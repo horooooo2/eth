@@ -1,0 +1,178 @@
+{
+  "events": [
+    {
+      "id": "2026-08-26-claims",
+      "date": "2026-08-26",
+      "title": "初请失业金",
+      "note": "劳动力市场高频指标，影响利率预期",
+      "time": "20:30",
+      "forecast": "230K",
+      "previous": "228K",
+      "actual": "229K",
+      "previousDate": "2026-08-19",
+      "tags": ["宏观", "就业"],
+      "impact": "watch",
+      "importance": "mid"
+    },
+    {
+      "id": "2026-08-28-pce",
+      "date": "2026-08-28",
+      "title": "核心 PCE",
+      "note": "美联储偏好的通胀指标",
+      "time": "20:30",
+      "forecast": "2.7%",
+      "previous": "2.8%",
+      "actual": "2.6%",
+      "previousDate": "2026-07-31",
+      "tags": ["宏观", "通胀", "PCE"],
+      "impact": "volatile",
+      "importance": "high"
+    },
+    {
+      "id": "2026-08-29-gdp",
+      "date": "2026-08-29",
+      "title": "GDP 修正值",
+      "note": "增长动能验证，影响风险偏好",
+      "time": "20:30",
+      "forecast": "2.1%",
+      "previous": "2.0%",
+      "actual": "2.3%",
+      "previousDate": "2026-05-29",
+      "tags": ["宏观", "GDP"],
+      "impact": "watch",
+      "importance": "high"
+    },
+    {
+      "id": "2026-08-31-ism-srv",
+      "date": "2026-08-31",
+      "title": "ISM 服务业 PMI",
+      "note": "服务业景气度，影响风险资产",
+      "time": "22:00",
+      "forecast": "54.8",
+      "previous": "54.5",
+      "actual": "55.1",
+      "previousDate": "2026-08-05",
+      "tags": ["宏观", "PMI"],
+      "impact": "watch",
+      "importance": "high"
+    },
+    {
+      "id": "2026-09-01-ism",
+      "date": "2026-09-01",
+      "title": "ISM 制造业 PMI",
+      "note": "经济景气度信号，影响风险资产风险偏好",
+      "time": "22:00",
+      "forecast": "55.2",
+      "previous": "55.6",
+      "actual": "55.4",
+      "previousDate": "2026-08-03",
+      "tags": ["宏观", "PMI"],
+      "impact": "watch",
+      "importance": "high"
+    },
+    {
+      "id": "2026-09-02-adp-avgo",
+      "date": "2026-09-02",
+      "title": "ADP 就业、博通财报",
+      "note": "非农前哨；博通作为 AI 算力链核心，影响科技股与风险情绪",
+      "time": "20:15",
+      "previousDate": "2026-08-06",
+      "tags": ["宏观", "就业", "AI"],
+      "impact": "watch",
+      "importance": "high"
+    },
+    {
+      "id": "2026-09-04-nfp",
+      "date": "2026-09-04",
+      "title": "非农就业报告",
+      "note": "决定加息预期的最关键数据",
+      "time": "20:30",
+      "forecast": "+58K",
+      "previous": "-23K",
+      "previousDate": "2026-08-07",
+      "tags": ["宏观", "非农", "就业"],
+      "impact": "volatile",
+      "importance": "high"
+    },
+    {
+      "id": "2026-09-07-holiday",
+      "date": "2026-09-07",
+      "title": "美加休市（劳工节）",
+      "note": "美股休市，流动性降低；加密盘仍交易，波动可能失真",
+      "tags": ["流动性"],
+      "impact": "liquidity",
+      "importance": "mid"
+    },
+    {
+      "id": "2026-09-09-repo",
+      "date": "2026-09-09",
+      "title": "国债回购扩容生效",
+      "note": "流动性注入预期（偏多）",
+      "tags": ["流动性", "利率"],
+      "impact": "bull",
+      "importance": "high"
+    },
+    {
+      "id": "2026-09-10-ppi-ecb",
+      "date": "2026-09-10",
+      "title": "PPI、欧央行决议",
+      "note": "通胀 + 全球货币政策信号",
+      "time": "20:30",
+      "previousDate": "2026-08-14",
+      "tags": ["宏观", "PPI", "欧央行"],
+      "impact": "watch",
+      "importance": "high"
+    },
+    {
+      "id": "2026-09-11-cpi",
+      "date": "2026-09-11",
+      "title": "CPI 数据",
+      "note": "通胀是否回落的关键验证，直接影响 9 月 FOMC 定价",
+      "time": "20:30",
+      "forecast": "待公布",
+      "previousDate": "2026-08-13",
+      "tags": ["宏观", "CPI", "通胀"],
+      "impact": "volatile",
+      "importance": "high"
+    },
+    {
+      "id": "2026-09-15-clarity-fomc",
+      "date": "2026-09-15",
+      "title": "CLARITY 法案投票 + FOMC 开幕",
+      "note": "监管 + 货币政策的双重变量",
+      "tags": ["监管", "CLARITY", "FOMC"],
+      "impact": "watch",
+      "importance": "high"
+    },
+    {
+      "id": "2026-09-17-fomc",
+      "date": "2026-09-17",
+      "title": "FOMC 利率决议",
+      "note": "9 月最终方向确认",
+      "time": "02:00",
+      "previousDate": "2026-07-29",
+      "timeNote": "北京时间次日 02:00（美东 14:00）",
+      "tags": ["宏观", "FOMC", "利率"],
+      "impact": "volatile",
+      "importance": "high"
+    },
+    {
+      "id": "2026-09-18-boj-witching",
+      "date": "2026-09-18",
+      "title": "日本央行决议、四巫日",
+      "note": "期权到期叠加央行决议，波动率放大",
+      "tags": ["宏观", "日央行", "波动"],
+      "impact": "volatile",
+      "importance": "high"
+    },
+    {
+      "id": "2026-09-29-upbit",
+      "date": "2026-09-29",
+      "title": "Upbit 开发者大会",
+      "note": "行业情绪与韩国市场关注度",
+      "tags": ["加密", "行业"],
+      "impact": "watch",
+      "importance": "mid"
+    }
+  ]
+}

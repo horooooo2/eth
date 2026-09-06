@@ -1,0 +1,22 @@
+巨鲸追踪 · EdgeOne Pages 部署（直传）
+
+请上传本文件夹的全部内容，根目录必须同时有：
+- index.html
+- assets/
+- cloud-functions/api/[[default]].js
+- edge-functions/
+- edgeone.json
+- package.json
+
+不要只传 public，也不要再套一层 whale-tracker-edgeone 目录。
+
+部署后先打开：
+  https://你的域名/api/health
+应返回 {"ok":true,"service":"whale-tracker",...}
+
+美联储定价（若 /api/markets 里 fed.items 为空）：
+  https://你的域名/poly-fed
+应返回含 items 的 JSON。这是边缘函数，用来绕过国内机房访问不了 Polymarket 的问题。
+
+若 health 仍是 404：当前「直接上传」项目可能不会编译 Node 云函数。
+需要新建一个「导入 Git 仓库」项目，或改用有 Node 的服务器跑 whale-tracker-deploy。

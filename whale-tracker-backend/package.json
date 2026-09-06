@@ -1,0 +1,27 @@
+{
+  "name": "whale-tracker-backend",
+  "version": "1.0.0",
+  "description": "巨鲸追踪与宏观共振仪表盘 · 后端 API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch --watch-path=./server.js --watch-path=./lib --watch-path=./routes server.js",
+    "build:edgeone": "node scripts/build-edgeone.js",
+    "refresh:metrics": "node scripts/refresh-whale-metrics.js",
+    "expand:leaderboard": "node scripts/expand-from-leaderboard.js"
+  },
+  "keywords": [
+    "whale",
+    "crypto",
+    "dashboard"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.11.0",
+    "better-sqlite3": "^11.10.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "ws": "^8.21.3"
+  }
+}

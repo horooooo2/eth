@@ -1,0 +1,15 @@
+巨鲸追踪 · 生产部署
+
+一、有 Node 服务器（推荐，功能最完整）
+1. 进入 whale-tracker-deploy 目录
+2. npm install --omit=dev
+3. npm start
+   或 PORT=3000 node server.js
+浏览器访问 http://服务器IP:3000
+健康检查 http://服务器IP:3000/api/health
+
+二、EdgeOne Pages（当前站点 *.edgeone.cool）
+请上传 whale-tracker-edgeone 整个文件夹（必须含 cloud-functions）。
+详见 whale-tracker-edgeone/DEPLOY.txt
+
+config/whales.json 为监控地址；cache/ 运行后自动生成。

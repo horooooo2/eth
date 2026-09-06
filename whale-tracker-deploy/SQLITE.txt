@@ -1,0 +1,25 @@
+SQLite 落库说明
+================
+
+已接入 better-sqlite3：
+- 库文件默认：data/whale.db（可用环境变量 SQLITE_PATH 覆盖）
+- 每次写入 JSON 缓存时同步写入：巨鲸、仓位、成交 fills、开/补/减事件 events
+- 开/补仓异动 alerts：前端同步 POST /api/whales/alert-history；打开页面 GET 恢复
+- GoldRush WebSocket：默认关闭；HL_USE_GOLDRUSH=1 时可开。默认官方 WS + 重启慢补 7 天成交（fillBackfill）
+- 自动清理 7 天前的 fills / events / alerts
+- JSON 缓存为空时，GET /api/whales 会回退读 SQLite
+- 健康检查：GET /api/health 的 sqlite 字段（含 alerts 计数）
+
+服务器更新步骤
+--------------
+1. 上传本目录新文件（至少 lib/db.js、lib/sqliteStore.js、以及改过的 cache/whales/createApp/routes、package.json、public 前端）
+2. cd /root/whale-tracker-deploy
+3. npm install --omit=dev
+4. mkdir -p data
+5. pm2 restart whale-tracker
+6. 打开 http://IP:3000/api/health 查看 sqlite.ok === true
+7. 异动恢复：GET /api/whales/alert-history 应能返回 alerts 数组
+
+若 better-sqlite3 安装失败（缺编译环境）：
+  apt update && apt install -y build-essential python3
+  然后重新 npm install --omit=dev

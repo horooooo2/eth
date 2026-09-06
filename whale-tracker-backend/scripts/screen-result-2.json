@@ -1,0 +1,2663 @@
+{
+  "ranked": [
+    {
+      "address": "0xb7e0b9fbc9479330d70bcc82a7d4325a20e8d1aa",
+      "equity": 4722114.488278,
+      "monthPnl": 4451906.074483,
+      "monthRoi": 4.0354170422,
+      "monthVlm": 211951655.08,
+      "weekVlm": 89057283.89,
+      "turnover": 44.88490391457913,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.3,
+      "winRate": 100,
+      "closedTrades": 1017,
+      "top": [
+        "BTC",
+        "SOL",
+        "ZEC",
+        "PONS"
+      ],
+      "coreShare": 84,
+      "majorShare": 84,
+      "ddMonth": 16.2,
+      "ddAll": 85.7,
+      "positions": [
+        "BTC",
+        "ASTER",
+        "PONS"
+      ]
+    },
+    {
+      "address": "0x2f58adc8b81f51b02acf65eff40d9f5bbb88bc9e",
+      "equity": 253767.706208,
+      "monthPnl": 224740.702159,
+      "monthRoi": 7.7424697974,
+      "monthVlm": 15902594.1,
+      "weekVlm": 10807359.85,
+      "turnover": 62.665948861773145,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.2,
+      "winRate": 96.6,
+      "closedTrades": 1058,
+      "top": [
+        "ETH",
+        "HYPE",
+        "ZEC",
+        "BTC"
+      ],
+      "coreShare": 85,
+      "majorShare": 86,
+      "ddMonth": 20.1,
+      "ddAll": 98.7,
+      "positions": [
+        "BTC",
+        "ETH",
+        "SOL",
+        "DOGE",
+        "XRP",
+        "FIL",
+        "PURR",
+        "HYPE",
+        "TRUMP",
+        "PUMP",
+        "ZEC",
+        "MON"
+      ]
+    },
+    {
+      "address": "0x64702807a1f0f9888ea22b858099d7f481227b55",
+      "equity": 2123828.059662,
+      "monthPnl": 1610236.669394,
+      "monthRoi": 2.4724145101,
+      "monthVlm": 47807851.32,
+      "weekVlm": 16468363.55,
+      "turnover": 22.51022680602895,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0,
+      "winRate": 95.7,
+      "closedTrades": 469,
+      "top": [
+        "HYPE",
+        "BTC",
+        "ETH"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 19.6,
+      "ddAll": 95.2,
+      "positions": [
+        "BTC",
+        "ETH",
+        "DOGE",
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0xdd7a372377fc633f74ab6e20963803d52f448830",
+      "equity": 2711253.264582,
+      "monthPnl": 2323832.068436,
+      "monthRoi": 4.4530841649,
+      "monthVlm": 30450640.49,
+      "weekVlm": 8864615.14,
+      "turnover": 11.231204730220819,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.7,
+      "winRate": 100,
+      "closedTrades": 461,
+      "top": [
+        "BTC",
+        "ZEC",
+        "HYPE",
+        "LINK"
+      ],
+      "coreShare": 73,
+      "majorShare": 73,
+      "ddMonth": 27.2,
+      "ddAll": 100,
+      "positions": [
+        "BTC",
+        "LINK",
+        "HYPE",
+        "ZEC"
+      ]
+    },
+    {
+      "address": "0x795cfd1b03eafc11c4ec958b8a94cfc9aa64a242",
+      "equity": 6814010.605922,
+      "monthPnl": 5242044.80075,
+      "monthRoi": 3.3347066352,
+      "monthVlm": 78690996.38,
+      "weekVlm": 5004032.64,
+      "turnover": 11.548411197307253,
+      "lastFill": "2026-08-26",
+      "daysAgo": 4.8,
+      "winRate": 90.3,
+      "closedTrades": 947,
+      "top": [
+        "ETH",
+        "PURR/USDC"
+      ],
+      "coreShare": 98,
+      "majorShare": 98,
+      "ddMonth": 17.6,
+      "ddAll": 93.1,
+      "positions": [
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0x0ca4109c94438dde8d7386da27180f414de80fa8",
+      "equity": 369148.035844,
+      "monthPnl": 255279.402144,
+      "monthRoi": 2.2418763961,
+      "monthVlm": 3528905.65,
+      "weekVlm": 1764244.42,
+      "turnover": 9.55959481656648,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.1,
+      "winRate": 86.4,
+      "closedTrades": 1209,
+      "top": [
+        "HYPE",
+        "ETH",
+        "PUMP",
+        "KAITO"
+      ],
+      "coreShare": 80,
+      "majorShare": 81,
+      "ddMonth": 17,
+      "ddAll": 98.7,
+      "positions": [
+        "ETH",
+        "CRV",
+        "STX",
+        "GALA",
+        "ENS",
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0x84bb8f4998527aaf4cf5633bb2743533310600bb",
+      "equity": 155265.144382,
+      "monthPnl": 107872.222906,
+      "monthRoi": 2.2744205702,
+      "monthVlm": 7047491.48,
+      "weekVlm": 3331419.76,
+      "turnover": 45.390042356583294,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.2,
+      "winRate": 83.6,
+      "closedTrades": 755,
+      "top": [
+        "ETH",
+        "LIT",
+        "ZEC",
+        "UNI"
+      ],
+      "coreShare": 55,
+      "majorShare": 61,
+      "ddMonth": 17.1,
+      "ddAll": 99.9,
+      "positions": [
+        "NEAR"
+      ]
+    },
+    {
+      "address": "0x362ad6209a5e904a5569f69884375809c5781d9f",
+      "equity": 8178203.343899,
+      "monthPnl": 7501923.921842,
+      "monthRoi": 2.3626031306,
+      "monthVlm": 277076194.19,
+      "weekVlm": 71842599.56,
+      "turnover": 33.87983674882587,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.6,
+      "winRate": 100,
+      "closedTrades": 2000,
+      "top": [
+        "SOL"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 33.9,
+      "ddAll": 28,
+      "positions": [
+        "BTC",
+        "ASTER",
+        "ZEC"
+      ]
+    },
+    {
+      "address": "0x470a5f416a0f380e228cb8f5439c91b0c98c81a6",
+      "equity": 1555255.911912,
+      "monthPnl": 1070485.04,
+      "monthRoi": 2.6117083019,
+      "monthVlm": 7652187.24,
+      "weekVlm": 4375598.44,
+      "turnover": 4.920210996396443,
+      "lastFill": "2026-08-25",
+      "daysAgo": 6.3,
+      "winRate": 100,
+      "closedTrades": 1001,
+      "top": [
+        "HYPE"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 34.2,
+      "ddAll": 34.5,
+      "positions": []
+    },
+    {
+      "address": "0x03ba951f72e59899ac8dab30cb5624dbe5d52bb8",
+      "equity": 429667.096231,
+      "monthPnl": 398438.446231,
+      "monthRoi": 5.2140518517,
+      "monthVlm": 6822175.64,
+      "weekVlm": 602062.34,
+      "turnover": 15.877817267934859,
+      "lastFill": "2026-08-26",
+      "daysAgo": 5.5,
+      "winRate": 80.2,
+      "closedTrades": 470,
+      "top": [
+        "BTC",
+        "HYPE",
+        "PUMP"
+      ],
+      "coreShare": 91,
+      "majorShare": 91,
+      "ddMonth": 15.9,
+      "ddAll": 18.6,
+      "positions": [
+        "BTC"
+      ]
+    },
+    {
+      "address": "0xe3c90b18dbd4cf0dae4b12aadc18665261dfd0b5",
+      "equity": 191640.888213,
+      "monthPnl": 115323.130127,
+      "monthRoi": 2.8899584712,
+      "monthVlm": 2364520.02,
+      "weekVlm": 1544776.28,
+      "turnover": 12.338285644825154,
+      "lastFill": "2026-08-30",
+      "daysAgo": 1.3,
+      "winRate": 79.9,
+      "closedTrades": 224,
+      "top": [
+        "SOL",
+        "SUI",
+        "HYPE"
+      ],
+      "coreShare": 64,
+      "majorShare": 100,
+      "ddMonth": 17,
+      "ddAll": 28.6,
+      "positions": [
+        "SUI"
+      ]
+    },
+    {
+      "address": "0x9137bd9347f07990a8ce22869f8b93d190479c5a",
+      "equity": 3161732.646549,
+      "monthPnl": 2262604.684276,
+      "monthRoi": 2.5164434643,
+      "monthVlm": 79840534.55,
+      "weekVlm": 44460376.47,
+      "turnover": 25.252146046296847,
+      "lastFill": "2026-08-28",
+      "daysAgo": 3.7,
+      "winRate": 78,
+      "closedTrades": 1141,
+      "top": [
+        "BTC",
+        "HYPE"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 15.6,
+      "ddAll": 95.2,
+      "positions": []
+    },
+    {
+      "address": "0x11f46fff2624737aa0d38507e761b6ef770eb94d",
+      "equity": 159670.736663,
+      "monthPnl": 112200.956878,
+      "monthRoi": 2.3636291844,
+      "monthVlm": 3052287.35,
+      "weekVlm": 978963.33,
+      "turnover": 19.116134952406075,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.6,
+      "winRate": 72.1,
+      "closedTrades": 1039,
+      "top": [
+        "BTC",
+        "ZEC",
+        "PUMP",
+        "SOL"
+      ],
+      "coreShare": 71,
+      "majorShare": 71,
+      "ddMonth": 10.1,
+      "ddAll": 42.1,
+      "positions": [
+        "PUMP",
+        "ZEC"
+      ]
+    },
+    {
+      "address": "0xa19ed0ae46e89461e56063f1ed268a0dc225745f",
+      "equity": 370677.703652,
+      "monthPnl": 255929.394638,
+      "monthRoi": 2.230354389,
+      "monthVlm": 5347897.89,
+      "weekVlm": 5252390.04,
+      "turnover": 14.427352487919581,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0,
+      "winRate": 76,
+      "closedTrades": 620,
+      "top": [
+        "BTC",
+        "SOL"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 18.1,
+      "ddAll": 99.5,
+      "positions": [
+        "BTC",
+        "SOL"
+      ]
+    },
+    {
+      "address": "0x53969485d7422b35c7fe5a4025498f9b69268b79",
+      "equity": 2220355.568605,
+      "monthPnl": 1967896.014341,
+      "monthRoi": 3.4832510218,
+      "monthVlm": 36938636.24,
+      "weekVlm": 24488472.34,
+      "turnover": 16.636360753339936,
+      "lastFill": "2026-08-30",
+      "daysAgo": 1.3,
+      "winRate": 100,
+      "closedTrades": 1919,
+      "top": [
+        "UNI",
+        "ETH"
+      ],
+      "coreShare": 48,
+      "majorShare": 100,
+      "ddMonth": 42.4,
+      "ddAll": 60.2,
+      "positions": [
+        "BTC",
+        "ETH",
+        "SUI",
+        "LINK",
+        "AAVE",
+        "UNI",
+        "NEAR",
+        "HYPE",
+        "ZEC",
+        "GRAM"
+      ]
+    },
+    {
+      "address": "0x68f33dd18add8ad4830d78ae66faa98d58f2310e",
+      "equity": 224188.810038,
+      "monthPnl": 158124.593066,
+      "monthRoi": 2.3934983311,
+      "monthVlm": 7696865.7,
+      "weekVlm": 1163015.43,
+      "turnover": 34.33206902117631,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.5,
+      "winRate": 78,
+      "closedTrades": 610,
+      "top": [
+        "BTC",
+        "ZEC",
+        "HYPE",
+        "LIT"
+      ],
+      "coreShare": 90,
+      "majorShare": 91,
+      "ddMonth": 22.6,
+      "ddAll": 49.5,
+      "positions": [
+        "ETHFI",
+        "FARTCOIN",
+        "PUMP",
+        "ZEC",
+        "LIT"
+      ]
+    },
+    {
+      "address": "0x634fe24f2f7396f5d967ec3936df04f49a3e6951",
+      "equity": 1541558.23778,
+      "monthPnl": 1462525.932415,
+      "monthRoi": 18.0655139136,
+      "monthVlm": 34255110.53,
+      "weekVlm": 23814501.56,
+      "turnover": 22.221094014152087,
+      "lastFill": "2026-08-30",
+      "daysAgo": 0.8,
+      "winRate": 100,
+      "closedTrades": 160,
+      "top": [
+        "ETH",
+        "SOL",
+        "HYPE",
+        "ZEC"
+      ],
+      "coreShare": 96,
+      "majorShare": 96,
+      "ddMonth": 45.3,
+      "ddAll": 99.8,
+      "positions": [
+        "BTC",
+        "SOL",
+        "HYPE",
+        "ZEC"
+      ]
+    },
+    {
+      "address": "0xbb1ac608e3bf90b73fa782007878205644c890a7",
+      "equity": 657406.763325,
+      "monthPnl": 640757.988157,
+      "monthRoi": 10.5358395173,
+      "monthVlm": 8525176.38,
+      "weekVlm": 4204482.21,
+      "turnover": 12.967886635181205,
+      "lastFill": "2026-08-28",
+      "daysAgo": 3.1,
+      "winRate": 76.1,
+      "closedTrades": 787,
+      "top": [
+        "BTC",
+        "HYPE",
+        "ZRO",
+        "ETH"
+      ],
+      "coreShare": 69,
+      "majorShare": 77,
+      "ddMonth": 33.1,
+      "ddAll": 100,
+      "positions": [
+        "ENA",
+        "HYPE",
+        "LIT",
+        "CASHCAT"
+      ]
+    },
+    {
+      "address": "0xe2823659be02e0f48a4660e4da008b5e1abfdf29",
+      "equity": 1867853.811389,
+      "monthPnl": 6624335.201552,
+      "monthRoi": 2.2128921638,
+      "monthVlm": 32889795.69,
+      "weekVlm": 3559822.46,
+      "turnover": 17.608335025717043,
+      "lastFill": "2026-08-25",
+      "daysAgo": 6.2,
+      "winRate": 100,
+      "closedTrades": 1847,
+      "top": [
+        "ETH",
+        "BTC",
+        "AAVE",
+        "HYPE"
+      ],
+      "coreShare": 84,
+      "majorShare": 98,
+      "ddMonth": 58.3,
+      "ddAll": 71.9,
+      "positions": [
+        "LINK",
+        "GMX",
+        "AAVE",
+        "UNI",
+        "NEAR",
+        "ONDO",
+        "HYPE",
+        "VVV",
+        "ZEC"
+      ]
+    },
+    {
+      "address": "0xd745e55d0f7d8b32d875d4674003bfc9d9d1ec4c",
+      "equity": 278832.754299,
+      "monthPnl": 224943.098837,
+      "monthRoi": 4.1741424566,
+      "monthVlm": 12225814.86,
+      "weekVlm": 2378547.29,
+      "turnover": 43.84640854241221,
+      "lastFill": "2026-08-28",
+      "daysAgo": 2.9,
+      "winRate": 71.9,
+      "closedTrades": 885,
+      "top": [
+        "BTC",
+        "HYPE",
+        "ZEC"
+      ],
+      "coreShare": 97,
+      "majorShare": 97,
+      "ddMonth": 31.1,
+      "ddAll": 89.7,
+      "positions": [
+        "BTC",
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0x9466140c8781e253fe426c87ac17ccba500140ff",
+      "equity": 350634.733409,
+      "monthPnl": 298166.738606,
+      "monthRoi": 3.2604206202,
+      "monthVlm": 2602875.27,
+      "weekVlm": 1032392.39,
+      "turnover": 7.4233241090917845,
+      "lastFill": "2026-08-28",
+      "daysAgo": 3.1,
+      "winRate": 88.3,
+      "closedTrades": 905,
+      "top": [
+        "HYPE",
+        "BTC",
+        "#30",
+        "#40"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 48.8,
+      "ddAll": 100,
+      "positions": [
+        "BTC",
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0x6f31fef250a34a025f7784a2e3a02b4921b30394",
+      "equity": 188744.876507,
+      "monthPnl": 162337.331477,
+      "monthRoi": 5.9230891092,
+      "monthVlm": 8651051.65,
+      "weekVlm": 6206371.95,
+      "turnover": 45.834630375670926,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0,
+      "winRate": 68,
+      "closedTrades": 1053,
+      "top": [
+        "HYPE",
+        "SOL",
+        "ZEC",
+        "LIT"
+      ],
+      "coreShare": 92,
+      "majorShare": 92,
+      "ddMonth": 29.3,
+      "ddAll": 99.3,
+      "positions": [
+        "BTC",
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0x0c44471cc8516125ead11e09446302ae20540ed4",
+      "equity": 1057335.208595,
+      "monthPnl": 917249.558297,
+      "monthRoi": 6.1124359325,
+      "monthVlm": 29329270.95,
+      "weekVlm": 17800098,
+      "turnover": 27.73885775446095,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0,
+      "winRate": 65.4,
+      "closedTrades": 1346,
+      "top": [
+        "HYPE",
+        "BTC"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 27.3,
+      "ddAll": 100,
+      "positions": [
+        "BTC",
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0x76fe28b803eeba445c34afc2f914e6bcb71112fd",
+      "equity": 1148737.400301,
+      "monthPnl": 960440.625468,
+      "monthRoi": 5.0979674483,
+      "monthVlm": 16071583.7,
+      "weekVlm": 7475238.8,
+      "turnover": 13.990650688128385,
+      "lastFill": "2026-08-29",
+      "daysAgo": 1.9,
+      "winRate": 82.5,
+      "closedTrades": 938,
+      "top": [
+        "ETH",
+        "HYPE",
+        "BTC"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 47.2,
+      "ddAll": 100,
+      "positions": [
+        "ETH"
+      ]
+    },
+    {
+      "address": "0xbd3e5876cc7924be16c2534b1b990a808041469c",
+      "equity": 159925.77332,
+      "monthPnl": 285080.404471,
+      "monthRoi": 5.1884270815,
+      "monthVlm": 2721258.86,
+      "weekVlm": 1276539.25,
+      "turnover": 17.015761771899992,
+      "lastFill": "2026-08-28",
+      "daysAgo": 3.2,
+      "winRate": 88.2,
+      "closedTrades": 1369,
+      "top": [
+        "CASHCAT",
+        "ETH",
+        "SOL",
+        "FARTCOIN"
+      ],
+      "coreShare": 49,
+      "majorShare": 49,
+      "ddMonth": 55.8,
+      "ddAll": 99.9,
+      "positions": []
+    },
+    {
+      "address": "0x613ead0ea5af374af0ccfc117ef116a8e8d133fe",
+      "equity": 413627.46662,
+      "monthPnl": 464108.260679,
+      "monthRoi": 25.8903223913,
+      "monthVlm": 6061251.92,
+      "weekVlm": 2691764.84,
+      "turnover": 14.653891264838267,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.5,
+      "winRate": 70.5,
+      "closedTrades": 837,
+      "top": [
+        "ETH",
+        "LIT",
+        "CASHCAT",
+        "BTC"
+      ],
+      "coreShare": 64,
+      "majorShare": 64,
+      "ddMonth": 46.6,
+      "ddAll": 100,
+      "positions": [
+        "ZEC",
+        "CASHCAT"
+      ]
+    },
+    {
+      "address": "0xab7fb756330e3983e676f44c03dabda9120aa273",
+      "equity": 251603.881328,
+      "monthPnl": 502919.748172,
+      "monthRoi": 14.1582851576,
+      "monthVlm": 16190575.37,
+      "weekVlm": 7686975.27,
+      "turnover": 64.34946585300636,
+      "lastFill": "2026-08-30",
+      "daysAgo": 1,
+      "winRate": 86.7,
+      "closedTrades": 722,
+      "top": [
+        "SOL",
+        "BTC",
+        "ETH",
+        "XRP"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 79.4,
+      "ddAll": 100,
+      "positions": [
+        "BTC",
+        "ETH",
+        "SOL",
+        "XRP"
+      ]
+    },
+    {
+      "address": "0x1add90cfe379ad9c56c36522a3a4d33e89032671",
+      "equity": 535090.486514,
+      "monthPnl": 834685.509782,
+      "monthRoi": 3.2971424848,
+      "monthVlm": 41422631.739999995,
+      "weekVlm": 17391634.009999998,
+      "turnover": 77.41238684668004,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.1,
+      "winRate": 67.9,
+      "closedTrades": 340,
+      "top": [
+        "HYPE"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 69.1,
+      "ddAll": 100,
+      "positions": [
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0x0f83a7bf2ea16c7d8c90e3aa4ca0c8e58a83c9ea",
+      "equity": 286698.954756,
+      "monthPnl": 199064.059234,
+      "monthRoi": 2.2715055395,
+      "monthVlm": 3959455.63,
+      "weekVlm": 2896018.02,
+      "turnover": 13.81049900711972,
+      "lastFill": "2026-08-29",
+      "daysAgo": 2.2,
+      "winRate": 95.6,
+      "closedTrades": 858,
+      "top": [
+        "HYPE"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 100,
+      "ddAll": 100,
+      "positions": []
+    },
+    {
+      "address": "0x1b232b41b0e75550c59288b99874e4a8142fbe21",
+      "equity": 523093.439044,
+      "monthPnl": 502524.653229,
+      "monthRoi": 5.7248027881,
+      "monthVlm": 6105581.21,
+      "weekVlm": 1188246.8,
+      "turnover": 11.672066124856192,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.8,
+      "winRate": 66.3,
+      "closedTrades": 723,
+      "top": [
+        "HYPE"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 74.4,
+      "ddAll": 74.4,
+      "positions": [
+        "HYPE"
+      ]
+    }
+  ],
+  "all": [
+    {
+      "address": "0x06ecb2a427c3d51a66c29d9b4fb1960107d10b19",
+      "equity": 209833.105307,
+      "monthPnl": 1926619.895307,
+      "monthRoi": 25.9443812843,
+      "monthVlm": 14046335.81,
+      "weekVlm": 727814.6,
+      "turnover": 66.9405134592526,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.2,
+      "winRate": 90.3,
+      "closedTrades": 1004,
+      "top": [],
+      "coreShare": 0,
+      "majorShare": 0,
+      "ddMonth": 100,
+      "ddAll": 100,
+      "positions": []
+    },
+    {
+      "address": "0x613ead0ea5af374af0ccfc117ef116a8e8d133fe",
+      "equity": 413627.46662,
+      "monthPnl": 464108.260679,
+      "monthRoi": 25.8903223913,
+      "monthVlm": 6061251.92,
+      "weekVlm": 2691764.84,
+      "turnover": 14.653891264838267,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.5,
+      "winRate": 70.5,
+      "closedTrades": 837,
+      "top": [
+        "ETH",
+        "LIT",
+        "CASHCAT",
+        "BTC"
+      ],
+      "coreShare": 64,
+      "majorShare": 64,
+      "ddMonth": 46.6,
+      "ddAll": 100,
+      "positions": [
+        "ZEC",
+        "CASHCAT"
+      ]
+    },
+    {
+      "address": "0xa516541e599129095d14f7faf8b11ae670c837b0",
+      "equity": 1083526.774823,
+      "monthPnl": 1038455.217189,
+      "monthRoi": 20.8815986803,
+      "monthVlm": 49477520.61,
+      "weekVlm": 30211903.43,
+      "turnover": 45.6634037659867,
+      "lastFill": "2026-08-28",
+      "daysAgo": 3,
+      "winRate": 18.3,
+      "closedTrades": 465,
+      "top": [
+        "ETH",
+        "HYPE",
+        "SOL",
+        "ZEC"
+      ],
+      "coreShare": 99,
+      "majorShare": 99,
+      "ddMonth": 62.2,
+      "ddAll": 97.3,
+      "positions": [
+        "BTC",
+        "SOL",
+        "HYPE",
+        "ZEC"
+      ]
+    },
+    {
+      "address": "0x634fe24f2f7396f5d967ec3936df04f49a3e6951",
+      "equity": 1541558.23778,
+      "monthPnl": 1462525.932415,
+      "monthRoi": 18.0655139136,
+      "monthVlm": 34255110.53,
+      "weekVlm": 23814501.56,
+      "turnover": 22.221094014152087,
+      "lastFill": "2026-08-30",
+      "daysAgo": 0.8,
+      "winRate": 100,
+      "closedTrades": 160,
+      "top": [
+        "ETH",
+        "SOL",
+        "HYPE",
+        "ZEC"
+      ],
+      "coreShare": 96,
+      "majorShare": 96,
+      "ddMonth": 45.3,
+      "ddAll": 99.8,
+      "positions": [
+        "BTC",
+        "SOL",
+        "HYPE",
+        "ZEC"
+      ]
+    },
+    {
+      "address": "0xab7fb756330e3983e676f44c03dabda9120aa273",
+      "equity": 251603.881328,
+      "monthPnl": 502919.748172,
+      "monthRoi": 14.1582851576,
+      "monthVlm": 16190575.37,
+      "weekVlm": 7686975.27,
+      "turnover": 64.34946585300636,
+      "lastFill": "2026-08-30",
+      "daysAgo": 1,
+      "winRate": 86.7,
+      "closedTrades": 722,
+      "top": [
+        "SOL",
+        "BTC",
+        "ETH",
+        "XRP"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 79.4,
+      "ddAll": 100,
+      "positions": [
+        "BTC",
+        "ETH",
+        "SOL",
+        "XRP"
+      ]
+    },
+    {
+      "address": "0xbb1ac608e3bf90b73fa782007878205644c890a7",
+      "equity": 657406.763325,
+      "monthPnl": 640757.988157,
+      "monthRoi": 10.5358395173,
+      "monthVlm": 8525176.38,
+      "weekVlm": 4204482.21,
+      "turnover": 12.967886635181205,
+      "lastFill": "2026-08-28",
+      "daysAgo": 3.1,
+      "winRate": 76.1,
+      "closedTrades": 787,
+      "top": [
+        "BTC",
+        "HYPE",
+        "ZRO",
+        "ETH"
+      ],
+      "coreShare": 69,
+      "majorShare": 77,
+      "ddMonth": 33.1,
+      "ddAll": 100,
+      "positions": [
+        "ENA",
+        "HYPE",
+        "LIT",
+        "CASHCAT"
+      ]
+    },
+    {
+      "address": "0x3e470a0bf8460c3a8320327cf5db7deed3a3aaf6",
+      "equity": 754962.141613,
+      "monthPnl": 685167.196982,
+      "monthRoi": 9.8168599546,
+      "monthVlm": 4773254.65,
+      "weekVlm": 2245175.22,
+      "turnover": 6.322508622487737,
+      "lastFill": "2026-08-25",
+      "daysAgo": 6.2,
+      "winRate": 61.8,
+      "closedTrades": 513,
+      "top": [
+        "BTC",
+        "ZEC",
+        "ETH",
+        "SOL"
+      ],
+      "coreShare": 85,
+      "majorShare": 85,
+      "ddMonth": 41.8,
+      "ddAll": 62.3,
+      "positions": [
+        "BTC",
+        "ETH",
+        "HYPE",
+        "XMR"
+      ]
+    },
+    {
+      "address": "0xb7ae6c2850230b7d903aebd95c1fb2a4d525369f",
+      "equity": 389324.271381,
+      "monthPnl": 350715.097306,
+      "monthRoi": 9.0837244181,
+      "monthVlm": 3033969.12,
+      "weekVlm": 650482.9,
+      "turnover": 7.792910288480066,
+      "lastFill": "2026-08-28",
+      "daysAgo": 3.1,
+      "winRate": 37.3,
+      "closedTrades": 467,
+      "top": [
+        "PUMP",
+        "CASHCAT"
+      ],
+      "coreShare": 0,
+      "majorShare": 0,
+      "ddMonth": 38,
+      "ddAll": 93.5,
+      "positions": [
+        "CASHCAT"
+      ]
+    },
+    {
+      "address": "0x4cae5bed586f6e73ae54ebd40a4ac4ed2c477c34",
+      "equity": 1389036.279038,
+      "monthPnl": 1263388.66109,
+      "monthRoi": 8.8432846161,
+      "monthVlm": 21198793.48,
+      "weekVlm": 5017368.8,
+      "turnover": 15.261511740126453,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.1,
+      "winRate": 0.3,
+      "closedTrades": 589,
+      "top": [
+        "NEAR",
+        "TAO",
+        "ZEC",
+        "ENA"
+      ],
+      "coreShare": 0,
+      "majorShare": 79,
+      "ddMonth": 28.5,
+      "ddAll": 100,
+      "positions": [
+        "NEAR",
+        "TAO",
+        "ENA",
+        "HYPE",
+        "SYRUP",
+        "PUMP",
+        "XPL",
+        "ZEC",
+        "LIT"
+      ]
+    },
+    {
+      "address": "0x2f58adc8b81f51b02acf65eff40d9f5bbb88bc9e",
+      "equity": 253767.706208,
+      "monthPnl": 224740.702159,
+      "monthRoi": 7.7424697974,
+      "monthVlm": 15902594.1,
+      "weekVlm": 10807359.85,
+      "turnover": 62.665948861773145,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.2,
+      "winRate": 96.6,
+      "closedTrades": 1058,
+      "top": [
+        "ETH",
+        "HYPE",
+        "ZEC",
+        "BTC"
+      ],
+      "coreShare": 85,
+      "majorShare": 86,
+      "ddMonth": 20.1,
+      "ddAll": 98.7,
+      "positions": [
+        "BTC",
+        "ETH",
+        "SOL",
+        "DOGE",
+        "XRP",
+        "FIL",
+        "PURR",
+        "HYPE",
+        "TRUMP",
+        "PUMP",
+        "ZEC",
+        "MON"
+      ]
+    },
+    {
+      "address": "0x7e1ad5e2bbe30d6d202e7c41036ea0a07c560be9",
+      "equity": 2377556.026579,
+      "monthPnl": 2487739.31084,
+      "monthRoi": 7.6277317058,
+      "monthVlm": 187066086.73,
+      "weekVlm": 99457164.24,
+      "turnover": 78.67999098181683,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.1,
+      "winRate": 20.7,
+      "closedTrades": 603,
+      "top": [
+        "ETH",
+        "PUMP"
+      ],
+      "coreShare": 84,
+      "majorShare": 84,
+      "ddMonth": 100,
+      "ddAll": 100,
+      "positions": [
+        "ETH",
+        "SOL",
+        "PUMP",
+        "LIT"
+      ]
+    },
+    {
+      "address": "0x2fef2bd40f8dc6e0986a462c1117054faa965071",
+      "equity": 207122.948289,
+      "monthPnl": 194049.589344,
+      "monthRoi": 6.4957405594,
+      "monthVlm": 7866385.15,
+      "weekVlm": 5052932.72,
+      "turnover": 37.97930270393787,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0,
+      "winRate": 70.6,
+      "closedTrades": 34,
+      "top": [
+        "AAVE",
+        "FARTCOIN",
+        "SOL",
+        "ZEC"
+      ],
+      "coreShare": 21,
+      "majorShare": 56,
+      "ddMonth": 55.2,
+      "ddAll": 100,
+      "positions": [
+        "DOGE",
+        "AAVE",
+        "HYPE",
+        "FARTCOIN",
+        "PUMP",
+        "ZEC",
+        "MON"
+      ]
+    },
+    {
+      "address": "0x0c44471cc8516125ead11e09446302ae20540ed4",
+      "equity": 1057335.208595,
+      "monthPnl": 917249.558297,
+      "monthRoi": 6.1124359325,
+      "monthVlm": 29329270.95,
+      "weekVlm": 17800098,
+      "turnover": 27.73885775446095,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0,
+      "winRate": 65.4,
+      "closedTrades": 1346,
+      "top": [
+        "HYPE",
+        "BTC"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 27.3,
+      "ddAll": 100,
+      "positions": [
+        "BTC",
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0x6f31fef250a34a025f7784a2e3a02b4921b30394",
+      "equity": 188744.876507,
+      "monthPnl": 162337.331477,
+      "monthRoi": 5.9230891092,
+      "monthVlm": 8651051.65,
+      "weekVlm": 6206371.95,
+      "turnover": 45.834630375670926,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0,
+      "winRate": 68,
+      "closedTrades": 1053,
+      "top": [
+        "HYPE",
+        "SOL",
+        "ZEC",
+        "LIT"
+      ],
+      "coreShare": 92,
+      "majorShare": 92,
+      "ddMonth": 29.3,
+      "ddAll": 99.3,
+      "positions": [
+        "BTC",
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0xb5b3f3caf9d778b1293e5cd29f32e84b04c67a08",
+      "equity": 6126177.793209,
+      "monthPnl": 6936350.346383,
+      "monthRoi": 5.829711112,
+      "monthVlm": 109032178.47,
+      "weekVlm": 24709965.31,
+      "turnover": 17.797749616549577,
+      "lastFill": "2026-08-30",
+      "daysAgo": 1.4,
+      "winRate": 61.7,
+      "closedTrades": 1044,
+      "top": [
+        "BTC",
+        "ETH"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 38.2,
+      "ddAll": 38.2,
+      "positions": [
+        "BTC",
+        "ETH"
+      ]
+    },
+    {
+      "address": "0x1b232b41b0e75550c59288b99874e4a8142fbe21",
+      "equity": 523093.439044,
+      "monthPnl": 502524.653229,
+      "monthRoi": 5.7248027881,
+      "monthVlm": 6105581.21,
+      "weekVlm": 1188246.8,
+      "turnover": 11.672066124856192,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.8,
+      "winRate": 66.3,
+      "closedTrades": 723,
+      "top": [
+        "HYPE"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 74.4,
+      "ddAll": 74.4,
+      "positions": [
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0x2f7b23210488e418aeb330434cf93c988098ffe5",
+      "equity": 152123.535003,
+      "monthPnl": 128908.41407,
+      "monthRoi": 5.5527772091,
+      "monthVlm": 2133722.37,
+      "weekVlm": 2069661.41,
+      "turnover": 14.026247614860655,
+      "lastFill": "2026-08-28",
+      "daysAgo": 3,
+      "winRate": 10.5,
+      "closedTrades": 611,
+      "top": [
+        "HYPE"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 30.8,
+      "ddAll": 88.1,
+      "positions": []
+    },
+    {
+      "address": "0x03ba951f72e59899ac8dab30cb5624dbe5d52bb8",
+      "equity": 429667.096231,
+      "monthPnl": 398438.446231,
+      "monthRoi": 5.2140518517,
+      "monthVlm": 6822175.64,
+      "weekVlm": 602062.34,
+      "turnover": 15.877817267934859,
+      "lastFill": "2026-08-26",
+      "daysAgo": 5.5,
+      "winRate": 80.2,
+      "closedTrades": 470,
+      "top": [
+        "BTC",
+        "HYPE",
+        "PUMP"
+      ],
+      "coreShare": 91,
+      "majorShare": 91,
+      "ddMonth": 15.9,
+      "ddAll": 18.6,
+      "positions": [
+        "BTC"
+      ]
+    },
+    {
+      "address": "0xbd3e5876cc7924be16c2534b1b990a808041469c",
+      "equity": 159925.77332,
+      "monthPnl": 285080.404471,
+      "monthRoi": 5.1884270815,
+      "monthVlm": 2721258.86,
+      "weekVlm": 1276539.25,
+      "turnover": 17.015761771899992,
+      "lastFill": "2026-08-28",
+      "daysAgo": 3.2,
+      "winRate": 88.2,
+      "closedTrades": 1369,
+      "top": [
+        "CASHCAT",
+        "ETH",
+        "SOL",
+        "FARTCOIN"
+      ],
+      "coreShare": 49,
+      "majorShare": 49,
+      "ddMonth": 55.8,
+      "ddAll": 99.9,
+      "positions": []
+    },
+    {
+      "address": "0x76fe28b803eeba445c34afc2f914e6bcb71112fd",
+      "equity": 1148737.400301,
+      "monthPnl": 960440.625468,
+      "monthRoi": 5.0979674483,
+      "monthVlm": 16071583.7,
+      "weekVlm": 7475238.8,
+      "turnover": 13.990650688128385,
+      "lastFill": "2026-08-29",
+      "daysAgo": 1.9,
+      "winRate": 82.5,
+      "closedTrades": 938,
+      "top": [
+        "ETH",
+        "HYPE",
+        "BTC"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 47.2,
+      "ddAll": 100,
+      "positions": [
+        "ETH"
+      ]
+    },
+    {
+      "address": "0xd74916aecd93ca55deb392dfad4c3ae43951ea49",
+      "equity": 1155226.857144,
+      "monthPnl": 965594.330722,
+      "monthRoi": 5.0919235689,
+      "monthVlm": 10057427.52,
+      "weekVlm": 2063518.73,
+      "turnover": 8.706019478169328,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.1,
+      "winRate": 54.9,
+      "closedTrades": 1078,
+      "top": [
+        "HYPE",
+        "BTC"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 31.6,
+      "ddAll": 99.9,
+      "positions": [
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0x8be0b9c4dbfb90f47fb94e8968dce08d3152326c",
+      "equity": 587622.943838,
+      "monthPnl": 488186.795111,
+      "monthRoi": 4.9637863093,
+      "monthVlm": 36996214.25,
+      "weekVlm": 6934423.58,
+      "turnover": 62.9591043677821,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.2,
+      "winRate": 59.1,
+      "closedTrades": 832,
+      "top": [
+        "XRP",
+        "CASHCAT",
+        "PONS",
+        "SOL"
+      ],
+      "coreShare": 78,
+      "majorShare": 78,
+      "ddMonth": 49.1,
+      "ddAll": 97.1,
+      "positions": [
+        "SOL",
+        "CASHCAT",
+        "PONS"
+      ]
+    },
+    {
+      "address": "0x18b8539261cf9e760e7fec4a8a73c50f0ae7babe",
+      "equity": 434459.022832,
+      "monthPnl": 469299.593277,
+      "monthRoi": 4.8033382402,
+      "monthVlm": 4358742.46,
+      "weekVlm": 2064998.67,
+      "turnover": 10.032574376261653,
+      "lastFill": "2026-08-28",
+      "daysAgo": 3,
+      "winRate": 25.9,
+      "closedTrades": 957,
+      "top": [
+        "HYPE"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 41.8,
+      "ddAll": 94.1,
+      "positions": [
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0xdd7a372377fc633f74ab6e20963803d52f448830",
+      "equity": 2711253.264582,
+      "monthPnl": 2323832.068436,
+      "monthRoi": 4.4530841649,
+      "monthVlm": 30450640.49,
+      "weekVlm": 8864615.14,
+      "turnover": 11.231204730220819,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.7,
+      "winRate": 100,
+      "closedTrades": 461,
+      "top": [
+        "BTC",
+        "ZEC",
+        "HYPE",
+        "LINK"
+      ],
+      "coreShare": 73,
+      "majorShare": 73,
+      "ddMonth": 27.2,
+      "ddAll": 100,
+      "positions": [
+        "BTC",
+        "LINK",
+        "HYPE",
+        "ZEC"
+      ]
+    },
+    {
+      "address": "0xa2ce501d9c0c5e23d34272f84402cfb7835b3126",
+      "equity": 15438874.151664,
+      "monthPnl": 16634120.033681,
+      "monthRoi": 4.3719291401,
+      "monthVlm": 25278564.29,
+      "weekVlm": 6602694.24,
+      "turnover": 1.6373321034730683,
+      "lastFill": "2026-08-28",
+      "daysAgo": 3.7,
+      "winRate": 66.2,
+      "closedTrades": 2000,
+      "top": [
+        "ZEC",
+        "SOL",
+        "HYPE"
+      ],
+      "coreShare": 27,
+      "majorShare": 27,
+      "ddMonth": 29,
+      "ddAll": 97.8,
+      "positions": [
+        "BTC",
+        "ETH",
+        "SOL",
+        "SUI",
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0xd745e55d0f7d8b32d875d4674003bfc9d9d1ec4c",
+      "equity": 278832.754299,
+      "monthPnl": 224943.098837,
+      "monthRoi": 4.1741424566,
+      "monthVlm": 12225814.86,
+      "weekVlm": 2378547.29,
+      "turnover": 43.84640854241221,
+      "lastFill": "2026-08-28",
+      "daysAgo": 2.9,
+      "winRate": 71.9,
+      "closedTrades": 885,
+      "top": [
+        "BTC",
+        "HYPE",
+        "ZEC"
+      ],
+      "coreShare": 97,
+      "majorShare": 97,
+      "ddMonth": 31.1,
+      "ddAll": 89.7,
+      "positions": [
+        "BTC",
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0xb7e0b9fbc9479330d70bcc82a7d4325a20e8d1aa",
+      "equity": 4722114.488278,
+      "monthPnl": 4451906.074483,
+      "monthRoi": 4.0354170422,
+      "monthVlm": 211951655.08,
+      "weekVlm": 89057283.89,
+      "turnover": 44.88490391457913,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.3,
+      "winRate": 100,
+      "closedTrades": 1017,
+      "top": [
+        "BTC",
+        "SOL",
+        "ZEC",
+        "PONS"
+      ],
+      "coreShare": 84,
+      "majorShare": 84,
+      "ddMonth": 16.2,
+      "ddAll": 85.7,
+      "positions": [
+        "BTC",
+        "ASTER",
+        "PONS"
+      ]
+    },
+    {
+      "address": "0x266b5569ed3017e74dd48059c6db804e016eefcb",
+      "equity": 1872168.010178,
+      "monthPnl": 1855065.171004,
+      "monthRoi": 3.9395011868,
+      "monthVlm": 13217196.43,
+      "weekVlm": 3989842.26,
+      "turnover": 7.0598345651378525,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.8,
+      "winRate": 44.5,
+      "closedTrades": 699,
+      "top": [
+        "ZEC",
+        "HYPE",
+        "KPEPE",
+        "TAO"
+      ],
+      "coreShare": 30,
+      "majorShare": 40,
+      "ddMonth": 19.9,
+      "ddAll": 100,
+      "positions": [
+        "TAO",
+        "HYPE",
+        "VIRTUAL",
+        "FARTCOIN",
+        "ZEC"
+      ]
+    },
+    {
+      "address": "0x188b264aa1456b869c3a92eeed32117ebb835f47",
+      "equity": 277978.253015,
+      "monthPnl": 219997.190202,
+      "monthRoi": 3.7942938527,
+      "monthVlm": 2270146.46,
+      "weekVlm": 1527991.07,
+      "turnover": 8.166633308100904,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.2,
+      "winRate": 23.1,
+      "closedTrades": 948,
+      "top": [
+        "BTC",
+        "ETH",
+        "HYPE"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 27.9,
+      "ddAll": 97.6,
+      "positions": [
+        "ETH"
+      ]
+    },
+    {
+      "address": "0x186db447f4de2f258ec100aa194b6e9974a46482",
+      "equity": 2353661.281624,
+      "monthPnl": 1853651.681624,
+      "monthRoi": 3.7072321844,
+      "monthVlm": 100809441,
+      "weekVlm": 58334215.55,
+      "turnover": 42.830904254176545,
+      "lastFill": "2026-08-25",
+      "daysAgo": 6.7,
+      "winRate": 64.8,
+      "closedTrades": 766,
+      "top": [
+        "BTC",
+        "HYPE"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 28.3,
+      "ddAll": 27.4,
+      "positions": [
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0xe7795fce474d1eafd645a29e799a64f85dc26ba7",
+      "equity": 185464.431815,
+      "monthPnl": 145223.104189,
+      "monthRoi": 3.6088049962,
+      "monthVlm": 3652888.96,
+      "weekVlm": 2176042.24,
+      "turnover": 19.69590030957387,
+      "lastFill": "2026-08-30",
+      "daysAgo": 1.1,
+      "winRate": 62.9,
+      "closedTrades": 517,
+      "top": [
+        "TRUMP",
+        "BTC",
+        "XLM",
+        "KBONK"
+      ],
+      "coreShare": 29,
+      "majorShare": 32,
+      "ddMonth": 49,
+      "ddAll": 99.6,
+      "positions": [
+        "UNI",
+        "ENA",
+        "SPX",
+        "PUMP",
+        "ZEC"
+      ]
+    },
+    {
+      "address": "0x53969485d7422b35c7fe5a4025498f9b69268b79",
+      "equity": 2220355.568605,
+      "monthPnl": 1967896.014341,
+      "monthRoi": 3.4832510218,
+      "monthVlm": 36938636.24,
+      "weekVlm": 24488472.34,
+      "turnover": 16.636360753339936,
+      "lastFill": "2026-08-30",
+      "daysAgo": 1.3,
+      "winRate": 100,
+      "closedTrades": 1919,
+      "top": [
+        "UNI",
+        "ETH"
+      ],
+      "coreShare": 48,
+      "majorShare": 100,
+      "ddMonth": 42.4,
+      "ddAll": 60.2,
+      "positions": [
+        "BTC",
+        "ETH",
+        "SUI",
+        "LINK",
+        "AAVE",
+        "UNI",
+        "NEAR",
+        "HYPE",
+        "ZEC",
+        "GRAM"
+      ]
+    },
+    {
+      "address": "0xaecfe4eff84a1cd9a24accc1914ac537af7f6e1b",
+      "equity": 1444936.951657,
+      "monthPnl": 1822625.620495,
+      "monthRoi": 3.456446398,
+      "monthVlm": 13279376.56,
+      "weekVlm": 2587599.56,
+      "turnover": 9.190280963312416,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.6,
+      "winRate": 58.5,
+      "closedTrades": 1033,
+      "top": [
+        "CASHCAT",
+        "HYPE"
+      ],
+      "coreShare": 49,
+      "majorShare": 49,
+      "ddMonth": 37.9,
+      "ddAll": 100,
+      "positions": [
+        "PUMP",
+        "CASHCAT"
+      ]
+    },
+    {
+      "address": "0x1e08253f267b5e985859b5cf469972326f191584",
+      "equity": 726241.528112,
+      "monthPnl": 559832.578651,
+      "monthRoi": 3.3641975414,
+      "monthVlm": 32259911.4,
+      "weekVlm": 1562957.81,
+      "turnover": 44.42036175467085,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.2,
+      "winRate": 46.1,
+      "closedTrades": 988,
+      "top": [
+        "BTC",
+        "ETH",
+        "LDO"
+      ],
+      "coreShare": 99,
+      "majorShare": 99,
+      "ddMonth": 28.6,
+      "ddAll": 41.7,
+      "positions": [
+        "BTC",
+        "LDO"
+      ]
+    },
+    {
+      "address": "0x31fe86dadaf5fe01b3a411770338e09ef49553ba",
+      "equity": 395783.063027,
+      "monthPnl": 381436.72532,
+      "monthRoi": 3.3609600408,
+      "monthVlm": 21949100.18,
+      "weekVlm": 13677132.22,
+      "turnover": 55.45740136561288,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0,
+      "winRate": 12.6,
+      "closedTrades": 572,
+      "top": [
+        "PUMP",
+        "UNI",
+        "ZEC",
+        "LIT"
+      ],
+      "coreShare": 6,
+      "majorShare": 15,
+      "ddMonth": 48.4,
+      "ddAll": 100,
+      "positions": [
+        "HYPE",
+        "PUMP",
+        "ZEC",
+        "LIT"
+      ]
+    },
+    {
+      "address": "0xc36af149b64a41aab6c26ea6b71c37082d9e105b",
+      "equity": 4774993.286042,
+      "monthPnl": 2333643.380003,
+      "monthRoi": 3.3431326826,
+      "monthVlm": 10430297,
+      "weekVlm": 3957885.73,
+      "turnover": 2.1843584640190543,
+      "lastFill": "2026-08-22",
+      "daysAgo": 9.2,
+      "winRate": 0,
+      "closedTrades": 21,
+      "top": [
+        "CASHCAT",
+        "PUMP"
+      ],
+      "coreShare": 0,
+      "majorShare": 0,
+      "ddMonth": 39.6,
+      "ddAll": 39.6,
+      "positions": [
+        "PUMP"
+      ]
+    },
+    {
+      "address": "0x795cfd1b03eafc11c4ec958b8a94cfc9aa64a242",
+      "equity": 6814010.605922,
+      "monthPnl": 5242044.80075,
+      "monthRoi": 3.3347066352,
+      "monthVlm": 78690996.38,
+      "weekVlm": 5004032.64,
+      "turnover": 11.548411197307253,
+      "lastFill": "2026-08-26",
+      "daysAgo": 4.8,
+      "winRate": 90.3,
+      "closedTrades": 947,
+      "top": [
+        "ETH",
+        "PURR/USDC"
+      ],
+      "coreShare": 98,
+      "majorShare": 98,
+      "ddMonth": 17.6,
+      "ddAll": 93.1,
+      "positions": [
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0x1add90cfe379ad9c56c36522a3a4d33e89032671",
+      "equity": 535090.486514,
+      "monthPnl": 834685.509782,
+      "monthRoi": 3.2971424848,
+      "monthVlm": 41422631.739999995,
+      "weekVlm": 17391634.009999998,
+      "turnover": 77.41238684668004,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.1,
+      "winRate": 67.9,
+      "closedTrades": 340,
+      "top": [
+        "HYPE"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 69.1,
+      "ddAll": 100,
+      "positions": [
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0x9466140c8781e253fe426c87ac17ccba500140ff",
+      "equity": 350634.733409,
+      "monthPnl": 298166.738606,
+      "monthRoi": 3.2604206202,
+      "monthVlm": 2602875.27,
+      "weekVlm": 1032392.39,
+      "turnover": 7.4233241090917845,
+      "lastFill": "2026-08-28",
+      "daysAgo": 3.1,
+      "winRate": 88.3,
+      "closedTrades": 905,
+      "top": [
+        "HYPE",
+        "BTC",
+        "#30",
+        "#40"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 48.8,
+      "ddAll": 100,
+      "positions": [
+        "BTC",
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0x8659ddca2443d673d05eac3a3e5bcacde0f0ca4a",
+      "equity": 192746.263004,
+      "monthPnl": 218843.097191,
+      "monthRoi": 3.22282285,
+      "monthVlm": 8315240.59,
+      "weekVlm": 6060409.97,
+      "turnover": 43.140865407219,
+      "lastFill": "2026-08-30",
+      "daysAgo": 0.8,
+      "winRate": 15.4,
+      "closedTrades": 832,
+      "top": [
+        "FARTCOIN",
+        "XRP",
+        "TAO",
+        "GRASS"
+      ],
+      "coreShare": 16,
+      "majorShare": 30,
+      "ddMonth": 40.9,
+      "ddAll": 40.7,
+      "positions": [
+        "BTC",
+        "ETH"
+      ]
+    },
+    {
+      "address": "0x0e1cdcd958d002d98528c973f1397b7784abce6d",
+      "equity": 668054.813103,
+      "monthPnl": 507930.8921,
+      "monthRoi": 3.1721112556,
+      "monthVlm": 14179169.52,
+      "weekVlm": 371943.68,
+      "turnover": 21.22456008383532,
+      "lastFill": "2026-08-25",
+      "daysAgo": 6.2,
+      "winRate": 46.5,
+      "closedTrades": 912,
+      "top": [
+        "ETH",
+        "SUI"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 24.2,
+      "ddAll": 50.2,
+      "positions": [
+        "ETH",
+        "SUI"
+      ]
+    },
+    {
+      "address": "0xdfaf7cd4ab0fc1d7f5ccf3216769f26bcd041a61",
+      "equity": 336422.549901,
+      "monthPnl": 269969.404141,
+      "monthRoi": 3.1555754232,
+      "monthVlm": 2258360.4,
+      "weekVlm": 504012.07,
+      "turnover": 6.712868684529542,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.1,
+      "winRate": 43.4,
+      "closedTrades": 1047,
+      "top": [
+        "PUMP",
+        "ETHFI",
+        "ENA",
+        "ZEC"
+      ],
+      "coreShare": 25,
+      "majorShare": 26,
+      "ddMonth": 24.5,
+      "ddAll": 74.8,
+      "positions": [
+        "ENA",
+        "HYPE",
+        "PUMP"
+      ]
+    },
+    {
+      "address": "0x736850ee773ac6170fcaeda596514269b863ee56",
+      "equity": 302718.720276,
+      "monthPnl": 378977.977021,
+      "monthRoi": 3.0626526429,
+      "monthVlm": 15277106.96,
+      "weekVlm": 2583654.53,
+      "turnover": 50.46634362774556,
+      "lastFill": "2026-08-28",
+      "daysAgo": 3.1,
+      "winRate": 100,
+      "closedTrades": 655,
+      "top": [
+        "ATOM",
+        "BCH"
+      ],
+      "coreShare": 0,
+      "majorShare": 40,
+      "ddMonth": 33,
+      "ddAll": 84.7,
+      "positions": [
+        "ATOM"
+      ]
+    },
+    {
+      "address": "0x597568694fe6ee1b701ec8578bd57102c9a29abd",
+      "equity": 2040125.60419,
+      "monthPnl": 1531127.80704,
+      "monthRoi": 3.0081226591,
+      "monthVlm": 22990924.32,
+      "weekVlm": 15201063.94,
+      "turnover": 11.269367078566805,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.1,
+      "winRate": 33.4,
+      "closedTrades": 716,
+      "top": [
+        "BTC",
+        "ZEC",
+        "SOL",
+        "PUMP"
+      ],
+      "coreShare": 71,
+      "majorShare": 71,
+      "ddMonth": 14.9,
+      "ddAll": 100,
+      "positions": [
+        "HYPE",
+        "ZEC",
+        "LIT"
+      ]
+    },
+    {
+      "address": "0x2e2b6070bec9be9f50887cfe306ac6ca93002fab",
+      "equity": 3846107.928583,
+      "monthPnl": 2876455.770073,
+      "monthRoi": 2.9664820986,
+      "monthVlm": 3896550.65,
+      "weekVlm": 1971790.71,
+      "turnover": 1.0131152641458985,
+      "lastFill": "2026-05-30",
+      "daysAgo": 93.4,
+      "winRate": 7.6,
+      "closedTrades": 1720,
+      "top": [
+        "ETH",
+        "KPEPE",
+        "HYPE",
+        "ZK"
+      ],
+      "coreShare": 55,
+      "majorShare": 63,
+      "ddMonth": 17.4,
+      "ddAll": 100,
+      "positions": [
+        "ETH",
+        "SOL",
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0xe3c90b18dbd4cf0dae4b12aadc18665261dfd0b5",
+      "equity": 191640.888213,
+      "monthPnl": 115323.130127,
+      "monthRoi": 2.8899584712,
+      "monthVlm": 2364520.02,
+      "weekVlm": 1544776.28,
+      "turnover": 12.338285644825154,
+      "lastFill": "2026-08-30",
+      "daysAgo": 1.3,
+      "winRate": 79.9,
+      "closedTrades": 224,
+      "top": [
+        "SOL",
+        "SUI",
+        "HYPE"
+      ],
+      "coreShare": 64,
+      "majorShare": 100,
+      "ddMonth": 17,
+      "ddAll": 28.6,
+      "positions": [
+        "SUI"
+      ]
+    },
+    {
+      "address": "0x734531e87f8c1643321355f7143fcc6169c4b404",
+      "equity": 2769518.103156,
+      "monthPnl": 2019341.38597,
+      "monthRoi": 2.6918209266,
+      "monthVlm": 95272567.67,
+      "weekVlm": 18931906.01,
+      "turnover": 34.40041340095676,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.1,
+      "winRate": 43.8,
+      "closedTrades": 1168,
+      "top": [
+        "HYPE",
+        "BTC",
+        "ONDO",
+        "DOT"
+      ],
+      "coreShare": 81,
+      "majorShare": 92,
+      "ddMonth": 37.7,
+      "ddAll": 40.6,
+      "positions": [
+        "BTC",
+        "ETH",
+        "AVAX",
+        "LTC",
+        "ARB",
+        "DOGE",
+        "SUI",
+        "XRP",
+        "APT",
+        "DOT",
+        "ADA",
+        "FET",
+        "JTO",
+        "EIGEN",
+        "XLM",
+        "HYPE",
+        "XPL",
+        "MON"
+      ]
+    },
+    {
+      "address": "0xb68289331805991b85ab399b8b949a821edd926d",
+      "equity": 223910.448221,
+      "monthPnl": 281761.503598,
+      "monthRoi": 2.6762147,
+      "monthVlm": 7437504.21,
+      "weekVlm": 1660744.62,
+      "turnover": 33.21642321335166,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.5,
+      "winRate": 60.5,
+      "closedTrades": 832,
+      "top": [
+        "ETH",
+        "SOL",
+        "BTC",
+        "PUMP"
+      ],
+      "coreShare": 85,
+      "majorShare": 85,
+      "ddMonth": 43.9,
+      "ddAll": 84.6,
+      "positions": [
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0x830c399350587074e3dd6269d869ada69cc4f5ec",
+      "equity": 523648.484635,
+      "monthPnl": 452746.939894,
+      "monthRoi": 2.6720641089,
+      "monthVlm": 13253908.23,
+      "weekVlm": 3003111.64,
+      "turnover": 25.31069719267574,
+      "lastFill": "2026-08-26",
+      "daysAgo": 5.3,
+      "winRate": 24.6,
+      "closedTrades": 804,
+      "top": [
+        "ETH",
+        "XRP",
+        "BTC"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 100,
+      "ddAll": 100,
+      "positions": [
+        "BTC",
+        "ETH",
+        "XRP"
+      ]
+    },
+    {
+      "address": "0x615f9484c8f46ca4fd4d2c0291c42661043a3d87",
+      "equity": 757395.224409,
+      "monthPnl": 549570.585383,
+      "monthRoi": 2.6443957173,
+      "monthVlm": 33552137.21,
+      "weekVlm": 4030527.26,
+      "turnover": 44.29937782639299,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.6,
+      "winRate": 79.6,
+      "closedTrades": 824,
+      "top": [
+        "KPEPE",
+        "LIT"
+      ],
+      "coreShare": 0,
+      "majorShare": 0,
+      "ddMonth": 68.8,
+      "ddAll": 99.5,
+      "positions": [
+        "kPEPE",
+        "LIT"
+      ]
+    },
+    {
+      "address": "0x470a5f416a0f380e228cb8f5439c91b0c98c81a6",
+      "equity": 1555255.911912,
+      "monthPnl": 1070485.04,
+      "monthRoi": 2.6117083019,
+      "monthVlm": 7652187.24,
+      "weekVlm": 4375598.44,
+      "turnover": 4.920210996396443,
+      "lastFill": "2026-08-25",
+      "daysAgo": 6.3,
+      "winRate": 100,
+      "closedTrades": 1001,
+      "top": [
+        "HYPE"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 34.2,
+      "ddAll": 34.5,
+      "positions": []
+    },
+    {
+      "address": "0x986f7cd8debe091d50523447b978673f3935bc6b",
+      "equity": 494419.150386,
+      "monthPnl": 367541.216442,
+      "monthRoi": 2.572180612,
+      "monthVlm": 17385463.31,
+      "weekVlm": 8212004.04,
+      "turnover": 35.163410026547155,
+      "lastFill": "2026-08-30",
+      "daysAgo": 1.5,
+      "winRate": 54.2,
+      "closedTrades": 974,
+      "top": [
+        "ZEC",
+        "ZRO",
+        "XRP",
+        "NEAR"
+      ],
+      "coreShare": 8,
+      "majorShare": 16,
+      "ddMonth": 45.2,
+      "ddAll": 45.2,
+      "positions": [
+        "HYPE",
+        "CASHCAT"
+      ]
+    },
+    {
+      "address": "0xc6a7757dfed3b596a5b5865d1dd92dff7f12d9ec",
+      "equity": 217401.243197,
+      "monthPnl": 156218.599774,
+      "monthRoi": 2.5533156306,
+      "monthVlm": 11480127.07,
+      "weekVlm": 9203253.33,
+      "turnover": 52.806170292214865,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.1,
+      "winRate": 61.6,
+      "closedTrades": 870,
+      "top": [
+        "BTC",
+        "XRP",
+        "SOL"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 72.5,
+      "ddAll": 74.2,
+      "positions": [
+        "BTC"
+      ]
+    },
+    {
+      "address": "0x9137bd9347f07990a8ce22869f8b93d190479c5a",
+      "equity": 3161732.646549,
+      "monthPnl": 2262604.684276,
+      "monthRoi": 2.5164434643,
+      "monthVlm": 79840534.55,
+      "weekVlm": 44460376.47,
+      "turnover": 25.252146046296847,
+      "lastFill": "2026-08-28",
+      "daysAgo": 3.7,
+      "winRate": 78,
+      "closedTrades": 1141,
+      "top": [
+        "BTC",
+        "HYPE"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 15.6,
+      "ddAll": 95.2,
+      "positions": []
+    },
+    {
+      "address": "0x64702807a1f0f9888ea22b858099d7f481227b55",
+      "equity": 2123828.059662,
+      "monthPnl": 1610236.669394,
+      "monthRoi": 2.4724145101,
+      "monthVlm": 47807851.32,
+      "weekVlm": 16468363.55,
+      "turnover": 22.51022680602895,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0,
+      "winRate": 95.7,
+      "closedTrades": 469,
+      "top": [
+        "HYPE",
+        "BTC",
+        "ETH"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 19.6,
+      "ddAll": 95.2,
+      "positions": [
+        "BTC",
+        "ETH",
+        "DOGE",
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0x5371c4517b448006941ae335e5cafd54af573c11",
+      "equity": 1139044.319814,
+      "monthPnl": 591816.547265,
+      "monthRoi": 2.4655028966,
+      "monthVlm": 3706391.41,
+      "weekVlm": 332274.54,
+      "turnover": 3.2539483719169366,
+      "lastFill": "2026-08-27",
+      "daysAgo": 4.1,
+      "winRate": 58.7,
+      "closedTrades": 704,
+      "top": [
+        "LIT",
+        "JTO",
+        "XPL",
+        "TAO"
+      ],
+      "coreShare": 0,
+      "majorShare": 7,
+      "ddMonth": 17.9,
+      "ddAll": 46.8,
+      "positions": [
+        "JTO",
+        "TAO",
+        "ENA",
+        "LIT"
+      ]
+    },
+    {
+      "address": "0x3160cda0ed2e7c0f935677ae76fb989de5585e67",
+      "equity": 230691.704135,
+      "monthPnl": 163289.750857,
+      "monthRoi": 2.4190374193,
+      "monthVlm": 3550585.57,
+      "weekVlm": 402076.4,
+      "turnover": 15.391041404428696,
+      "lastFill": "2026-08-27",
+      "daysAgo": 4.1,
+      "winRate": 49.5,
+      "closedTrades": 648,
+      "top": [
+        "HYPE",
+        "BTC",
+        "ETH",
+        "XMR"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 20.4,
+      "ddAll": 27.7,
+      "positions": [
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0x68f33dd18add8ad4830d78ae66faa98d58f2310e",
+      "equity": 224188.810038,
+      "monthPnl": 158124.593066,
+      "monthRoi": 2.3934983311,
+      "monthVlm": 7696865.7,
+      "weekVlm": 1163015.43,
+      "turnover": 34.33206902117631,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.5,
+      "winRate": 78,
+      "closedTrades": 610,
+      "top": [
+        "BTC",
+        "ZEC",
+        "HYPE",
+        "LIT"
+      ],
+      "coreShare": 90,
+      "majorShare": 91,
+      "ddMonth": 22.6,
+      "ddAll": 49.5,
+      "positions": [
+        "ETHFI",
+        "FARTCOIN",
+        "PUMP",
+        "ZEC",
+        "LIT"
+      ]
+    },
+    {
+      "address": "0x13d2db460a97b30a71e6bd05183feb77147b39d6",
+      "equity": 414840.627529,
+      "monthPnl": 291784.912508,
+      "monthRoi": 2.3711610018,
+      "monthVlm": 13349286.36,
+      "weekVlm": 4435987.16,
+      "turnover": 32.17931290750157,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0,
+      "winRate": 94.6,
+      "closedTrades": 1218,
+      "top": [
+        "XPL",
+        "PURR/USDC"
+      ],
+      "coreShare": 0,
+      "majorShare": 0,
+      "ddMonth": 24.4,
+      "ddAll": 100,
+      "positions": []
+    },
+    {
+      "address": "0x11f46fff2624737aa0d38507e761b6ef770eb94d",
+      "equity": 159670.736663,
+      "monthPnl": 112200.956878,
+      "monthRoi": 2.3636291844,
+      "monthVlm": 3052287.35,
+      "weekVlm": 978963.33,
+      "turnover": 19.116134952406075,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.6,
+      "winRate": 72.1,
+      "closedTrades": 1039,
+      "top": [
+        "BTC",
+        "ZEC",
+        "PUMP",
+        "SOL"
+      ],
+      "coreShare": 71,
+      "majorShare": 71,
+      "ddMonth": 10.1,
+      "ddAll": 42.1,
+      "positions": [
+        "PUMP",
+        "ZEC"
+      ]
+    },
+    {
+      "address": "0x362ad6209a5e904a5569f69884375809c5781d9f",
+      "equity": 8178203.343899,
+      "monthPnl": 7501923.921842,
+      "monthRoi": 2.3626031306,
+      "monthVlm": 277076194.19,
+      "weekVlm": 71842599.56,
+      "turnover": 33.87983674882587,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.6,
+      "winRate": 100,
+      "closedTrades": 2000,
+      "top": [
+        "SOL"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 33.9,
+      "ddAll": 28,
+      "positions": [
+        "BTC",
+        "ASTER",
+        "ZEC"
+      ]
+    },
+    {
+      "address": "0x97be9c7904f9c772a3efbf9e10286b91ba8a773e",
+      "equity": 312528.798384,
+      "monthPnl": 217960.098592,
+      "monthRoi": 2.304780536,
+      "monthVlm": 8557132.73,
+      "weekVlm": 2598292.43,
+      "turnover": 27.380301509001946,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.2,
+      "winRate": 87.6,
+      "closedTrades": 908,
+      "top": [
+        "SKR",
+        "CASHCAT",
+        "XPL",
+        "CRV"
+      ],
+      "coreShare": 13,
+      "majorShare": 22,
+      "ddMonth": 15.4,
+      "ddAll": 69.4,
+      "positions": [
+        "BTC",
+        "ETH",
+        "NIL",
+        "SKR"
+      ]
+    },
+    {
+      "address": "0x84bb8f4998527aaf4cf5633bb2743533310600bb",
+      "equity": 155265.144382,
+      "monthPnl": 107872.222906,
+      "monthRoi": 2.2744205702,
+      "monthVlm": 7047491.48,
+      "weekVlm": 3331419.76,
+      "turnover": 45.390042356583294,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.2,
+      "winRate": 83.6,
+      "closedTrades": 755,
+      "top": [
+        "ETH",
+        "LIT",
+        "ZEC",
+        "UNI"
+      ],
+      "coreShare": 55,
+      "majorShare": 61,
+      "ddMonth": 17.1,
+      "ddAll": 99.9,
+      "positions": [
+        "NEAR"
+      ]
+    },
+    {
+      "address": "0x0f83a7bf2ea16c7d8c90e3aa4ca0c8e58a83c9ea",
+      "equity": 286698.954756,
+      "monthPnl": 199064.059234,
+      "monthRoi": 2.2715055395,
+      "monthVlm": 3959455.63,
+      "weekVlm": 2896018.02,
+      "turnover": 13.81049900711972,
+      "lastFill": "2026-08-29",
+      "daysAgo": 2.2,
+      "winRate": 95.6,
+      "closedTrades": 858,
+      "top": [
+        "HYPE"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 100,
+      "ddAll": 100,
+      "positions": []
+    },
+    {
+      "address": "0x0ca4109c94438dde8d7386da27180f414de80fa8",
+      "equity": 369148.035844,
+      "monthPnl": 255279.402144,
+      "monthRoi": 2.2418763961,
+      "monthVlm": 3528905.65,
+      "weekVlm": 1764244.42,
+      "turnover": 9.55959481656648,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.1,
+      "winRate": 86.4,
+      "closedTrades": 1209,
+      "top": [
+        "HYPE",
+        "ETH",
+        "PUMP",
+        "KAITO"
+      ],
+      "coreShare": 80,
+      "majorShare": 81,
+      "ddMonth": 17,
+      "ddAll": 98.7,
+      "positions": [
+        "ETH",
+        "CRV",
+        "STX",
+        "GALA",
+        "ENS",
+        "HYPE"
+      ]
+    },
+    {
+      "address": "0xa19ed0ae46e89461e56063f1ed268a0dc225745f",
+      "equity": 370677.703652,
+      "monthPnl": 255929.394638,
+      "monthRoi": 2.230354389,
+      "monthVlm": 5347897.89,
+      "weekVlm": 5252390.04,
+      "turnover": 14.427352487919581,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0,
+      "winRate": 76,
+      "closedTrades": 620,
+      "top": [
+        "BTC",
+        "SOL"
+      ],
+      "coreShare": 100,
+      "majorShare": 100,
+      "ddMonth": 18.1,
+      "ddAll": 99.5,
+      "positions": [
+        "BTC",
+        "SOL"
+      ]
+    },
+    {
+      "address": "0xe2823659be02e0f48a4660e4da008b5e1abfdf29",
+      "equity": 1867853.811389,
+      "monthPnl": 6624335.201552,
+      "monthRoi": 2.2128921638,
+      "monthVlm": 32889795.69,
+      "weekVlm": 3559822.46,
+      "turnover": 17.608335025717043,
+      "lastFill": "2026-08-25",
+      "daysAgo": 6.2,
+      "winRate": 100,
+      "closedTrades": 1847,
+      "top": [
+        "ETH",
+        "BTC",
+        "AAVE",
+        "HYPE"
+      ],
+      "coreShare": 84,
+      "majorShare": 98,
+      "ddMonth": 58.3,
+      "ddAll": 71.9,
+      "positions": [
+        "LINK",
+        "GMX",
+        "AAVE",
+        "UNI",
+        "NEAR",
+        "ONDO",
+        "HYPE",
+        "VVV",
+        "ZEC"
+      ]
+    },
+    {
+      "address": "0x71b117d68974aa4c5615669ae70e8e13ce7479c8",
+      "equity": 783094.11476,
+      "monthPnl": 536718.671731,
+      "monthRoi": 2.1784584743,
+      "monthVlm": 15392248.27,
+      "weekVlm": 8274972.81,
+      "turnover": 19.655681200869914,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.1,
+      "winRate": 100,
+      "closedTrades": 1112,
+      "top": [
+        "VIRTUAL",
+        "PONS"
+      ],
+      "coreShare": 0,
+      "majorShare": 0,
+      "ddMonth": 23.6,
+      "ddAll": 90,
+      "positions": []
+    },
+    {
+      "address": "0xe6e0e0dd371e4f9bd5218ab4bc0634d59705ae71",
+      "equity": 2805754.180661,
+      "monthPnl": 1918914.018833,
+      "monthRoi": 2.1637653564,
+      "monthVlm": 39439597.94,
+      "weekVlm": 32024868.99,
+      "turnover": 14.056683301709821,
+      "lastFill": "2026-08-31",
+      "daysAgo": 0.5,
+      "winRate": 0,
+      "closedTrades": 477,
+      "top": [
+        "PUMP",
+        "SUI",
+        "XPL",
+        "ETHFI"
+      ],
+      "coreShare": 5,
+      "majorShare": 31,
+      "ddMonth": 34.2,
+      "ddAll": 100,
+      "positions": [
+        "SUI",
+        "ETHFI",
+        "HYPE",
+        "XPL"
+      ]
+    }
+  ]
+}

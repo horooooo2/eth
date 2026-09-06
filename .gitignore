@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+whale-tracker-backend/.env
+whale-tracker-backend/cache/*.json
+!whale-tracker-backend/cache/.gitkeep
+.vscode/
+.idea/

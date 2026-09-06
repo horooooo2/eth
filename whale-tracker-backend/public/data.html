@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>数据库看板</title>
+  <style>
+    :root {
+      --bg: #0c1118;
+      --panel: #151c26;
+      --panel2: #1b2430;
+      --line: #2a3544;
+      --text: #eef3f8;
+      --muted: #8fa0b3;
+      --accent: #4aa3ff;
+      --ok: #3dce8e;
+      --warn: #e6a23c;
+      --danger: #f56c6c;
+      --chip: #243041;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(1100px 420px at 8% -8%, rgba(74,163,255,.14), transparent 55%),
+        radial-gradient(900px 380px at 92% 0%, rgba(61,206,142,.08), transparent 50%),
+        var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    .top {
+      position: sticky; top: 0; z-index: 30;
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; flex-wrap: wrap;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(21,28,38,.94);
+      backdrop-filter: blur(10px);
+    }
+    .top h1 { margin: 0; font-size: 1.15rem; font-weight: 650; }
+    a.btn, button {
+      appearance: none; border: 0; border-radius: 8px;
+      padding: 8px 14px; background: var(--accent); color: #fff;
+      font-size: 0.88rem; cursor: pointer; text-decoration: none;
+    }
+    button.ghost, a.ghost { background: var(--chip); color: var(--text); }
+    button.warn { background: var(--warn); color: #1a1200; }
+    button.danger { background: var(--danger); }
+    button.sm { padding: 4px 10px; font-size: .78rem; border-radius: 6px; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    input, select {
+      background: #0f1520; color: var(--text);
+      border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
+    }
+    .filters {
+      display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+      padding: 10px 12px; border-bottom: 1px solid var(--line);
+      background: rgba(0,0,0,.1);
+    }
+    .filters-right {
+      margin-left: auto;
+      display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    }
+    .filters .chip {
+      background: var(--chip); border: 1px solid transparent;
+      color: var(--muted); border-radius: 999px; padding: 4px 10px; font-size: .78rem;
+      cursor: pointer;
+    }
+    .filters .chip.on { color: #fff; background: var(--accent); }
+    .pager-bar {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px; flex-wrap: wrap;
+      padding: 8px 12px; border-top: 1px solid var(--line);
+      background: rgba(0,0,0,.12); font-size: .78rem; color: var(--muted);
+    }
+    .pager-bar button.sm { background: var(--chip); color: var(--text); }
+    .modal-mask {
+      display: none; position: fixed; inset: 0; z-index: 80;
+      background: rgba(0,0,0,.55); align-items: center; justify-content: center;
+      padding: 16px;
+    }
+    .modal-mask.show { display: flex; }
+    .modal {
+      width: min(440px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px 18px;
+      box-shadow: 0 16px 48px rgba(0,0,0,.45);
+    }
+    .modal h3 { margin: 0 0 12px; font-size: 1rem; }
+    .modal .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+    .modal .field label { color: var(--muted); font-size: .8rem; }
+    .modal .field input { width: 100%; }
+    .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+    .modal .actions button.ghost { background: var(--chip); color: var(--text); }
+    main { max-width: 1400px; margin: 0 auto; padding: 16px 20px 40px; }
+    .banner {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 16px 18px;
+      margin-bottom: 16px;
+      background: linear-gradient(135deg, rgba(74,163,255,.16), rgba(61,206,142,.07));
+      display: grid;
+      grid-template-columns: 1.4fr auto;
+      gap: 14px;
+      align-items: start;
+    }
+    .banner .meta { color: var(--muted); font-size: .86rem; line-height: 1.7; }
+    .banner .meta b { color: var(--text); font-weight: 600; }
+    .banner-stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(72px, 1fr));
+      gap: 8px;
+      min-width: 320px;
+    }
+    @media (min-width: 1100px) {
+      .banner-stats {
+        grid-template-columns: repeat(6, minmax(68px, 1fr));
+        min-width: 480px;
+      }
+    }
+    .bstat {
+      background: rgba(0,0,0,.18);
+      border: 1px solid rgba(42,53,68,.8);
+      border-radius: 10px;
+      padding: 8px 10px;
+      text-align: center;
+    }
+    .bstat .n { font-size: 1.2rem; font-weight: 700; }
+    .bstat .l { color: var(--muted); font-size: .72rem; margin-top: 2px; }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      height: 480px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .card-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 10px; flex-wrap: wrap;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255,255,255,.02);
+    }
+    .card-head h2 { margin: 0; font-size: 1rem; }
+    .card-tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .card-body { flex: 1; min-height: 0; overflow: auto; padding: 0; }
+    .status-text {
+      color: var(--muted);
+      font-size: 0.84rem;
+      line-height: 1.4;
+    }
+    .status-text.on { color: var(--ok); }
+    .status-text.off { color: var(--warn); }
+    .status-text .rate-limit { color: #f56c6c; font-weight: 600; }
+    .pill {
+      background: var(--chip); color: var(--muted);
+      border-radius: 999px; padding: 3px 9px; font-size: .75rem;
+    }
+    .form-row {
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+      padding: 12px 14px; border-bottom: 1px solid var(--line);
+    }
+    .form-row label { color: var(--muted); font-size: .8rem; }
+    table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+    th, td {
+      text-align: left; padding: 8px 12px;
+      border-bottom: 1px solid rgba(42,53,68,.65);
+      white-space: nowrap;
+    }
+    th {
+      position: sticky; top: 0; z-index: 1;
+      background: #121922; color: var(--muted); font-weight: 550;
+      cursor: pointer; user-select: none;
+    }
+    th.nosort { cursor: default; }
+    th .arrow { opacity: .45; font-size: .7rem; margin-left: 4px; }
+    th.active .arrow { opacity: 1; color: var(--accent); }
+    tr:hover td { background: rgba(74,163,255,.05); }
+    .mono { font-family: ui-monospace, Consolas, monospace; }
+    .dim { color: var(--muted); }
+    .up { color: var(--ok); }
+    .down { color: #ff8e8e; }
+    .empty { padding: 28px; text-align: center; color: var(--muted); }
+    .msg { font-size: .8rem; color: var(--muted); }
+    .msg.ok { color: var(--ok); }
+    .msg.err { color: var(--danger); }
+    .tabs {
+      display: flex; gap: 0; border-bottom: 1px solid var(--line);
+      background: rgba(0,0,0,.12);
+    }
+    .tab {
+      flex: 1; text-align: center;
+      padding: 9px 8px; background: transparent; color: var(--muted);
+      border-radius: 0; border-bottom: 2px solid transparent;
+    }
+    .tab.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 700; }
+    .log-stream {
+      height: 100%;
+      overflow: auto;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: .75rem;
+      line-height: 1.45;
+      padding: 8px 10px;
+    }
+    .log-line {
+      padding: 3px 0;
+      border-bottom: 1px dashed rgba(42,53,68,.45);
+      color: var(--muted);
+    }
+    .log-line .t { color: #6f8196; margin-right: 8px; }
+    .log-line.err { color: #ffb4b4; }
+    .log-line.ok { color: #9ad7b5; }
+    .err-banner {
+      display: none; margin-bottom: 12px; padding: 10px 12px;
+      border-radius: 10px; background: rgba(245,108,108,.12);
+      border: 1px solid rgba(245,108,108,.35); color: #ffb4b4;
+    }
+    .err-banner.show { display: block; }
+    @media (max-width: 980px) {
+      .grid-2 { grid-template-columns: 1fr; }
+      .banner { grid-template-columns: 1fr; }
+      .card { height: 440px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <h1>数据库看板</h1>
+    <a class="btn ghost" href="/">返回主站</a>
+  </div>
+  <main>
+    <div id="pageErr" class="err-banner"></div>
+    <section class="banner">
+      <div>
+        <div class="meta" id="bannerMeta">加载中…</div>
+        <div style="margin-top:10px;display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+          <button id="pullBtn" class="warn" type="button">重置</button>
+          <span class="status-text" id="pullStatus">待命</span>
+          <span class="status-text" id="rtStatus">实时 —</span>
+        </div>
+      </div>
+      <div class="banner-stats" id="bannerStats"></div>
+    </section>
+
+    <div class="grid-2">
+      <!-- 用户管理 -->
+      <section class="card" id="cardUsers">
+        <div class="card-head">
+          <h2>用户管理</h2>
+          <span class="pill" id="userCount">0</span>
+        </div>
+        <div class="form-row">
+          <label>用户名 <input id="newUser" /></label>
+          <label>密码 <input id="newPass" type="password" /></label>
+          <button type="button" id="createUserBtn" class="sm">增加</button>
+          <span class="msg" id="userMsg"></span>
+        </div>
+        <div class="card-body">
+          <table>
+            <thead>
+              <tr>
+                <th class="nosort">用户名</th>
+                <th class="nosort">创建时间</th>
+                <th class="nosort">操作</th>
+              </tr>
+            </thead>
+            <tbody id="userRows"></tbody>
+          </table>
+          <div class="empty" id="userEmpty">暂无用户</div>
+        </div>
+      </section>
+
+      <!-- 巨鲸列表 -->
+      <section class="card" id="cardWhales">
+        <div class="card-head">
+          <h2>巨鲸列表</h2>
+          <span class="pill" id="whaleCount">0</span>
+        </div>
+        <div class="filters" id="whaleFilters">
+          <button type="button" class="chip on" data-dir="all">全部</button>
+          <button type="button" class="chip" data-dir="long">做多</button>
+          <button type="button" class="chip" data-dir="short">做空</button>
+          <button type="button" class="chip" data-dir="neutral">中性</button>
+          <div class="filters-right">
+            <input id="whaleSearch" type="search" style="width:160px" />
+            <button type="button" id="openAddWhaleBtn" class="sm">新增</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <table>
+            <thead>
+              <tr>
+                <th data-sort="name">名称 <span class="arrow">↕</span></th>
+                <th data-sort="direction">方向 <span class="arrow">↕</span></th>
+                <th data-sort="longUsd">多头 <span class="arrow">↕</span></th>
+                <th data-sort="shortUsd">空头 <span class="arrow">↕</span></th>
+                <th data-sort="netUsd">净名义 <span class="arrow">↕</span></th>
+                <th data-sort="closedTrades">已平 <span class="arrow">↕</span></th>
+                <th class="nosort">操作</th>
+              </tr>
+            </thead>
+            <tbody id="whaleRows"></tbody>
+          </table>
+          <div class="empty" id="whaleEmpty" hidden>暂无巨鲸</div>
+        </div>
+        <div class="pager-bar" id="whalePager">
+          <button type="button" class="sm" id="whaleFirst">首页</button>
+          <button type="button" class="sm" id="whalePrev">上一页</button>
+          <span id="whalePageInfo">第 1/1 页</span>
+          <button type="button" class="sm" id="whaleNext">下一页</button>
+        </div>
+        <span class="msg" id="whaleMsg" style="padding:0 12px 8px"></span>
+      </section>
+
+      <!-- 数据看板 -->
+      <section class="card" id="cardBrowse">
+        <div class="card-head">
+          <h2>数据看板</h2>
+          <div class="card-tools">
+            <select id="browseKind">
+              <option value="fills">成交</option>
+              <option value="events">事件</option>
+              <option value="alerts">异动</option>
+            </select>
+            <span class="pill" id="browseCount">0</span>
+          </div>
+        </div>
+        <div class="card-body">
+          <table>
+            <thead id="browseHead"></thead>
+            <tbody id="browseRows"></tbody>
+          </table>
+          <div class="empty" id="browseEmpty" hidden>暂无数据</div>
+        </div>
+      </section>
+
+      <!-- 数据监控 -->
+      <section class="card" id="cardMonitor">
+        <div class="card-head">
+          <h2>数据监控</h2>
+          <span class="pill" id="monitorHint">实时</span>
+        </div>
+        <div class="tabs">
+          <button type="button" class="tab on" data-tab="socket">Socket</button>
+          <button type="button" class="tab" data-tab="requests">正常请求</button>
+          <button type="button" class="tab" data-tab="errors">报错记录</button>
+        </div>
+        <div class="card-body">
+          <div class="log-stream" id="monitorStream"></div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <div class="modal-mask" id="addWhaleModal">
+    <div class="modal">
+      <h3>新增巨鲸</h3>
+      <div class="field">
+        <label>地址</label>
+        <input id="manualAddr" />
+      </div>
+      <div class="field">
+        <label>名称</label>
+        <input id="manualName" />
+      </div>
+      <div class="actions">
+        <button type="button" class="ghost" id="cancelAddWhaleBtn">取消</button>
+        <button type="button" id="addWhaleBtn">确认添加</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = {
+      browse: null,
+      users: [],
+      whales: [],
+      whaleDir: 'all',
+      whaleSort: { key: 'netUsd', dir: -1 },
+      whaleSearch: '',
+      whalePage: 1,
+      whalePageSize: 20,
+      browseKind: 'fills',
+      monitorTab: 'socket',
+      monitor: { socket: [], requests: [], errors: [] },
+    };
+
+    function fmtTime(ts) {
+      const n = Number(ts) || 0;
+      if (!n) return '—';
+      const d = new Date(n);
+      return Number.isNaN(d.getTime()) ? String(ts) : d.toLocaleString('zh-CN', { hour12: false });
+    }
+    function fmtDuration(ms) {
+      const sec = Math.floor(Math.max(0, Number(ms) || 0) / 1000);
+      const d = Math.floor(sec / 86400);
+      const h = Math.floor((sec % 86400) / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = sec % 60;
+      if (d) return `${d}天 ${h}时 ${m}分 ${s}秒`;
+      if (h) return `${h}时 ${m}分 ${s}秒`;
+      if (m) return `${m}分 ${s}秒`;
+      return `${s}秒`;
+    }
+    function fmtUsd(n) {
+      const v = Number(n);
+      if (!Number.isFinite(v)) return '—';
+      const abs = Math.abs(v);
+      const sign = v < 0 ? '-' : '';
+      if (abs >= 1e6) return sign + '$' + (abs / 1e6).toFixed(2) + 'M';
+      if (abs >= 1e3) return sign + '$' + (abs / 1e3).toFixed(1) + 'K';
+      return sign + '$' + abs.toFixed(0);
+    }
+    function shortAddr(s) {
+      const t = String(s || '');
+      return t.length < 12 ? (t || '—') : t.slice(0, 6) + '…' + t.slice(-4);
+    }
+    function dirHtml(dir) {
+      if (dir === 'long') return '<span class="up">做多</span>';
+      if (dir === 'short') return '<span class="down">做空</span>';
+      return '<span class="dim">中性</span>';
+    }
+    function showErr(msg) {
+      const el = $('pageErr');
+      if (!msg) { el.classList.remove('show'); el.textContent = ''; return; }
+      el.textContent = msg;
+      el.classList.add('show');
+    }
+
+    async function loadBrowse() {
+      const res = await fetch('/api/data/browse?limit=500', { cache: 'no-store' });
+      if (!res.ok) throw new Error('browse HTTP ' + res.status);
+      state.browse = await res.json();
+      renderBanner();
+      state.whales = state.browse.whales || [];
+      renderWhales();
+      renderBrowse();
+    }
+
+    async function loadUsers() {
+      const res = await fetch('/api/auth/users', { cache: 'no-store' });
+      if (!res.ok) throw new Error('users HTTP ' + res.status);
+      const data = await res.json();
+      state.users = data.users || [];
+      renderUsers();
+    }
+
+    async function loadMonitor() {
+      const res = await fetch('/api/data/monitor', { cache: 'no-store' });
+      if (!res.ok) throw new Error('monitor HTTP ' + res.status);
+      state.monitor = await res.json();
+      renderMonitor();
+    }
+
+    async function loadHealthBits() {
+      try {
+        const h = await fetch('/api/health', { cache: 'no-store' }).then((r) => r.json());
+        const rt = h.realtime || {};
+        $('rtStatus').textContent = rt.connected
+          ? `实时已连接 · 订阅 ${rt.fillSubs || 0}`
+          : '实时未连接';
+        $('rtStatus').className = 'status-text ' + (rt.connected ? 'on' : 'off');
+        updateProgressHint(h.fillBackfill, h.whaleRefresh);
+      } catch {
+        $('rtStatus').textContent = '实时未知';
+        $('rtStatus').className = 'status-text off';
+      }
+    }
+
+    function updateProgressHint(backfill, whaleRefresh) {
+      const st = $('pullStatus');
+      if (!st) return;
+      if (whaleRefresh && (whaleRefresh.status === 'resetting' || whaleRefresh.status === 'running')) {
+        st.textContent = '正在重置并重新拉取…';
+        st.className = 'status-text';
+        return;
+      }
+      const bf = backfill || {};
+      if (bf.enabled === false) {
+        st.textContent = '历史补齐已关闭';
+        st.className = 'status-text';
+        return;
+      }
+      if (bf.done) {
+        st.textContent = '历史补齐已完成 · 后续靠实时推送';
+        st.className = 'status-text on';
+        return;
+      }
+      const day = (Number(bf.dayOffset) || 0) + 1;
+      const days = Number(bf.days) || 7;
+      const idx = Number(bf.whaleIndex) || 0;
+      const total = Number(bf.whaleTotal) || 0;
+      let base = total > 0
+        ? `历史补齐进行中：第 ${day}/${days} 天 · 地址 ${Math.min(idx + 1, total)}/${total}`
+        : `历史补齐待命：第 ${day}/${days} 天 · 等待巨鲸名单`;
+      if (bf.rateLimited) {
+        st.innerHTML = `${base}<span class="rate-limit">（429限流，半小时后重试）</span>`;
+      } else {
+        st.textContent = base;
+      }
+      st.className = 'status-text';
+    }
+
+    let startedAtMs = 0;
+
+    function tickUptime() {
+      const el = $('bannerUptime');
+      if (!el || !startedAtMs) return;
+      el.textContent = fmtDuration(Date.now() - startedAtMs);
+    }
+
+    function renderBanner() {
+      const d = state.browse || {};
+      const st = d.status || {};
+      const wr = d.whaleRefresh;
+      const nextStarted = Number(d.startedAt) || 0;
+      if (nextStarted > 0) startedAtMs = nextStarted;
+      const uptimeLabel = startedAtMs
+        ? fmtDuration(Date.now() - startedAtMs)
+        : fmtDuration(d.uptimeMs);
+      $('bannerMeta').innerHTML =
+        `启动：<b>${fmtTime(d.startedAt)}</b> · 已运行 <b id="bannerUptime">${uptimeLabel}</b>` +
+        (wr ? ` · 最近任务 <b>${wr.status || '—'}</b> ${fmtTime(wr.finishedAt || wr.startedAt)}` : '');
+      const daily = d.dailyIo || {};
+      $('bannerStats').innerHTML = [
+        ['巨鲸', st.whales ?? 0],
+        ['成交', st.fills ?? 0],
+        ['事件', st.events ?? 0],
+        ['异动', st.alerts ?? 0],
+        ['今日新增', daily.addedRows ?? 0],
+        ['今日删除', `${Number(daily.deletedRows) || 0}条`],
+      ].map(([l, n]) => `<div class="bstat"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+      const addEl = $('bannerStats')?.querySelectorAll('.bstat')?.[4];
+      if (addEl) addEl.title = `上海时区 ${daily.ymd || '今日'} 新写入条数（成交/事件/异动），零点清零`;
+      const delEl = $('bannerStats')?.querySelectorAll('.bstat')?.[5];
+      if (delEl) {
+        delEl.title = `今日清理涉及 ${Number(daily.deletedDays) || 0} 个自然日 · 共删 ${Number(daily.deletedRows) || 0} 条`;
+      }
+    }
+
+    function renderUsers() {
+      $('userCount').textContent = String(state.users.length);
+      const tb = $('userRows');
+      $('userEmpty').style.display = state.users.length ? 'none' : 'block';
+      tb.innerHTML = state.users.map((u) => `
+        <tr data-id="${u.id}">
+          <td>${u.username}</td>
+          <td class="dim">${fmtTime(u.createdAt)}</td>
+          <td>
+            <button type="button" class="ghost sm" data-act="pwd">改密</button>
+            <button type="button" class="danger sm" data-act="del">删除</button>
+          </td>
+        </tr>`).join('');
+    }
+
+    function filteredWhales() {
+      let list = state.whales.slice();
+      if (state.whaleDir !== 'all') {
+        list = list.filter((w) => (w.direction || 'neutral') === state.whaleDir);
+      }
+      const q = String(state.whaleSearch || '').trim().toLowerCase();
+      if (q) {
+        list = list.filter((w) => {
+          const blob = [
+            w.name,
+            w.id,
+            w.address,
+            w.direction,
+          ].map((x) => String(x || '').toLowerCase()).join(' ');
+          return blob.includes(q);
+        });
+      }
+      const { key, dir } = state.whaleSort;
+      list.sort((a, b) => {
+        const av = a[key];
+        const bv = b[key];
+        if (typeof av === 'string' || typeof bv === 'string') {
+          return String(av || '').localeCompare(String(bv || ''), 'zh') * dir;
+        }
+        return ((Number(av) || 0) - (Number(bv) || 0)) * dir;
+      });
+      return list;
+    }
+
+    function renderWhales() {
+      const list = filteredWhales();
+      const pageSize = state.whalePageSize;
+      const pageCount = Math.max(1, Math.ceil(list.length / pageSize));
+      if (state.whalePage > pageCount) state.whalePage = pageCount;
+      if (state.whalePage < 1) state.whalePage = 1;
+      const start = (state.whalePage - 1) * pageSize;
+      const pageList = list.slice(start, start + pageSize);
+
+      $('whaleCount').textContent = `${list.length}/${state.whales.length}`;
+      $('whaleEmpty').hidden = list.length > 0;
+      $('whalePageInfo').textContent = `第 ${state.whalePage}/${pageCount} 页 · ${list.length} 条`;
+      $('whaleFirst').disabled = state.whalePage <= 1;
+      $('whalePrev').disabled = state.whalePage <= 1;
+      $('whaleNext').disabled = state.whalePage >= pageCount;
+
+      $('whaleRows').innerHTML = pageList.map((w) => {
+        const tag = w.manual ? ' <span class="pill">手动</span>' : (w.customName ? ' <span class="pill">改名</span>' : '');
+        const safeId = String(w.id || '').replace(/"/g, '');
+        const safeName = String(w.name || '').replace(/"/g, '&quot;');
+        return `
+        <tr data-id="${safeId}">
+          <td title="${w.address || ''}">${w.name || shortAddr(w.id)}${tag}</td>
+          <td>${dirHtml(w.direction)}</td>
+          <td>${fmtUsd(w.longUsd)}</td>
+          <td>${fmtUsd(w.shortUsd)}</td>
+          <td>${fmtUsd(w.netUsd)}</td>
+          <td>${w.closedTrades ?? 0}</td>
+          <td>
+            <button type="button" class="sm ghost" data-act="rename" data-id="${safeId}" data-name="${safeName}">改名</button>
+          </td>
+        </tr>`;
+      }).join('');
+      document.querySelectorAll('#cardWhales th[data-sort]').forEach((th) => {
+        th.classList.toggle('active', th.dataset.sort === state.whaleSort.key);
+      });
+    }
+
+    function openAddWhaleModal(show) {
+      $('addWhaleModal').classList.toggle('show', Boolean(show));
+      if (show) {
+        $('manualAddr').value = '';
+        $('manualName').value = '';
+        $('manualAddr').focus();
+      }
+    }
+
+    async function addManualWhale() {
+      const address = $('manualAddr').value.trim();
+      const name = $('manualName').value.trim();
+      const msg = $('whaleMsg');
+      try {
+        const res = await fetch('/api/whales/manual', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ address, name }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '添加失败');
+        msg.className = 'msg ok';
+        msg.textContent = '已添加 ' + (data.whale?.name || address);
+        openAddWhaleModal(false);
+        await loadBrowse();
+      } catch (e) {
+        msg.className = 'msg err';
+        msg.textContent = e.message || String(e);
+      }
+    }
+
+    async function onWhaleAction(e) {
+      const btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      if (btn.dataset.act !== 'rename') return;
+      const id = btn.dataset.id;
+      const current = btn.dataset.name || '';
+      const next = window.prompt('新的巨鲸名称', current);
+      if (next == null) return;
+      const name = String(next).trim();
+      if (!name) return;
+      const msg = $('whaleMsg');
+      try {
+        const res = await fetch('/api/whales/' + encodeURIComponent(id) + '/name', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '改名失败');
+        msg.className = 'msg ok';
+        msg.textContent = '已改名：' + (data.whale?.name || name);
+        await loadBrowse();
+      } catch (err) {
+        msg.className = 'msg err';
+        msg.textContent = err.message || String(err);
+      }
+    }
+
+    async function resetSite() {
+      if (!window.confirm('是否重置整站数据？\n将清空成交/异动/仓位缓存并重新拉取；用户账号与手动添加的巨鲸会保留。')) {
+        return;
+      }
+      const btn = $('pullBtn');
+      const st = $('pullStatus');
+      btn.disabled = true;
+      st.textContent = '正在重置并重新拉取…';
+      try {
+        const res = await fetch('/api/data/reset?rounds=3', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '重置失败');
+        const bf = data.fillBackfill || {};
+        const kept = data.keptManuals ?? 0;
+        st.textContent =
+          `重置完成 · 保留手动 ${kept} 个 · ` +
+          (bf.done
+            ? '补齐已完成'
+            : `补齐第 ${(Number(bf.dayOffset) || 0) + 1}/${bf.days || 7} 天 · 地址 ${(Number(bf.whaleIndex) || 0) + 1}/${bf.whaleTotal || 0}`);
+        await loadBrowse();
+        await loadHealthBits();
+      } catch (e) {
+        st.textContent = '失败：' + (e.message || e);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function renderBrowse() {
+      const kind = state.browseKind;
+      const d = state.browse || {};
+      const rows = d[kind] || [];
+      $('browseCount').textContent = String(rows.length);
+      $('browseEmpty').hidden = rows.length > 0;
+      let head = '';
+      let body = '';
+      if (kind === 'fills') {
+        head = '<tr><th class="nosort">时间</th><th class="nosort">币种</th><th class="nosort">方向</th><th class="nosort">名义</th><th class="nosort">来源</th></tr>';
+        body = rows.map((f) => `<tr><td>${fmtTime(f.time)}</td><td>${f.asset || '—'}</td><td>${f.side || '—'}</td><td>${fmtUsd(f.amountUsd)}</td><td class="dim">${f.source || '—'}</td></tr>`).join('');
+      } else if (kind === 'events') {
+        head = '<tr><th class="nosort">时间</th><th class="nosort">类型</th><th class="nosort">币种</th><th class="nosort">名义</th><th class="nosort">标题</th></tr>';
+        body = rows.map((e) => `<tr><td>${fmtTime(e.time)}</td><td>${e.kind || '—'}</td><td>${e.coin || '—'}</td><td>${fmtUsd(e.usd)}</td><td>${e.title || '—'}</td></tr>`).join('');
+      } else {
+        head = '<tr><th class="nosort">时间</th><th class="nosort">类型</th><th class="nosort">巨鲸</th><th class="nosort">币种</th><th class="nosort">名义</th></tr>';
+        body = rows.map((a) => `<tr><td>${fmtTime(a.time)}</td><td>${a.kind || '—'}</td><td>${a.whaleName || shortAddr(a.whaleId)}</td><td>${a.coin || '—'}</td><td>${fmtUsd(a.usd)}</td></tr>`).join('');
+      }
+      $('browseHead').innerHTML = head;
+      $('browseRows').innerHTML = body;
+    }
+
+    function renderMonitor() {
+      const tab = state.monitorTab;
+      const list =
+        tab === 'socket' ? (state.monitor.socket || []) :
+        tab === 'requests' ? (state.monitor.requests || []) :
+        (state.monitor.errors || []);
+      const lim = state.monitor.limits || {};
+      $('monitorHint').textContent =
+        tab === 'socket' ? `最新 ${lim.socket || 100} 条` :
+        tab === 'requests' ? `请求 ${list.length}` : `报错 ${list.length}`;
+      const el = $('monitorStream');
+      if (!list.length) {
+        el.innerHTML = '<div class="empty">暂无记录</div>';
+        return;
+      }
+      el.innerHTML = list.map((item) => {
+        const cls = tab === 'errors' ? 'err' : (item.ok === false ? 'err' : 'ok');
+        const msg = item.message || item.detail || JSON.stringify(item);
+        return `<div class="log-line ${cls}"><span class="t">${fmtTime(item.at)}</span>${msg}</div>`;
+      }).join('');
+    }
+
+    async function createUser() {
+      const username = $('newUser').value.trim();
+      const password = $('newPass').value;
+      const msg = $('userMsg');
+      try {
+        const res = await fetch('/api/auth/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '创建失败');
+        msg.className = 'msg ok';
+        msg.textContent = '已创建 ' + data.user.username;
+        $('newUser').value = '';
+        $('newPass').value = '';
+        await loadUsers();
+      } catch (e) {
+        msg.className = 'msg err';
+        msg.textContent = e.message || String(e);
+      }
+    }
+
+    async function onUserAction(e) {
+      const btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      const tr = btn.closest('tr[data-id]');
+      if (!tr) return;
+      const id = tr.dataset.id;
+      const act = btn.dataset.act;
+      const msg = $('userMsg');
+      try {
+        if (act === 'del') {
+          if (!confirm('确认删除该用户？')) return;
+          const res = await fetch('/api/auth/users/' + encodeURIComponent(id), { method: 'DELETE' });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || '删除失败');
+          msg.className = 'msg ok';
+          msg.textContent = '已删除 ' + (data.user?.username || '');
+        } else if (act === 'pwd') {
+          const password = prompt('输入新密码（至少 4 位）');
+          if (password == null) return;
+          const res = await fetch('/api/auth/users/' + encodeURIComponent(id) + '/password', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || '改密失败');
+          msg.className = 'msg ok';
+          msg.textContent = '已改密 ' + (data.user?.username || '');
+        }
+        await loadUsers();
+      } catch (err) {
+        msg.className = 'msg err';
+        msg.textContent = err.message || String(err);
+      }
+    }
+
+    async function refreshAll() {
+      try {
+        showErr('');
+        await Promise.all([loadBrowse(), loadUsers(), loadMonitor(), loadHealthBits()]);
+      } catch (e) {
+        showErr('加载失败：' + (e.message || e));
+      }
+    }
+
+    $('createUserBtn').onclick = createUser;
+    $('userRows').onclick = onUserAction;
+    $('openAddWhaleBtn').onclick = () => openAddWhaleModal(true);
+    $('cancelAddWhaleBtn').onclick = () => openAddWhaleModal(false);
+    $('addWhaleModal').onclick = (e) => {
+      if (e.target === $('addWhaleModal')) openAddWhaleModal(false);
+    };
+    $('addWhaleBtn').onclick = addManualWhale;
+    $('whaleRows').onclick = onWhaleAction;
+    $('pullBtn').onclick = resetSite;
+    $('whaleSearch').oninput = (e) => {
+      state.whaleSearch = e.target.value || '';
+      state.whalePage = 1;
+      renderWhales();
+    };
+    $('whaleFirst').onclick = () => {
+      state.whalePage = 1;
+      renderWhales();
+    };
+    $('whalePrev').onclick = () => {
+      state.whalePage -= 1;
+      renderWhales();
+    };
+    $('whaleNext').onclick = () => {
+      state.whalePage += 1;
+      renderWhales();
+    };
+    $('browseKind').onchange = (e) => {
+      state.browseKind = e.target.value;
+      renderBrowse();
+    };
+    $('whaleFilters').onclick = (e) => {
+      const chip = e.target.closest('.chip');
+      if (!chip) return;
+      state.whaleDir = chip.dataset.dir;
+      state.whalePage = 1;
+      $('whaleFilters').querySelectorAll('.chip').forEach((c) => c.classList.toggle('on', c === chip));
+      renderWhales();
+    };
+    document.querySelectorAll('#cardWhales th[data-sort]').forEach((th) => {
+      th.onclick = () => {
+        const key = th.dataset.sort;
+        if (state.whaleSort.key === key) state.whaleSort.dir *= -1;
+        else state.whaleSort = { key, dir: key === 'name' || key === 'direction' ? 1 : -1 };
+        state.whalePage = 1;
+        renderWhales();
+      };
+    });
+    document.querySelectorAll('#cardMonitor .tab').forEach((tab) => {
+      tab.onclick = () => {
+        state.monitorTab = tab.dataset.tab;
+        document.querySelectorAll('#cardMonitor .tab').forEach((t) => t.classList.toggle('on', t === tab));
+        renderMonitor();
+      };
+    });
+
+    refreshAll();
+    setInterval(tickUptime, 1000);
+    setInterval(async () => {
+      try {
+        await Promise.all([loadMonitor(), loadHealthBits()]);
+      } catch { /* ignore */ }
+    }, 2500);
+    setInterval(async () => {
+      try { await loadBrowse(); } catch { /* ignore */ }
+    }, 20000);
+  </script>
+</body>
+</html>
