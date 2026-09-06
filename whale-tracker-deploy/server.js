@@ -49,6 +49,7 @@ const {
   getPositionBackfillStatus,
 } = require('./lib/positionBackfill');
 const { startOkxPolling, getOkxStatus } = require('./lib/okxCopyTrading');
+const { startXFeedPolling, getStatus: getXFeedStatus } = require('./lib/xFeedPoller');
 
 const app = createApp({ prefixes: ['/api'] });
 const PORT = Number(process.env.PORT) || 80;
@@ -152,6 +153,12 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log('[okx]', JSON.stringify(getOkxStatus()));
   } catch (err) {
     console.warn('[okx] 启动失败:', err.message);
+  }
+  try {
+    startXFeedPolling();
+    console.log('[x-poll]', JSON.stringify(getXFeedStatus()));
+  } catch (err) {
+    console.warn('[x-poll] 启动失败:', err.message);
   }
   refreshAll('启动预热');
   setInterval(() => refreshAll('定时刷新'), REFRESH_MS);

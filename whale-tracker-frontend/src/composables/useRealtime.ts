@@ -16,7 +16,13 @@ export type RealtimeMessage =
       positionsByTrader?: Record<string, unknown[]>;
       meta?: Record<string, unknown>;
     }
-  | { type: 'okxAlert'; alert: Record<string, unknown>; at?: number };
+  | { type: 'okxAlert'; alert: Record<string, unknown>; at?: number }
+  | {
+      type: 'xTweet';
+      at?: number;
+      tweets?: Array<Record<string, unknown>>;
+      accounts?: unknown[];
+    };
 
 type Handler = (msg: RealtimeMessage) => void;
 

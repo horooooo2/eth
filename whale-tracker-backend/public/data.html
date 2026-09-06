@@ -322,26 +322,44 @@
         <span class="msg" id="whaleMsg" style="padding:0 12px 8px"></span>
       </section>
 
-      <!-- 数据看板 -->
-      <section class="card" id="cardBrowse">
+      <!-- X 抓取源 -->
+      <section class="card" id="cardXWatch" style="height:auto;min-height:480px">
         <div class="card-head">
-          <h2>数据看板</h2>
+          <h2>监控账号</h2>
           <div class="card-tools">
-            <select id="browseKind">
-              <option value="fills">成交</option>
-              <option value="events">事件</option>
-              <option value="alerts">异动</option>
-            </select>
-            <span class="pill" id="browseCount">0</span>
+            <button type="button" class="sm ghost" id="xReloadBtn">刷新列表</button>
+            <button type="button" class="sm" id="xPollBtn">立即拉取</button>
           </div>
         </div>
-        <div class="card-body">
-          <table>
-            <thead id="browseHead"></thead>
-            <tbody id="browseRows"></tbody>
-          </table>
-          <div class="empty" id="browseEmpty" hidden>暂无数据</div>
+        <div class="form-row" style="flex-direction:column;align-items:stretch;gap:10px">
+          <div class="status-text" id="xBannerMeta" style="line-height:1.6">加载中…</div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:end">
+            <label style="flex:1;min-width:140px">X 用户名（不含 @）
+              <input id="xUsername" placeholder="例如 cz_binance" maxlength="15" autocomplete="off" />
+            </label>
+            <label style="flex:1;min-width:120px">显示名（筛选标签）
+              <input id="xLabel" placeholder="例如 CZ" maxlength="32" autocomplete="off" />
+            </label>
+            <button type="button" id="xAddBtn" class="sm">添加</button>
+          </div>
+          <span class="msg" id="xMsg"></span>
         </div>
+        <div class="card-body" style="max-height:320px">
+          <table>
+            <thead>
+              <tr>
+                <th class="nosort">显示名</th>
+                <th class="nosort">用户名</th>
+                <th class="nosort">操作</th>
+              </tr>
+            </thead>
+            <tbody id="xRows"></tbody>
+          </table>
+          <div class="empty" id="xEmpty" hidden>暂无账号</div>
+        </div>
+        <p class="msg" style="padding:8px 14px 12px;margin:0;line-height:1.55">
+          改动立即写入服务器；关闭后不拉取该账号。定时拉取（默认 30 分钟，北京时间 9:00–次日 3:00）只抓开启中的账号。主站 X 筛选仅显示开启账号。至少保留 1 个账号（可全部关闭拉取）。
+        </p>
       </section>
 
       <!-- 数据监控 -->
@@ -394,7 +412,17 @@
       browseKind: 'fills',
       monitorTab: 'socket',
       monitor: { socket: [], requests: [], errors: [] },
+      xAccounts: [],
+      xMeta: null,
     };
+
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
 
     function fmtTime(ts) {
       const n = Number(ts) || 0;
@@ -443,9 +471,158 @@
       if (!res.ok) throw new Error('browse HTTP ' + res.status);
       state.browse = await res.json();
       renderBanner();
-      state.whales = state.browse.whales || [];
       renderWhales();
-      renderBrowse();
+      // 原「数据看板」卡片已改为 X 监控账号，browse 表仅作数据源
+    }
+
+    async function loadXWatch() {
+      const res = await fetch('/api/x/accounts', { cache: 'no-store' });
+      if (!res.ok) throw new Error('x accounts HTTP ' + res.status);
+      const data = await res.json();
+      state.xAccounts = data.accounts || [];
+      state.xMeta = data;
+      renderXWatch();
+    }
+
+    function renderXWatch() {
+      const accounts = state.xAccounts || [];
+      const poll = (state.xMeta && state.xMeta.poll) || {};
+      const onCount = accounts.filter((a) => a.enabled !== false).length;
+      const meta = $('xBannerMeta');
+      if (meta) {
+        meta.innerHTML =
+          '当前监控 <b>' + accounts.length + '</b> 人（开启 <b>' + onCount + '</b>）· 拉取间隔 <b>' +
+          Math.round((poll.pollMs || 0) / 60000) + ' 分钟</b> · 窗口 ' +
+          (poll.windowOpen ? '<b>开启</b>' : '<b>暂停</b>（凌晨 3–9 点）') +
+          (state.xMeta && state.xMeta.updatedAt
+            ? ' · 配置更新 ' + fmtTime(state.xMeta.updatedAt)
+            : '') +
+          (poll.lastPollAt ? ' · 上次拉取 ' + fmtTime(poll.lastPollAt) : '');
+      }
+      const empty = $('xEmpty');
+      const rows = $('xRows');
+      if (!rows) return;
+      if (empty) empty.hidden = accounts.length > 0;
+      rows.innerHTML = accounts.map((a) => {
+        const u = encodeURIComponent(a.username);
+        const on = a.enabled !== false;
+        return (
+          '<tr' + (on ? '' : ' style="opacity:.55"') + '>' +
+          '<td><b>' + esc(a.label || a.name || a.username) + '</b>' +
+          (on ? '' : ' <span class="dim">已关闭</span>') + '</td>' +
+          '<td class="mono"><a class="dim" href="https://x.com/' + esc(a.username) +
+          '" target="_blank" rel="noopener">@' + esc(a.username) + '</a></td>' +
+          '<td>' +
+          '<button type="button" class="sm ' + (on ? 'ghost' : '') + '" data-x-toggle="' + u + '" data-enabled="' + (on ? '0' : '1') + '">' +
+          (on ? '关闭' : '开启') + '</button> ' +
+          '<button type="button" class="sm ghost" data-x-edit="' + u + '">改标签</button> ' +
+          '<button type="button" class="sm danger" data-x-del="' + u + '">删除</button>' +
+          '</td></tr>'
+        );
+      }).join('');
+    }
+
+    function setXMsg(text, ok) {
+      const el = $('xMsg');
+      if (!el) return;
+      el.className = 'msg' + (text ? (ok ? ' ok' : ' err') : '');
+      el.textContent = text || '';
+    }
+
+    async function addXAccount() {
+      const username = String(($('xUsername') && $('xUsername').value) || '').trim().replace(/^@+/, '');
+      const label = String(($('xLabel') && $('xLabel').value) || '').trim();
+      if (!username) { setXMsg('请填写用户名', false); return; }
+      const btn = $('xAddBtn');
+      if (btn) btn.disabled = true;
+      try {
+        const res = await fetch('/api/x/accounts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, label: label || username }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '添加失败');
+        state.xAccounts = data.accounts || [];
+        state.xMeta = data;
+        if ($('xUsername')) $('xUsername').value = '';
+        if ($('xLabel')) $('xLabel').value = '';
+        const st = await fetch('/api/x/status', { cache: 'no-store' });
+        if (st.ok) state.xMeta = { ...data, poll: await st.json() };
+        renderXWatch();
+        setXMsg('已添加 @' + username, true);
+      } catch (err) {
+        setXMsg(err.message || '添加失败', false);
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    async function onXRowAction(e) {
+      const del = e.target.closest('[data-x-del]');
+      const edit = e.target.closest('[data-x-edit]');
+      const toggle = e.target.closest('[data-x-toggle]');
+      if (!del && !edit && !toggle) return;
+      if (toggle) {
+        const username = decodeURIComponent(toggle.getAttribute('data-x-toggle'));
+        const enabled = toggle.getAttribute('data-enabled') === '1';
+        try {
+          const res = await fetch('/api/x/accounts/' + encodeURIComponent(username) + '/toggle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || '切换失败');
+          state.xAccounts = data.accounts || [];
+          const st = await fetch('/api/x/status', { cache: 'no-store' });
+          state.xMeta = { ...data, poll: st.ok ? await st.json() : data.poll };
+          renderXWatch();
+          setXMsg((enabled ? '已开启 @' : '已关闭 @') + username + (enabled ? '' : '（不再拉取）'), true);
+        } catch (err) {
+          setXMsg(err.message || '切换失败', false);
+        }
+        return;
+      }
+      if (del) {
+        const username = decodeURIComponent(del.getAttribute('data-x-del'));
+        if (!confirm('确定删除 @' + username + '？')) return;
+        try {
+          const res = await fetch('/api/x/accounts/' + encodeURIComponent(username), { method: 'DELETE' });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || '删除失败');
+          state.xAccounts = data.accounts || [];
+          const st = await fetch('/api/x/status', { cache: 'no-store' });
+          state.xMeta = { ...data, poll: st.ok ? await st.json() : data.poll };
+          renderXWatch();
+          setXMsg('已删除 @' + username, true);
+        } catch (err) {
+          setXMsg(err.message || '删除失败', false);
+        }
+        return;
+      }
+      if (edit) {
+        const username = decodeURIComponent(edit.getAttribute('data-x-edit'));
+        const cur = (state.xAccounts || []).find((a) => a.username === username);
+        const label = prompt('显示名（筛选标签）', (cur && cur.label) || username);
+        if (label == null) return;
+        try {
+          const res = await fetch('/api/x/accounts/' + encodeURIComponent(username), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ label: String(label).trim() || username }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || '更新失败');
+          state.xAccounts = data.accounts || [];
+          const st = await fetch('/api/x/status', { cache: 'no-store' });
+          state.xMeta = { ...data, poll: st.ok ? await st.json() : data.poll };
+          renderXWatch();
+          setXMsg('已更新 @' + username, true);
+        } catch (err) {
+          setXMsg(err.message || '更新失败', false);
+        }
+      }
     }
 
     async function loadUsers() {
@@ -719,11 +896,13 @@
     }
 
     function renderBrowse() {
+      // 原数据看板卡片已替换为 X 监控账号
+      if (!$('browseHead') || !$('browseRows')) return;
       const kind = state.browseKind;
       const d = state.browse || {};
       const rows = d[kind] || [];
-      $('browseCount').textContent = String(rows.length);
-      $('browseEmpty').hidden = rows.length > 0;
+      if ($('browseCount')) $('browseCount').textContent = String(rows.length);
+      if ($('browseEmpty')) $('browseEmpty').hidden = rows.length > 0;
       let head = '';
       let body = '';
       if (kind === 'fills') {
@@ -824,7 +1003,7 @@
     async function refreshAll() {
       try {
         showErr('');
-        await Promise.all([loadBrowse(), loadUsers(), loadMonitor(), loadHealthBits()]);
+        await Promise.all([loadBrowse(), loadUsers(), loadMonitor(), loadHealthBits(), loadXWatch()]);
       } catch (e) {
         showErr('加载失败：' + (e.message || e));
       }
@@ -840,6 +1019,31 @@
     $('addWhaleBtn').onclick = addManualWhale;
     $('whaleRows').onclick = onWhaleAction;
     $('pullBtn').onclick = resetSite;
+    if ($('xAddBtn')) $('xAddBtn').onclick = addXAccount;
+    if ($('xReloadBtn')) {
+      $('xReloadBtn').onclick = () => {
+        loadXWatch().then(() => setXMsg('列表已刷新', true)).catch((err) => setXMsg(err.message || '刷新失败', false));
+      };
+    }
+    if ($('xPollBtn')) {
+      $('xPollBtn').onclick = async () => {
+        const btn = $('xPollBtn');
+        btn.disabled = true;
+        setXMsg('正在拉取…');
+        try {
+          const res = await fetch('/api/x/refresh?force=1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || '拉取失败');
+          await loadXWatch();
+          setXMsg('拉取完成', true);
+        } catch (err) {
+          setXMsg(err.message || '拉取失败', false);
+        } finally {
+          btn.disabled = false;
+        }
+      };
+    }
+    if ($('xRows')) $('xRows').onclick = onXRowAction;
     $('whaleSearch').oninput = (e) => {
       state.whaleSearch = e.target.value || '';
       state.whalePage = 1;
@@ -857,10 +1061,12 @@
       state.whalePage += 1;
       renderWhales();
     };
-    $('browseKind').onchange = (e) => {
-      state.browseKind = e.target.value;
-      renderBrowse();
-    };
+    if ($('browseKind')) {
+      $('browseKind').onchange = (e) => {
+        state.browseKind = e.target.value;
+        renderBrowse();
+      };
+    }
     $('whaleFilters').onclick = (e) => {
       const chip = e.target.closest('.chip');
       if (!chip) return;

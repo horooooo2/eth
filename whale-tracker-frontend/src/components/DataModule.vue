@@ -3,9 +3,10 @@ import { ref, watch } from 'vue';
 import { fetchCalendar } from '@/api';
 import type { CalendarEvent, WhaleProfile } from '@/types';
 import type { RecoQuotes } from '@/utils/recommend';
-import WhaleTable from '@/components/WhaleTable.vue';
+import XFeed from '@/components/XFeed.vue';
+import { clearXUnread, xUnread } from '@/stores/xFeed';
 
-type DataTab = 'macro' | 'transfer';
+type DataTab = 'macro' | 'x';
 
 const props = defineProps<{
   whales: WhaleProfile[];
@@ -14,7 +15,7 @@ const props = defineProps<{
   selectedName: string;
   updatedAt?: number;
   quotes?: RecoQuotes;
-  /** 巨鲸首屏就绪后再拉资金动态 / 宏观 */
+  /** 巨鲸首屏就绪后再拉 X / 宏观 */
   bootReady?: boolean;
 }>();
 
@@ -22,11 +23,15 @@ const emit = defineEmits<{
   focusWhale: [payload: { id: string; name: string }];
 }>();
 
-const tab = ref<DataTab>('transfer');
+const tab = ref<DataTab>('x');
 const macroLoading = ref(false);
 const macroError = ref('');
 const macroEvents = ref<CalendarEvent[]>([]);
 const macroLoaded = ref(false);
+
+watch(tab, (t) => {
+  if (t === 'x') clearXUnread();
+});
 
 function importanceStars(importance: CalendarEvent['importance']) {
   if (importance === 'high') return 3;
@@ -84,58 +89,56 @@ watch(
     <template #header>
       <div class="head">
         <el-radio-group v-model="tab" class="direction-filter" @change="onTabChange">
-          <el-radio-button label="transfer">资金动态</el-radio-button>
+          <el-radio-button label="x">
+            <span class="tab-label">
+              X
+              <i v-if="xUnread && tab !== 'x'" class="unread-dot" aria-hidden="true" />
+            </span>
+          </el-radio-button>
           <el-radio-button label="macro">宏观数据</el-radio-button>
         </el-radio-group>
       </div>
     </template>
 
-    <div v-if="tab === 'macro'" class="tab-panel">
-      <el-skeleton v-if="macroLoading && !macroEvents.length" :rows="8" animated />
-      <el-alert
-        v-else-if="macroError && !macroEvents.length"
-        type="warning"
-        :closable="false"
-        :title="macroError"
-      />
-      <el-empty v-else-if="!macroEvents.length" description="暂无近期重要事件" />
-      <div v-else class="list">
-        <article v-for="item in macroEvents" :key="item.id" class="row macro-row">
-          <div class="row-time">
-            <strong>{{ item.dateLabel }}</strong>
-            <span>{{ item.weekday }} · {{ countdownLabel(item) }}</span>
-            <em v-if="item.time">北京时间 {{ item.time }}</em>
-            <em v-else-if="item.timeNote">{{ item.timeNote }}</em>
-          </div>
-          <div class="row-body">
-            <div class="title-line">
-              <span class="stars" :title="`${importanceStars(item.importance)} 星`">
-                {{ starText(importanceStars(item.importance)) }}
-              </span>
-              <strong class="title">{{ item.title }}</strong>
+    <div class="tab-stack">
+      <div v-show="tab === 'macro'" class="tab-panel">
+        <el-skeleton v-if="macroLoading && !macroEvents.length" :rows="8" animated />
+        <el-alert
+          v-else-if="macroError && !macroEvents.length"
+          type="warning"
+          :closable="false"
+          :title="macroError"
+        />
+        <el-empty v-else-if="!macroEvents.length" description="暂无近期重要事件" />
+        <div v-else class="list">
+          <article v-for="item in macroEvents" :key="item.id" class="row macro-row">
+            <div class="row-time">
+              <strong>{{ item.dateLabel }}</strong>
+              <span>{{ item.weekday }} · {{ countdownLabel(item) }}</span>
+              <em v-if="item.time">北京时间 {{ item.time }}</em>
+              <em v-else-if="item.timeNote">{{ item.timeNote }}</em>
             </div>
-            <p v-if="item.note" class="note">{{ item.note }}</p>
-            <div class="meta">
-              <span v-if="item.previous">前值 {{ item.previous }}</span>
-              <span v-if="item.forecast">预测 {{ item.forecast }}</span>
-              <span v-if="item.actual">公布 {{ item.actual }}</span>
+            <div class="row-body">
+              <div class="title-line">
+                <span class="stars" :title="`${importanceStars(item.importance)} 星`">
+                  {{ starText(importanceStars(item.importance)) }}
+                </span>
+                <strong class="title">{{ item.title }}</strong>
+              </div>
+              <p v-if="item.note" class="note">{{ item.note }}</p>
+              <div class="meta">
+                <span v-if="item.previous">前值 {{ item.previous }}</span>
+                <span v-if="item.forecast">预测 {{ item.forecast }}</span>
+                <span v-if="item.actual">公布 {{ item.actual }}</span>
+              </div>
             </div>
-          </div>
-        </article>
+          </article>
+        </div>
       </div>
-    </div>
 
-    <div v-else class="tab-panel transfer-panel">
-      <WhaleTable
-        :whales="whales"
-        :loading="loading"
-        :selected-id="selectedId"
-        :selected-name="selectedName"
-        :updated-at="updatedAt"
-        :quotes="quotes"
-        :boot-ready="bootReady"
-        @focus-whale="emit('focusWhale', $event)"
-      />
+      <div v-show="tab === 'x'" class="tab-panel transfer-panel">
+        <XFeed :limit="40" :boot-ready="bootReady" :active="tab === 'x'" />
+      </div>
     </div>
   </el-card>
 </template>
@@ -203,8 +206,31 @@ watch(
   border-color: transparent;
   box-shadow: none !important;
 }
-.tab-panel {
+.tab-label {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+.unread-dot {
+  position: absolute;
+  top: -2px;
+  right: -10px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e5484d;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--card) 80%, transparent);
+}
+.tab-stack {
   flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template: 1fr / 1fr;
+}
+.tab-panel {
+  grid-area: 1 / 1;
   min-height: 0;
   overflow: auto;
   padding: 8px 12px 12px;
@@ -213,6 +239,7 @@ watch(
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  padding: 0;
 }
 .list {
   display: flex;

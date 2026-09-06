@@ -35,6 +35,8 @@ import { freshModeEnabled, freshWindowMs } from '@/utils/freshMode';
 import type { WhaleAlert } from '@/utils/whaleAlerts';
 import { normalizeStoredAlert } from '@/utils/whaleAlerts';
 import { ingestOkxAlert, type OkxOpenAlert } from '@/utils/okxAlerts';
+import { noteXTweets } from '@/stores/xFeed';
+import type { XFeedTweet } from '@/api';
 import { isOkxTraderMonitored } from '@/utils/monitoredOkxTraders';
 import { isWhaleMonitored } from '@/utils/monitoredWhales';
 import {
@@ -251,6 +253,8 @@ const {
       noteOkxWorkspacePending(alert.traderId);
       playAlertDing();
     }
+  } else if (msg.type === 'xTweet' && Array.isArray(msg.tweets)) {
+    noteXTweets(msg.tweets as unknown as XFeedTweet[]);
   }
 });
 

@@ -599,3 +599,101 @@ export async function fetchOkxTraderDetail(traderId: string, lastDays = '3') {
   return data;
 }
 
+export type XTweetUser = {
+  id?: string;
+  username: string;
+  name: string;
+  label?: string;
+  description?: string;
+  followers?: number;
+  following?: number;
+  tweets?: number;
+  avatar?: string;
+  verified?: boolean;
+  url?: string | null;
+};
+
+export type XTweet = {
+  id: string;
+  text: string;
+  textZh?: string;
+  createdAt?: string | null;
+  likes?: number;
+  retweets?: number;
+  replies?: number;
+  views?: number;
+  quotes?: number;
+  isReply?: boolean;
+  isQuote?: boolean;
+  isRetweet?: boolean;
+  lang?: string;
+  url?: string | null;
+  username?: string;
+  label?: string;
+  user?: XTweetUser;
+  refKind?: 'quote' | 'retweet' | '';
+  refTweet?: XTweet | null;
+};
+
+export type XFeedTweet = XTweet;
+
+export type XTweetsResponse = {
+  username: string;
+  profile: XTweetUser | null;
+  tweets: XTweet[];
+  updatedAt?: number;
+  refreshedAt?: number;
+  stale?: boolean;
+  source?: string;
+  error?: string;
+};
+
+export type XFeedAccount = {
+  username: string;
+  label: string;
+  name?: string;
+  avatar?: string;
+  url?: string;
+};
+
+export type XFeedResponse = {
+  accounts: XFeedAccount[];
+  tweets: XFeedTweet[];
+  updatedAt?: number;
+  refreshedAt?: number;
+  stale?: boolean;
+  source?: string;
+  poll?: Record<string, unknown>;
+  error?: string;
+};
+
+export async function fetchXTweets(opts?: {
+  user?: string;
+  limit?: number;
+  refresh?: boolean;
+}) {
+  const { data } = await http.get<XTweetsResponse>('/x/tweets', {
+    params: {
+      user: opts?.user || 'cz_binance',
+      limit: opts?.limit ?? 10,
+      refresh: opts?.refresh ? 1 : undefined,
+    },
+    timeout: 90_000,
+  });
+  return data;
+}
+
+export async function fetchXFeed(opts?: {
+  user?: string;
+  limit?: number;
+}) {
+  const { data } = await http.get<XFeedResponse>('/x/feed', {
+    params: {
+      user: opts?.user || undefined,
+      limit: opts?.limit ?? 40,
+    },
+    timeout: 30_000,
+  });
+  return data;
+}
+
