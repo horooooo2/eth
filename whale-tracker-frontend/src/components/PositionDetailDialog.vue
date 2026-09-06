@@ -146,6 +146,7 @@ async function open(whale: WhaleProfile, pos: PositionSeed, trade?: WhaleTrade) 
         lastAddTime: data.position.lastAddTime ?? undefined,
         openHistoryComplete: data.position.openHistoryComplete,
         entryPx: data.position.entryPx ?? undefined,
+        markPx: data.position.markPx ?? undefined,
         size: data.position.size,
         positionValue: data.position.positionValue ?? undefined,
         unrealizedPnl: data.position.unrealizedPnl ?? undefined,

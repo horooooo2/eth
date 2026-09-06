@@ -1,17 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, shallowRef, watch } from 'vue';
+import { CopyDocument } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import PnlProgressBar from '@/components/PnlProgressBar.vue';
 import PositionDetailDialog from '@/components/PositionDetailDialog.vue';
 import type { WhaleDirection, WhalePosition, WhaleProfile } from '@/types';
 import { directionLabel, formatPrice, formatRelativeAgo, formatTimeShort, formatUsd, isOpenTimeStale } from '@/utils/format';
 import {
-  formatWhaleAddressLine,
   formatWhaleMetricLines,
-  isAddressLikeName,
+  whaleCardIdentityLine,
+  whaleCardTitle,
   positionFirstOpenTime,
   positionLastAddTime,
-  whaleCardTitle,
 } from '@/utils/whaleReference';
 import { WHALE_PAGE_SIZE, compareWhalesForDisplay, sortWhalesForDisplay } from '@/utils/topWhales';
 import type { RecoQuotes } from '@/utils/recommend';
@@ -483,24 +483,19 @@ function cardTitle(whale: WhaleProfile) {
   return whaleCardTitle(whale);
 }
 
-/** 巨鲸卡片底部指标行（成交量/胜率/地址） */
+/** 第一行：做多/做空后平铺月盈亏·累计·账户等 */
 function cardHeadInline(whale: WhaleProfile) {
-  const titleIsMetric = isAddressLikeName(whale.name, whale.address);
-  if (titleIsMetric) {
-    const dd = whale.maxDrawdown;
-    const trades = Number(whale.closedTrades) || 0;
-    const parts: string[] = [];
-    if (dd != null && Number.isFinite(Number(dd))) parts.push(`回撤 ${Number(dd)}%`);
-    if (trades > 0) parts.push(`${trades}笔`);
-    return parts.join(' · ');
-  }
   const metrics = formatWhaleMetricLines(whale);
+  const exposure = cardExposureText(whale);
   const parts: string[] = [];
-  if (metrics.volumeLine) parts.push(metrics.volumeLine);
   if (metrics.statsLine) parts.push(metrics.statsLine);
-  const addr = formatWhaleAddressLine(whale.address);
-  if (addr) parts.push(addr);
+  else if (metrics.volumeLine) parts.push(metrics.volumeLine);
+  if (exposure) parts.push(exposure);
   return parts.join(' · ');
+}
+
+function cardIdentityLine(whale: WhaleProfile) {
+  return whaleCardIdentityLine(whale);
 }
 
 /** 仓位曝光 + 保证金摘要 */
@@ -613,6 +608,31 @@ function onWhaleNameClick(whale: WhaleProfile, event?: Event) {
   event?.stopPropagation();
   emit('selectTransfers', whale);
   emit('query', whale);
+}
+
+async function copyWhaleAddress(whale: WhaleProfile, event?: Event) {
+  event?.stopPropagation();
+  const address = String(whale.address || '').trim();
+  if (!address) {
+    ElMessage.warning('该巨鲸没有可复制的地址');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(address);
+    ElMessage.success('地址已复制');
+  } catch {
+    try {
+      const input = document.createElement('input');
+      input.value = address;
+      document.body.appendChild(input);
+      input.select();
+      document.execCommand('copy');
+      document.body.removeChild(input);
+      ElMessage.success('地址已复制');
+    } catch {
+      ElMessage.error('复制失败，请手动复制');
+    }
+  }
 }
 
 async function focusWhale(payload: { id: string; coin?: string }) {
@@ -843,15 +863,25 @@ defineExpose({ focusWhale });
           <button
             type="button"
             class="card-name"
-            :title="`查看 ${cardTitle(whale)} 转账记录`"
+            :title="whale.address || cardIdentityLine(whale)"
             @click="onWhaleNameClick(whale, $event)"
           >
-            {{ cardTitle(whale) }}
+            {{ cardIdentityLine(whale) }}
           </button>
-          <span v-if="cardExposureText(whale)" class="name-totals">{{ cardExposureText(whale) }}</span>
+          <button
+            v-if="whale.address"
+            type="button"
+            class="copy-addr-btn"
+            title="复制地址"
+            @click="copyWhaleAddress(whale, $event)"
+          >
+            <el-icon :size="14"><CopyDocument /></el-icon>
+          </button>
         </div>
-        <div v-if="sideWinTag(whale)" class="side-meta">{{ sideWinTag(whale) }}</div>
-        <div v-if="cardPositions(whale).length" class="pnl-strip">
+        <div
+          v-if="cardPositions(whale).length"
+          class="pnl-strip"
+        >
           <PnlProgressBar compact :pct="positionsAggregatePnlPct(cardPositions(whale))" />
         </div>
         <div
@@ -1479,9 +1509,9 @@ defineExpose({ focusWhale });
 }
 .card-name-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   flex-wrap: wrap;
-  gap: 6px 10px;
+  gap: 6px 8px;
   margin-top: 8px;
   min-width: 0;
 }
@@ -1503,6 +1533,25 @@ defineExpose({ focusWhale });
 .card-name:hover {
   color: var(--accent);
   text-decoration: underline;
+}
+.copy-addr-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--card) 80%, transparent);
+  color: var(--muted);
+  cursor: pointer;
+}
+.copy-addr-btn:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
 }
 .name-totals {
   font-size: 12px;

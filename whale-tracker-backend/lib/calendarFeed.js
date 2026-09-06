@@ -84,12 +84,69 @@ function mapFfImportance(ffImpact) {
   return /high/i.test(ffImpact) ? 'high' : 'mid';
 }
 
+/** 宏观数据对加密走势的方向说明（替换「关注市场风险偏好变化」） */
+function cryptoImpactHint(title) {
+  if (/非农|NFP|Non-Farm|Nonfarm/i.test(title)) {
+    return '非农过高→美元走强、资金回流美元资产→加密偏空；过低则相反偏多';
+  }
+  if (/ADP/i.test(title)) {
+    return 'ADP 偏强预示就业热→美联储偏鹰、美元偏强→加密承压；偏弱则加密易反弹';
+  }
+  if (/失业|Unemployment/i.test(title)) {
+    return '失业率下降→经济偏热、加息预期升温→加密承压；上升则利多加密';
+  }
+  if (/时薪|Hourly Earnings|Average Hourly/i.test(title)) {
+    return '时薪偏热→通胀黏性、紧缩预期↑→加密偏空；偏冷则偏多';
+  }
+  if (/初请|Claims/i.test(title)) {
+    return '初请偏低→就业仍强→加密偏空；偏高→失业加快→加密偏多';
+  }
+  if (/JOLTS|职位空缺|Job Openings/i.test(title)) {
+    return '空缺偏多→招工仍热→加密承压；空缺回落→降温叙事→加密偏多';
+  }
+  if (/核心 CPI|Core CPI/i.test(title)) {
+    return '核心 CPI 超预期→抗通胀加息预期↑、美元强→加密下跌；低于预期则偏多';
+  }
+  if (/\bCPI\b|通胀/i.test(title)) {
+    return 'CPI 超预期→美元走强、风险资产承压→加密偏空；不及预期则偏多';
+  }
+  if (/核心 PCE|PCE/i.test(title)) {
+    return 'PCE 偏热→联储更鹰→加密承压；偏冷→降息预期升温→加密偏多';
+  }
+  if (/\bPPI\b/i.test(title)) {
+    return 'PPI 偏高→成本推升通胀预期→加密偏空；偏低则偏多';
+  }
+  if (/ISM|PMI/i.test(title)) {
+    return 'PMI 强于预期→经济偏热、利率预期↑→加密短线承压；弱于预期则偏多';
+  }
+  if (/FOMC|Federal Funds|利率决议/i.test(title)) {
+    return '偏鹰/加息→美元强、流动性收紧→加密偏空；偏鸽/降息则偏多';
+  }
+  if (/GDP/i.test(title)) {
+    return 'GDP 过热→加息预期↑→加密承压；明显走弱→宽松预期↑→加密偏多';
+  }
+  if (/零售|Retail Sales/i.test(title)) {
+    return '零售强→消费热、利率预期偏鹰→加密承压；偏弱则偏多';
+  }
+  if (/消费者信心|Consumer Confidence/i.test(title)) {
+    return '信心大升→风险偏好分化，美元或走强压制加密；大降则避险与宽松叙事交织，波动加大';
+  }
+  if (/原油|Oil Inventories/i.test(title)) {
+    return '库存骤降→油价涨、通胀预期↑→加密偏空；骤增则偏多';
+  }
+  if (/Holiday|休市|Bank Holiday/i.test(title)) {
+    return '美股休市时加密仍交易，流动性薄、方向易失真，宜降杠杆';
+  }
+  return '超预期偏热→美元走强、资金偏向美元资产→加密偏空；不及预期则偏多';
+}
+
 function buildFfNote(row, title) {
   const bits = [];
   if (row.forecast) bits.push(`预期 ${row.forecast}`);
   if (row.previous) bits.push(`前值 ${row.previous}`);
-  if (!bits.length) return '美国经济数据发布，关注 BTC/ETH 等风险资产波动';
-  return `${bits.join(' · ')}；关注市场风险偏好变化`;
+  const impact = cryptoImpactHint(title);
+  if (!bits.length) return impact;
+  return `${bits.join(' · ')}；${impact}`;
 }
 
 function slugify(value) {
@@ -183,7 +240,7 @@ function mergeCalendarEvents(localEvents, apiEvents) {
       if (!existing.actual && api.actual) existing.actual = api.actual;
       if (!existing.time && api.time) existing.time = api.time;
       if (!existing.previousDate && api.previousDate) existing.previousDate = api.previousDate;
-      if (!existing.note && api.note) existing.note = api.note;
+      if (api.note) existing.note = api.note;
       if (!existing.tags?.includes('API') && api.tags?.includes('API')) {
         existing.tags = [...(existing.tags || []), 'API'];
       }
@@ -220,6 +277,7 @@ function mergeFfMacroEvents(baseEvents, rows, { since } = {}) {
       if (actual) existing.actual = actual;
       if (!existing.time) existing.time = parts.hm;
       if (!existing.previousDate) existing.previousDate = inferPreviousDate(parts.ymd, title);
+      existing.note = buildFfNote(row, title);
       if (/high/i.test(row.impact)) existing.severity = existing.severity === 'extreme' ? 'extreme' : 'high';
       continue;
     }
@@ -228,6 +286,7 @@ function mergeFfMacroEvents(baseEvents, rows, { since } = {}) {
       date: parts.ymd,
       time: parts.hm,
       title,
+      note: buildFfNote(row, title),
       forecast: row.forecast || '',
       previous: row.previous || '',
       actual,

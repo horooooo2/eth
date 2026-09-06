@@ -44,6 +44,10 @@ const { getHlInfoConfig } = require('./lib/hlInfoClient');
 const { attachRealtimeHub } = require('./lib/realtimeHub');
 const { startRealtimeBridge, syncFromCache, getRealtimeStatus } = require('./lib/realtimeBridge');
 const { startFillBackfill, getBackfillStatus } = require('./lib/fillBackfill');
+const {
+  startPositionBackfill,
+  getPositionBackfillStatus,
+} = require('./lib/positionBackfill');
 
 const app = createApp({ prefixes: ['/api'] });
 const PORT = Number(process.env.PORT) || 3000;
@@ -135,6 +139,12 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log('[fill-backfill]', JSON.stringify(getBackfillStatus()));
   } catch (err) {
     console.warn('[fill-backfill] 启动失败:', err.message);
+  }
+  try {
+    startPositionBackfill();
+    console.log('[position-backfill]', JSON.stringify(getPositionBackfillStatus()));
+  } catch (err) {
+    console.warn('[position-backfill] 启动失败:', err.message);
   }
   refreshAll('启动预热');
   setInterval(() => refreshAll('定时刷新'), REFRESH_MS);

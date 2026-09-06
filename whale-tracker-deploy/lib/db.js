@@ -5,17 +5,20 @@
 const fs = require('fs');
 const path = require('path');
 
-const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-/** 资金动态（fills）保留天数，可用 FILL_RETENTION_DAYS 覆盖，默认 3 */
+const {
+  FILL_MAX_PER_WHALE,
+  CLOSED_POSITION_RETENTION_MS,
+} = require('./positionEventPolicy');
+
+/** @deprecated 兼容旧调用；仓位事件改为「持仓中保留 / 平仓后 1 天」 */
+const RETENTION_MS = CLOSED_POSITION_RETENTION_MS;
+/** 资金动态（fills）保留天数，默认 1 */
 const FILL_RETENTION_MS = Math.max(
-  24 * 60 * 60 * 1000,
-  (Number(process.env.FILL_RETENTION_DAYS) || 3) * 24 * 60 * 60 * 1000,
+  60 * 60 * 1000,
+  (Number(process.env.FILL_RETENTION_DAYS) || 1) * 24 * 60 * 60 * 1000,
 );
-/** 异动 / events 保留（默认仍 7 天） */
-const ALERT_RETENTION_MS = Math.max(
-  24 * 60 * 60 * 1000,
-  (Number(process.env.ALERT_RETENTION_DAYS) || 7) * 24 * 60 * 60 * 1000,
-);
+/** 已平仓事件窗口（与 CLOSED_POSITION_RETENTION_MS 对齐） */
+const ALERT_RETENTION_MS = CLOSED_POSITION_RETENTION_MS;
 
 let db;
 let Database;
@@ -239,50 +242,110 @@ function countDistinctShanghaiDays(times = []) {
   return set.size;
 }
 
+/**
+ * 清理策略：
+ * - fills：超过 FILL_RETENTION 的删掉；每鲸最多 FILL_MAX_PER_WHALE 条（留最新）
+ * - events/alerts：当前持仓（positions 表）相关的一直保留；其余超过「平仓后窗口」删除
+ */
 function purgeOlderThan(retentionMs = RETENTION_MS) {
-  // retentionMs 兼容旧调用：同时用作 alerts/events 窗口；fills 用更短的 FILL_RETENTION_MS
-  const alertRetention = retentionMs || ALERT_RETENTION_MS;
+  const closedRetention = Number(retentionMs) > 0 ? retentionMs : ALERT_RETENTION_MS;
   const fillCutoff = Date.now() - FILL_RETENTION_MS;
-  const alertCutoff = Date.now() - alertRetention;
+  const closedCutoff = Date.now() - closedRetention;
   const database = getDb();
 
-  // 删除前统计涉及多少个自然日（上海），供看板「今日删除」
   let deletedDays = 0;
   try {
     const fillTimes = database
       .prepare('SELECT time FROM fills WHERE time < ? LIMIT 20000')
       .all(fillCutoff)
       .map((r) => r.time);
-    const eventTimes = database
-      .prepare('SELECT time FROM events WHERE time < ? LIMIT 20000')
-      .all(alertCutoff)
-      .map((r) => r.time);
-    const alertTimes = database
-      .prepare('SELECT time FROM alerts WHERE time < ? LIMIT 20000')
-      .all(alertCutoff)
-      .map((r) => r.time);
-    deletedDays = countDistinctShanghaiDays([...fillTimes, ...eventTimes, ...alertTimes]);
+    deletedDays = countDistinctShanghaiDays(fillTimes);
   } catch {
     deletedDays = 0;
   }
 
   const fills = database.prepare('DELETE FROM fills WHERE time < ?').run(fillCutoff);
-  const events = database.prepare('DELETE FROM events WHERE time < ?').run(alertCutoff);
-  const alerts = database.prepare('DELETE FROM alerts WHERE time < ?').run(alertCutoff);
+
+  // 每鲸 fills 上限：删掉最旧的多余行
+  let fillCapDeleted = 0;
+  const whaleIds = database
+    .prepare(
+      `SELECT whale_id AS id, COUNT(*) AS c FROM fills
+       WHERE whale_id IS NOT NULL AND COALESCE(source, '') != 'onchain'
+       GROUP BY whale_id HAVING c > ?`,
+    )
+    .all(FILL_MAX_PER_WHALE);
+  const delExtra = database.prepare(`
+    DELETE FROM fills WHERE id IN (
+      SELECT id FROM fills
+      WHERE whale_id = ? AND COALESCE(source, '') != 'onchain'
+      ORDER BY time ASC
+      LIMIT ?
+    )
+  `);
+  const capTx = database.transaction(() => {
+    for (const row of whaleIds) {
+      const extra = Number(row.c) - FILL_MAX_PER_WHALE;
+      if (extra <= 0) continue;
+      fillCapDeleted += delExtra.run(row.id, extra).changes || 0;
+    }
+  });
+  capTx();
+
+  // 非当前持仓的 events / alerts：用 NOT EXISTS 批量删（避免逐行扫几十万）
+  const events = database
+    .prepare(
+      `DELETE FROM events
+       WHERE time < ?
+         AND NOT EXISTS (
+           SELECT 1 FROM positions p
+           WHERE p.whale_id = events.whale_id
+             AND UPPER(p.coin) = UPPER(COALESCE(events.coin, ''))
+             AND p.side = events.side
+             AND (ABS(COALESCE(p.size, 0)) > 1e-12 OR ABS(COALESCE(p.position_value, 0)) > 1)
+         )`,
+    )
+    .run(closedCutoff);
+
+  const alerts = database
+    .prepare(
+      `DELETE FROM alerts
+       WHERE time < ?
+         AND NOT EXISTS (
+           SELECT 1 FROM positions p
+           WHERE p.whale_id = alerts.whale_id
+             AND UPPER(p.coin) = UPPER(COALESCE(json_extract(alerts.payload_json, '$.items[0].coin'), ''))
+             AND LOWER(p.side) = LOWER(COALESCE(json_extract(alerts.payload_json, '$.items[0].side'), ''))
+             AND (ABS(COALESCE(p.size, 0)) > 1e-12 OR ABS(COALESCE(p.position_value, 0)) > 1)
+         )`,
+    )
+    .run(closedCutoff);
+
+  const liveCount =
+    Number(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS c FROM positions
+           WHERE ABS(COALESCE(size, 0)) > 1e-12 OR ABS(COALESCE(position_value, 0)) > 1`,
+        )
+        .get()?.c,
+    ) || 0;
+
   const deletedRows =
-    (fills.changes || 0) + (events.changes || 0) + (alerts.changes || 0);
+    (fills.changes || 0) + fillCapDeleted + (events.changes || 0) + (alerts.changes || 0);
   if (deletedRows > 0) {
-    bumpDailyDeleted(deletedRows, deletedDays || (deletedRows > 0 ? 1 : 0));
+    bumpDailyDeleted(deletedRows, deletedDays || 1);
   }
   return {
     cutoff: fillCutoff,
     fillCutoff,
-    alertCutoff,
-    fillsDeleted: fills.changes || 0,
+    alertCutoff: closedCutoff,
+    fillsDeleted: (fills.changes || 0) + fillCapDeleted,
     eventsDeleted: events.changes || 0,
     alertsDeleted: alerts.changes || 0,
     deletedRows,
     deletedDays,
+    livePositions: liveCount,
   };
 }
 
@@ -312,6 +375,8 @@ module.exports = {
   RETENTION_MS,
   FILL_RETENTION_MS,
   ALERT_RETENTION_MS,
+  CLOSED_POSITION_RETENTION_MS,
+  FILL_MAX_PER_WHALE,
   resolveDbPath,
   getDb,
   closeDb,

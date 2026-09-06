@@ -3,7 +3,19 @@ import { formatUsd, shortAddress } from '@/utils/format';
 import { positionPnlPct } from '@/utils/whaleCardUtils';
 
 export type WhaleTitleFields = Partial<
-  Pick<WhaleProfile, 'name' | 'address' | 'winRate' | 'weekVlm' | 'monthVlm' | 'closedTrades'>
+  Pick<
+    WhaleProfile,
+    | 'name'
+    | 'address'
+    | 'winRate'
+    | 'weekVlm'
+    | 'monthVlm'
+    | 'monthPnl'
+    | 'allTimePnl'
+    | 'accountValue'
+    | 'closedTrades'
+    | 'customName'
+  >
 > & {
   name?: string | null;
   address?: string | null;
@@ -63,27 +75,23 @@ export function isAddressLikeName(
   return false;
 }
 
-/** 无真实名称时：$月成交额·胜率·地址后4位 */
+/** 无真实名称时：完整地址 */
 export function formatMetricWhaleTitle(whale: WhaleTitleFields) {
-  const vol = whaleVolumeUsd({
-    name: String(whale.name || ''),
-    weekVlm: whale.weekVlm,
-    monthVlm: whale.monthVlm,
-  });
-  const volPart = vol.usd > 0 ? formatUsd(vol.usd) : '$--';
-  const win = Number(whale.winRate);
-  const winPart = Number.isFinite(win) ? `${Math.round(win)}%` : '--%';
-  const addrPart = addressTail(String(whale.address || ''), 4);
-  return `${volPart}·${winPart}·${addrPart}`;
+  const addr = String(whale.address || '').trim();
+  return addr || '--';
 }
 
 /**
- * 展示名：能抓到真实名称（ENS / 人工昵称）则用名称；
- * 否则按规则 $月成交额·胜率·地址后4位。
+ * 展示名：
+ * - 自定义名 / 真实昵称 → 名称
+ * - 否则 → 完整地址（不再拼 $成交·胜率·尾号）
  */
 export function whaleCardTitle(whale: WhaleTitleFields) {
   const name = String(whale.name || '').trim();
   const cleaned = name.replace(/^高频/, '').trim();
+  const addr = String(whale.address || '').trim();
+
+  if (whale.customName && cleaned) return cleaned;
 
   const ensInline = name.match(/\b([a-z0-9-]+\.eth)\b/i);
   if (ensInline) return ensInline[1];
@@ -93,7 +101,23 @@ export function whaleCardTitle(whale: WhaleTitleFields) {
     return cleaned;
   }
 
-  return formatMetricWhaleTitle(whale);
+  return addr || formatMetricWhaleTitle(whale);
+}
+
+/** 第二行：有自定义名 → 名称（地址）；否则完整地址 */
+export function whaleCardIdentityLine(whale: WhaleTitleFields) {
+  const addr = String(whale.address || '').trim();
+  const title = whaleCardTitle(whale);
+  const hasCustom =
+    whale.customName === true ||
+    (Boolean(String(whale.name || '').trim()) &&
+      !isAddressLikeName(whale.name, whale.address) &&
+      !isAutoMetricName(whale.name));
+  if (hasCustom && addr) {
+    const short = addr.length > 14 ? `${addr.slice(0, 8)}…${addr.slice(-4)}` : addr;
+    return `${title}（${short}）`;
+  }
+  return addr || title || '--';
 }
 
 /**
@@ -271,6 +295,9 @@ export function formatWhaleMetricLines(
     | 'closedTrades'
     | 'weekVlm'
     | 'monthVlm'
+    | 'monthPnl'
+    | 'allTimePnl'
+    | 'accountValue'
     | 'activeDays'
     | 'description'
     | 'name'
@@ -282,12 +309,20 @@ export function formatWhaleMetricLines(
   if (volume.usd > 0) lineAParts.push(`${volume.label} ${formatUsd(volume.usd)}`);
   if (days != null) lineAParts.push(`${days}天`);
 
-  const win = Number(whale.winRate);
-  const dd = whale.maxDrawdown;
+  const monthPnl = Number(whale.monthPnl);
+  const allTimePnl = Number(whale.allTimePnl);
+  const accountValue = Number(whale.accountValue);
   const trades = Number(whale.closedTrades) || 0;
   const lineBParts: string[] = [];
-  if (Number.isFinite(win) && (win > 0 || trades > 0)) lineBParts.push(`胜率 ${win || 0}%`);
-  if (dd != null && Number.isFinite(Number(dd))) lineBParts.push(`回撤 ${Number(dd)}%`);
+  if (Number.isFinite(monthPnl) && monthPnl !== 0) {
+    lineBParts.push(`月盈亏 ${formatUsd(monthPnl)}`);
+  }
+  if (Number.isFinite(allTimePnl) && allTimePnl !== 0) {
+    lineBParts.push(`累计 ${formatUsd(allTimePnl)}`);
+  }
+  if (Number.isFinite(accountValue) && accountValue > 0) {
+    lineBParts.push(`账户 ${formatUsd(accountValue)}`);
+  }
   if (trades > 0) lineBParts.push(`${trades}笔`);
 
   return {

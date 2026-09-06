@@ -96,8 +96,13 @@ export const POSITION_ALERT_KINDS: WhaleAlertKind[] = [
   'flip',
 ];
 
-/** 异动 / 监控只认开仓、补仓 */
-export const TRACKED_ALERT_KINDS: WhaleAlertKind[] = ['open', 'increase'];
+/** 异动 / 监控：开/加/减/平 */
+export const TRACKED_ALERT_KINDS: WhaleAlertKind[] = [
+  'open',
+  'increase',
+  'decrease',
+  'close',
+];
 
 export function isPositionAlertKind(kind: WhaleAlertKind) {
   return POSITION_ALERT_KINDS.includes(kind);
@@ -126,8 +131,11 @@ export function alertEventTime(item: WhaleAlert): number {
   return Number(item.at) || 0;
 }
 
-/** 异动记录列表仅保留最近 7 天 */
-export const ALERT_HISTORY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+/** 异动列表本地窗口：持仓中事件由服务端保留；前端放宽到 180 天避免误砍 */
+export const ALERT_HISTORY_WINDOW_MS = 180 * 24 * 60 * 60 * 1000;
+
+/** 仓位事件最小名义（与后端 POSITION_EVENT_MIN_USD 对齐） */
+export const POSITION_EVENT_MIN_USD = 1000;
 
 /** 右下角监控弹窗仅提示最近一段时间内的新异动 */
 export const DOCK_ALERT_MAX_AGE_MS = 15 * 60 * 1000;
@@ -595,8 +603,13 @@ function diffPositions(prev: PositionSnap | undefined, next: PositionSnap): Whal
     );
   }
 
-  // 异动只保留开仓 / 补仓；平仓、减仓、反向不进列表
-  return items.filter((item) => item.kind === 'open' || item.kind === 'increase');
+  // 开/加/减/平均进异动；过滤粉尘与低于门槛
+  return items.filter((item) => {
+    if (!isTrackedAlertKind(item.kind)) return false;
+    const usd = Math.abs(Number(item.usd) || 0);
+    if (item.kind === 'open') return usd >= Math.min(POSITION_EVENT_MIN_USD, 100);
+    return usd >= POSITION_EVENT_MIN_USD;
+  });
 }
 
 function relatedFills(fills: WhaleTrade[], coin: string) {

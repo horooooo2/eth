@@ -66,11 +66,13 @@ async function main() {
     if (!address.startsWith('0x')) continue;
     const week = windowPerf(row, 'week');
     const month = windowPerf(row, 'month');
+    const allTime = windowPerf(row, 'allTime');
     byAddr.set(address, {
       weekVlm: Number(week.vlm) || 0,
       monthVlm: Number(month.vlm) || 0,
       accountValue: Number(row.accountValue) || 0,
       monthPnl: Number(month.pnl) || 0,
+      allTimePnl: Number(allTime.pnl) || 0,
     });
   }
   console.log(`[metrics] leaderboard rows=${rows.length}`);
@@ -93,13 +95,16 @@ async function main() {
       winRate: whale.winRate,
       maxDrawdown: whale.maxDrawdown,
       weekVlm,
-      monthVlm: lb?.monthVlm || 0,
-      accountValue: lb?.accountValue || 0,
+      monthVlm: lb?.monthVlm || Number(whale.monthVlm) || 0,
+      accountValue: lb?.accountValue || Number(whale.accountValue) || 0,
     });
     return {
       ...whale,
       weekVlm,
       monthVlm: lb ? lb.monthVlm : Number(whale.monthVlm) || 0,
+      accountValue: lb ? lb.accountValue : Number(whale.accountValue) || 0,
+      monthPnl: lb ? lb.monthPnl : Number(whale.monthPnl) || 0,
+      allTimePnl: lb ? lb.allTimePnl : Number(whale.allTimePnl) || 0,
       priority,
     };
   });

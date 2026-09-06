@@ -117,6 +117,12 @@ export interface WhaleProfile {
   weekVlm?: number;
   /** 月成交额（榜单），优先于 weekVlm 展示 */
   monthVlm?: number;
+  /** 账户权益（榜单） */
+  accountValue?: number;
+  /** 近月盈亏（榜单） */
+  monthPnl?: number;
+  /** 累计盈亏（榜单 allTime） */
+  allTimePnl?: number;
   /** 活跃天数（首次成交至今），可选 */
   activeDays?: number;
   /** 外部脚本定期写入的排序权重，越高越靠前 */

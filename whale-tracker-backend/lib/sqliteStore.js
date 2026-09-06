@@ -9,10 +9,20 @@ const {
   purgeOlderThan,
   RETENTION_MS,
   FILL_RETENTION_MS,
+  CLOSED_POSITION_RETENTION_MS,
+  FILL_MAX_PER_WHALE,
   dbStatus,
   bumpDailyAdded,
   readDailyIoStats,
 } = require('./db');
+const {
+  POSITION_EVENT_MERGE_MS,
+  ALL_KINDS,
+  kindGroup,
+  passesMinUsd,
+  preferKind,
+  alertDocFromEvent,
+} = require('./positionEventPolicy');
 
 function safeJson(value) {
   try {
@@ -44,6 +54,7 @@ function eventsFromTrade(trade) {
   const buy = trade.side === 'buy' || trade.side === 'B' || trade.side === 'in';
   const dir = String(trade.dir || '');
   const start = Number(trade.startPosition);
+  const sz = Math.abs(Number(trade.amount) || 0);
   const eps = 1e-8;
 
   let side = null;
@@ -71,29 +82,46 @@ function eventsFromTrade(trade) {
     side = 'long';
     isOpen = /open/i.test(dir);
   } else {
-    // 无仓位上下文时退回 closedPnl；方向仍不可靠，仅用于减仓类
     isClose = Math.abs(Number(trade.closedPnl) || 0) > 1;
     side = buy ? 'long' : 'short';
-    if (!isClose) {
-      // 无法确认是加多还是平空时，不写开/加事件
-      return [];
-    }
+    if (!isClose) return [];
   }
 
   if (!side) return [];
 
-  const openKind = isClose
-    ? 'decrease'
-    : isOpen || Number(trade._asOpen)
-      ? 'open'
-      : 'increase';
-  const title = isClose
-    ? side === 'long'
-      ? `减/平多 ${coin}`
-      : `减/平空 ${coin}`
-    : side === 'long'
-      ? `开/加多 ${coin}`
-      : `开/加空 ${coin}`;
+  let openKind;
+  if (isClose) {
+    const remaining =
+      Number.isFinite(start) && sz > 0 ? Math.abs(start) - sz : null;
+    openKind =
+      remaining != null && remaining <= Math.max(eps, Math.abs(start) * 1e-6)
+        ? 'close'
+        : 'decrease';
+  } else if (isOpen || Number(trade._asOpen)) {
+    openKind = 'open';
+  } else {
+    openKind = 'increase';
+  }
+
+  if (!passesMinUsd(usd, openKind)) return [];
+
+  const title =
+    openKind === 'close'
+      ? side === 'long'
+        ? `平多 ${coin}`
+        : `平空 ${coin}`
+      : openKind === 'decrease'
+        ? side === 'long'
+          ? `减多 ${coin}`
+          : `减空 ${coin}`
+        : openKind === 'open'
+          ? side === 'long'
+            ? `开多 ${coin}`
+            : `开空 ${coin}`
+          : side === 'long'
+            ? `加多 ${coin}`
+            : `加空 ${coin}`;
+
   return [
     {
       id: `evt-${openKind}-${trade.id || `${trade.whaleId}-${ts}-${coin}`}`,
@@ -105,38 +133,9 @@ function eventsFromTrade(trade) {
       usd,
       title,
       payload: trade,
+      mergedCount: 1,
     },
   ];
-}
-
-/** 开/补仓事件 → 前端 WhaleAlert 形状（供右侧异动持久化） */
-function alertDocFromEvent(event) {
-  if (!event || (event.kind !== 'open' && event.kind !== 'increase')) return null;
-  const kindLabel = event.kind === 'open' ? '开单' : '加仓';
-  const sideLabel = event.side === 'short' ? '空' : '多';
-  return {
-    id: String(event.id),
-    at: Number(event.time) || Date.now(),
-    whaleId: event.whaleId ? String(event.whaleId) : '',
-    whaleName: event.payload?.whaleName || '',
-    address: event.payload?.from || event.payload?.address || '',
-    kind: event.kind,
-    kindLabel,
-    headline: event.title || `${kindLabel} ${event.coin || ''}`.trim(),
-    items: [
-      {
-        kind: event.kind,
-        title: event.title || `${kindLabel}${sideLabel} ${event.coin || ''}`.trim(),
-        detail: '',
-        coin: event.coin || undefined,
-        side: event.side === 'short' ? 'short' : 'long',
-        usd: Number(event.usd) || 0,
-        time: Number(event.time) || 0,
-        price: event.payload?.price ?? null,
-      },
-    ],
-    layer: 'position',
-  };
 }
 
 function upsertAlertRows(database, alerts) {
@@ -151,45 +150,125 @@ function upsertAlertRows(database, alerts) {
       payload_json = excluded.payload_json
   `);
   const exists = database.prepare('SELECT 1 AS x FROM alerts WHERE id = ?');
+  const findMerge = database.prepare(`
+    SELECT id, time, kind, payload_json FROM alerts
+    WHERE whale_id = ?
+      AND time >= ? AND time <= ?
+      AND kind IN ('open', 'increase', 'decrease', 'close')
+    ORDER BY time DESC LIMIT 40
+  `);
+  const delById = database.prepare('DELETE FROM alerts WHERE id = ?');
+
   let written = 0;
   let added = 0;
   for (const alert of alerts) {
     if (!alert?.id) continue;
     const kind = String(alert.kind || '');
-    if (kind !== 'open' && kind !== 'increase') continue;
+    if (!ALL_KINDS.has(kind)) continue;
     const time = Number(alert.at || alert.time) || 0;
     if (!time) continue;
-    const id = String(alert.id);
+    const usd = Math.abs(Number(alert.items?.[0]?.usd) || 0);
+    if (!passesMinUsd(usd, kind)) continue;
+
+    const whaleId = alert.whaleId ? String(alert.whaleId) : null;
+    const coin = String(alert.items?.[0]?.coin || '').toUpperCase();
+    const side = String(alert.items?.[0]?.side || '').toLowerCase();
+    const group = kindGroup(kind);
+
+    let target = alert;
+    let mergedIntoExisting = false;
+
+    if (whaleId && coin && side && group) {
+      const windowStart = time - POSITION_EVENT_MERGE_MS;
+      const windowEnd = time + POSITION_EVENT_MERGE_MS;
+      const candidates = findMerge.all(whaleId, windowStart, windowEnd);
+      for (const row of candidates) {
+        if (String(row.id) === String(alert.id)) continue;
+        if (kindGroup(row.kind) !== group) continue;
+        const payload = parseJson(row.payload_json, null);
+        const pCoin = String(payload?.items?.[0]?.coin || '').toUpperCase();
+        const pSide = String(payload?.items?.[0]?.side || '').toLowerCase();
+        if (pCoin !== coin || pSide !== side) continue;
+
+        const prevUsd = Math.abs(Number(payload?.items?.[0]?.usd) || 0);
+        const nextKind = preferKind(row.kind, kind);
+        const mergedCount =
+          Math.max(1, Number(payload?.mergedCount) || 1) +
+          Math.max(1, Number(alert.mergedCount) || 1);
+        const items = [
+          ...(payload?.items || []),
+          ...(alert.items || []),
+        ].sort((a, b) => (Number(b.time) || 0) - (Number(a.time) || 0));
+        const lead = items[0] || alert.items?.[0];
+        target = {
+          ...payload,
+          ...alert,
+          id: String(row.id),
+          at: Math.max(Number(row.time) || 0, time),
+          kind: nextKind,
+          kindLabel:
+            mergedCount > 1
+              ? `${preferKind(row.kind, kind) === 'open' ? '开单' : preferKind(row.kind, kind) === 'close' ? '平仓' : preferKind(row.kind, kind) === 'increase' ? '加仓' : '减仓'}（多单）`
+              : alert.kindLabel,
+          headline:
+            mergedCount > 1
+              ? `${lead?.title || alert.headline || ''}（${mergedCount} 笔）`
+              : alert.headline,
+          items: items.map((it, idx) =>
+            idx === 0
+              ? { ...it, kind: nextKind, usd: prevUsd + usd }
+              : it,
+          ),
+          mergedCount,
+        };
+        if (String(alert.id) !== String(row.id)) {
+          // 新 id 不单独落库，并入已有行
+          mergedIntoExisting = true;
+        }
+        break;
+      }
+    }
+
+    const id = String(target.id);
     if (!exists.get(id)) added += 1;
     stmt.run({
       id,
-      whale_id: alert.whaleId ? String(alert.whaleId) : null,
-      time,
-      kind,
-      payload_json: safeJson(alert),
+      whale_id: target.whaleId ? String(target.whaleId) : whaleId,
+      time: Number(target.at || target.time) || time,
+      kind: String(target.kind || kind),
+      payload_json: safeJson(target),
     });
+    if (mergedIntoExisting && String(alert.id) !== id) {
+      try {
+        delById.run(String(alert.id));
+      } catch {
+        // ignore
+      }
+    }
     written += 1;
   }
   return { written, added };
 }
 
-/** 前端同步异动历史（开仓/补仓） */
+/** 前端同步异动历史 */
 function persistAlerts(alerts = []) {
   const list = Array.isArray(alerts) ? alerts : [];
   const database = getDb();
   const tx = database.transaction(() => upsertAlertRows(database, list));
   const result = tx();
   if (result.added) bumpDailyAdded(result.added);
-  const purged = purgeOlderThan(RETENTION_MS);
+  const purged = purgeOlderThan(CLOSED_POSITION_RETENTION_MS);
   return { saved: result.written, added: result.added, purged };
 }
 
 function loadRecentAlerts(limit = 500) {
-  const cutoff = Date.now() - RETENTION_MS;
-  const rows = getDb()
+  const database = getDb();
+  // 持仓中事件不按固定天数砍；查询侧取较宽窗口 + 当前仓过滤由 purge 保证
+  const cutoff = Date.now() - 180 * 24 * 60 * 60 * 1000;
+  const rows = database
     .prepare(
       `SELECT payload_json FROM alerts
-       WHERE time >= ? AND kind IN ('open', 'increase')
+       WHERE time >= ? AND kind IN ('open', 'increase', 'decrease', 'close')
        ORDER BY time DESC LIMIT ?`,
     )
     .all(cutoff, Math.max(1, Math.min(2000, Number(limit) || 500)));
@@ -199,16 +278,14 @@ function loadRecentAlerts(limit = 500) {
 }
 
 /**
- * 异动分页查询（开/补仓）。
- * query: page, limit, whaleId, kind(open|increase|all), coin, side(long|short|all),
- *        minUsd, sinceMs
+ * 异动分页查询（开/加/减/平）。
  */
 function loadPagedAlerts(query = {}) {
   const page = Math.max(1, Number(query.page) || 1);
   const limit = Math.max(1, Math.min(100, Number(query.limit) || 50));
   const offset = (page - 1) * limit;
   const cutoff = Math.max(
-    Date.now() - RETENTION_MS,
+    Date.now() - 180 * 24 * 60 * 60 * 1000,
     Number(query.sinceMs) || 0,
   );
   const whaleId = String(query.whaleId || '').trim();
@@ -217,14 +294,17 @@ function loadPagedAlerts(query = {}) {
   const side = String(query.side || 'all').trim().toLowerCase();
   const minUsd = Math.max(0, Number(query.minUsd) || 0);
 
-  const where = [`time >= ?`, `kind IN ('open', 'increase')`];
+  const where = [
+    `time >= ?`,
+    `kind IN ('open', 'increase', 'decrease', 'close')`,
+  ];
   const params = [cutoff];
 
   if (whaleId) {
     where.push('whale_id = ?');
     params.push(whaleId);
   }
-  if (kind === 'open' || kind === 'increase') {
+  if (ALL_KINDS.has(kind)) {
     where.push('kind = ?');
     params.push(kind);
   }
@@ -268,14 +348,16 @@ function loadPagedAlerts(query = {}) {
     .map((row) => parseJson(row.payload_json, null))
     .filter((item) => item && item.id);
 
-  // 分面：在 whale/since/kind/minUsd 基础上统计（不含 coin/side，便于筛选项数字）
-  const facetWhere = [`time >= ?`, `kind IN ('open', 'increase')`];
+  const facetWhere = [
+    `time >= ?`,
+    `kind IN ('open', 'increase', 'decrease', 'close')`,
+  ];
   const facetParams = [cutoff];
   if (whaleId) {
     facetWhere.push('whale_id = ?');
     facetParams.push(whaleId);
   }
-  if (kind === 'open' || kind === 'increase') {
+  if (ALL_KINDS.has(kind)) {
     facetWhere.push('kind = ?');
     facetParams.push(kind);
   }
@@ -328,7 +410,8 @@ function loadPagedAlerts(query = {}) {
     total,
     page,
     limit,
-    retentionDays: 7,
+    retentionDays: Math.round(CLOSED_POSITION_RETENTION_MS / (24 * 60 * 60 * 1000)),
+    retentionMode: 'open-positions+closed-1d',
     facets: {
       all: allCount,
       byCoin,
@@ -341,13 +424,8 @@ function loadPagedAlerts(query = {}) {
 function loadFillsByWhale(whaleId, options = {}) {
   const id = String(whaleId || '');
   if (!id) return [];
-  const limit = Math.max(
-    1,
-    Math.min(
-      Number(options.limit) || Number(process.env.FILL_MAX_PER_WHALE) || 10000,
-      Number(process.env.FILL_MAX_PER_WHALE) || 10000,
-    ),
-  );
+  const cap = FILL_MAX_PER_WHALE;
+  const limit = Math.max(1, Math.min(Number(options.limit) || cap, cap));
   const since = Number(options.sinceMs) || Date.now() - FILL_RETENTION_MS;
   const rows = getDb()
     .prepare(
@@ -390,7 +468,7 @@ function loadDbBrowse(options = {}) {
   const limit = Math.max(1, Math.min(1000, Number(options.limit) || 50));
   const database = getDb();
   const fillCutoff = Date.now() - FILL_RETENTION_MS;
-  const alertCutoff = Date.now() - RETENTION_MS;
+  const alertCutoff = Date.now() - Math.max(CLOSED_POSITION_RETENTION_MS, 7 * 24 * 60 * 60 * 1000);
   const status = dbStatus();
 
   const whales = database
@@ -490,7 +568,9 @@ function loadDbBrowse(options = {}) {
   return {
     at: Date.now(),
     retentionDays: Math.round(FILL_RETENTION_MS / (24 * 60 * 60 * 1000)),
-    alertRetentionDays: Math.round(RETENTION_MS / (24 * 60 * 60 * 1000)),
+    alertRetentionDays: Math.round(CLOSED_POSITION_RETENTION_MS / (24 * 60 * 60 * 1000)),
+    fillMaxPerWhale: FILL_MAX_PER_WHALE,
+    retentionMode: 'open-positions+closed-1d',
     status,
     dailyIo: readDailyIoStats(),
     fillBySource,

@@ -108,10 +108,10 @@ async function fetchUserFills(address) {
   return fetchUserFillsByTime(address, Date.now() - FILL_LOOKBACK_MS);
 }
 
-/** 近 3 天成交回看窗口（资金动态）；可用 FILL_RETENTION_DAYS 对齐 */
+/** 近 1 天成交回看窗口（资金动态）；可用 FILL_RETENTION_DAYS 对齐 */
 const FILL_LOOKBACK_MS = Math.max(
-  24 * 60 * 60 * 1000,
-  (Number(process.env.FILL_RETENTION_DAYS) || 3) * 24 * 60 * 60 * 1000,
+  60 * 60 * 1000,
+  (Number(process.env.FILL_RETENTION_DAYS) || 1) * 24 * 60 * 60 * 1000,
 );
 const FILL_PAGE_SIZE = 2000;
 const FILL_MAX_PAGES = 6;
