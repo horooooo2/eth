@@ -38,7 +38,7 @@ const WHALE_MODES = ['hf'];
 /** 共振扫描最长窗口 24h，活动流按时间保留而非仅取全局最新 N 条 */
 const ACTIVITY_WINDOW_MS = Math.max(
   24 * 60 * 60 * 1000,
-  (Number(process.env.FILL_RETENTION_DAYS) || 3) * 24 * 60 * 60 * 1000,
+  (Number(process.env.FILL_RETENTION_DAYS) || 1) * 24 * 60 * 60 * 1000,
 );
 const ACTIVITY_MAX = 3000;
 /** 并发拉取 HL 仓位；GoldRush 下跟随 hlInfoClient 并发 */
@@ -1766,6 +1766,29 @@ async function getWhalePosition(id, coin, options = {}) {
       patchCachedPositionFields(whale.id, coinKey, side, enriched);
     }
 
+    let markPx = pos.markPx ?? null;
+    try {
+      const mids = await fetchAllMids();
+      const midMap = mids?.mids && typeof mids.mids === 'object' ? mids.mids : mids;
+      const candidates = [
+        pos.coin,
+        pos.coinLabel,
+        coinLabel(pos.coin, names),
+        String(decoded || ''),
+      ]
+        .map((c) => String(c || '').trim())
+        .filter(Boolean);
+      for (const key of candidates) {
+        const direct = Number(midMap?.[key] ?? midMap?.[key.toUpperCase()]);
+        if (Number.isFinite(direct) && direct > 0) {
+          markPx = direct;
+          break;
+        }
+      }
+    } catch {
+      // keep cached/derived
+    }
+
     return {
       whale: {
         id: whale.id,
@@ -1782,7 +1805,7 @@ async function getWhalePosition(id, coin, options = {}) {
         side: pos.side,
         size: pos.size,
         entryPx: pos.entryPx,
-        markPx: pos.markPx ?? null,
+        markPx,
         positionValue: pos.positionValue,
         unrealizedPnl: pos.unrealizedPnl,
         liquidationPx:

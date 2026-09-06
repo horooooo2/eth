@@ -50,12 +50,6 @@ export function isAutoMetricName(name: string | null | undefined) {
   return false;
 }
 
-function addressTail(address: string, n = 6) {
-  const value = String(address || '').trim();
-  if (!value) return '--';
-  return value.slice(-n);
-}
-
 /** 名称是否只是地址缩写（无真实昵称） */
 export function isAddressLikeName(
   name: string | null | undefined,

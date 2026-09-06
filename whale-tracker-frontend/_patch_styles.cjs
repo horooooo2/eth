@@ -1,0 +1,11 @@
+const fs = require('fs');
+const p = 'E:/demo/Eth/whale-tracker-frontend/src/views/DesktopApp.vue';
+const stylePath = 'E:/demo/Eth/whale-tracker-frontend/_DesktopApp.styles.tmp';
+let s = fs.readFileSync(p, 'utf8');
+const start = s.indexOf('<style scoped>');
+const end = s.indexOf('</style>', start);
+if (start < 0 || end < 0) throw new Error('style block not found');
+const newStyle = fs.readFileSync(stylePath, 'utf8');
+s = s.slice(0, start) + newStyle + s.slice(end + '</style>'.length);
+fs.writeFileSync(p, s);
+console.log('ok');

@@ -26,7 +26,6 @@ import {
   entryFillKind,
   entryFillLabel,
   entryFillTotalCount,
-  formatSideWinRate,
   positionPnlPct,
   positionsAggregatePnlPct,
   scopedWhaleDirection,
@@ -470,17 +469,6 @@ function sortedPositions(positions: WhalePosition[]) {
 function openPosition(whale: WhaleProfile, pos: WhalePosition) {
   dialogOpen.value = true;
   positionDialog.value?.open(whale, pos);
-}
-
-function sideWinTag(whale: WhaleProfile) {
-  const long = formatSideWinRate(whale.longWinRate);
-  const short = formatSideWinRate(whale.shortWinRate);
-  if (long === '--' && short === '--') return '';
-  return `多胜率 ${long} / 空胜率 ${short}`;
-}
-
-function cardTitle(whale: WhaleProfile) {
-  return whaleCardTitle(whale);
 }
 
 /** 第一行：做多/做空后平铺月盈亏·累计·账户等 */

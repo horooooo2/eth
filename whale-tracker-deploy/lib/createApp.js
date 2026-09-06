@@ -4,6 +4,7 @@ const whalesRouter = require('../routes/whales');
 const newsRouter = require('../routes/news');
 const marketsRouter = require('../routes/markets');
 const authRouter = require('../routes/auth');
+const okxRouter = require('../routes/okx');
 const { fetchFedOdds } = require('./markets');
 const { getHlInfoConfig } = require('./hlInfoClient');
 const { getStartedAt, getUptimeMs } = require('./runtime');
@@ -62,6 +63,7 @@ function mountRoutes(app, prefix) {
   app.use(`${base}/whales`, whalesRouter);
   app.use(`${base}/news`, newsRouter);
   app.use(`${base}/markets`, marketsRouter);
+  app.use(`${base}/okx`, okxRouter);
   app.get(`${base}/data/browse`, (req, res) => {
     try {
       const { loadDbBrowse } = require('./sqliteStore');

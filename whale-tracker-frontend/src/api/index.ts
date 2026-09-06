@@ -487,3 +487,115 @@ export async function listAuthUsers() {
   }>('/auth/users');
   return data;
 }
+
+/* ===== OKX 跟单监控 ===== */
+
+export type OkxTrader = {
+  id: string;
+  uniqueCode: string;
+  name: string;
+  avatar?: string;
+  rank: number;
+  pnl: number;
+  pnlRatio: number;
+  winRatio: number;
+  aum: number;
+  copyTraderNum: number;
+  maxCopyTraderNum: number;
+  isFull?: boolean;
+  leadDays: number;
+  ccy: string;
+  instruments: string[];
+  pnlRatios?: Array<{ beginTs: number; pnlRatio: number }>;
+  maxDrawdown?: number;
+  copyPnl?: number;
+  openCount?: number;
+  openMargin?: number;
+  openUpl?: number;
+  lastOpenAt?: number;
+};
+
+export type OkxOpenEvent = {
+  id: string;
+  at: number;
+  traderId: string;
+  traderName: string;
+  kind: 'open' | 'close';
+  status: 'open' | 'closed';
+  coin: string;
+  instId: string;
+  side: 'long' | 'short';
+  lever: number;
+  margin: number;
+  size: number;
+  openAvgPx: number;
+  closeAvgPx: number;
+  markPx: number;
+  liqPx?: number;
+  mgnMode?: '' | 'cross' | 'isolated';
+  /** 维持保证金率（ecotrade 多为百分数如 52.2；偶发小数） */
+  mgnRatio?: number;
+  pnl: number;
+  pnlRatio: number;
+  openTime: number | null;
+  closeTime: number | null;
+  subPosId: string;
+};
+
+export type OkxLeadRow = {
+  key: string;
+  label: string;
+  value: string;
+  tone: 'up' | 'down' | 'neutral' | 'warn';
+};
+
+export type OkxDashboardResponse = {
+  traders: OkxTrader[];
+  opens: OkxOpenEvent[];
+  positions?: OkxOpenEvent[];
+  positionsByTrader?: Record<string, OkxOpenEvent[]>;
+  meta?: Record<string, unknown>;
+  updatedAt?: number;
+  stale?: boolean;
+  error?: string;
+};
+
+export async function fetchOkxDashboard(refresh = false) {
+  const { data } = await http.get<OkxDashboardResponse>('/okx', {
+    params: refresh ? { refresh: 1 } : undefined,
+    timeout: 120_000,
+  });
+  return data;
+}
+
+export async function fetchOkxOpens(traderId = '', limit = 120) {
+  const { data } = await http.get<{
+    opens: OkxOpenEvent[];
+    total: number;
+    traderId: string | null;
+    updatedAt?: number;
+    stale?: boolean;
+  }>('/okx/opens', {
+    params: {
+      ...(traderId ? { traderId } : {}),
+      limit,
+    },
+  });
+  return data;
+}
+
+export async function fetchOkxTraderDetail(traderId: string, lastDays = '3') {
+  const { data } = await http.get<{
+    trader: OkxTrader;
+    stats: Record<string, number | string> | null;
+    weekly: Array<{ beginTs: number; pnl: number; pnlRatio: number }>;
+    rows: OkxLeadRow[];
+    positions: OkxOpenEvent[];
+    opens: OkxOpenEvent[];
+    updatedAt: number;
+  }>(`/okx/traders/${encodeURIComponent(traderId)}/detail`, {
+    params: { lastDays },
+  });
+  return data;
+}
+

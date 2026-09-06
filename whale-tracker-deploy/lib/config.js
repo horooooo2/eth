@@ -82,6 +82,9 @@ function normalizeWhale(item = {}) {
     closedTrades: Number(item.closedTrades) || 0,
     weekVlm: Number(item.weekVlm) || 0,
     monthVlm: Number(item.monthVlm) || 0,
+    accountValue: Number(item.accountValue) || 0,
+    monthPnl: Number(item.monthPnl) || 0,
+    allTimePnl: Number(item.allTimePnl) || 0,
     /** 外部脚本定期写入；越高越靠前。为 0 时回退到成交笔数/周成交额 */
     priority: Number(item.priority) || 0,
     style: item.style === 'hf' ? 'hf' : item.style === 'stable' ? 'stable' : undefined,

@@ -9,6 +9,10 @@ import {
   writePreferredCoins,
 } from '@/utils/watchedCoins';
 
+const props = defineProps<{
+  variant?: 'default' | 'sidebar';
+}>();
+
 const emit = defineEmits<{
   change: [];
 }>();
@@ -100,9 +104,26 @@ async function confirmPrefs() {
 </script>
 
 <template>
-  <div class="coin-prefs">
-    <button type="button" class="prefs-trigger" title="币种偏好设置" @click="openPrefs">
-      币种
+  <div class="coin-prefs" :class="{ sidebar: props.variant === 'sidebar' }">
+    <button
+      type="button"
+      class="prefs-trigger"
+      :class="{ sidebar: props.variant === 'sidebar' }"
+      title="币种偏好设置"
+      @click="openPrefs"
+    >
+      <svg
+        v-if="props.variant === 'sidebar'"
+        class="prefs-icon"
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+      >
+        <path
+          fill="currentColor"
+          d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.07 7.07 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.6.24-1.14.55-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.58a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.68.22l2.39-.96c.49.39 1.03.7 1.63.94l.36 2.54c.05.24.25.42.49.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.6-.24 1.14-.55 1.63-.94l2.39.96c.25.12.54.02.68-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"
+        />
+      </svg>
+      <span>{{ props.variant === 'sidebar' ? '设置' : '币种' }}</span>
     </button>
     <el-dialog
       v-model="prefsVisible"
@@ -183,30 +204,59 @@ async function confirmPrefs() {
   background: #2a3a52;
   color: #f0f4fa;
 }
+.coin-prefs.sidebar {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+.prefs-trigger.sidebar {
+  width: 56px;
+  height: 48px;
+  min-height: 48px;
+  padding: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: #6a7e9c;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  font-size: 10px;
+  font-weight: 600;
+}
+.prefs-trigger.sidebar .prefs-icon {
+  width: 18px;
+  height: 18px;
+}
+.prefs-trigger.sidebar:hover {
+  background: #1a222e;
+  color: #e8edf5;
+}
 
 .dialog-body {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  min-height: 260px;
-  padding: 4px 2px 8px;
+  gap: 12px;
+  min-height: 220px;
+  padding: 0;
 }
 
 .intro {
   margin: 0;
   color: #8b9bb5;
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.5;
 }
 
 .coin-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
-  gap: 10px;
-  min-height: 160px;
-  padding: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 8px;
+  min-height: 140px;
+  padding: 10px;
   border: 1px solid #1f2937;
-  border-radius: 14px;
+  border-radius: 4px;
   background: #10171f;
   align-content: start;
 }
@@ -215,18 +265,18 @@ async function confirmPrefs() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  min-height: 40px;
-  padding: 0 12px;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 8px 0 10px;
   border: 1px solid #1f2937;
-  border-radius: 999px;
+  border-radius: 4px;
   background: #1a222e;
 }
 
 .coin-label {
-  font-size: 14px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
   color: #e8edf5;
 }
 
@@ -235,35 +285,48 @@ async function confirmPrefs() {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 120px;
+  min-height: 100px;
   color: #6a7e9c;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .pref-add {
   display: flex;
-  gap: 10px;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
 }
 
-.pref-add .el-input {
+.pref-add :deep(.el-input) {
   flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
 }
 .pref-add :deep(.el-input__wrapper) {
-  min-height: 42px;
-  border-radius: 12px;
+  min-height: 36px;
+  border-radius: 4px;
   background: #10171f;
   box-shadow: 0 0 0 1px #1f2937 inset;
+}
+.pref-add > .dlg-btn {
+  flex: 0 0 auto;
+  align-self: stretch;
+  white-space: nowrap;
+  min-width: 72px;
+  padding: 0 16px;
 }
 
 .chip-remove {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 22px;
+  height: 22px;
   padding: 0;
   border: 0;
-  border-radius: 50%;
+  border-radius: 2px;
   background: transparent;
   color: #6a7e9c;
   cursor: pointer;
@@ -283,17 +346,17 @@ async function confirmPrefs() {
 .dialog-footer {
   display: flex;
   justify-content: flex-end;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
 }
 
 .dlg-btn {
   border: 0;
-  border-radius: 12px;
-  padding: 10px 18px;
+  border-radius: 4px;
+  padding: 8px 16px;
   font: inherit;
-  font-size: 14px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
 }
 .dlg-btn:disabled {
@@ -315,31 +378,30 @@ async function confirmPrefs() {
 .dlg-btn.primary:hover:not(:disabled) {
   background: #345878;
 }
-
-:deep(.coin-prefs-dialog .el-dialog__footer) {
-  padding: 8px 20px 18px;
-}
 </style>
 
 <style>
 .coin-prefs-dialog.el-dialog {
   background: #141a24 !important;
   border: 1px solid #1f2937;
-  border-radius: 16px;
+  border-radius: 6px;
   overflow: hidden;
+  box-shadow: none;
 }
 .coin-prefs-dialog .el-dialog__header {
-  padding: 16px 20px 8px;
+  padding: 14px 16px 6px;
   margin: 0;
 }
 .coin-prefs-dialog .el-dialog__title {
   color: #e8edf5;
-  font-weight: 700;
+  font-size: 15px;
+  font-weight: 600;
 }
 .coin-prefs-dialog .el-dialog__body {
-  padding: 8px 20px;
+  padding: 8px 16px 4px;
 }
 .coin-prefs-dialog .el-dialog__footer {
-  padding: 8px 20px 18px;
+  padding: 8px 16px 14px;
+  border-top: 1px solid #1a1f2a;
 }
 </style>

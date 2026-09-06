@@ -25,6 +25,8 @@ const emit = defineEmits<{
 
 const props = defineProps<{
   reloadAlerts?: () => void | Promise<void>;
+  /** 侧栏竖排样式 */
+  variant?: 'default' | 'sidebar';
 }>();
 
 const dialogOpen = ref(false);
@@ -115,11 +117,11 @@ function onDisable() {
 </script>
 
 <template>
-  <div class="fresh-wrap">
+  <div class="fresh-wrap" :class="{ sidebar: props.variant === 'sidebar' }">
     <button
       type="button"
       class="fresh-btn"
-      :class="{ on: freshModeEnabled }"
+      :class="{ on: freshModeEnabled, sidebar: props.variant === 'sidebar' }"
       :title="freshModeTitle"
       aria-label="闪电模式"
       :disabled="freshApplyBusy"
@@ -131,6 +133,7 @@ function onDisable() {
           d="M13 2 4.5 13.5h6L10 22l9.5-12.5h-6L13 2z"
         />
       </svg>
+      <span v-if="props.variant === 'sidebar'" class="fresh-caption">闪电</span>
       <span v-if="freshModeEnabled" class="fresh-hours">{{ activeLabel }}</span>
     </button>
 
@@ -143,7 +146,7 @@ function onDisable() {
       class="fresh-dialog"
     >
       <p class="hint">
-        只统计近 {{ draftPreset }} 小时内新开仓的仓位及其后续行为；更早开仓上的补仓会隐藏。
+        HL / OKX 共用：只看近 {{ draftPreset }} 小时内的新开仓及相关动态；更早开仓上的补仓会隐藏。
       </p>
       <div class="presets">
         <button
@@ -227,6 +230,51 @@ function onDisable() {
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.02em;
+}
+.fresh-caption {
+  display: none;
+}
+.fresh-wrap.sidebar {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+.fresh-btn.sidebar {
+  width: 56px;
+  height: 48px;
+  min-width: 56px;
+  padding: 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  border-radius: 14px;
+  border: none;
+  background: transparent;
+  color: #6a7e9c;
+}
+.fresh-btn.sidebar .bolt {
+  width: 18px;
+  height: 18px;
+}
+.fresh-btn.sidebar .fresh-caption {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+.fresh-btn.sidebar .fresh-hours {
+  font-size: 9px;
+  line-height: 1;
+}
+.fresh-btn.sidebar:hover:not(:disabled) {
+  background: #1a222e;
+  color: #e8edf5;
+  border: none;
+}
+.fresh-btn.sidebar.on {
+  background: #1f2a3a;
+  color: #fbbf24;
+  border: none;
 }
 .hint {
   margin: 0 0 16px;

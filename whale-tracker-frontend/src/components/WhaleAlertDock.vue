@@ -15,6 +15,14 @@ function isWhaleAlertMonitored(alert: WhaleAlert) {
   return isWhaleMonitored(alert.whaleId);
 }
 
+const props = withDefaults(
+  defineProps<{
+    /** 当前是否在 HL 工作区：否时不展示卡片、不播声音（由侧栏红点承接） */
+    dockActive?: boolean;
+  }>(),
+  { dockActive: true },
+);
+
 const emit = defineEmits<{
   focusWhale: [payload: { id: string; name: string; coin?: string }];
   focusWhaleTrades: [whale: { id: string; name: string }];
@@ -33,12 +41,13 @@ function alertWhaleTitle(alert: WhaleAlert) {
   });
 }
 
-/** 只监控关注列表中的巨鲸 */
-const whaleMonitorCards = computed(() =>
-  [...whaleStore.alerts.filter((alert) => isWhaleAlertMonitored(alert))].sort(
+/** 只监控关注列表中的巨鲸；非本工作区时隐藏卡片 */
+const whaleMonitorCards = computed(() => {
+  if (!props.dockActive) return [];
+  return [...whaleStore.alerts.filter((alert) => isWhaleAlertMonitored(alert))].sort(
     (a, b) => (Number(b.at) || 0) - (Number(a.at) || 0),
-  ),
-);
+  );
+});
 
 const PC_DOCK_MAX = 4;
 
@@ -70,6 +79,12 @@ function kindClass(alert: WhaleAlert) {
 
 function dismiss(id: string) {
   whaleStore.dismissAlert(id);
+}
+
+function dismissAll() {
+  for (const alert of whaleMonitorCards.value) {
+    whaleStore.dismissAlert(alert.id);
+  }
 }
 
 function openAlert(alert: WhaleAlert) {
@@ -128,8 +143,10 @@ const activeWatchLabel = computed(() => {
 });
 
 watch(
-  () => whaleStore.alerts.map((item) => item.id),
+  () =>
+    whaleStore.alerts.filter((alert) => isWhaleAlertMonitored(alert)).map((item) => item.id),
   (ids, prev) => {
+    if (!props.dockActive) return;
     const prevSet = new Set(prev || []);
     if (ids.some((id) => !prevSet.has(id))) playAlertDing();
   },
@@ -177,6 +194,15 @@ onMounted(() => {
     <div class="dock-wrap">
     <section v-if="pcWhaleCards.length" class="dock-section whale">
       <p class="dock-label">关注</p>
+      <button
+        v-if="pcWhaleCards.length > 2"
+        type="button"
+        class="hide-all"
+        title="关闭当前全部关注卡片"
+        @click.stop="dismissAll"
+      >
+        全部隐藏
+      </button>
       <TransitionGroup name="toast" tag="div" class="dock">
         <article
           v-for="alert in pcWhaleCards"
@@ -317,6 +343,25 @@ onMounted(() => {
 }
 .dock-section.whale .dock-label {
   color: #e6a23c;
+}
+.hide-all {
+  pointer-events: auto;
+  width: 100%;
+  margin: 0;
+  padding: 7px 12px;
+  border: 1px solid color-mix(in srgb, #e6a23c 40%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--card) 92%, #e6a23c);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.22);
+}
+.hide-all:hover {
+  filter: brightness(1.06);
 }
 .dock {
   display: flex;

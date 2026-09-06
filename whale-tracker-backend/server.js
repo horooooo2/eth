@@ -48,9 +48,10 @@ const {
   startPositionBackfill,
   getPositionBackfillStatus,
 } = require('./lib/positionBackfill');
+const { startOkxPolling, getOkxStatus } = require('./lib/okxCopyTrading');
 
 const app = createApp({ prefixes: ['/api'] });
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = Number(process.env.PORT) || 80;
 /**
  * 定时分片刷新间隔（毫秒）。
  * 有实时 WS 时默认 5 分钟兜底；可用 REFRESH_INTERVAL 覆盖。
@@ -145,6 +146,12 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log('[position-backfill]', JSON.stringify(getPositionBackfillStatus()));
   } catch (err) {
     console.warn('[position-backfill] 启动失败:', err.message);
+  }
+  try {
+    startOkxPolling();
+    console.log('[okx]', JSON.stringify(getOkxStatus()));
+  } catch (err) {
+    console.warn('[okx] 启动失败:', err.message);
   }
   refreshAll('启动预热');
   setInterval(() => refreshAll('定时刷新'), REFRESH_MS);
