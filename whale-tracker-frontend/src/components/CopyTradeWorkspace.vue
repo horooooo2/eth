@@ -7,7 +7,6 @@ import {
   fetchCopyTradeSnapshot,
   saveCopyTask,
   saveOkxExchangeKeys,
-  syncCopyTasks,
   type CopyExchange,
   type CopyPositionDto,
   type CopyRecordDto,
@@ -64,17 +63,6 @@ async function onManualClose(p: FollowedPosition) {
     void refreshSnapshot(true);
   } finally {
     closingPosId.value = '';
-  }
-}
-
-function loadLocalTasks(): CopyTask[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const list = JSON.parse(raw);
-    return Array.isArray(list) ? list : [];
-  } catch {
-    return [];
   }
 }
 
