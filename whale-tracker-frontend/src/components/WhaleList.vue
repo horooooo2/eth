@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { CopyDocument } from '@element-plus/icons-vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import PnlProgressBar from '@/components/PnlProgressBar.vue';
 import PositionDetailDialog from '@/components/PositionDetailDialog.vue';
 import type { WhaleDirection, WhalePosition, WhaleProfile } from '@/types';
+import { saveCopyTask } from '@/api';
+import { isLoggedIn } from '@/stores/auth';
 import { directionLabel, formatPrice, formatRelativeAgo, formatTimeShort, formatUsd, isOpenTimeStale } from '@/utils/format';
 import {
   formatWhaleMetricLines,
@@ -515,6 +517,72 @@ function onToggleMonitor(whale: WhaleProfile) {
   toggleWhaleMonitor(whale.id);
 }
 
+const copyStartingIds = ref<Record<string, boolean>>({});
+
+/** 卡片一键跟单：确认本金后开启 OKX（默认 100U，可改） */
+async function onStartCopyTrade(whale: WhaleProfile) {
+  if (!isLoggedIn.value) {
+    ElMessage.warning('请先登录后再跟单');
+    return;
+  }
+  const address = String(whale.address || '').trim();
+  if (!address) {
+    ElMessage.warning('该巨鲸缺少钱包地址，无法跟单');
+    return;
+  }
+  if (copyStartingIds.value[whale.id]) return;
+
+  const title = whaleCardTitle(whale) || whale.name || '巨鲸';
+  let followCapitalUsd = 100;
+  try {
+    const { value } = await ElMessageBox.prompt(
+      `确认对「${title}」开启 OKX 跟单？\n杠杆跟随，无名义上限。请确认或修改跟单本金。`,
+      '跟单本金（USDT）',
+      {
+        confirmButtonText: '确认跟单',
+        cancelButtonText: '取消',
+        inputValue: '100',
+        inputPlaceholder: '请输入跟单本金',
+        inputPattern: /^(?:[1-9]\d*|0)(?:\.\d+)?$/,
+        inputErrorMessage: '请输入大于 0 的金额',
+        type: 'info',
+      },
+    );
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) {
+      ElMessage.warning('跟单本金需大于 0');
+      return;
+    }
+    followCapitalUsd = n;
+  } catch {
+    return;
+  }
+
+  copyStartingIds.value = { ...copyStartingIds.value, [whale.id]: true };
+  try {
+    await saveCopyTask({
+      name: `${title} · OKX`,
+      exchange: 'okx',
+      enabled: true,
+      whaleAddress: address,
+      followCapitalUsd,
+      maxLeverage: 0,
+      maxNotionalUsd: 0,
+      note: '',
+    });
+    ElMessage.success(`已开启 OKX 跟单：${title}（本金 ${followCapitalUsd}U）`);
+    window.dispatchEvent(new CustomEvent('whale-copy-update'));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : '跟单失败';
+    if (/已存在跟单/.test(msg)) ElMessage.warning(msg);
+    else ElMessage.error(msg);
+  } finally {
+    const next = { ...copyStartingIds.value };
+    delete next[whale.id];
+    copyStartingIds.value = next;
+  }
+}
+
 function flashWhaleCard(id: string) {
   if (highlightTimer) clearTimeout(highlightTimer);
   highlightedId.value = id;
@@ -823,15 +891,26 @@ defineExpose({ focusWhale });
           <div v-if="cardHeadInline(whale)" class="head-metrics" :title="cardHeadInline(whale)">
             {{ cardHeadInline(whale) }}
           </div>
-          <button
-            type="button"
-            class="monitor-btn"
-            :class="{ on: isWhaleMonitored(whale.id) }"
-            :title="isWhaleMonitored(whale.id) ? '取消关注' : '关注巨鲸'"
-            @click.stop="onToggleMonitor(whale)"
-          >
-            {{ isWhaleMonitored(whale.id) ? '已关注' : '关注' }}
-          </button>
+          <div class="card-head-actions">
+            <button
+              type="button"
+              class="copy-trade-btn"
+              :disabled="Boolean(copyStartingIds[whale.id]) || !whale.address"
+              :title="whale.address ? '开启 OKX 跟单（默认本金 100U，可改）' : '缺少地址，无法跟单'"
+              @click.stop="onStartCopyTrade(whale)"
+            >
+              {{ copyStartingIds[whale.id] ? '…' : '跟单' }}
+            </button>
+            <button
+              type="button"
+              class="monitor-btn"
+              :class="{ on: isWhaleMonitored(whale.id) }"
+              :title="isWhaleMonitored(whale.id) ? '取消关注' : '关注巨鲸'"
+              @click.stop="onToggleMonitor(whale)"
+            >
+              {{ isWhaleMonitored(whale.id) ? '已关注' : '关注' }}
+            </button>
+          </div>
         </div>
         <div class="card-name-row">
           <button
@@ -1459,6 +1538,35 @@ defineExpose({ focusWhale });
   border-color: #e6a23c;
   background: #e6a23c;
 }
+.copy-trade-btn {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, #58bd7d 45%, var(--border));
+  border-radius: 999px;
+  background: transparent;
+  color: #58bd7d;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.copy-trade-btn:hover:not(:disabled) {
+  color: #fff;
+  border-color: #58bd7d;
+  background: #58bd7d;
+}
+.copy-trade-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.card-head-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
 .row {
   display: flex;
   align-items: center;
@@ -1625,7 +1733,7 @@ defineExpose({ focusWhale });
   padding: 0;
 }
 .card-head .monitor-btn {
-  margin-left: auto;
+  margin-left: 0;
 }
 .fold-btn {
   cursor: pointer;

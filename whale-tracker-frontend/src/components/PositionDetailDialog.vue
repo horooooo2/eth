@@ -302,7 +302,7 @@ async function confirmOkxCopy() {
   const sideText = row.side === 'short' ? '空' : '多';
   const name = whaleName.value || '巨鲸';
 
-  let followCapitalUsd = 1000;
+  let followCapitalUsd = 100;
   try {
     const { value } = await ElMessageBox.prompt(
       `跟单「${name}」的 ${coin} ${sideText} 仓位。\n仓位大小 = 跟单本金 × (巨鲸该仓保证金 / 巨鲸权益) × 杠杆。\n开仓失败不会加入跟单列表。`,
@@ -310,7 +310,7 @@ async function confirmOkxCopy() {
       {
         confirmButtonText: '确认开仓',
         cancelButtonText: '取消',
-        inputValue: '1000',
+        inputValue: '100',
         inputPlaceholder: '请输入跟单本金',
         inputPattern: /^(?:[1-9]\d*|0)(?:\.\d+)?$/,
         inputErrorMessage: '请输入大于 0 的金额',

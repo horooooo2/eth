@@ -163,7 +163,7 @@ const visibleRecords = computed(() =>
 const draft = ref({
   name: '',
   whaleAddress: '',
-  followCapitalUsd: 1000,
+  followCapitalUsd: 100,
   maxLeverage: 0,
   maxNotionalUsd: 0,
   note: '',
@@ -174,7 +174,7 @@ function resetDraft(_exchange: CopyExchange = 'okx') {
   draft.value = {
     name: 'OKX 跟单',
     whaleAddress: '',
-    followCapitalUsd: 1000,
+    followCapitalUsd: 100,
     maxLeverage: 0,
     maxNotionalUsd: 0,
     note: '',
@@ -1146,9 +1146,9 @@ onUnmounted(() => {
   transition: box-shadow 0.15s, border-color 0.15s;
 }
 .task-card.on {
-  background: color-mix(in srgb, #58bd7d 22%, #0a0e14);
-  border-color: color-mix(in srgb, #58bd7d 55%, #1e2630);
-  color: #d8f5e4;
+  background: transparent;
+  border-color: #58bd7d;
+  color: #e0e3eb;
 }
 .task-card.off {
   background: color-mix(in srgb, #ea5a5a 22%, #0a0e14);

@@ -249,7 +249,7 @@ function calcProportionalSize(task, opts = {}) {
   const whaleLever = Math.max(1, Number(opts.leverage) || 0);
   const maxLever = Number(task.maxLeverage) || 0;
   const lever = Math.min(125, Math.max(1, maxLever > 0 ? maxLever : whaleLever || 5));
-  const capital = Math.max(1, Number(task.followCapitalUsd) || 1000);
+  const capital = Math.max(1, Number(task.followCapitalUsd) || 100);
 
   const posValue = Math.abs(Number(opts.positionValue) || 0);
   let posMargin = Math.abs(Number(opts.marginUsed) || 0);
@@ -1062,7 +1062,7 @@ async function followFromPosition(input = {}) {
     (whaleLever > 0 && posValue > 0 ? posValue / whaleLever : 0);
   const whaleAccountValue = Math.abs(Number(input.whaleAccountValue) || 0);
   const whaleTotalPositionUsd = Math.abs(Number(input.whaleTotalPositionUsd) || 0);
-  const followCapitalUsd = Math.max(1, Number(input.followCapitalUsd) || 1000);
+  const followCapitalUsd = Math.max(1, Number(input.followCapitalUsd) || 100);
   const meta =
     whaleAccountValue > 0 || whaleTotalPositionUsd > 0
       ? { whaleAccountValue, whaleTotalPositionUsd }
