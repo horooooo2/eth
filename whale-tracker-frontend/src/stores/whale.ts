@@ -331,10 +331,10 @@ export const useWhaleStore = defineStore('whale', () => {
       result.alerts.filter((item) => isTrackedAlertKind(item.kind)),
     );
     const dockAlerts = mergeDockAlerts(filterDockAlerts(freshDiffs));
-    if (!dockAlerts.length) return;
-    // 新异动可入栏；已展示卡片不按时间老化踢掉，仅手动关闭
-    const merged = mergeDockAlerts([...dockAlerts, ...alerts.value]);
-    alerts.value = merged.slice(0, 4);
+    // 新异动可入栏；已展示卡片不按时间老化踢掉，仅手动关闭；顺带清掉减仓/平仓旧卡
+    alerts.value = mergeDockAlerts(
+      filterDockAlerts([...dockAlerts, ...alerts.value]),
+    ).slice(0, 4);
 
     // 附加：新开仓后后台补拉该地址成交作验证，不挡主流程
     const openIds = dockAlerts

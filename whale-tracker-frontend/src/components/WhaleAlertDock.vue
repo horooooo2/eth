@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Close } from '@element-plus/icons-vue';
 import { useWhaleStore } from '@/stores/whale';
-import { alertKindLabel, type WhaleAlert } from '@/utils/whaleAlerts';
+import { alertKindLabel, isTrackedAlertKind, type WhaleAlert } from '@/utils/whaleAlerts';
 import { playAlertDing, unlockAlertSound } from '@/utils/alertSound';
 import { directionLabel, formatLeverage, formatPnl, formatPrice, formatTime, formatUsd, shortAddress } from '@/utils/format';
 import { displayAsset } from '@/utils/assets';
@@ -41,12 +41,14 @@ function alertWhaleTitle(alert: WhaleAlert) {
   });
 }
 
-/** 只监控关注列表中的巨鲸；非本工作区时隐藏卡片 */
+/** 只监控关注列表中的巨鲸；仅开仓/加仓；非本工作区时隐藏卡片 */
 const whaleMonitorCards = computed(() => {
   if (!props.dockActive) return [];
-  return [...whaleStore.alerts.filter((alert) => isWhaleAlertMonitored(alert))].sort(
-    (a, b) => (Number(b.at) || 0) - (Number(a.at) || 0),
-  );
+  return [
+    ...whaleStore.alerts.filter(
+      (alert) => isWhaleAlertMonitored(alert) && isTrackedAlertKind(alert.kind),
+    ),
+  ].sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0));
 });
 
 const PC_DOCK_MAX = 4;

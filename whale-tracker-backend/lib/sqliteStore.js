@@ -17,7 +17,7 @@ const {
 } = require('./db');
 const {
   POSITION_EVENT_MERGE_MS,
-  ALL_KINDS,
+  OPEN_KINDS,
   kindGroup,
   passesMinUsd,
   preferKind,
@@ -154,7 +154,7 @@ function upsertAlertRows(database, alerts) {
     SELECT id, time, kind, payload_json FROM alerts
     WHERE whale_id = ?
       AND time >= ? AND time <= ?
-      AND kind IN ('open', 'increase', 'decrease', 'close')
+      AND kind IN ('open', 'increase')
     ORDER BY time DESC LIMIT 40
   `);
   const delById = database.prepare('DELETE FROM alerts WHERE id = ?');
@@ -164,7 +164,7 @@ function upsertAlertRows(database, alerts) {
   for (const alert of alerts) {
     if (!alert?.id) continue;
     const kind = String(alert.kind || '');
-    if (!ALL_KINDS.has(kind)) continue;
+    if (!OPEN_KINDS.has(kind)) continue;
     const time = Number(alert.at || alert.time) || 0;
     if (!time) continue;
     const usd = Math.abs(Number(alert.items?.[0]?.usd) || 0);
@@ -268,7 +268,7 @@ function loadRecentAlerts(limit = 500) {
   const rows = database
     .prepare(
       `SELECT payload_json FROM alerts
-       WHERE time >= ? AND kind IN ('open', 'increase', 'decrease', 'close')
+       WHERE time >= ? AND kind IN ('open', 'increase')
        ORDER BY time DESC LIMIT ?`,
     )
     .all(cutoff, Math.max(1, Math.min(2000, Number(limit) || 500)));
@@ -278,7 +278,7 @@ function loadRecentAlerts(limit = 500) {
 }
 
 /**
- * 异动分页查询（开/加/减/平）。
+ * 异动分页查询（仅开仓 / 加仓）。
  */
 function loadPagedAlerts(query = {}) {
   const page = Math.max(1, Number(query.page) || 1);
@@ -296,7 +296,7 @@ function loadPagedAlerts(query = {}) {
 
   const where = [
     `time >= ?`,
-    `kind IN ('open', 'increase', 'decrease', 'close')`,
+    `kind IN ('open', 'increase')`,
   ];
   const params = [cutoff];
 
@@ -304,7 +304,7 @@ function loadPagedAlerts(query = {}) {
     where.push('whale_id = ?');
     params.push(whaleId);
   }
-  if (ALL_KINDS.has(kind)) {
+  if (kind === 'open' || kind === 'increase') {
     where.push('kind = ?');
     params.push(kind);
   }
@@ -350,14 +350,14 @@ function loadPagedAlerts(query = {}) {
 
   const facetWhere = [
     `time >= ?`,
-    `kind IN ('open', 'increase', 'decrease', 'close')`,
+    `kind IN ('open', 'increase')`,
   ];
   const facetParams = [cutoff];
   if (whaleId) {
     facetWhere.push('whale_id = ?');
     facetParams.push(whaleId);
   }
-  if (ALL_KINDS.has(kind)) {
+  if (kind === 'open' || kind === 'increase') {
     facetWhere.push('kind = ?');
     facetParams.push(kind);
   }

@@ -8,6 +8,7 @@ const { mapFillToTrade, deriveDirection } = require('./hyperliquid');
 const { readWhaleModeCache, writeWhaleModeCache } = require('./cache');
 const { persistAlerts, persistTradesIncremental } = require('./sqliteStore');
 const { normalizeAddress } = require('./config');
+const { OPEN_KINDS } = require('./positionEventPolicy');
 
 const MODE = 'hf';
 const DISPLAY_TOP_N = 20;
@@ -405,13 +406,17 @@ function alertsFromPositionDiff(whale, prevPositions, nextPositions) {
 
 function emitAlerts(alerts) {
   if (!alerts?.length) return;
-  try {
-    persistAlerts(alerts);
-  } catch (err) {
-    console.warn('[realtime] persistAlerts failed:', err.message);
-  }
-  for (const alert of alerts) {
-    broadcast({ type: 'alert', alert, at: Date.now() });
+  // 监控卡片 / 异动列表只推开仓、加仓；减仓/平仓仍交给跟单引擎
+  const monitorAlerts = alerts.filter((a) => a && OPEN_KINDS.has(a.kind));
+  if (monitorAlerts.length) {
+    try {
+      persistAlerts(monitorAlerts);
+    } catch (err) {
+      console.warn('[realtime] persistAlerts failed:', err.message);
+    }
+    for (const alert of monitorAlerts) {
+      broadcast({ type: 'alert', alert, at: Date.now() });
+    }
   }
   try {
     require('./hlCopyEngine').onWhaleAlerts(alerts);

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { fetchPagedAlertHistory } from '@/api';
 import { useWhaleStore } from '@/stores/whale';
@@ -22,6 +22,10 @@ const total = ref(0);
 const loading = ref(false);
 const alerts = ref<WhaleAlert[]>([]);
 const sideFilter = ref<'all' | 'long' | 'short'>('all');
+
+/** 驱动「N分钟前」相对时间定时重算 */
+const nowTick = ref(Date.now());
+let nowTickTimer: ReturnType<typeof setInterval> | undefined;
 
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)));
 
@@ -53,7 +57,7 @@ const rows = computed(() =>
     const whale =
       whaleStore.enabledWhales.find((w) => w.id === scoped.whaleId) ||
       whaleStore.displayWhales.find((w) => w.id === scoped.whaleId);
-    const view = enrichAlertView(scoped, whale || null);
+    const view = enrichAlertView(scoped, whale || null, nowTick.value);
     return {
       alert: scoped,
       view,
@@ -95,6 +99,13 @@ watch([page, sideFilter], () => {
 
 onMounted(() => {
   void loadAlerts();
+  nowTickTimer = setInterval(() => {
+    nowTick.value = Date.now();
+  }, 30_000);
+});
+
+onUnmounted(() => {
+  if (nowTickTimer) clearInterval(nowTickTimer);
 });
 </script>
 

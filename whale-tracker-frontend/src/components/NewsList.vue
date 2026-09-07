@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Refresh } from '@element-plus/icons-vue';
 import type { WhaleProfile } from '@/types';
@@ -78,6 +78,10 @@ const facets = ref<{ all: number; byCoin: Record<string, number>; long: number; 
 });
 let alertReqSeq = 0;
 
+/** 驱动「N分钟前」相对时间每分钟重算（computed 不会因 Date.now 自动刷新） */
+const nowTick = ref(Date.now());
+let nowTickTimer: ReturnType<typeof setInterval> | undefined;
+
 onMounted(() => {
   const s = getAuthUiSettings();
   if (s.alertSideFilter === 'long' || s.alertSideFilter === 'short') {
@@ -92,6 +96,13 @@ onMounted(() => {
   if (typeof s.alertMinUsd === 'number') {
     alertMinUsd.value = s.alertMinUsd;
   }
+  nowTickTimer = setInterval(() => {
+    nowTick.value = Date.now();
+  }, 30_000);
+});
+
+onUnmounted(() => {
+  if (nowTickTimer) clearInterval(nowTickTimer);
 });
 
 watch(
@@ -258,7 +269,7 @@ const filteredAlerts = computed(() => {
       if (side !== 'all') {
         scoped = scopeAlertToSide(scoped, side);
       }
-      const view = enrichAlertView(scoped, whaleOf(scoped));
+      const view = enrichAlertView(scoped, whaleOf(scoped), nowTick.value);
       return {
         alert: scoped,
         view,
@@ -329,7 +340,9 @@ function whaleOf(alert: WhaleAlert) {
   return props.whales?.find((item) => item.id === alert.whaleId) || null;
 }
 
-const activeView = computed(() => (activeAlert.value ? enrichAlertView(activeAlert.value, whaleOf(activeAlert.value)) : null));
+const activeView = computed(() =>
+  activeAlert.value ? enrichAlertView(activeAlert.value, whaleOf(activeAlert.value), nowTick.value) : null,
+);
 const activeClosedOpen = computed(() => (activeAlert.value ? isOpenPositionClosed(activeAlert.value) : false));
 
 function pnlClass(value: number | null | undefined) {

@@ -96,12 +96,10 @@ export const POSITION_ALERT_KINDS: WhaleAlertKind[] = [
   'flip',
 ];
 
-/** 异动 / 监控：开/加/减/平 */
+/** 异动 / 监控卡片：只跟踪开仓、加仓（减仓/平仓不展示） */
 export const TRACKED_ALERT_KINDS: WhaleAlertKind[] = [
   'open',
   'increase',
-  'decrease',
-  'close',
 ];
 
 export function isPositionAlertKind(kind: WhaleAlertKind) {
@@ -603,7 +601,7 @@ function diffPositions(prev: PositionSnap | undefined, next: PositionSnap): Whal
     );
   }
 
-  // 开/加/减/平均进异动；过滤粉尘与低于门槛
+  // 仅开/加仓进异动与监控卡片；过滤粉尘与低于门槛
   return items.filter((item) => {
     if (!isTrackedAlertKind(item.kind)) return false;
     const usd = Math.abs(Number(item.usd) || 0);
