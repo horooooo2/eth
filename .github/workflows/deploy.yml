@@ -1,21 +1,75 @@
 name: Deploy to Server
+
 on:
   push:
     branches: [main]
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy via SSH
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: whale-tracker-frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: whale-tracker-frontend
+        run: |
+          npm ci
+          npm run build
+          mkdir -p ../whale-tracker-deploy/public
+          rm -rf ../whale-tracker-deploy/public/assets
+          cp -r dist/* ../whale-tracker-deploy/public/
+
+      - name: Pull backend on server
+        uses: appleboy/ssh-action@v1.0.0
+        env:
+          GIT_DEPLOY_KEY: ${{ secrets.GIT_DEPLOY_KEY }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: GIT_DEPLOY_KEY
+          script_stop: true
+          script: |
+            set -e
+            if [ -n "${GIT_DEPLOY_KEY:-}" ]; then
+              eval "$(ssh-agent -s)"
+              printf '%s\n' "$GIT_DEPLOY_KEY" > /tmp/git_deploy_key
+              chmod 600 /tmp/git_deploy_key
+              ssh-add /tmp/git_deploy_key
+              rm -f /tmp/git_deploy_key
+            fi
+            cd /root/whale-tracker-deploy
+            git pull origin main
+            npm install --omit=dev
+
+      - name: Upload frontend public assets
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: 'whale-tracker-deploy/public/*'
+          target: '/root/whale-tracker-deploy/public'
+          strip_components: 2
+          overwrite: true
+
+      - name: Restart service
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
           script: |
-            eval "$(ssh-agent -s)"
-            echo "${{ secrets.GIT_DEPLOY_KEY }}" | ssh-add -
-            cd /root/whale-tracker-deploy
-            git pull origin main
-            npm install
+            set -e
             systemctl restart whale-tracker
+            curl -sf http://127.0.0.1/api/health >/dev/null
+            echo "deploy ok"
