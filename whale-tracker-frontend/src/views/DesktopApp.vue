@@ -364,7 +364,7 @@ onUnmounted(() => {
 
       <div class="bottom-nav">
         <FreshModeControl variant="sidebar" :reload-alerts="reloadNewsAlerts" />
-        <CoinPreferences variant="sidebar" />
+        <CoinPreferences variant="sidebar" @reset-copy-api="openCopyWorkspace" />
         <button
           v-if="isLoggedIn"
           type="button"

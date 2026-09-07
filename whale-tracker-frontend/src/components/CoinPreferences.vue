@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { Close } from '@element-plus/icons-vue';
-import { lookupMarketCoin } from '@/api';
+import { deleteOkxExchangeKeys, lookupMarketCoin } from '@/api';
+import { isLoggedIn } from '@/stores/auth';
 import {
   MAX_PREFERRED_COINS,
   readWatchedCoins,
@@ -15,10 +16,12 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   change: [];
+  'reset-copy-api': [];
 }>();
 
 const prefsVisible = ref(false);
 const saving = ref(false);
+const resettingApi = ref(false);
 const prefAddSymbol = ref('');
 const prefAddLoading = ref(false);
 const draftCoins = ref<string[]>([]);
@@ -101,6 +104,38 @@ async function confirmPrefs() {
     saving.value = false;
   }
 }
+
+async function resetCopyApi() {
+  if (!isLoggedIn.value) {
+    ElMessage.warning('请先登录后再重置跟单 API');
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      '将清除已保存的 OKX API Key / Secret / Passphrase。\n清除后需重新填写才能继续跟单。',
+      '重置跟单 API',
+      {
+        confirmButtonText: '确认重置',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    );
+  } catch {
+    return;
+  }
+  resettingApi.value = true;
+  try {
+    await deleteOkxExchangeKeys();
+    prefsVisible.value = false;
+    window.dispatchEvent(new CustomEvent('whale-copy-keys-reset'));
+    emit('reset-copy-api');
+    ElMessage.success('跟单 API 已清除，请重新配置');
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '重置失败');
+  } finally {
+    resettingApi.value = false;
+  }
+}
 </script>
 
 <template>
@@ -109,7 +144,7 @@ async function confirmPrefs() {
       type="button"
       class="prefs-trigger"
       :class="{ sidebar: props.variant === 'sidebar' }"
-      title="币种偏好设置"
+      title="设置"
       @click="openPrefs"
     >
       <svg
@@ -127,7 +162,7 @@ async function confirmPrefs() {
     </button>
     <el-dialog
       v-model="prefsVisible"
-      title="币种偏好设置"
+      title="设置"
       width="min(520px, 94vw)"
       class="coin-prefs-dialog"
       append-to-body
@@ -135,38 +170,57 @@ async function confirmPrefs() {
       @close="resetDraft"
     >
       <div class="dialog-body">
-        <p class="intro">
-          全站分析与异动记录的币种筛选，均按此列表执行。至少保留 1 个币种。
-        </p>
+        <section class="setting-block">
+          <h4 class="block-title">币种偏好</h4>
+          <p class="intro">
+            全站分析与异动记录的币种筛选，均按此列表执行。至少保留 1 个币种。
+          </p>
 
-        <div class="coin-grid">
-          <div v-for="id in draftCoins" :key="id" class="coin-chip">
-            <span class="coin-label">{{ id }}</span>
-            <button
-              type="button"
-              class="chip-remove"
-              title="移除币种"
-              :disabled="draftCoins.length <= 1"
-              @click="removeDraftCoin(id)"
-            >
-              <el-icon><Close /></el-icon>
+          <div class="coin-grid">
+            <div v-for="id in draftCoins" :key="id" class="coin-chip">
+              <span class="coin-label">{{ id }}</span>
+              <button
+                type="button"
+                class="chip-remove"
+                title="移除币种"
+                :disabled="draftCoins.length <= 1"
+                @click="removeDraftCoin(id)"
+              >
+                <el-icon><Close /></el-icon>
+              </button>
+            </div>
+            <div v-if="!draftCoins.length" class="coin-empty">暂无币种</div>
+          </div>
+
+          <div class="pref-add">
+            <el-input
+              v-model="prefAddSymbol"
+              size="large"
+              placeholder="输入币种代码，例如 ZEC、SOL"
+              maxlength="16"
+              @keyup.enter="submitPrefAdd"
+            />
+            <button type="button" class="dlg-btn primary" :disabled="prefAddLoading" @click="submitPrefAdd">
+              {{ prefAddLoading ? '…' : '添加' }}
             </button>
           </div>
-          <div v-if="!draftCoins.length" class="coin-empty">暂无币种</div>
-        </div>
+        </section>
 
-        <div class="pref-add">
-          <el-input
-            v-model="prefAddSymbol"
-            size="large"
-            placeholder="输入币种代码，例如 ZEC、SOL"
-            maxlength="16"
-            @keyup.enter="submitPrefAdd"
-          />
-          <button type="button" class="dlg-btn primary" :disabled="prefAddLoading" @click="submitPrefAdd">
-            {{ prefAddLoading ? '…' : '添加' }}
+        <section class="setting-block api-block">
+          <h4 class="block-title">跟单 API</h4>
+          <p class="intro">
+            若 OKX Key / Secret / Passphrase 填错（例如 Passphrase incorrect），可在此清除后重新绑定。
+          </p>
+          <button
+            type="button"
+            class="dlg-btn danger"
+            :disabled="!isLoggedIn || resettingApi"
+            @click="resetCopyApi"
+          >
+            {{ resettingApi ? '重置中…' : '重置跟单 API' }}
           </button>
-        </div>
+          <p v-if="!isLoggedIn" class="hint-dim">登录后可重置</p>
+        </section>
       </div>
 
       <template #footer>
@@ -237,9 +291,27 @@ async function confirmPrefs() {
 .dialog-body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
   min-height: 220px;
   padding: 0;
+}
+
+.setting-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.block-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: #e8edf5;
+}
+
+.api-block {
+  padding-top: 12px;
+  border-top: 1px solid #1f2937;
 }
 
 .intro {
@@ -247,6 +319,12 @@ async function confirmPrefs() {
   color: #8b9bb5;
   font-size: 13px;
   line-height: 1.5;
+}
+
+.hint-dim {
+  margin: 0;
+  font-size: 12px;
+  color: #6a7e9c;
 }
 
 .coin-grid {
@@ -377,6 +455,16 @@ async function confirmPrefs() {
 }
 .dlg-btn.primary:hover:not(:disabled) {
   background: #345878;
+}
+.dlg-btn.danger {
+  align-self: flex-start;
+  background: #3a1f24;
+  color: #f0a0a8;
+  border: 1px solid #5a3038;
+}
+.dlg-btn.danger:hover:not(:disabled) {
+  background: #4a282e;
+  color: #ffc0c6;
 }
 </style>
 

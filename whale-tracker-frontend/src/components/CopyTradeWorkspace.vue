@@ -513,6 +513,17 @@ function onCopyUpdateEvent(ev: Event) {
   }, 120);
 }
 
+function onCopyKeysReset() {
+  exchangeKeys.value = null;
+  keyForm.value = {
+    apiKey: '',
+    apiSecret: '',
+    apiPassphrase: '',
+    simulated: true,
+  };
+  void refreshSnapshot(true);
+}
+
 onMounted(async () => {
   // 不再先灌本地缓存，避免与服务端列表叠加闪一下重复
   if (isLoggedIn.value) {
@@ -520,6 +531,7 @@ onMounted(async () => {
   }
 
   window.addEventListener('whale-copy-update', onCopyUpdateEvent);
+  window.addEventListener('whale-copy-keys-reset', onCopyKeysReset);
   pollTimer = window.setInterval(() => {
     if (isLoggedIn.value) void refreshSnapshot(true);
   }, 12_000);
@@ -527,6 +539,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('whale-copy-update', onCopyUpdateEvent);
+  window.removeEventListener('whale-copy-keys-reset', onCopyKeysReset);
   if (pollTimer) window.clearInterval(pollTimer);
   if (copyRefreshTimer) window.clearTimeout(copyRefreshTimer);
 });
