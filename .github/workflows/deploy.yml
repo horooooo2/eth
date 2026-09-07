@@ -18,6 +18,9 @@ jobs:
           cache: npm
           cache-dependency-path: whale-tracker-frontend/package-lock.json
 
+      - name: Sync backend into deploy package
+        run: node whale-tracker-backend/scripts/sync-deploy.js
+
       - name: Build frontend
         working-directory: whale-tracker-frontend
         run: |
@@ -27,94 +30,108 @@ jobs:
           rm -rf ../whale-tracker-deploy/public/assets
           cp -r dist/* ../whale-tracker-deploy/public/
 
-      - name: Pull backend on server
-        uses: appleboy/ssh-action@v1.0.0
-        env:
-          GIT_DEPLOY_KEY: ${{ secrets.GIT_DEPLOY_KEY }}
+      - name: Pack deploy payload
+        run: |
+          set -e
+          mkdir -p .deploy-pack
+          # 后端代码（不含 .env / data / cache / node_modules / .git）
+          tar -C whale-tracker-deploy -czf .deploy-pack/code.tgz \
+            --exclude='./node_modules' \
+            --exclude='./public' \
+            --exclude='./data' \
+            --exclude='./cache' \
+            --exclude='./.env' \
+            --exclude='./.git' \
+            --exclude='./.env.*' \
+            .
+          # 前端静态资源
+          tar -C whale-tracker-deploy/public -czf .deploy-pack/public.tgz .
+          ls -lh .deploy-pack
+
+      - name: Upload deploy payload
+        uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: GIT_DEPLOY_KEY
+          source: '.deploy-pack/*'
+          target: '/tmp/whale-deploy-pack'
+          strip_components: 1
+          overwrite: true
+
+      - name: Install deps and restart
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           script_stop: true
           script: |
             set -e
-            if [ -n "${GIT_DEPLOY_KEY:-}" ]; then
-              eval "$(ssh-agent -s)"
-              printf '%s\n' "$GIT_DEPLOY_KEY" > /tmp/git_deploy_key
-              chmod 600 /tmp/git_deploy_key
-              ssh-add /tmp/git_deploy_key
-              rm -f /tmp/git_deploy_key
-            fi
-            # 用登录 shell 加载 .bash_profile/.bashrc 里的 nvm/npm
             bash -lc 'set -e
               echo "shell PATH=$PATH"
               echo -n "which node: "; which node || true
               echo -n "which npm: "; which npm || true
               if ! command -v npm >/dev/null 2>&1; then
                 echo "ERROR: npm still not found after login shell"
-                echo "请在服务器执行: which npm; type npm; echo \$PATH"
                 exit 127
               fi
-              cd /root/whale-tracker-deploy
-              git pull origin main
+
+              DEPLOY=/root/whale-tracker-deploy
+              PACK=/tmp/whale-deploy-pack
+              mkdir -p "$DEPLOY" "$PACK"
+              test -f "$PACK/code.tgz"
+              test -f "$PACK/public.tgz"
+
+              # 解压后端（保留服务器上的 .env / data / cache）
+              tar -C "$DEPLOY" -xzf "$PACK/code.tgz"
+
+              # 解压前端
+              mkdir -p "$DEPLOY/public"
+              rm -rf "$DEPLOY/public/assets"
+              tar -C "$DEPLOY/public" -xzf "$PACK/public.tgz"
+
+              cd "$DEPLOY"
               npm install --omit=dev
-            '
 
-      - name: Upload frontend public assets
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: root
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: 'whale-tracker-deploy/public/*'
-          target: '/root/whale-tracker-deploy/public'
-          strip_components: 2
-          overwrite: true
-
-      - name: Restart service
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: root
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script_stop: true
-          script: |
-            set -e
-            cd /root/whale-tracker-deploy
-
-            if systemctl cat whale-tracker >/dev/null 2>&1; then
-              systemctl restart whale-tracker
-              systemctl --no-pager --full status whale-tracker || true
-            else
-              echo "systemd 服务 whale-tracker 不存在，改用 node 重启"
-              # 停掉占用 80 的旧进程（若有）
-              if command -v fuser >/dev/null 2>&1; then
-                fuser -k 80/tcp || true
+              if systemctl cat whale-tracker >/dev/null 2>&1; then
+                systemctl restart whale-tracker
+                systemctl --no-pager --full status whale-tracker || true
               else
-                pid=$(ss -lntp | awk '/:80 /{print $NF}' | grep -oE '[0-9]+' | head -1 || true)
-                [ -n "${pid:-}" ] && kill "$pid" || true
+                echo "systemd 服务 whale-tracker 不存在，改用 node 重启"
+                if command -v fuser >/dev/null 2>&1; then
+                  fuser -k 80/tcp || true
+                else
+                  pid=$(ss -lntp | awk "/:80 /{print \$NF}" | grep -oE "[0-9]+" | head -1 || true)
+                  [ -n "${pid:-}" ] && kill "$pid" || true
+                fi
+                sleep 1
+                nohup node server.js >/tmp/whale-tracker.log 2>&1 &
               fi
-              sleep 1
-              bash -lc 'cd /root/whale-tracker-deploy && nohup node server.js >/tmp/whale-tracker.log 2>&1 &'
-            fi
 
-            # curl 退出码 7 = 连不上；重启后稍等再探活
-            ok=0
-            for i in 1 2 3 4 5 6 7 8 9 10; do
-              sleep 2
-              if curl -sf --max-time 3 http://127.0.0.1/api/health; then
-                echo
-                echo "deploy ok (attempt $i)"
-                ok=1
-                break
+              ok=0
+              for i in 1 2 3 4 5 6 7 8 9 10; do
+                sleep 2
+                if curl -sf --max-time 3 http://127.0.0.1/api/health; then
+                  echo
+                  echo "deploy ok (attempt $i)"
+                  # 探活跟单路由：未登录应为 401，不能是 404
+                  code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 -X PUT http://127.0.0.1/api/copy-trade/exchange-keys/okx || true)
+                  echo "copy-trade exchange-keys PUT => HTTP $code"
+                  if [ "$code" = "404" ]; then
+                    echo "ERROR: copy-trade 路由仍为 404，后端未更新成功"
+                    exit 8
+                  fi
+                  ok=1
+                  break
+                fi
+                echo "health not ready, attempt $i"
+              done
+              if [ "$ok" != "1" ]; then
+                echo "health check failed"
+                systemctl --no-pager --full status whale-tracker || true
+                tail -n 80 /tmp/whale-tracker.log 2>/dev/null || true
+                journalctl -u whale-tracker -n 50 --no-pager || true
+                exit 7
               fi
-              echo "health not ready, attempt $i"
-            done
-            if [ "$ok" != "1" ]; then
-              echo "health check failed"
-              systemctl --no-pager --full status whale-tracker || true
-              tail -n 80 /tmp/whale-tracker.log 2>/dev/null || true
-              journalctl -u whale-tracker -n 50 --no-pager || true
-              exit 7
-            fi
+            '
