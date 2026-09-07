@@ -470,9 +470,10 @@
       const res = await fetch('/api/data/browse?limit=500', { cache: 'no-store' });
       if (!res.ok) throw new Error('browse HTTP ' + res.status);
       state.browse = await res.json();
+      state.whales = Array.isArray(state.browse.whales) ? state.browse.whales : [];
       renderBanner();
       renderWhales();
-      // 原「数据看板」卡片已改为 X 监控账号，browse 表仅作数据源
+      // 原「数据看板」卡片已改为 X 监控账号，browse 仍提供巨鲸列表等数据
     }
 
     async function loadXWatch() {
