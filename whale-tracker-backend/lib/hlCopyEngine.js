@@ -279,16 +279,16 @@ function calcProportionalSize(task, opts = {}) {
   let userMargin = capital * ratio;
   let notional = userMargin * lever;
 
-  // 加仓：按本次加仓名义 / 该仓名义 缩放
+  // 加仓：按本次加仓保证金占巨鲸权益比例（勿用本地持仓名义当巨鲸仓位）
   if (opts.action === 'add') {
     const addUsd = Math.abs(Number(opts.addUsd) || 0);
-    if (addUsd > 0 && posValue > 0) {
-      notional = notional * Math.min(1, addUsd / posValue);
-      userMargin = notional / lever;
-    } else if (addUsd > 0 && whaleEquity > 0) {
+    if (addUsd > 0 && whaleEquity > 0 && whaleLever > 0) {
       const addMargin = addUsd / whaleLever;
       userMargin = capital * Math.min(1, addMargin / whaleEquity);
       notional = userMargin * lever;
+    } else if (addUsd > 0 && posValue > 0) {
+      notional = notional * Math.min(1, addUsd / posValue);
+      userMargin = notional / lever;
     }
   }
 
@@ -323,6 +323,7 @@ function resolveWhaleMeta(address) {
 }
 
 const recentReduceAt = new Map(); // `${taskId}|coin|side` -> ts
+const recentOpenAddAt = new Map(); // `${taskId}|coin|side` -> ts
 
 function markReduce(taskId, coin, side) {
   recentReduceAt.set(`${taskId}|${String(coin).toUpperCase()}|${side}`, Date.now());
@@ -336,6 +337,21 @@ function markReduce(taskId, coin, side) {
 
 function wasRecentlyReduced(taskId, coin, side, windowMs = 12_000) {
   const t = recentReduceAt.get(`${taskId}|${String(coin).toUpperCase()}|${side}`);
+  return Boolean(t && Date.now() - t < windowMs);
+}
+
+function markOpenAdd(taskId, coin, side) {
+  recentOpenAddAt.set(`${taskId}|${String(coin).toUpperCase()}|${side}`, Date.now());
+  if (recentOpenAddAt.size > 2000) {
+    const cutoff = Date.now() - 60_000;
+    for (const [k, t] of recentOpenAddAt) {
+      if (t < cutoff) recentOpenAddAt.delete(k);
+    }
+  }
+}
+
+function wasRecentlyOpenAdd(taskId, coin, side, windowMs = 12_000) {
+  const t = recentOpenAddAt.get(`${taskId}|${String(coin).toUpperCase()}|${side}`);
   return Boolean(t && Date.now() - t < windowMs);
 }
 
@@ -532,6 +548,12 @@ async function executeForTask(task, alert) {
   const side = item.side === 'short' ? 'short' : 'long';
   if (!coin) return;
 
+  // fill 与仓位 diff 可能连续报同一笔开/加，短窗去重
+  if (wasRecentlyOpenAdd(task.id, coin, side)) {
+    console.log(`[copy-engine] skip duplicate open/add ${task.name} ${coin} ${side}`);
+    return;
+  }
+
   const local = findLocalPos(task.id, coin, side);
   let signalKind = alert.kind === 'open' ? 'open' : 'add';
   /** 巨鲸加仓但本地无仓 → 按开仓 */
@@ -543,17 +565,36 @@ async function executeForTask(task, alert) {
   const price = Number(item.price) || 0;
   const meta = resolveWhaleMeta(alert.address || task.whaleAddress);
   const fillUsd = Math.abs(Number(item.usd) || 0);
+  const remainingUsd = Math.abs(Number(item.remainingUsd) || 0);
+  const prevUsd = Math.abs(Number(item.prevUsd) || 0);
   const leverHint = Number(item.leverage) || Number(task.maxLeverage) || 5;
-  // 开仓信号：fill 名义≈该仓名义；加仓：fill 为增量
-  const positionValue =
-    signalKind === 'open' ? fillUsd : Math.max(fillUsd, Number(local?.notionalUsd) || 0);
-  const marginUsed = leverHint > 0 ? fillUsd / leverHint : fillUsd;
+
+  // 开仓/加仓：优先用巨鲸仓位名义（remaining / prev+fill / 实时仓），勿用本地 OKX 名义
+  let whalePosValue = 0;
+  if (remainingUsd > 0) {
+    whalePosValue = remainingUsd;
+  } else if (prevUsd > 0) {
+    whalePosValue = prevUsd + fillUsd;
+  } else if (meta.whale?.positions) {
+    const c = coin.toUpperCase();
+    const pos = meta.whale.positions.find(
+      (p) => String(p.coin || '').toUpperCase() === c && p.side === side,
+    );
+    if (pos) {
+      whalePosValue =
+        Math.abs(Number(pos.positionValue) || 0) ||
+        Math.abs((Number(pos.size) || 0) * (Number(pos.entryPx) || 0));
+    }
+  }
+  if (!(whalePosValue > 0)) whalePosValue = fillUsd;
+
+  const marginUsed = leverHint > 0 ? whalePosValue / leverHint : whalePosValue;
 
   const { notional, lever, userMargin, ratio } = calcProportionalSize(task, {
     action: signalKind,
     leverage: leverHint,
     marginUsed: signalKind === 'open' ? marginUsed : undefined,
-    positionValue: signalKind === 'open' ? positionValue : Number(local?.notionalUsd) || positionValue,
+    positionValue: whalePosValue,
     whaleAccountValue: meta.whaleAccountValue,
     whaleTotalPositionUsd: meta.whaleTotalPositionUsd,
     addUsd: signalKind === 'add' ? fillUsd : 0,
@@ -635,6 +676,7 @@ async function executeForTask(task, alert) {
       store.positions.unshift(nextPos);
     }
 
+    markOpenAdd(task.id, coin, side);
     pushRecord({
       ...recordBase,
       note: `已下单 ${instId} ${sz} 张 · 比例${(ratio * 100).toFixed(2)}% · 保证金≈${userMargin.toFixed(2)} · ordId=${order?.ordId || '—'}`,

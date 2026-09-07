@@ -176,6 +176,8 @@ function alertFromLiveFill(whale, fill, trade) {
       side = 'long';
       if (buy) {
         kind = 'increase';
+        prevUsd = px > 0 ? start * px : 0;
+        remainingUsd = px > 0 ? (start + fillSz) * px : 0;
       } else {
         const remainSz = Math.max(0, start - fillSz);
         kind = remainSz <= eps || remainSz / start < 0.02 ? 'close' : 'decrease';
@@ -187,6 +189,8 @@ function alertFromLiveFill(whale, fill, trade) {
       const startAbs = Math.abs(start);
       if (!buy) {
         kind = 'increase';
+        prevUsd = px > 0 ? startAbs * px : 0;
+        remainingUsd = px > 0 ? (startAbs + fillSz) * px : 0;
       } else {
         const remainSz = Math.max(0, startAbs - fillSz);
         kind = remainSz <= eps || remainSz / startAbs < 0.02 ? 'close' : 'decrease';
@@ -211,7 +215,8 @@ function alertFromLiveFill(whale, fill, trade) {
   }
 
   if (!kind || !side) return null;
-  if (/open/i.test(dir) && (kind === 'open' || kind === 'increase')) kind = 'open';
+  // 注意：HL 加仓的 dir 也经常是 "Open Long/Short"，不能据此把 increase 改成 open。
+  // 有 startPosition 时以仓位变化为准；无 start 时上面分支已按 dir 判定。
 
   const kindLabel =
     kind === 'open' ? '开单' : kind === 'increase' ? '加仓' : kind === 'decrease' ? '减仓' : '平仓';

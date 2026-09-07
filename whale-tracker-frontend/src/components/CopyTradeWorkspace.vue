@@ -129,6 +129,8 @@ function kindLabel(kind: CopyTradeRecord['kind'], item?: CopyTradeRecord) {
 
 const tasks = ref<CopyTask[]>([]);
 const selectedId = ref('');
+/** 跟随持仓筛选：空=全部；点左侧任务后只看该任务 */
+const filterTaskId = ref('');
 const settingsOpen = ref(false);
 const isCreating = ref(false);
 const exchangeTab = ref<CopyExchange>('okx');
@@ -136,15 +138,18 @@ const saving = ref(false);
 const engineHint = ref('');
 
 const selected = computed(() => tasks.value.find((t) => t.id === selectedId.value) || null);
+const filterTask = computed(() => tasks.value.find((t) => t.id === filterTaskId.value) || null);
 const dialogReady = computed(() => isCreating.value || Boolean(selected.value));
 
 const followedPositions = ref<FollowedPosition[]>([]);
 const tradeRecords = ref<CopyTradeRecord[]>([]);
 
-/** 默认展示全部跟随持仓 / 全部跟单记录 */
-const visiblePositions = computed(() =>
-  followedPositions.value.filter((p) => p.status === 'open'),
-);
+/** 默认全部开仓；选中左侧任务后只展示该跟单巨鲸持仓 */
+const visiblePositions = computed(() => {
+  const open = followedPositions.value.filter((p) => p.status === 'open');
+  if (!filterTaskId.value) return open;
+  return open.filter((p) => p.taskId === filterTaskId.value);
+});
 
 const visibleRecords = computed(() =>
   [...tradeRecords.value].sort((a, b) => b.at - a.at),
@@ -249,10 +254,12 @@ function applySnapshot(data: {
         ? '模拟盘执行中'
         : '实盘执行中';
   }
-  if (!selectedId.value && tasks.value[0]) selectedId.value = tasks.value[0].id;
-  // 选中项若不在列表中则纠正
+  // 选中 / 筛选任务若已删除则清空（默认不自动选中，持仓展示全部）
   if (selectedId.value && !tasks.value.some((t) => t.id === selectedId.value)) {
-    selectedId.value = tasks.value[0]?.id || '';
+    selectedId.value = '';
+  }
+  if (filterTaskId.value && !tasks.value.some((t) => t.id === filterTaskId.value)) {
+    filterTaskId.value = '';
   }
 }
 
@@ -262,6 +269,8 @@ async function refreshSnapshot(silent = true) {
     followedPositions.value = [];
     tradeRecords.value = [];
     exchangeKeys.value = null;
+    selectedId.value = '';
+    filterTaskId.value = '';
     return;
   }
   try {
@@ -320,6 +329,8 @@ watch(isLoggedIn, (ok) => {
     followedPositions.value = [];
     tradeRecords.value = [];
     exchangeKeys.value = null;
+    selectedId.value = '';
+    filterTaskId.value = '';
   }
 });
 
@@ -360,7 +371,8 @@ async function removeSelected() {
   }
   tasks.value = tasks.value.filter((t) => t.id !== id);
   saveLocalTasks(tasks.value);
-  selectedId.value = tasks.value[0]?.id || '';
+  if (selectedId.value === id) selectedId.value = '';
+  if (filterTaskId.value === id) filterTaskId.value = '';
   closeSettings();
   void refreshSnapshot();
 }
@@ -462,6 +474,13 @@ async function saveSettings() {
 
 function selectTask(task: CopyTask) {
   selectedId.value = task.id;
+  filterTaskId.value = task.id;
+}
+
+/** 跟随持仓恢复为全部任务 */
+function resetPositionFilter() {
+  filterTaskId.value = '';
+  selectedId.value = '';
 }
 
 function onExchangeTab(tab: CopyExchange) {
@@ -575,7 +594,7 @@ onUnmounted(() => {
           <div>
             <h3>跟单列表</h3>
             <p class="sub">
-              点击选中 · 设置弹窗编辑
+              点击查看该巨鲸持仓 · 卡片「设置」编辑
               <template v-if="exchangeKeys?.okx?.apiKeyHint">
                 · Key {{ exchangeKeys.okx.apiKeyHint }}
               </template>
@@ -590,7 +609,7 @@ onUnmounted(() => {
             :key="task.id"
             class="task-card"
             :class="{
-              active: task.id === selectedId,
+              active: task.id === filterTaskId,
               on: task.enabled,
               off: !task.enabled,
             }"
@@ -628,23 +647,25 @@ onUnmounted(() => {
           <div>
             <h3>跟随持仓</h3>
             <p class="sub">
-              全部任务 · {{ visiblePositions.length }} 个
+              <template v-if="filterTask">{{ filterTask.name }} · {{ visiblePositions.length }} 个</template>
+              <template v-else>全部任务 · {{ visiblePositions.length }} 个</template>
               <template v-if="engineHint"> · {{ engineHint }}</template>
             </p>
           </div>
           <button
-            v-if="selected"
             type="button"
             class="ghost"
-            @click="openSettings(selected)"
+            :disabled="!filterTaskId"
+            title="恢复展示全部跟随持仓"
+            @click="resetPositionFilter"
           >
-            设置
+            重置
           </button>
         </header>
 
-        <div v-if="!selected && !tasks.length" class="empty">请先新建跟单任务</div>
+        <div v-if="!tasks.length" class="empty">请先新建跟单任务</div>
         <div v-else-if="!visiblePositions.length" class="empty">
-          暂无跟随仓位
+          {{ filterTask ? `「${filterTask.name}」暂无跟随仓位` : '暂无跟随仓位' }}
           <span class="hint-dim">开启自动跟单后，开/加仓会显示在这里</span>
         </div>
         <div v-else class="pos-grid">
