@@ -307,15 +307,32 @@ export function formatWhaleMetricLines(
   const allTimePnl = Number(whale.allTimePnl);
   const accountValue = Number(whale.accountValue);
   const trades = Number(whale.closedTrades) || 0;
+  const winRateRaw = Number(whale.winRate);
   const lineBParts: string[] = [];
+
+  /** 盈亏相对期初权益估算：pnl / (账户权益 − pnl) */
+  const formatRoi = (pnl: number) => {
+    if (!(Number.isFinite(accountValue) && accountValue > 0)) return '';
+    const base = accountValue - pnl;
+    const roi = base > Math.abs(pnl) * 0.01 ? pnl / base : pnl / accountValue;
+    if (!Number.isFinite(roi)) return '';
+    const pct = roi * 100;
+    const sign = pct > 0 ? '+' : '';
+    const body = Math.abs(pct) >= 10 ? pct.toFixed(0) : pct.toFixed(1);
+    return `${sign}${body}%`;
+  };
+
   if (Number.isFinite(monthPnl) && monthPnl !== 0) {
-    lineBParts.push(`月盈亏 ${formatUsd(monthPnl)}`);
+    const roi = formatRoi(monthPnl);
+    lineBParts.push(roi ? `月盈亏 ${formatUsd(monthPnl)}（${roi}）` : `月盈亏 ${formatUsd(monthPnl)}`);
   }
   if (Number.isFinite(allTimePnl) && allTimePnl !== 0) {
-    lineBParts.push(`累计 ${formatUsd(allTimePnl)}`);
+    const roi = formatRoi(allTimePnl);
+    lineBParts.push(roi ? `累计 ${formatUsd(allTimePnl)}（${roi}）` : `累计 ${formatUsd(allTimePnl)}`);
   }
-  if (Number.isFinite(accountValue) && accountValue > 0) {
-    lineBParts.push(`账户 ${formatUsd(accountValue)}`);
+  if (Number.isFinite(winRateRaw) && winRateRaw > 0) {
+    const wr = winRateRaw <= 1 ? winRateRaw * 100 : winRateRaw;
+    lineBParts.push(`胜率 ${wr.toFixed(0)}%`);
   }
   if (trades > 0) lineBParts.push(`${trades}笔`);
 

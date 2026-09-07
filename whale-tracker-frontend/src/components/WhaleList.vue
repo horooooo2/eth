@@ -471,15 +471,10 @@ function openPosition(whale: WhaleProfile, pos: WhalePosition) {
   positionDialog.value?.open(whale, pos);
 }
 
-/** 第一行：做多/做空后平铺月盈亏·累计·账户等 */
+/** 第一行：月盈亏（%）· 累计（%）· 胜率 · 笔数 */
 function cardHeadInline(whale: WhaleProfile) {
   const metrics = formatWhaleMetricLines(whale);
-  const exposure = cardExposureText(whale);
-  const parts: string[] = [];
-  if (metrics.statsLine) parts.push(metrics.statsLine);
-  else if (metrics.volumeLine) parts.push(metrics.volumeLine);
-  if (exposure) parts.push(exposure);
-  return parts.join(' · ');
+  return metrics.statsLine || metrics.volumeLine || '';
 }
 
 function cardIdentityLine(whale: WhaleProfile) {
@@ -509,15 +504,6 @@ function cardExposure(whale: WhaleProfile) {
   const positionUsd = longUsd + shortUsd;
   if (positionUsd <= 0) return null;
   return { positionUsd, marginUsd: null as number | null };
-}
-
-function cardExposureText(whale: WhaleProfile) {
-  const exposure = cardExposure(whale);
-  if (!exposure) return '';
-  const parts: string[] = [];
-  if (exposure.positionUsd != null) parts.push(`仓位 ${formatUsd(exposure.positionUsd)}`);
-  if (exposure.marginUsd != null) parts.push(`保证金 ${formatUsd(exposure.marginUsd)}`);
-  return parts.join(' · ');
 }
 
 /** 刷新单个巨鲸并提示 */
