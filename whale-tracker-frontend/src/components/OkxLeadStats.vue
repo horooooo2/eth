@@ -5,6 +5,8 @@ import { fetchOkxTraderDetail, type OkxLeadRow, type OkxTrader } from '@/api';
 const props = defineProps<{
   traderId?: string;
   trader?: OkxTrader | null;
+  /** dialog：去掉外层卡片边框，用于弹窗内嵌 */
+  variant?: 'panel' | 'dialog';
 }>();
 
 const loading = ref(false);
@@ -64,11 +66,11 @@ watch(
 </script>
 
 <template>
-  <section class="okx-lead">
+  <section class="okx-lead" :class="{ dialog: variant === 'dialog' }">
     <header class="panel-head">
       <div class="titles">
-        <h3>带单表现</h3>
-        <p class="sub">{{ traderId ? title : '点击中间牛人查看带单数据' }}</p>
+        <h3 v-if="variant !== 'dialog'">带单表现</h3>
+        <p class="sub">{{ traderId ? title : '选择交易员查看带单数据' }}</p>
       </div>
       <select v-if="traderId" v-model="period" class="period">
         <option value="1">近 7 日</option>
@@ -110,6 +112,14 @@ watch(
   overflow: hidden;
   color: #e0e3eb;
 }
+.okx-lead.dialog {
+  height: auto;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+}
 .panel-head {
   display: flex;
   align-items: flex-start;
@@ -118,6 +128,9 @@ watch(
   padding: 12px 14px 8px;
   border-bottom: 1px solid var(--okx-border, #1e2630);
   flex-shrink: 0;
+}
+.okx-lead.dialog .panel-head {
+  padding: 0 0 10px;
 }
 .titles {
   min-width: 0;
@@ -134,6 +147,11 @@ watch(
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.okx-lead.dialog .panel-head .sub {
+  margin: 0;
+  font-size: 13px;
+  color: var(--okx-text-2, #a0a8b8);
 }
 .period {
   flex-shrink: 0;
@@ -154,6 +172,17 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 0;
+}
+.okx-lead.dialog .rows {
+  flex: none;
+  overflow: visible;
+  padding: 4px 0 0;
+}
+.okx-lead.dialog .value {
+  max-width: 70%;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
 }
 .row {
   display: flex;

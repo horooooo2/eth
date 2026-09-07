@@ -66,6 +66,7 @@ function mountRoutes(app, prefix) {
   app.use(`${base}/markets`, marketsRouter);
   app.use(`${base}/okx`, okxRouter);
   app.use(`${base}/x`, xRouter);
+  app.use(`${base}/copy-trade`, require('../routes/copyTrade'));
   app.get(`${base}/data/browse`, (req, res) => {
     try {
       const { loadDbBrowse } = require('./sqliteStore');

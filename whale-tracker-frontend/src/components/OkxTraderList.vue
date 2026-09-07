@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import { WarningFilled } from '@element-plus/icons-vue';
 import type { OkxTrader } from '@/api';
 import {
   isOkxTraderMonitored,
@@ -16,6 +17,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   select: [trader: OkxTrader];
+  lead: [trader: OkxTrader];
 }>();
 
 type SortKey = 'default' | 'aum' | 'copyNum' | 'copyPnl' | 'latestOpen';
@@ -135,6 +137,11 @@ function onFollowClick(e: Event, trader: OkxTrader) {
   e.stopPropagation();
   toggleOkxTraderMonitor(trader.id);
 }
+
+function onLeadClick(e: Event, trader: OkxTrader) {
+  e.stopPropagation();
+  emit('lead', trader);
+}
 </script>
 
 <template>
@@ -213,6 +220,13 @@ function onFollowClick(e: Event, trader: OkxTrader) {
             <span class="name">{{ trader.name }}</span>
             <span class="rank-tag">#{{ trader.rank }}</span>
           </div>
+          <span
+            class="lead-btn"
+            title="带单表现"
+            @click="onLeadClick($event, trader)"
+          >
+            <el-icon :size="14"><WarningFilled /></el-icon>
+          </span>
           <span
             class="copy-btn"
             :class="{ followed: isOkxTraderMonitored(trader.id) }"
@@ -461,6 +475,21 @@ function onFollowClick(e: Event, trader: OkxTrader) {
   color: var(--okx-text-3, #6a7282);
   flex-shrink: 0;
 }
+.lead-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  color: var(--okx-warn, #e6b84c);
+  cursor: pointer;
+}
+.lead-btn:hover {
+  background: color-mix(in srgb, var(--okx-warn, #e6b84c) 16%, transparent);
+  color: #f0c45c;
+}
 .copy-btn {
   flex-shrink: 0;
   font-size: 11px;
@@ -470,6 +499,7 @@ function onFollowClick(e: Event, trader: OkxTrader) {
   border: 1px solid var(--okx-orange, #f15a24);
   color: var(--okx-orange, #f15a24);
   background: transparent;
+  cursor: pointer;
 }
 .copy-btn.followed {
   background: color-mix(in srgb, var(--okx-orange, #f15a24) 18%, transparent);

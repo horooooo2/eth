@@ -6,9 +6,11 @@ const {
   getTraderDetail,
   seedOkxCache,
 } = require('../lib/okxCopyTrading');
+const okxTradeRouter = require('./okxTrade');
 
 const router = express.Router();
 
+router.use('/trade', okxTradeRouter);
 function assertSeedToken(req, res) {
   const need = String(process.env.OKX_SEED_TOKEN || '').trim();
   if (!need) return true;

@@ -141,9 +141,11 @@ function patchWhaleInCache(whaleId, patch) {
 }
 
 /**
- * 单笔 fill → 开/加仓异动。
- * HL：B=买、A=卖；必须结合 startPosition 判断是加多还是平空（买），加空还是平多（卖）。
- * 旧逻辑「买=多、卖=空」会把「减多」误报成「做空加仓」。
+ * 单笔 fill → 开/加/减/平异动。
+ * HL：B=买、A=卖；结合 startPosition 判断：
+ * - 多仓再买=加多，卖=减/平多
+ * - 空仓再卖=加空，买=减/平空
+ * 翻仓（dir 含 >）交给仓位 diff。
  */
 function alertFromLiveFill(whale, fill, trade) {
   if (!whale || !trade) return null;
@@ -151,52 +153,78 @@ function alertFromLiveFill(whale, fill, trade) {
   if (!coin) return null;
 
   const dir = String(fill.dir || trade.dir || '');
-  // 明确平仓/减仓、或一笔翻仓，不从 fill 出开/加异动（翻仓靠仓位 diff）
-  if (/close|reduce/i.test(dir)) return null;
   if (/>/.test(dir)) return null;
 
   const start = Number(fill.startPosition ?? trade.startPosition);
   const buy = trade.side === 'buy' || fill.side === 'B';
   const eps = 1e-8;
+  const fillSz = Math.abs(Number(fill.sz ?? fill.size ?? trade.size) || 0);
+  const px = Number(trade.price) || Number(fill.px) || 0;
+  const usd = Math.abs(Number(trade.amountUsd) || (fillSz * px) || 0);
 
   let side = null;
-  let kind = 'increase';
+  let kind = null;
+  let prevUsd = 0;
+  let remainingUsd = 0;
 
   if (Number.isFinite(start)) {
     if (Math.abs(start) < eps) {
       kind = 'open';
       side = buy ? 'long' : 'short';
     } else if (start > 0) {
-      // 原多仓：只有继续买才是加多；卖是减/平多
-      if (!buy) return null;
       side = 'long';
+      if (buy) {
+        kind = 'increase';
+      } else {
+        const remainSz = Math.max(0, start - fillSz);
+        kind = remainSz <= eps || remainSz / start < 0.02 ? 'close' : 'decrease';
+        prevUsd = px > 0 ? start * px : usd + remainSz * px;
+        remainingUsd = px > 0 ? remainSz * px : Math.max(0, prevUsd - usd);
+      }
     } else {
-      // 原空仓：只有继续卖才是加空；买是减/平空
-      if (buy) return null;
       side = 'short';
+      const startAbs = Math.abs(start);
+      if (!buy) {
+        kind = 'increase';
+      } else {
+        const remainSz = Math.max(0, startAbs - fillSz);
+        kind = remainSz <= eps || remainSz / startAbs < 0.02 ? 'close' : 'decrease';
+        prevUsd = px > 0 ? startAbs * px : usd + remainSz * px;
+        remainingUsd = px > 0 ? remainSz * px : Math.max(0, prevUsd - usd);
+      }
     }
+  } else if (/close|reduce/i.test(dir)) {
+    // dir 明确减/平，但无 startPosition：尽量推断方向
+    if (/short/i.test(dir)) side = 'short';
+    else if (/long/i.test(dir)) side = 'long';
+    else side = buy ? 'short' : 'long'; // 买平空 / 卖平多
+    kind = /close/i.test(dir) ? 'close' : 'decrease';
   } else if (/open\s*short|short\s*open/i.test(dir) || (/short/i.test(dir) && /open|add/i.test(dir))) {
     side = 'short';
-    if (/open/i.test(dir)) kind = 'open';
+    kind = /open/i.test(dir) ? 'open' : 'increase';
   } else if (/open\s*long|long\s*open/i.test(dir) || (/long/i.test(dir) && /open|add/i.test(dir))) {
     side = 'long';
-    if (/open/i.test(dir)) kind = 'open';
+    kind = /open/i.test(dir) ? 'open' : 'increase';
   } else {
-    // 无 startPosition / 无可靠 dir：宁可不报，避免买=多卖=空误伤
     return null;
   }
 
-  if (/open/i.test(dir)) kind = 'open';
+  if (!kind || !side) return null;
+  if (/open/i.test(dir) && (kind === 'open' || kind === 'increase')) kind = 'open';
 
-  const kindLabel = kind === 'open' ? '开单' : '加仓';
+  const kindLabel =
+    kind === 'open' ? '开单' : kind === 'increase' ? '加仓' : kind === 'decrease' ? '减仓' : '平仓';
   const title =
     kind === 'open'
       ? side === 'long'
         ? `开多 ${coin}`
         : `开空 ${coin}`
-      : `加仓 ${coin}`;
+      : kind === 'increase'
+        ? `加仓 ${coin}`
+        : kind === 'decrease'
+          ? `减仓 ${coin}`
+          : `平仓 ${coin}`;
   const ts = Number(trade.time) || Date.now();
-  const usd = Math.abs(Number(trade.amountUsd) || 0);
   return {
     id: `ws-${kind}-${whale.id}-${coin}-${trade.id || ts}`,
     at: ts,
@@ -215,6 +243,8 @@ function alertFromLiveFill(whale, fill, trade) {
         coin,
         side,
         usd,
+        prevUsd: prevUsd || undefined,
+        remainingUsd: remainingUsd || undefined,
         time: ts,
         price: trade.price ?? null,
       },
@@ -290,26 +320,28 @@ function alertsFromPositionDiff(whale, prevPositions, nextPositions) {
   const prevMap = new Map(
     (prevPositions || []).map((p) => [`${String(p.coin).toUpperCase()}:${p.side}`, p]),
   );
+  const nextMap = new Map(
+    (nextPositions || []).map((p) => [`${String(p.coin).toUpperCase()}:${p.side}`, p]),
+  );
   const alerts = [];
   const now = Date.now();
-  for (const pos of nextPositions || []) {
-    const key = `${String(pos.coin).toUpperCase()}:${pos.side}`;
-    const prev = prevMap.get(key);
-    const usd = positionNotionalUsd(pos);
-    if (usd < 1) continue;
-    let kind = null;
-    let title = '';
-    if (!prev) {
-      kind = 'open';
-      title = pos.side === 'long' ? `开多 ${pos.coin}` : `开空 ${pos.coin}`;
-    } else {
-      const prevUsd = positionNotionalUsd(prev);
-      if (usd > prevUsd * 1.04 && usd - prevUsd > 50) {
-        kind = 'increase';
-        title = `加仓 ${pos.coin}`;
-      }
-    }
-    if (!kind) continue;
+
+  const pushAlert = (kind, pos, extras = {}) => {
+    const coin = pos.coin;
+    const side = pos.side;
+    const title =
+      kind === 'open'
+        ? side === 'long'
+          ? `开多 ${coin}`
+          : `开空 ${coin}`
+        : kind === 'increase'
+          ? `加仓 ${coin}`
+          : kind === 'decrease'
+            ? `减仓 ${coin}`
+            : `平仓 ${coin}`;
+    const kindLabel =
+      kind === 'open' ? '开单' : kind === 'increase' ? '加仓' : kind === 'decrease' ? '减仓' : '平仓';
+    const key = `${String(coin).toUpperCase()}:${side}`;
     alerts.push({
       id: `ws-pos-${kind}-${whale.id}-${key}-${now}`,
       at: now,
@@ -317,7 +349,7 @@ function alertsFromPositionDiff(whale, prevPositions, nextPositions) {
       whaleName: whale.name,
       address: whale.address,
       kind,
-      kindLabel: kind === 'open' ? '开单' : '加仓',
+      kindLabel,
       headline: title,
       layer: 'position',
       items: [
@@ -325,16 +357,49 @@ function alertsFromPositionDiff(whale, prevPositions, nextPositions) {
           kind,
           title,
           detail: '',
-          coin: pos.coin,
-          side: pos.side,
-          usd,
+          coin,
+          side,
+          usd: extras.usd ?? positionNotionalUsd(pos),
+          prevUsd: extras.prevUsd,
+          remainingUsd: extras.remainingUsd,
           time: now,
-          price: pos.entryPx || null,
+          price: pos.entryPx || pos.markPx || null,
           leverage: pos.leverage,
         },
       ],
     });
+  };
+
+  for (const pos of nextPositions || []) {
+    const key = `${String(pos.coin).toUpperCase()}:${pos.side}`;
+    const prev = prevMap.get(key);
+    const usd = positionNotionalUsd(pos);
+    if (usd < 1) continue;
+    if (!prev) {
+      pushAlert('open', pos, { usd });
+      continue;
+    }
+    const prevUsd = positionNotionalUsd(prev);
+    if (usd > prevUsd * 1.04 && usd - prevUsd > 50) {
+      pushAlert('increase', pos, { usd: usd - prevUsd, prevUsd, remainingUsd: usd });
+    } else if (usd < prevUsd * 0.96 && prevUsd - usd > 50) {
+      pushAlert('decrease', pos, {
+        usd: prevUsd - usd,
+        prevUsd,
+        remainingUsd: usd,
+      });
+    }
   }
+
+  // 上一轮有仓、本轮消失 → 平仓
+  for (const prev of prevPositions || []) {
+    const key = `${String(prev.coin).toUpperCase()}:${prev.side}`;
+    if (nextMap.has(key)) continue;
+    const prevUsd = positionNotionalUsd(prev);
+    if (prevUsd < 1) continue;
+    pushAlert('close', prev, { usd: prevUsd, prevUsd, remainingUsd: 0 });
+  }
+
   return alerts;
 }
 
@@ -347,6 +412,11 @@ function emitAlerts(alerts) {
   }
   for (const alert of alerts) {
     broadcast({ type: 'alert', alert, at: Date.now() });
+  }
+  try {
+    require('./hlCopyEngine').onWhaleAlerts(alerts);
+  } catch (err) {
+    console.warn('[realtime] copy-engine:', err.message);
   }
 }
 
@@ -460,9 +530,18 @@ function getRealtimeStatus() {
   };
 }
 
+function getWhaleByAddress(address) {
+  const key = String(address || '')
+    .trim()
+    .toLowerCase();
+  if (!key) return null;
+  return whalesByAddress.get(key) || null;
+}
+
 module.exports = {
   startRealtimeBridge,
   syncFromCache,
   isRealtimeConnected,
   getRealtimeStatus,
+  getWhaleByAddress,
 };

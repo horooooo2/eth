@@ -485,7 +485,7 @@ onMounted(() => {
   font: inherit;
   font-size: 11px;
   line-height: 1.2;
-  cursor: default;
+  cursor: pointer;
 }
 .orig-btn.on {
   color: #fff;

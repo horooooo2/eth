@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { fetchQuotes, fetchPagedAlertHistory, fetchPagedTrades, fetchCalendar, fetchOkxDashboard } from '@/api';
-import type { OkxOpenEvent, OkxTrader } from '@/api';
+import { fetchQuotes, fetchPagedAlertHistory, fetchPagedTrades, fetchCalendar } from '@/api';
 import CoinPreferences from '@/components/CoinPreferences.vue';
 import FreshModeControl from '@/components/FreshModeControl.vue';
 import NewsList from '@/components/NewsList.vue';
@@ -11,10 +10,7 @@ import WhaleResonanceBanner from '@/components/WhaleResonanceBanner.vue';
 import WhaleAlertDock from '@/components/WhaleAlertDock.vue';
 import WhaleList from '@/components/WhaleList.vue';
 import DataModule from '@/components/DataModule.vue';
-import OkxTraderList from '@/components/OkxTraderList.vue';
-import OkxOpenStream from '@/components/OkxOpenStream.vue';
-import OkxLeadStats from '@/components/OkxLeadStats.vue';
-import OkxAlertDock from '@/components/OkxAlertDock.vue';
+import CopyTradeWorkspace from '@/components/CopyTradeWorkspace.vue';
 import { useNewsStore } from '@/stores/news';
 import { useWhaleStore } from '@/stores/whale';
 import {
@@ -31,32 +27,18 @@ import type { RecoQuotes } from '@/utils/recommend';
 import { readFocusCoin } from '@/utils/recoPrefs';
 import { preferredCoinsState } from '@/utils/watchedCoins';
 import { unlockAlertSound, playAlertDing } from '@/utils/alertSound';
-import { freshModeEnabled, freshWindowMs } from '@/utils/freshMode';
 import type { WhaleAlert } from '@/utils/whaleAlerts';
 import { normalizeStoredAlert } from '@/utils/whaleAlerts';
-import { ingestOkxAlert, type OkxOpenAlert } from '@/utils/okxAlerts';
 import { noteXTweets } from '@/stores/xFeed';
 import type { XFeedTweet } from '@/api';
-import { isOkxTraderMonitored } from '@/utils/monitoredOkxTraders';
 import { isWhaleMonitored } from '@/utils/monitoredWhales';
 import {
   clearHlWorkspaceBadge,
-  clearOkxWorkspaceBadge,
   formatWorkspaceBadge,
   hlWorkspaceBadge,
   noteHlWorkspacePending,
-  noteOkxWorkspacePending,
-  okxWorkspaceBadge,
 } from '@/utils/workspaceBadges';
 import type { WhaleProfile, WhaleTrade } from '@/types';
-
-function okxAlertInFreshWindow(alert: OkxOpenAlert) {
-  if (!freshModeEnabled.value) return true;
-  const at = Number(alert.at) || 0;
-  if (!at) return false;
-  const age = Date.now() - at;
-  return age >= -60_000 && age <= freshWindowMs();
-}
 
 const whaleStore = useWhaleStore();
 const newsStore = useNewsStore();
@@ -90,6 +72,17 @@ async function submitLogin() {
   } finally {
     loginBusy.value = false;
   }
+}
+
+function openCopyWorkspace() {
+  workspace.value = 'copy';
+  if (!isLoggedIn.value) {
+    loginOpen.value = true;
+  }
+}
+
+function onOpenCopyWorkspace() {
+  workspace.value = 'copy';
 }
 
 function onLogout() {
@@ -182,36 +175,8 @@ const secondaryReady = ref(false);
 const bootBusy = ref(true);
 const bootLabel = ref('巨鲸加载中…');
 const bootProgress = ref(0);
-/** 工作区模块：HL 现网 / OKX 占位 */
-const workspace = ref<'hyperliquid' | 'okx'>('hyperliquid');
-const okxLoading = ref(false);
-const okxError = ref('');
-const okxUpdatedAt = ref(0);
-const okxTraders = ref<OkxTrader[]>([]);
-const okxOpens = ref<OkxOpenEvent[]>([]);
-const okxPositions = ref<OkxOpenEvent[]>([]);
-const okxSelectedId = ref('');
-const okxSelectedTrader = computed(
-  () => okxTraders.value.find((t) => t.id === okxSelectedId.value) || null,
-);
-const okxSelectedName = computed(() => okxSelectedTrader.value?.name || '');
-
-function applyOkxSnapshot(data: {
-  traders?: OkxTrader[];
-  opens?: OkxOpenEvent[];
-  positions?: OkxOpenEvent[];
-  positionsByTrader?: Record<string, OkxOpenEvent[]>;
-  updatedAt?: number;
-  error?: string;
-}) {
-  okxTraders.value = Array.isArray(data.traders) ? data.traders : [];
-  okxOpens.value = Array.isArray(data.opens) ? data.opens : [];
-  okxPositions.value = Array.isArray(data.positions)
-    ? data.positions
-    : Object.values(data.positionsByTrader || {}).flat();
-  okxUpdatedAt.value = Number(data.updatedAt) || Date.now();
-  if (data.error) okxError.value = data.error;
-}
+/** 工作区：HL 监控 / 跟单 */
+const workspace = ref<'hyperliquid' | 'copy'>('hyperliquid');
 
 const {
   status: realtimeStatus,
@@ -232,64 +197,15 @@ const {
     }
   } else if (msg.type === 'whalePatch' && msg.whaleId && msg.patch) {
     whaleStore.ingestRealtimeWhalePatch(msg.whaleId, msg.patch as Partial<WhaleProfile>);
-  } else if (msg.type === 'okxUpdate') {
-    applyOkxSnapshot({
-      traders: msg.traders as OkxTrader[] | undefined,
-      opens: msg.opens as OkxOpenEvent[] | undefined,
-      positions: msg.positions as OkxOpenEvent[] | undefined,
-      positionsByTrader: msg.positionsByTrader as Record<string, OkxOpenEvent[]> | undefined,
-      updatedAt: msg.updatedAt || msg.at,
-    });
-    okxError.value = '';
-  } else if (msg.type === 'okxAlert' && msg.alert) {
-    const alert = msg.alert as unknown as OkxOpenAlert;
-    ingestOkxAlert(alert);
-    if (
-      workspace.value !== 'okx' &&
-      alert.traderId &&
-      isOkxTraderMonitored(alert.traderId) &&
-      okxAlertInFreshWindow(alert)
-    ) {
-      noteOkxWorkspacePending(alert.traderId);
-      playAlertDing();
-    }
   } else if (msg.type === 'xTweet' && Array.isArray(msg.tweets)) {
     noteXTweets(msg.tweets as unknown as XFeedTweet[]);
+  } else if (msg.type === 'copyUpdate') {
+    window.dispatchEvent(new CustomEvent('whale-copy-update', { detail: msg }));
   }
 });
 
-async function loadOkxDashboard(force = false) {
-  if (okxLoading.value && !force) return;
-  okxLoading.value = true;
-  okxError.value = '';
-  try {
-    const data = await fetchOkxDashboard(force);
-    applyOkxSnapshot(data);
-  } catch (err) {
-    okxError.value = err instanceof Error ? err.message : 'OKX 加载失败';
-  } finally {
-    okxLoading.value = false;
-  }
-}
-
-function onSelectOkxTrader(trader: OkxTrader) {
-  okxSelectedId.value = trader.id;
-}
-
-function clearOkxTraderFilter() {
-  okxSelectedId.value = '';
-}
-
-function onFocusOkxAlert(payload: { id: string; name: string }) {
-  workspace.value = 'okx';
-  okxSelectedId.value = payload.id;
-}
-
 watch(workspace, (next) => {
-  if (next === 'okx') {
-    clearOkxWorkspaceBadge();
-    void loadOkxDashboard(false);
-  } else if (next === 'hyperliquid') {
+  if (next === 'hyperliquid') {
     clearHlWorkspaceBadge();
   }
 });
@@ -347,6 +263,7 @@ onMounted(async () => {
   document.documentElement.classList.remove('light');
   syncMobilePanel();
   window.addEventListener('resize', syncMobilePanel);
+  window.addEventListener('whale-open-copy-workspace', onOpenCopyWorkspace);
   unlockAlertSound();
   await bootstrapAuth();
   void getAuthUiSettings();
@@ -363,13 +280,14 @@ onUnmounted(() => {
   whaleStore.stopActivityPolling();
   stopRealtime();
   window.removeEventListener('resize', syncMobilePanel);
+  window.removeEventListener('whale-open-copy-workspace', onOpenCopyWorkspace);
 });
 </script>
 
 <template>
   <div
     class="app-shell"
-    :class="{ busy: pageBusy, 'theme-okx': workspace === 'okx' }"
+    :class="{ busy: pageBusy, 'theme-copy': workspace === 'copy' }"
     @pointerdown="unlockAlertSound"
   >
     <div v-if="pageBusy" class="page-mask">
@@ -389,10 +307,6 @@ onUnmounted(() => {
     <WhaleAlertDock
       :dock-active="workspace === 'hyperliquid'"
       @focus-whale="onFocusWhaleCard"
-    />
-    <OkxAlertDock
-      :dock-active="workspace === 'okx'"
-      @focus-trader="onFocusOkxAlert"
     />
 
     <aside class="sidebar" aria-label="主导航">
@@ -433,18 +347,19 @@ onUnmounted(() => {
       <button
         type="button"
         class="nav-item"
-        :class="{ active: workspace === 'okx' }"
-        @click="workspace = 'okx'"
+        :class="{ active: workspace === 'copy' }"
+        @click="openCopyWorkspace"
       >
         <span class="nav-mark brand" aria-hidden="true">
-          <svg class="brand-logo okx" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M2 2h6.5v6.5H2V2zm13.5 0H22v6.5h-6.5V2zM2 15.5h6.5V22H2v-6.5zm6.75-4.75h6.5v6.5h-6.5v-6.5zM15.5 15.5H22V22h-6.5v-6.5z" />
+          <svg class="brand-logo copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              d="M7 7h10v10H7zM4.5 4.5H9M15 19.5h4.5M4.5 15V9M19.5 9v6"
+            />
           </svg>
-          <span v-if="okxWorkspaceBadge > 0" class="nav-badge">{{
-            formatWorkspaceBadge(okxWorkspaceBadge)
-          }}</span>
         </span>
-        <span>OKX</span>
+        <span>跟单</span>
       </button>
 
       <div class="bottom-nav">
@@ -574,40 +489,7 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div v-show="workspace === 'okx'" class="okx-shell">
-        <div class="okx-toolbar">
-          <span class="okx-title">OKX 顶级交易员 · Top {{ okxTraders.length || 50 }}</span>
-          <span v-if="okxError" class="okx-err">{{ okxError }}</span>
-          <button
-            type="button"
-            class="okx-refresh"
-            :disabled="okxLoading"
-            @click="loadOkxDashboard(true)"
-          >
-            {{ okxLoading ? '刷新中…' : '刷新' }}
-          </button>
-        </div>
-        <div class="okx-grid">
-          <OkxLeadStats
-            :trader-id="okxSelectedId"
-            :trader="okxSelectedTrader"
-          />
-          <OkxTraderList
-            :traders="okxTraders"
-            :loading="okxLoading"
-            :selected-id="okxSelectedId"
-            @select="onSelectOkxTrader"
-          />
-          <OkxOpenStream
-            :opens="okxOpens"
-            :positions="okxPositions"
-            :loading="okxLoading"
-            :filter-trader-id="okxSelectedId"
-            :filter-trader-name="okxSelectedName"
-            @reset="clearOkxTraderFilter"
-          />
-        </div>
-      </div>
+      <CopyTradeWorkspace v-show="workspace === 'copy'" @request-login="loginOpen = true" />
     </div>
   </div>
 </template>
@@ -625,74 +507,54 @@ onUnmounted(() => {
   user-select: none;
 }
 
-/* ===== OKX 模块主题（含侧栏） ===== */
-.app-shell.theme-okx {
-  --okx-black: #000000;
-  --okx-orange: #f15a24;
-  --okx-orange-2: #ff6b35;
-  --okx-bg: #0a0e14;
-  --okx-card: #121821;
-  --okx-bg-3: #1a222c;
-  --okx-border: #1e2630;
-  --okx-text: #e0e3eb;
-  --okx-text-2: #a0a8b8;
-  --okx-text-3: #6a7282;
-  --okx-text-4: #4a5262;
-  --okx-up: #58bd7d;
-  --okx-down: #ea5a5a;
-  --okx-warn: #e6b84c;
-  --okx-accent: #f0b90b;
-  --okx-link: #5b9bd5;
-  background: var(--okx-bg);
-  color: var(--okx-text);
+/* ===== 跟单模块主题（含侧栏） ===== */
+.app-shell.theme-copy {
+  --copy-black: #000000;
+  --copy-accent: #f15a24;
+  --copy-bg: #0a0e14;
+  --copy-bg-3: #1a222c;
+  --copy-border: #1e2630;
+  --copy-text: #e0e3eb;
+  --copy-text-3: #6a7282;
+  background: var(--copy-bg);
+  color: var(--copy-text);
 }
-.app-shell.theme-okx .sidebar {
-  background: var(--okx-black);
-  border-right-color: var(--okx-border);
+.app-shell.theme-copy .sidebar {
+  background: var(--copy-black);
+  border-right-color: var(--copy-border);
 }
-.app-shell.theme-okx .sidebar .nav-item {
-  color: var(--okx-text-3);
+.app-shell.theme-copy .sidebar .nav-item {
+  color: var(--copy-text-3);
 }
-.app-shell.theme-okx .sidebar .nav-item.active {
-  background: var(--okx-bg-3);
-  color: var(--okx-orange);
+.app-shell.theme-copy .sidebar .nav-item.active {
+  background: var(--copy-bg-3);
+  color: var(--copy-accent);
 }
-.app-shell.theme-okx .sidebar .nav-item:hover {
-  background: var(--okx-bg-3);
-  color: var(--okx-text);
+.app-shell.theme-copy .sidebar .nav-item:hover {
+  background: var(--copy-bg-3);
+  color: var(--copy-text);
 }
-.app-shell.theme-okx .sidebar .nav-item.active .nav-mark .brand-logo.okx {
-  color: #e8edf5;
+.app-shell.theme-copy .sidebar .nav-item.active .nav-mark .brand-logo.copy {
+  color: var(--copy-accent);
 }
-.app-shell.theme-okx .sidebar .bottom-nav {
-  border-top-color: var(--okx-border);
+.app-shell.theme-copy .sidebar .bottom-nav {
+  border-top-color: var(--copy-border);
 }
-.app-shell.theme-okx .layout {
-  background: var(--okx-bg);
+.app-shell.theme-copy .layout {
+  background: var(--copy-bg);
 }
-.app-shell.theme-okx .okx-toolbar .okx-title {
-  color: var(--okx-text);
+.app-shell.theme-copy .sidebar :deep(.fresh-btn.sidebar),
+.app-shell.theme-copy .sidebar :deep(.prefs-trigger.sidebar) {
+  color: var(--copy-text-3);
 }
-.app-shell.theme-okx .okx-refresh {
-  background: var(--okx-bg-3);
-  color: var(--okx-text-2);
+.app-shell.theme-copy .sidebar :deep(.fresh-btn.sidebar:hover:not(:disabled)),
+.app-shell.theme-copy .sidebar :deep(.prefs-trigger.sidebar:hover) {
+  background: var(--copy-bg-3);
+  color: var(--copy-text);
 }
-.app-shell.theme-okx .okx-refresh:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--okx-orange) 22%, var(--okx-bg-3));
-  color: var(--okx-orange);
-}
-.app-shell.theme-okx .sidebar :deep(.fresh-btn.sidebar),
-.app-shell.theme-okx .sidebar :deep(.prefs-trigger.sidebar) {
-  color: var(--okx-text-3);
-}
-.app-shell.theme-okx .sidebar :deep(.fresh-btn.sidebar:hover:not(:disabled)),
-.app-shell.theme-okx .sidebar :deep(.prefs-trigger.sidebar:hover) {
-  background: var(--okx-bg-3);
-  color: var(--okx-text);
-}
-.app-shell.theme-okx .sidebar :deep(.fresh-btn.sidebar.on) {
-  background: var(--okx-bg-3);
-  color: var(--okx-orange);
+.app-shell.theme-copy .sidebar :deep(.fresh-btn.sidebar.on) {
+  background: var(--copy-bg-3);
+  color: var(--copy-accent);
 }
 
 .sidebar {
@@ -852,12 +714,9 @@ onUnmounted(() => {
 .sidebar .nav-item .nav-mark .brand-logo.hl {
   border-radius: 50%;
 }
-.sidebar .nav-item .nav-mark .brand-logo.okx {
+.sidebar .nav-item .nav-mark .brand-logo.copy {
   width: 20px;
   height: 20px;
-  color: #e8edf5;
-}
-.sidebar .nav-item.active .nav-mark .brand-logo.okx {
   color: #e8edf5;
 }
 .sidebar .nav-item .nav-mark.user {
@@ -1032,81 +891,6 @@ onUnmounted(() => {
   max-width: 100%;
   min-height: 0;
   overflow: hidden;
-}
-.okx-shell {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.okx-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-shrink: 0;
-}
-.okx-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: #e8edf5;
-}
-.okx-err {
-  font-size: 12px;
-  color: #f87171;
-}
-.okx-refresh {
-  margin-left: auto;
-  border: 0;
-  border-radius: 4px;
-  padding: 6px 14px;
-  background: #1a222e;
-  color: #b0c4de;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.okx-refresh:hover:not(:disabled) {
-  background: #2a3a52;
-  color: #f0f4fa;
-}
-.okx-refresh:disabled {
-  opacity: 0.55;
-  cursor: wait;
-}
-.okx-grid {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns:
-    minmax(120px, calc((100% - 24px) * 0.25 - 80px))
-    minmax(0, calc((100% - 24px) * 0.5))
-    minmax(200px, calc((100% - 24px) * 0.25 + 80px));
-  gap: 12px;
-}
-.app-shell.theme-okx .okx-shell {
-  background: #0a0e14;
-}
-.app-shell.theme-okx .okx-grid :deep(.okx-lead),
-.app-shell.theme-okx .okx-grid :deep(.okx-traders),
-.app-shell.theme-okx .okx-grid :deep(.okx-right) {
-  background: #121821;
-  border-color: #1e2630;
-  color: #e0e3eb;
-}
-.app-shell.theme-okx .okx-grid :deep(.okx-card),
-.app-shell.theme-okx .okx-grid :deep(.event),
-.app-shell.theme-okx .okx-grid :deep(.period),
-.app-shell.theme-okx .okx-grid :deep(.min-usd) {
-  background: #0a0e14;
-  border-color: #1e2630;
-}
-@media (max-width: 1280px) {
-  .okx-grid {
-    grid-template-columns: 1fr;
-    overflow: auto;
-  }
 }
 @media (max-width: 1280px) {
   .app-shell {

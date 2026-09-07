@@ -22,6 +22,14 @@ export type RealtimeMessage =
       at?: number;
       tweets?: Array<Record<string, unknown>>;
       accounts?: unknown[];
+    }
+  | {
+      type: 'copyUpdate';
+      at?: number;
+      updatedAt?: number;
+      tasks?: unknown[];
+      positions?: unknown[];
+      records?: unknown[];
     };
 
 type Handler = (msg: RealtimeMessage) => void;

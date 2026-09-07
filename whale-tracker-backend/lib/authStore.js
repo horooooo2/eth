@@ -210,6 +210,11 @@ function deleteUser(userId) {
   const database = getDb();
   database.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
   database.prepare('DELETE FROM user_settings WHERE user_id = ?').run(id);
+  try {
+    database.prepare('DELETE FROM user_exchange_keys WHERE user_id = ?').run(id);
+  } catch {
+    /* table may not exist on very old DBs mid-migrate */
+  }
   database.prepare('DELETE FROM users WHERE id = ?').run(id);
   return { id, username: user.username };
 }

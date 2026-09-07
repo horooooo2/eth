@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { fetchWhalePosition, isTimeoutError, scheduleSilentRetry } from '@/api';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import { fetchWhalePosition, followCopyFromPosition, isTimeoutError, scheduleSilentRetry } from '@/api';
 import PositionAnalysisDialog from '@/components/PositionAnalysisDialog.vue';
 import type { WhalePosition, WhalePositionDetail, WhaleProfile, WhaleTrade } from '@/types';
 import { displayAsset, hyperliquidExplorer } from '@/utils/assets';
@@ -26,6 +27,7 @@ import {
 import { useWhaleStore } from '@/stores/whale';
 import { preferredCoinsState } from '@/utils/watchedCoins';
 import { whaleCardTitle } from '@/utils/whaleReference';
+import { isLoggedIn } from '@/stores/auth';
 
 const whaleStore = useWhaleStore();
 
@@ -55,6 +57,16 @@ const detail = ref<WhalePositionDetail | null>(null);
 const entryFillsExpanded = ref(false);
 const analysisVisible = ref(false);
 const analysisPreset = ref<Partial<UserPositionInput> | null>(null);
+const copyPickOpen = ref(false);
+const copyBusy = ref(false);
+
+type CopyTarget = 'all' | 'okx' | 'binance';
+
+function targetLabel(target: CopyTarget) {
+  if (target === 'all') return '全部（OKX + 币安）';
+  if (target === 'okx') return 'OKX';
+  return '币安';
+}
 
 const recoOptions = computed<RecoOptions>(() => ({
   coin: preferredCoinsState.value[0] || detail.value?.coin || 'BTC',
@@ -277,6 +289,105 @@ function openPositionAnalysis() {
   };
   analysisVisible.value = true;
 }
+
+function openCopyPick() {
+  if (!detail.value || detail.value.closed) return;
+  if (!whaleAddress.value) {
+    ElMessage.warning('缺少巨鲸地址，无法跟单');
+    return;
+  }
+  if (!isLoggedIn.value) {
+    ElMessage.warning('请先登录后再跟单');
+    return;
+  }
+  copyPickOpen.value = true;
+}
+
+async function pickCopyTarget(target: CopyTarget) {
+  if (target === 'binance') {
+    ElMessage.info('币安跟单对接中');
+    return;
+  }
+  const row = detail.value;
+  if (!row || row.closed) return;
+  const coin = String(row.coinLabel || row.coin || '');
+  const sideText = row.side === 'short' ? '空' : '多';
+  const name = whaleName.value || '巨鲸';
+
+  copyPickOpen.value = false;
+
+  try {
+    await ElMessageBox.confirm(
+      `确认在 ${targetLabel(target)} 跟单「${name}」的 ${coin} ${sideText} 仓位？\n将按同方向、当前市价开仓；仓位大小=跟单本金×(巨鲸该仓保证金/巨鲸权益)×杠杆。\n开仓失败不会加入跟单列表。`,
+      '确认跟单开仓',
+      {
+        confirmButtonText: '确认开仓',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    );
+  } catch {
+    return;
+  }
+
+  if (copyBusy.value) return;
+  copyBusy.value = true;
+  try {
+    const result = await followCopyFromPosition({
+      target: target === 'all' ? 'okx' : target,
+      whaleAddress: whaleAddress.value,
+      whaleName: whaleName.value,
+      whaleAccountValue: Number(activeWhale.value?.accountValue) || 0,
+      whaleTotalPositionUsd:
+        Math.abs(Number(activeWhale.value?.longUsd) || 0) +
+        Math.abs(Number(activeWhale.value?.shortUsd) || 0),
+      position: {
+        coin: row.coin,
+        coinLabel: row.coinLabel,
+        side: row.side,
+        size: row.size,
+        entryPx: row.entryPx,
+        markPx: markPx.value ?? row.markPx,
+        positionValue: row.positionValue,
+        unrealizedPnl: row.unrealizedPnl,
+        leverage: row.leverage,
+        marginUsed: row.marginUsed,
+        liquidationPx: row.liquidationPx,
+      },
+    });
+    if (result.snapshot) {
+      window.dispatchEvent(new CustomEvent('whale-copy-update', { detail: result.snapshot }));
+    }
+    const n = (result.created?.length || 0) + (result.reused?.length || 0);
+    const opened = Array.isArray(result.orders) ? result.orders.length : 0;
+    const fails = Array.isArray(result.failures) ? result.failures : [];
+    if (opened > 0 && fails.length === 0) {
+      ElMessage.success(`已跟单开仓（${opened} 笔）${n ? ` · 已加入跟单列表` : ''}`);
+      visible.value = false;
+      copyPickOpen.value = false;
+      window.dispatchEvent(new CustomEvent('whale-open-copy-workspace'));
+    } else if (opened > 0 && fails.length) {
+      ElMessage.warning(`部分开仓成功（${opened}）`);
+      visible.value = false;
+      window.dispatchEvent(new CustomEvent('whale-open-copy-workspace'));
+    } else if (fails.length) {
+      ElMessage.error(fails[0] || result.error || '开仓失败，未加入跟单列表');
+    } else {
+      ElMessage.warning('未开仓，未加入跟单列表');
+    }
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '跟单失败');
+    try {
+      const { fetchCopyTradeSnapshot } = await import('@/api');
+      const snap = await fetchCopyTradeSnapshot();
+      window.dispatchEvent(new CustomEvent('whale-copy-update', { detail: snap }));
+    } catch {
+      /* ignore */
+    }
+  } finally {
+    copyBusy.value = false;
+  }
+}
 </script>
 
 <template>
@@ -439,9 +550,37 @@ function openPositionAnalysis() {
     <template #footer>
       <div class="actions">
         <el-button v-if="detail && !isClosed" @click="openPositionAnalysis">仓位分析</el-button>
+        <el-button v-if="detail && !isClosed" type="success" :loading="copyBusy" @click="openCopyPick">
+          跟单
+        </el-button>
         <el-button type="primary" @click="locateWhaleCard">查看巨鲸卡片</el-button>
       </div>
     </template>
+  </el-dialog>
+
+  <el-dialog
+    v-model="copyPickOpen"
+    title="选择跟单交易所"
+    width="380px"
+    append-to-body
+    align-center
+    class="copy-pick-dialog"
+  >
+    <p class="copy-pick-hint">选择后将再次确认是否跟单该仓位</p>
+    <div class="copy-pick-list">
+      <button type="button" class="copy-pick-btn" :disabled="copyBusy" @click="pickCopyTarget('all')">
+        全部
+        <span>同时写入 OKX 与币安跟单</span>
+      </button>
+      <button type="button" class="copy-pick-btn" :disabled="copyBusy" @click="pickCopyTarget('okx')">
+        OKX
+        <span>写入 OKX 跟单配置</span>
+      </button>
+      <button type="button" class="copy-pick-btn" :disabled="copyBusy" @click="pickCopyTarget('binance')">
+        币安
+        <span>写入币安跟单配置（预留）</span>
+      </button>
+    </div>
   </el-dialog>
 
   <PositionAnalysisDialog
@@ -596,6 +735,46 @@ function openPositionAnalysis() {
   margin: 0;
   flex: 0 0 auto;
   white-space: nowrap;
+}
+.copy-pick-hint {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--muted, #8b9bb5);
+}
+.copy-pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.copy-pick-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border, #1e2630);
+  border-radius: 10px;
+  background: var(--bg-2, #121821);
+  color: inherit;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+.copy-pick-btn > span {
+  font-size: 12px;
+  color: var(--muted, #8b9bb5);
+  font-weight: 500;
+}
+.copy-pick-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, #58bd7d 50%, #1e2630);
+  background: color-mix(in srgb, #58bd7d 10%, #121821);
+}
+.copy-pick-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
 }
 .stale-open {
   color: #e6a23c;

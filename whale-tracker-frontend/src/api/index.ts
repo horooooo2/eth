@@ -599,6 +599,273 @@ export async function fetchOkxTraderDetail(traderId: string, lastDays = '3') {
   return data;
 }
 
+/* ===== OKX 交易（服务端代理，需登录） ===== */
+
+export type OkxTradeStatus = {
+  configured: boolean;
+  simulated: boolean;
+  base: string;
+  hasProxy?: boolean;
+};
+
+export type OkxTradeBalanceDetail = {
+  ccy: string;
+  eq: number;
+  availBal: number;
+  frozenBal: number;
+};
+
+export type OkxPlaceOrderInput = {
+  instId: string;
+  side: 'buy' | 'sell';
+  posSide?: 'long' | 'short' | '';
+  tdMode?: 'cross' | 'isolated' | 'cash';
+  ordType?: 'market' | 'limit' | 'ioc' | 'fok' | 'post_only';
+  sz: string;
+  px?: string;
+  lever?: number | string;
+  reduceOnly?: boolean;
+  clOrdId?: string;
+};
+
+export async function fetchOkxTradeStatus() {
+  const { data } = await http.get<OkxTradeStatus>('/okx/trade/status');
+  return data;
+}
+
+export async function fetchOkxTradeBalance(ccy = '') {
+  const { data } = await http.get<
+    OkxTradeStatus & {
+      balance: { totalEq: number | null; details: OkxTradeBalanceDetail[] };
+    }
+  >('/okx/trade/balance', {
+    params: ccy ? { ccy } : undefined,
+  });
+  return data;
+}
+
+export async function fetchOkxTradePositions(instType = 'SWAP') {
+  const { data } = await http.get<OkxTradeStatus & { positions: Record<string, unknown>[] }>(
+    '/okx/trade/positions',
+    { params: { instType } },
+  );
+  return data;
+}
+
+export async function placeOkxOrder(body: OkxPlaceOrderInput) {
+  const { data } = await http.post<{
+    ok: boolean;
+    order: Record<string, unknown> | null;
+    simulated?: boolean;
+    error?: string;
+  }>('/okx/trade/order', body, { timeout: 90_000 });
+  return data;
+}
+
+export async function cancelOkxOrder(body: { instId: string; ordId?: string; clOrdId?: string }) {
+  const { data } = await http.post<{ ok: boolean; result: Record<string, unknown> | null }>(
+    '/okx/trade/cancel',
+    body,
+  );
+  return data;
+}
+
+/* ===== HL → 交易所跟单 ===== */
+
+export type CopyExchange = 'okx' | 'binance';
+
+export type CopyTaskDto = {
+  id: string;
+  userId?: string;
+  name: string;
+  exchange: CopyExchange;
+  enabled: boolean;
+  whaleAddress: string;
+  followCapitalUsd: number;
+  maxLeverage: number;
+  maxNotionalUsd: number;
+  note: string;
+  updatedAt: number;
+};
+
+export type CopyPositionDto = {
+  id: string;
+  taskId: string;
+  coin: string;
+  side: 'long' | 'short';
+  lever: number;
+  mgnMode?: string;
+  marginUsd: number;
+  size: number;
+  notionalUsd?: number;
+  entryPx: number;
+  markPx: number;
+  liqPx: number;
+  mgnRatio: number;
+  uPnl: number;
+  pnlRatio: number;
+  status: 'open' | 'closed';
+  instId?: string;
+};
+
+export type CopyRecordDto = {
+  id: string;
+  taskId: string;
+  at: number;
+  kind: 'open' | 'add' | 'close' | 'margin';
+  coin: string;
+  side: 'long' | 'short';
+  lever?: number;
+  marginUsd?: number;
+  px?: number;
+  note?: string;
+  status?: 'ok' | 'fail';
+};
+
+export type ExchangeKeysDto = {
+  okx: {
+    exchange: 'okx';
+    configured: boolean;
+    enabled: boolean;
+    simulated: boolean;
+    apiKeyHint: string;
+    hasSecret: boolean;
+    hasPassphrase: boolean;
+    updatedAt: number;
+    ready: boolean;
+    status: string;
+  };
+  binance: {
+    exchange: 'binance';
+    configured: boolean;
+    enabled: boolean;
+    simulated: boolean;
+    apiKeyHint: string;
+    hasSecret: boolean;
+    hasPassphrase: boolean;
+    updatedAt: number;
+    ready: boolean;
+    status: string;
+  };
+};
+
+export async function fetchCopyTradeSnapshot() {
+  const { data } = await http.get<{
+    tasks: CopyTaskDto[];
+    positions: CopyPositionDto[];
+    records: CopyRecordDto[];
+    updatedAt: number;
+    trade?: { configured?: boolean; simulated?: boolean; keyHint?: string; source?: string };
+    exchangeKeys?: ExchangeKeysDto;
+    exchangeKeysReady?: boolean;
+  }>('/copy-trade');
+  return data;
+}
+
+export async function fetchExchangeKeys() {
+  const { data } = await http.get<ExchangeKeysDto>('/copy-trade/exchange-keys');
+  return data;
+}
+
+export async function saveOkxExchangeKeys(body: {
+  apiKey: string;
+  apiSecret: string;
+  apiPassphrase: string;
+  simulated?: boolean;
+  enabled?: boolean;
+}) {
+  const { data } = await http.put<{ ok: boolean } & ExchangeKeysDto>(
+    '/copy-trade/exchange-keys/okx',
+    body,
+  );
+  return data;
+}
+
+export async function deleteOkxExchangeKeys() {
+  const { data } = await http.delete<{ ok: boolean } & ExchangeKeysDto>(
+    '/copy-trade/exchange-keys/okx',
+  );
+  return data;
+}
+
+export async function saveCopyTask(task: Partial<CopyTaskDto> & { whaleAddress?: string }) {
+  const { data } = await http.post<{ ok: boolean; task: CopyTaskDto }>('/copy-trade/tasks', task);
+  return data;
+}
+
+export async function deleteCopyTask(id: string) {
+  const { data } = await http.delete<{ ok: boolean }>(`/copy-trade/tasks/${encodeURIComponent(id)}`);
+  return data;
+}
+
+export async function closeCopyPosition(id: string) {
+  const { data } = await http.post<{
+    ok: boolean;
+    order?: { instId: string; sz: number; ordId: string | null; side: string };
+    snapshot?: {
+      tasks: CopyTaskDto[];
+      positions: CopyPositionDto[];
+      records: CopyRecordDto[];
+      updatedAt: number;
+    };
+    error?: string;
+  }>(`/copy-trade/positions/${encodeURIComponent(id)}/close`, {}, { timeout: 90_000 });
+  return data;
+}
+
+export async function syncCopyTasks(tasks: CopyTaskDto[]) {
+  const { data } = await http.put<{ ok: boolean; tasks: CopyTaskDto[] }>('/copy-trade/tasks', {
+    tasks,
+  });
+  return data;
+}
+
+export async function followCopyFromPosition(body: {
+  target: 'all' | 'okx' | 'binance';
+  whaleAddress: string;
+  whaleName?: string;
+  whaleAccountValue?: number;
+  whaleTotalPositionUsd?: number;
+  position: {
+    coin: string;
+    coinLabel?: string;
+    side: 'long' | 'short';
+    size?: number;
+    entryPx?: number | null;
+    markPx?: number | null;
+    positionValue?: number | null;
+    unrealizedPnl?: number | null;
+    leverage?: number | null;
+    marginUsed?: number | null;
+    liquidationPx?: number | string | null;
+  };
+}) {
+  const { data } = await http.post<{
+    ok: boolean;
+    created: CopyTaskDto[];
+    reused: CopyTaskDto[];
+    positions: CopyPositionDto[];
+    orders?: Array<{
+      exchange: string;
+      instId: string;
+      sz: number;
+      ordId: string | null;
+      side: string;
+      lever: number;
+      notional: number;
+    }>;
+    failures?: string[];
+    error?: string;
+    snapshot?: {
+      tasks: CopyTaskDto[];
+      positions: CopyPositionDto[];
+      records: CopyRecordDto[];
+      updatedAt: number;
+    };
+  }>('/copy-trade/follow', body, { timeout: 90_000 });
+  return data;
+}
+
 export type XTweetUser = {
   id?: string;
   username: string;
