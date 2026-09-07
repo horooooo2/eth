@@ -188,9 +188,20 @@ const libFiles = [
   'lib/newsService.js',
   'lib/whales.js',
   'lib/news.js',
+  'lib/okxTradeClient.js',
+  'lib/userExchangeKeys.js',
+  'lib/hlCopyEngine.js',
+  'lib/authStore.js',
+  'lib/db.js',
+  'lib/createApp.js',
+  'lib/realtimeBridge.js',
   'routes/markets.js',
   'routes/whales.js',
   'routes/news.js',
+  'routes/okx.js',
+  'routes/okxTrade.js',
+  'routes/copyTrade.js',
+  'server.js',
 ];
 for (const rel of libFiles) {
   const src = path.join(backendRoot, rel);

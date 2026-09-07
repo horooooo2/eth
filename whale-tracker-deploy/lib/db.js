@@ -148,6 +148,19 @@ function migrate(database) {
       settings_json TEXT NOT NULL DEFAULT '{}',
       updated_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS user_exchange_keys (
+      user_id TEXT NOT NULL,
+      exchange TEXT NOT NULL,
+      api_key TEXT NOT NULL DEFAULT '',
+      api_secret TEXT NOT NULL DEFAULT '',
+      api_passphrase TEXT NOT NULL DEFAULT '',
+      simulated INTEGER NOT NULL DEFAULT 1,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, exchange)
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_exchange_keys_user ON user_exchange_keys(user_id);
   `);
 }
 

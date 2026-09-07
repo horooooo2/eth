@@ -155,6 +155,12 @@ server.listen(PORT, '0.0.0.0', () => {
     console.warn('[okx] 启动失败:', err.message);
   }
   try {
+    const { startCopyEngine } = require('./lib/hlCopyEngine');
+    startCopyEngine();
+  } catch (err) {
+    console.warn('[copy-engine] 启动失败:', err.message);
+  }
+  try {
     startXFeedPolling();
     console.log('[x-poll]', JSON.stringify(getXFeedStatus()));
   } catch (err) {
