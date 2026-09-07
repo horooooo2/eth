@@ -103,7 +103,7 @@ router.get('/exchange-keys', (req, res) => {
 });
 
 /** PUT /api/copy-trade/exchange-keys/:exchange */
-router.put('/exchange-keys/:exchange', (req, res) => {
+router.put('/exchange-keys/:exchange', async (req, res) => {
   if (!assertLogin(req, res)) return;
   try {
     const exchange = String(req.params.exchange || '').toLowerCase();
@@ -112,8 +112,54 @@ router.put('/exchange-keys/:exchange', (req, res) => {
       err.status = 400;
       throw err;
     }
-    const data = upsertExchangeKeys(req.user.user.id, exchange, req.body || {});
-    res.json({ ok: true, ...data });
+    const userId = req.user.user.id;
+    const body = req.body || {};
+    const simulated =
+      body.simulated === false || body.simulated === 0 || body.simulated === '0' ? false : true;
+
+    const { withTradeCredentials, getAccountConfig } = require('../lib/okxTradeClient');
+    const probe = {
+      apiKey: String(body.apiKey || body.api_key || '').trim(),
+      secret: String(body.apiSecret || body.api_secret || '').trim(),
+      passphrase: String(body.apiPassphrase || body.api_passphrase || '').trim(),
+      simulated,
+    };
+    if (!probe.apiKey || !probe.secret || !probe.passphrase) {
+      const err = new Error('请填写 OKX_API_KEY / OKX_API_SECRET / OKX_API_PASSPHRASE');
+      err.status = 400;
+      throw err;
+    }
+
+    let verified = false;
+    let warn = '';
+    try {
+      await withTradeCredentials(probe, () =>
+        getAccountConfig({ timeoutMs: Number(process.env.OKX_TIMEOUT_MS) || 60_000 }),
+      );
+      verified = true;
+    } catch (err) {
+      const detail = String(err.message || err.code || '校验失败');
+      const isTimeout = /timeout|ETIMEDOUT|ECONNABORTED|TIMEOUT/i.test(detail);
+      if (isTimeout) {
+        // 本机访问 OKX 常较慢：超时不挡绑定，跟单下单时再验真
+        warn = `${simulated ? '模拟盘' : '实盘'} API 校验超时（网络访问 OKX 过慢），密钥已保存；若密钥有误，跟单下单时会失败。`;
+        console.warn('[copy-trade] okx key verify timeout, save anyway:', detail);
+      } else {
+        const mode = simulated ? '模拟盘' : '实盘';
+        const wrapped = new Error(
+          `${mode} API 校验失败：${detail}。请确认密钥属于该盘，且账户模式已切换为合约/跨币种等（非现货简易模式）。`,
+        );
+        wrapped.status = 400;
+        throw wrapped;
+      }
+    }
+
+    const data = upsertExchangeKeys(userId, exchange, {
+      ...body,
+      simulated,
+      enabled: body.enabled !== false && body.enabled !== 0 && body.enabled !== '0',
+    });
+    res.json({ ok: true, verified, warn, ...data });
   } catch (err) {
     sendErr(res, err);
   }
@@ -218,6 +264,7 @@ router.post('/follow', async (req, res) => {
       whaleName: req.body?.whaleName,
       whaleAccountValue: req.body?.whaleAccountValue,
       whaleTotalPositionUsd: req.body?.whaleTotalPositionUsd,
+      followCapitalUsd: req.body?.followCapitalUsd,
       position: req.body?.position,
     });
     res.json(result);

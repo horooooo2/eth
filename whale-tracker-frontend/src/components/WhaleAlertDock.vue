@@ -139,11 +139,6 @@ const currentWhale = computed(() =>
   whaleStore.whales.find((item) => item.id === active.value?.whaleId) || null,
 );
 
-const activeWatchLabel = computed(() => {
-  if (active.value && isWhaleAlertMonitored(active.value)) return '关注';
-  return '异动';
-});
-
 watch(
   () =>
     whaleStore.alerts.filter((alert) => isWhaleAlertMonitored(alert)).map((item) => item.id),
@@ -174,7 +169,6 @@ onMounted(() => {
         :class="kindClass(alert)"
         @click="openAlert(alert)"
       >
-        <span class="banner-channel">关注</span>
         <span class="banner-kind" :class="kindClass(alert)">{{ alert.kindLabel }}</span>
         <span class="banner-name">{{ alertWhaleTitle(alert) }}</span>
         <span v-if="alertCoin(alert)" class="banner-coin">{{ displayAsset(alertCoin(alert)!) }}</span>
@@ -195,12 +189,11 @@ onMounted(() => {
     <!-- 桌面端：右下角卡片（最多 4 张，取最新） -->
     <div class="dock-wrap">
     <section v-if="pcWhaleCards.length" class="dock-section whale">
-      <p class="dock-label">关注</p>
       <button
         v-if="pcWhaleCards.length > 2"
         type="button"
         class="hide-all"
-        title="关闭当前全部关注卡片"
+        title="关闭当前全部监控卡片"
         @click.stop="dismissAll"
       >
         全部隐藏
@@ -262,7 +255,7 @@ onMounted(() => {
             {{ alertWhaleTitle(active) }}
           </button>
           <template v-if="alertCoin(active)"> · {{ displayAsset(alertCoin(active)!) }}</template>
-          · {{ activeWatchLabel }}提醒
+          · 异动提醒
         </template>
         <span v-else>异动提醒</span>
       </template>
@@ -334,17 +327,6 @@ onMounted(() => {
   align-items: stretch;
   gap: 6px;
   width: min(360px, calc(100vw - 32px));
-}
-.dock-label {
-  margin: 0;
-  padding: 0 4px;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.02em;
-  text-transform: none;
-}
-.dock-section.whale .dock-label {
-  color: #e6a23c;
 }
 .hide-all {
   pointer-events: auto;
@@ -636,20 +618,6 @@ onMounted(() => {
   }
   .alert-banner.short {
     background: color-mix(in srgb, var(--bear) 10%, var(--card));
-  }
-  .banner-channel {
-    flex: 0 0 auto;
-    font-size: 10px;
-    font-weight: 800;
-    color: var(--muted);
-    padding: 2px 6px;
-    border-radius: 999px;
-    border: 1px solid var(--border);
-    background: color-mix(in srgb, var(--card) 70%, transparent);
-  }
-  .alert-banner.whale .banner-channel {
-    color: #e6a23c;
-    border-color: color-mix(in srgb, #e6a23c 45%, var(--border));
   }
   .banner-kind {
     flex: 0 0 auto;

@@ -774,10 +774,9 @@ export async function saveOkxExchangeKeys(body: {
   simulated?: boolean;
   enabled?: boolean;
 }) {
-  const { data } = await http.put<{ ok: boolean } & ExchangeKeysDto>(
-    '/copy-trade/exchange-keys/okx',
-    body,
-  );
+  const { data } = await http.put<
+    { ok: boolean; verified?: boolean; warn?: string } & ExchangeKeysDto
+  >('/copy-trade/exchange-keys/okx', body, { timeout: 90_000 });
   return data;
 }
 
@@ -826,6 +825,8 @@ export async function followCopyFromPosition(body: {
   whaleName?: string;
   whaleAccountValue?: number;
   whaleTotalPositionUsd?: number;
+  /** 跟单本金（USDT），等同跟单任务里的 followCapitalUsd */
+  followCapitalUsd?: number;
   position: {
     coin: string;
     coinLabel?: string;

@@ -86,7 +86,6 @@ watch(
         :class="sideClass(alert)"
         @click="openTrader(alert)"
       >
-        <span class="banner-channel">OKX关注</span>
         <span class="banner-kind" :class="sideClass(alert)">{{ alert.kindLabel }}</span>
         <span class="banner-name">{{ alert.traderName }}</span>
         <span v-if="alert.coin" class="banner-coin">{{ alert.coin }}</span>
@@ -106,12 +105,11 @@ watch(
 
     <div class="dock-wrap">
       <section v-if="pcCards.length" class="dock-section">
-        <p class="dock-label">OKX 关注</p>
         <button
           v-if="pcCards.length > 2"
           type="button"
           class="hide-all"
-          title="关闭当前全部 OKX 关注卡片"
+          title="关闭当前全部 OKX 监控卡片"
           @click.stop="dismissAll"
         >
           全部隐藏
@@ -172,14 +170,6 @@ watch(
 }
 .dock-section {
   pointer-events: auto;
-}
-.dock-label {
-  margin: 0 0 6px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: #f15a24;
-  text-transform: uppercase;
 }
 .hide-all {
   pointer-events: auto;
@@ -329,12 +319,6 @@ watch(
   }
   .alert-banner.short {
     border-left: 3px solid #ea5a5a;
-  }
-  .banner-channel {
-    flex-shrink: 0;
-    font-size: 10px;
-    font-weight: 700;
-    color: #f15a24;
   }
   .banner-kind {
     flex-shrink: 0;

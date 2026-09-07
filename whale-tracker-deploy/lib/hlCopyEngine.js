@@ -1062,6 +1062,7 @@ async function followFromPosition(input = {}) {
     (whaleLever > 0 && posValue > 0 ? posValue / whaleLever : 0);
   const whaleAccountValue = Math.abs(Number(input.whaleAccountValue) || 0);
   const whaleTotalPositionUsd = Math.abs(Number(input.whaleTotalPositionUsd) || 0);
+  const followCapitalUsd = Math.max(1, Number(input.followCapitalUsd) || 1000);
   const meta =
     whaleAccountValue > 0 || whaleTotalPositionUsd > 0
       ? { whaleAccountValue, whaleTotalPositionUsd }
@@ -1104,12 +1105,16 @@ async function followFromPosition(input = {}) {
         exchange,
         enabled: true,
         whaleAddress,
-        followCapitalUsd: 1000,
+        followCapitalUsd,
         maxLeverage: whaleLever > 0 ? whaleLever : 0,
         maxNotionalUsd: 0,
         note: coin ? `来自持仓 ${coin} ${side === 'long' ? '多' : '空'}` : '',
         updatedAt: Date.now(),
       };
+    } else {
+      // 本次跟单本金覆盖任务额度，后续自动跟单也按此本金
+      task.followCapitalUsd = followCapitalUsd;
+      task.updatedAt = Date.now();
     }
 
     const { notional, lever, userMargin, ratio } = calcProportionalSize(task, {

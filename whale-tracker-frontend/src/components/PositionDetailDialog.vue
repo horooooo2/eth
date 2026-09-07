@@ -302,16 +302,27 @@ async function confirmOkxCopy() {
   const sideText = row.side === 'short' ? '空' : '多';
   const name = whaleName.value || '巨鲸';
 
+  let followCapitalUsd = 1000;
   try {
-    await ElMessageBox.confirm(
-      `确认在 OKX 跟单「${name}」的 ${coin} ${sideText} 仓位？\n将按同方向、当前市价开仓；仓位大小=跟单本金×(巨鲸该仓保证金/巨鲸权益)×杠杆。\n开仓失败不会加入跟单列表。`,
-      '确认跟单开仓',
+    const { value } = await ElMessageBox.prompt(
+      `跟单「${name}」的 ${coin} ${sideText} 仓位。\n仓位大小 = 跟单本金 × (巨鲸该仓保证金 / 巨鲸权益) × 杠杆。\n开仓失败不会加入跟单列表。`,
+      '跟单本金（USDT）',
       {
         confirmButtonText: '确认开仓',
         cancelButtonText: '取消',
+        inputValue: '1000',
+        inputPlaceholder: '请输入跟单本金',
+        inputPattern: /^(?:[1-9]\d*|0)(?:\.\d+)?$/,
+        inputErrorMessage: '请输入大于 0 的金额',
         type: 'warning',
       },
     );
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) {
+      ElMessage.warning('跟单本金需大于 0');
+      return;
+    }
+    followCapitalUsd = n;
   } catch {
     return;
   }
@@ -327,6 +338,7 @@ async function confirmOkxCopy() {
       whaleTotalPositionUsd:
         Math.abs(Number(activeWhale.value?.longUsd) || 0) +
         Math.abs(Number(activeWhale.value?.shortUsd) || 0),
+      followCapitalUsd,
       position: {
         coin: row.coin,
         coinLabel: row.coinLabel,

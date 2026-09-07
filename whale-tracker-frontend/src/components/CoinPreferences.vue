@@ -209,7 +209,7 @@ async function resetCopyApi() {
         <section class="setting-block api-block">
           <h4 class="block-title">跟单 API</h4>
           <p class="intro">
-            若 OKX Key / Secret / Passphrase 填错（例如 Passphrase incorrect），可在此清除后重新绑定。
+            清除已保存的 OKX 密钥后可重新绑定。日常切换模拟/实盘请到跟单页点「API」。
           </p>
           <button
             type="button"

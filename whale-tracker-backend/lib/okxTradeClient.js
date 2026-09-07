@@ -221,8 +221,10 @@ function qs(params) {
   return s ? `?${s}` : '';
 }
 
-async function getAccountConfig() {
-  const data = await okxPrivate('GET', '/api/v5/account/config', null, { timeoutMs: 8_000 });
+async function getAccountConfig(options = {}) {
+  const timeoutMs =
+    Number(options.timeoutMs) || Number(process.env.OKX_TIMEOUT_MS) || 60_000;
+  const data = await okxPrivate('GET', '/api/v5/account/config', null, { timeoutMs });
   return (data.data && data.data[0]) || null;
 }
 

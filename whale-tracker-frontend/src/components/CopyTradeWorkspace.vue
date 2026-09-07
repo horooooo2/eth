@@ -27,6 +27,9 @@ const STORAGE_KEY = 'whale-copytrade-tasks-v1';
 
 const exchangeKeys = ref<ExchangeKeysDto | null>(null);
 const keysReady = computed(() => Boolean(exchangeKeys.value?.okx?.ready));
+/** 已配置后仍可打开更换 API / 切换盘 */
+const reconfigKeys = ref(false);
+const showKeySetup = computed(() => !keysReady.value || reconfigKeys.value);
 const keyForm = ref({
   apiKey: '',
   apiSecret: '',
@@ -35,6 +38,10 @@ const keyForm = ref({
 });
 const savingKeys = ref(false);
 const closingPosId = ref('');
+
+const okxModeLabel = computed(() =>
+  exchangeKeys.value?.okx?.simulated === false ? '实盘' : '模拟盘',
+);
 
 async function onManualClose(p: FollowedPosition) {
   if (!p?.id || closingPosId.value) return;
@@ -288,25 +295,60 @@ async function submitOkxKeys() {
     return;
   }
   if (savingKeys.value) return;
+
+  const simulated = Boolean(keyForm.value.simulated);
+  if (!simulated) {
+    try {
+      await ElMessageBox.confirm(
+        '即将绑定【实盘】API，跟单开/加/减/平都会打到真实账户。\n请确认密钥来自 OKX 实盘（非模拟盘），且账户已切到合约模式。',
+        '确认使用实盘',
+        {
+          confirmButtonText: '确认绑定实盘',
+          cancelButtonText: '取消',
+          type: 'warning',
+        },
+      );
+    } catch {
+      return;
+    }
+  }
+
   savingKeys.value = true;
   try {
     const data = await saveOkxExchangeKeys({
       apiKey,
       apiSecret,
       apiPassphrase,
-      simulated: keyForm.value.simulated,
+      simulated,
       enabled: true,
     });
     exchangeKeys.value = data;
+    keyForm.value.apiKey = '';
     keyForm.value.apiSecret = '';
     keyForm.value.apiPassphrase = '';
-    ElMessage.success('OKX API 已保存，可以开启跟单');
+    reconfigKeys.value = false;
+    const warn = typeof data.warn === 'string' ? data.warn : '';
+    if (warn) {
+      ElMessage.warning(warn);
+    } else {
+      ElMessage.success(
+        simulated ? '模拟盘 API 已校验并保存，跟单走模拟盘' : '实盘 API 已校验并保存，跟单走实盘',
+      );
+    }
     await refreshSnapshot(true);
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '保存失败');
   } finally {
     savingKeys.value = false;
   }
+}
+
+function cancelReconfigKeys() {
+  if (!keysReady.value) return;
+  reconfigKeys.value = false;
+  keyForm.value.apiKey = '';
+  keyForm.value.apiSecret = '';
+  keyForm.value.apiPassphrase = '';
 }
 
 watch(isLoggedIn, (ok) => {
@@ -318,6 +360,7 @@ watch(isLoggedIn, (ok) => {
     exchangeKeys.value = null;
     selectedId.value = '';
     filterTaskId.value = '';
+    reconfigKeys.value = false;
   }
 });
 
@@ -475,6 +518,7 @@ function onCopyUpdateEvent(ev: Event) {
 
 function onCopyKeysReset() {
   exchangeKeys.value = null;
+  reconfigKeys.value = false;
   keyForm.value = {
     apiKey: '',
     apiSecret: '',
@@ -513,9 +557,39 @@ onUnmounted(() => {
       <button type="button" class="primary-btn" @click="emit('request-login')">去登录</button>
     </div>
 
-    <div v-else-if="!keysReady" class="gate-panel setup-panel">
-      <h3>配置 OKX 跟单</h3>
-      <p class="setup-desc">填写 OKX API 密钥（保存在服务端数据库，仅你的账户可用）。</p>
+    <div v-else-if="showKeySetup" class="gate-panel setup-panel">
+      <h3>{{ keysReady ? '更换 OKX API' : '配置 OKX 跟单' }}</h3>
+      <p class="setup-desc">
+        先选盘口，再填对应盘的 API。模拟盘与实盘密钥通常不同，跟单会严格按当前配置执行。
+      </p>
+
+      <div class="mode-switch" role="group" aria-label="交易盘口">
+        <button
+          type="button"
+          class="mode-btn"
+          :class="{ on: keyForm.simulated }"
+          @click="keyForm.simulated = true"
+        >
+          模拟盘
+        </button>
+        <button
+          type="button"
+          class="mode-btn live"
+          :class="{ on: !keyForm.simulated }"
+          @click="keyForm.simulated = false"
+        >
+          实盘
+        </button>
+      </div>
+      <p class="mode-hint" :class="{ live: !keyForm.simulated }">
+        <template v-if="keyForm.simulated">
+          使用 OKX「模拟交易」里创建的 API；请求头走模拟盘。
+        </template>
+        <template v-else>
+          使用 OKX「实盘」API；下单真实资金，请谨慎。
+        </template>
+      </p>
+
       <div class="key-form">
         <label>
           <span>OKX_API_KEY</span>
@@ -539,13 +613,26 @@ onUnmounted(() => {
             placeholder="Passphrase"
           />
         </label>
-        <label class="check-row">
-          <input v-model="keyForm.simulated" type="checkbox" />
-          <span>模拟盘（推荐先勾选测试）</span>
-        </label>
-        <button type="button" class="primary-btn" :disabled="savingKeys" @click="submitOkxKeys">
-          {{ savingKeys ? '保存中…' : '保存并开启 OKX 跟单' }}
-        </button>
+        <div class="setup-actions">
+          <button
+            v-if="keysReady"
+            type="button"
+            class="ghost-btn"
+            :disabled="savingKeys"
+            @click="cancelReconfigKeys"
+          >
+            取消
+          </button>
+          <button type="button" class="primary-btn" :disabled="savingKeys" @click="submitOkxKeys">
+            {{
+              savingKeys
+                ? '校验中…'
+                : keyForm.simulated
+                  ? '校验并绑定模拟盘'
+                  : '校验并绑定实盘'
+            }}
+          </button>
+        </div>
       </div>
     </div>
 
@@ -560,6 +647,10 @@ onUnmounted(() => {
               <template v-if="exchangeKeys?.okx?.apiKeyHint">
                 · Key {{ exchangeKeys.okx.apiKeyHint }}
               </template>
+              ·
+              <span class="mode-pill" :class="{ live: exchangeKeys?.okx?.simulated === false }">
+                {{ okxModeLabel }}
+              </span>
             </p>
           </div>
           <button type="button" class="ghost" @click="addTask()">新建</button>
@@ -793,7 +884,7 @@ onUnmounted(() => {
           <input v-model="draft.note" placeholder="可选" />
         </label>
         <p class="hint dim">
-          使用你在跟单页绑定的 OKX API（数据库存储）。开仓失败不会加入跟单列表。
+          使用跟单页绑定的 OKX API（当前盘口以列表旁标注为准）。开仓失败不会加入跟单列表。
         </p>
         <label class="field switch-row switch-bottom">
           <span>自动跟单</span>
@@ -855,6 +946,82 @@ onUnmounted(() => {
   color: #8b93a7;
   font-size: 13px;
   line-height: 1.5;
+}
+.mode-switch {
+  display: flex;
+  gap: 8px;
+  width: min(420px, 100%);
+  margin-top: 4px;
+}
+.mode-btn {
+  flex: 1;
+  height: 40px;
+  border: 1px solid #2a3444;
+  border-radius: 8px;
+  background: #0d1219;
+  color: #9aa3b5;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.mode-btn.on {
+  border-color: #3d8bfd;
+  background: color-mix(in srgb, #3d8bfd 18%, #0d1219);
+  color: #e8f1ff;
+}
+.mode-btn.live.on {
+  border-color: #ea5a5a;
+  background: color-mix(in srgb, #ea5a5a 16%, #0d1219);
+  color: #ffe4e4;
+}
+.mode-hint {
+  margin: 0;
+  max-width: 420px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #8b93a7;
+}
+.mode-hint.live {
+  color: #f0a0a8;
+}
+.setup-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.ghost-btn {
+  flex: 0 0 auto;
+  height: 40px;
+  padding: 0 16px;
+  border: 1px solid #2a3444;
+  border-radius: 8px;
+  background: transparent;
+  color: #b0c4de;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ghost-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.setup-actions .primary-btn {
+  flex: 1;
+  margin-top: 0;
+}
+.mode-pill {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #8ec8ff;
+  background: color-mix(in srgb, #3d8bfd 18%, transparent);
+}
+.mode-pill.live {
+  color: #ffb4b4;
+  background: color-mix(in srgb, #ea5a5a 18%, transparent);
 }
 .key-form {
   display: flex;
