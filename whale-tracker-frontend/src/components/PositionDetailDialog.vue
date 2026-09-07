@@ -57,16 +57,7 @@ const detail = ref<WhalePositionDetail | null>(null);
 const entryFillsExpanded = ref(false);
 const analysisVisible = ref(false);
 const analysisPreset = ref<Partial<UserPositionInput> | null>(null);
-const copyPickOpen = ref(false);
 const copyBusy = ref(false);
-
-type CopyTarget = 'all' | 'okx' | 'binance';
-
-function targetLabel(target: CopyTarget) {
-  if (target === 'all') return '全部（OKX + 币安）';
-  if (target === 'okx') return 'OKX';
-  return '币安';
-}
 
 const recoOptions = computed<RecoOptions>(() => ({
   coin: preferredCoinsState.value[0] || detail.value?.coin || 'BTC',
@@ -300,25 +291,20 @@ function openCopyPick() {
     ElMessage.warning('请先登录后再跟单');
     return;
   }
-  copyPickOpen.value = true;
+  // 暂只支持 OKX，跳过交易所选择弹窗
+  void confirmOkxCopy();
 }
 
-async function pickCopyTarget(target: CopyTarget) {
-  if (target === 'binance') {
-    ElMessage.info('币安跟单对接中');
-    return;
-  }
+async function confirmOkxCopy() {
   const row = detail.value;
   if (!row || row.closed) return;
   const coin = String(row.coinLabel || row.coin || '');
   const sideText = row.side === 'short' ? '空' : '多';
   const name = whaleName.value || '巨鲸';
 
-  copyPickOpen.value = false;
-
   try {
     await ElMessageBox.confirm(
-      `确认在 ${targetLabel(target)} 跟单「${name}」的 ${coin} ${sideText} 仓位？\n将按同方向、当前市价开仓；仓位大小=跟单本金×(巨鲸该仓保证金/巨鲸权益)×杠杆。\n开仓失败不会加入跟单列表。`,
+      `确认在 OKX 跟单「${name}」的 ${coin} ${sideText} 仓位？\n将按同方向、当前市价开仓；仓位大小=跟单本金×(巨鲸该仓保证金/巨鲸权益)×杠杆。\n开仓失败不会加入跟单列表。`,
       '确认跟单开仓',
       {
         confirmButtonText: '确认开仓',
@@ -334,7 +320,7 @@ async function pickCopyTarget(target: CopyTarget) {
   copyBusy.value = true;
   try {
     const result = await followCopyFromPosition({
-      target: target === 'all' ? 'okx' : target,
+      target: 'okx',
       whaleAddress: whaleAddress.value,
       whaleName: whaleName.value,
       whaleAccountValue: Number(activeWhale.value?.accountValue) || 0,
@@ -364,7 +350,6 @@ async function pickCopyTarget(target: CopyTarget) {
     if (opened > 0 && fails.length === 0) {
       ElMessage.success(`已跟单开仓（${opened} 笔）${n ? ` · 已加入跟单列表` : ''}`);
       visible.value = false;
-      copyPickOpen.value = false;
       window.dispatchEvent(new CustomEvent('whale-open-copy-workspace'));
     } else if (opened > 0 && fails.length) {
       ElMessage.warning(`部分开仓成功（${opened}）`);
@@ -558,31 +543,6 @@ async function pickCopyTarget(target: CopyTarget) {
     </template>
   </el-dialog>
 
-  <el-dialog
-    v-model="copyPickOpen"
-    title="选择跟单交易所"
-    width="380px"
-    append-to-body
-    align-center
-    class="copy-pick-dialog"
-  >
-    <p class="copy-pick-hint">选择后将再次确认是否跟单该仓位</p>
-    <div class="copy-pick-list">
-      <button type="button" class="copy-pick-btn" :disabled="copyBusy" @click="pickCopyTarget('all')">
-        全部
-        <span>同时写入 OKX 与币安跟单</span>
-      </button>
-      <button type="button" class="copy-pick-btn" :disabled="copyBusy" @click="pickCopyTarget('okx')">
-        OKX
-        <span>写入 OKX 跟单配置</span>
-      </button>
-      <button type="button" class="copy-pick-btn" :disabled="copyBusy" @click="pickCopyTarget('binance')">
-        币安
-        <span>写入币安跟单配置（预留）</span>
-      </button>
-    </div>
-  </el-dialog>
-
   <PositionAnalysisDialog
     v-model="analysisVisible"
     :whales="props.whales"
@@ -735,46 +695,6 @@ async function pickCopyTarget(target: CopyTarget) {
   margin: 0;
   flex: 0 0 auto;
   white-space: nowrap;
-}
-.copy-pick-hint {
-  margin: 0 0 12px;
-  font-size: 13px;
-  color: var(--muted, #8b9bb5);
-}
-.copy-pick-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.copy-pick-btn {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  width: 100%;
-  padding: 12px 14px;
-  border: 1px solid var(--border, #1e2630);
-  border-radius: 10px;
-  background: var(--bg-2, #121821);
-  color: inherit;
-  font: inherit;
-  font-size: 15px;
-  font-weight: 700;
-  text-align: left;
-  cursor: pointer;
-}
-.copy-pick-btn > span {
-  font-size: 12px;
-  color: var(--muted, #8b9bb5);
-  font-weight: 500;
-}
-.copy-pick-btn:hover:not(:disabled) {
-  border-color: color-mix(in srgb, #58bd7d 50%, #1e2630);
-  background: color-mix(in srgb, #58bd7d 10%, #121821);
-}
-.copy-pick-btn:disabled {
-  opacity: 0.55;
-  cursor: wait;
 }
 .stale-open {
   color: #e6a23c;

@@ -27,7 +27,6 @@ const STORAGE_KEY = 'whale-copytrade-tasks-v1';
 
 const exchangeKeys = ref<ExchangeKeysDto | null>(null);
 const keysReady = computed(() => Boolean(exchangeKeys.value?.okx?.ready));
-const setupExchange = ref<'okx' | 'binance'>('okx');
 const keyForm = ref({
   apiKey: '',
   apiSecret: '',
@@ -133,7 +132,6 @@ const selectedId = ref('');
 const filterTaskId = ref('');
 const settingsOpen = ref(false);
 const isCreating = ref(false);
-const exchangeTab = ref<CopyExchange>('okx');
 const saving = ref(false);
 const engineHint = ref('');
 
@@ -165,23 +163,22 @@ const draft = ref({
   enabled: true,
 });
 
-function resetDraft(exchange: CopyExchange = 'okx') {
+function resetDraft(_exchange: CopyExchange = 'okx') {
   draft.value = {
-    name: exchange === 'okx' ? 'OKX 跟单' : '币安跟单',
+    name: 'OKX 跟单',
     whaleAddress: '',
     followCapitalUsd: 1000,
     maxLeverage: 0,
     maxNotionalUsd: 0,
     note: '',
-    enabled: exchange === 'okx',
+    enabled: true,
   };
-  exchangeTab.value = exchange;
 }
 
 function syncDraftFromSelected() {
   const t = selected.value;
   if (!t) {
-    resetDraft(exchangeTab.value);
+    resetDraft();
     return;
   }
   draft.value = {
@@ -193,10 +190,9 @@ function syncDraftFromSelected() {
     note: t.note,
     enabled: t.enabled,
   };
-  exchangeTab.value = t.exchange;
 }
 
-function findDuplicate(address: string, excludeId = '', exchange?: CopyExchange) {
+function findDuplicate(address: string, excludeId = '', exchange: CopyExchange = 'okx') {
   const key = normAddr(address);
   if (!key) return null;
   return (
@@ -284,10 +280,6 @@ async function refreshSnapshot(silent = true) {
 }
 
 async function submitOkxKeys() {
-  if (setupExchange.value === 'binance') {
-    ElMessage.info('币安跟单对接中');
-    return;
-  }
   const apiKey = keyForm.value.apiKey.trim();
   const apiSecret = keyForm.value.apiSecret.trim();
   const apiPassphrase = keyForm.value.apiPassphrase.trim();
@@ -315,11 +307,6 @@ async function submitOkxKeys() {
   } finally {
     savingKeys.value = false;
   }
-}
-
-function onBinancePick() {
-  ElMessage.info('币安跟单对接中');
-  setupExchange.value = 'okx';
 }
 
 watch(isLoggedIn, (ok) => {
@@ -379,7 +366,7 @@ async function removeSelected() {
 
 function validateDraft() {
   const addr = draft.value.whaleAddress.trim();
-  const wantEnable = exchangeTab.value === 'okx' && Boolean(draft.value.enabled);
+  const wantEnable = Boolean(draft.value.enabled);
   if (wantEnable && !addr) {
     ElMessage.warning('开启跟单前请填写巨鲸地址');
     return null;
@@ -390,7 +377,7 @@ function validateDraft() {
     return null;
   }
   const excludeId = isCreating.value ? '' : selected.value?.id || '';
-  const dup = findDuplicate(addr, excludeId, exchangeTab.value);
+  const dup = findDuplicate(addr, excludeId, 'okx');
   if (dup) {
     ElMessage.warning(`该地址已存在跟单（${dup.name || shortAddr(dup.whaleAddress)}）`);
     return null;
@@ -399,9 +386,7 @@ function validateDraft() {
     addr,
     wantEnable,
     capital,
-    name:
-      draft.value.name.trim() ||
-      (exchangeTab.value === 'okx' ? 'OKX 跟单' : '币安跟单'),
+    name: draft.value.name.trim() || 'OKX 跟单',
   };
 }
 
@@ -413,7 +398,7 @@ async function saveSettings() {
   try {
     const payload = {
       name: parsed.name,
-      exchange: exchangeTab.value,
+      exchange: 'okx' as const,
       enabled: parsed.wantEnable,
       whaleAddress: parsed.addr,
       followCapitalUsd: parsed.capital,
@@ -433,13 +418,7 @@ async function saveSettings() {
       selectedId.value = task.id;
       saveLocalTasks(tasks.value);
       closeSettings();
-      ElMessage.success(
-        task.exchange === 'binance'
-          ? '币安跟单已创建（执行待接入）'
-          : task.enabled
-            ? '已创建并开启自动跟单'
-            : '已创建跟单',
-      );
+      ElMessage.success(task.enabled ? '已创建并开启自动跟单' : '已创建跟单');
       void refreshSnapshot();
       return;
     }
@@ -455,13 +434,7 @@ async function saveSettings() {
     else tasks.value.unshift(task);
     saveLocalTasks(tasks.value);
     closeSettings();
-    ElMessage.success(
-      task.exchange === 'binance'
-        ? '币安草稿已保存'
-        : task.enabled
-          ? '已保存并开启自动跟单'
-          : '已保存设置',
-    );
+    ElMessage.success(task.enabled ? '已保存并开启自动跟单' : '已保存设置');
     void refreshSnapshot();
   } catch (err) {
     const msg = err instanceof Error ? err.message : '保存失败';
@@ -481,19 +454,6 @@ function selectTask(task: CopyTask) {
 function resetPositionFilter() {
   filterTaskId.value = '';
   selectedId.value = '';
-}
-
-function onExchangeTab(tab: CopyExchange) {
-  if (tab === 'binance') {
-    ElMessage.info('币安跟单对接中');
-    exchangeTab.value = 'okx';
-    return;
-  }
-  exchangeTab.value = tab;
-  if (isCreating.value) {
-    draft.value.enabled = true;
-    if (!draft.value.name.trim()) draft.value.name = 'OKX 跟单';
-  }
 }
 
 let pollTimer: number | undefined;
@@ -549,25 +509,14 @@ onUnmounted(() => {
   <div class="copy-shell">
     <div v-if="!isLoggedIn" class="gate-panel">
       <h3>跟单需要登录</h3>
-      <p>登录后选择交易所并绑定 API Key，才能开启跟单。</p>
+      <p>登录后绑定 OKX API Key，才能开启跟单。</p>
       <button type="button" class="primary-btn" @click="emit('request-login')">去登录</button>
     </div>
 
     <div v-else-if="!keysReady" class="gate-panel setup-panel">
-      <h3>配置跟单交易所</h3>
-      <p class="setup-desc">选择交易所并填写 API 密钥（保存在服务端数据库，仅你的账户可用）。</p>
-      <div class="ex-pick">
-        <button
-          type="button"
-          class="ex-card"
-          :class="{ active: setupExchange === 'okx' }"
-          @click="setupExchange = 'okx'"
-        >
-          OKX
-        </button>
-        <button type="button" class="ex-card" @click="onBinancePick">币安</button>
-      </div>
-      <div v-if="setupExchange === 'okx'" class="key-form">
+      <h3>配置 OKX 跟单</h3>
+      <p class="setup-desc">填写 OKX API 密钥（保存在服务端数据库，仅你的账户可用）。</p>
+      <div class="key-form">
         <label>
           <span>OKX_API_KEY</span>
           <input v-model="keyForm.apiKey" autocomplete="off" placeholder="API Key" />
@@ -640,7 +589,7 @@ onUnmounted(() => {
             </div>
             <div class="task-row bottom">
               <span class="task-cap">本金 ${{ task.followCapitalUsd }}</span>
-              <span class="ex-tag">{{ task.exchange === 'okx' ? 'OKX' : '币安' }}</span>
+              <span class="ex-tag">OKX</span>
               <button
                 type="button"
                 class="settings-btn"
@@ -814,25 +763,6 @@ onUnmounted(() => {
     >
       <div v-if="!dialogReady" class="empty">请先选择任务</div>
       <template v-else>
-        <div class="ex-tabs">
-          <button
-            type="button"
-            class="ex-tab"
-            :class="{ on: exchangeTab === 'okx' }"
-            @click="onExchangeTab('okx')"
-          >
-            OKX
-          </button>
-          <button type="button" class="ex-tab" @click="onExchangeTab('binance')">
-            币安
-          </button>
-        </div>
-
-        <div v-if="exchangeTab === 'binance'" class="binance-banner">
-          <b>币安跟单 · 对接中</b>
-          <span>暂不可用，请使用 OKX。</span>
-        </div>
-
         <label class="field">
           <span>任务名称</span>
           <input v-model="draft.name" placeholder="例如：跟单巨鲸 A" />
@@ -863,14 +793,11 @@ onUnmounted(() => {
           <input v-model="draft.note" placeholder="可选" />
         </label>
         <p class="hint dim">
-          <template v-if="exchangeTab === 'okx'">
-            使用你在跟单页绑定的 OKX API（数据库存储）。开仓失败不会加入跟单列表。
-          </template>
-          <template v-else>币安跟单对接中。</template>
+          使用你在跟单页绑定的 OKX API（数据库存储）。开仓失败不会加入跟单列表。
         </p>
         <label class="field switch-row switch-bottom">
           <span>自动跟单</span>
-          <input v-model="draft.enabled" type="checkbox" :disabled="exchangeTab === 'binance'" />
+          <input v-model="draft.enabled" type="checkbox" />
         </label>
       </template>
 
@@ -887,7 +814,7 @@ onUnmounted(() => {
         <div class="footer-spacer" />
         <button type="button" class="ghost" @click="closeSettings">取消</button>
         <button type="button" class="primary" :disabled="!dialogReady || saving" @click="saveSettings">
-          {{ isCreating ? '确认创建' : exchangeTab === 'binance' ? '保存草稿' : '保存' }}
+          {{ isCreating ? '确认创建' : '保存' }}
         </button>
       </template>
     </el-dialog>
@@ -928,25 +855,6 @@ onUnmounted(() => {
   color: #8b93a7;
   font-size: 13px;
   line-height: 1.5;
-}
-.ex-pick {
-  display: flex;
-  gap: 12px;
-  margin-top: 8px;
-}
-.ex-card {
-  min-width: 120px;
-  padding: 14px 18px;
-  border-radius: 10px;
-  border: 1px solid #2a3444;
-  background: #0d1219;
-  color: #e0e3eb;
-  font-weight: 700;
-  cursor: pointer;
-}
-.ex-card.active {
-  border-color: #3d8bfd;
-  box-shadow: 0 0 0 1px #3d8bfd55;
 }
 .key-form {
   display: flex;
@@ -1408,27 +1316,6 @@ onUnmounted(() => {
   cursor: not-allowed;
 }
 
-.ex-tabs {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 12px;
-}
-.ex-tab {
-  height: 28px;
-  padding: 0 12px;
-  border: 1px solid #1e2630;
-  border-radius: 6px;
-  background: transparent;
-  color: #a0a8b8;
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-.ex-tab.on {
-  color: #f15a24;
-  border-color: color-mix(in srgb, #f15a24 45%, #1e2630);
-  background: color-mix(in srgb, #f15a24 12%, transparent);
-}
 .field {
   display: flex;
   flex-direction: column;
@@ -1475,25 +1362,6 @@ onUnmounted(() => {
 }
 .hint.dim {
   color: #6a7282;
-}
-.binance-banner {
-  margin: 0 0 12px;
-  padding: 10px 12px;
-  border: 1px dashed color-mix(in srgb, #f0b90b 40%, #1e2630);
-  border-radius: 8px;
-  background: color-mix(in srgb, #f0b90b 6%, transparent);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.binance-banner b {
-  font-size: 13px;
-  color: #f0b90b;
-}
-.binance-banner span {
-  font-size: 12px;
-  color: #a0a8b8;
-  line-height: 1.4;
 }
 .footer-spacer {
   flex: 1;
