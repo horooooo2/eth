@@ -39,6 +39,24 @@ jobs:
           script_stop: true
           script: |
             set -e
+            # 非交互 SSH 往往没有 nvm/npm 的 PATH，先补齐
+            export PATH="/usr/local/bin:/usr/bin:$PATH"
+            if [ -s "$HOME/.nvm/nvm.sh" ]; then
+              # shellcheck disable=SC1090
+              . "$HOME/.nvm/nvm.sh"
+            fi
+            if [ -s /usr/local/nvm/nvm.sh ]; then
+              . /usr/local/nvm/nvm.sh
+            fi
+            # 常见二进制目录（宝塔 / fnm / 自定义安装）
+            for d in /root/.nvm/versions/node/*/bin /www/server/nodejs/v*/bin; do
+              [ -d "$d" ] && export PATH="$d:$PATH"
+            done
+            if ! command -v npm >/dev/null 2>&1; then
+              echo "npm not found in PATH=$PATH"
+              echo "请在服务器执行: which npm && which node"
+              exit 127
+            fi
             if [ -n "${GIT_DEPLOY_KEY:-}" ]; then
               eval "$(ssh-agent -s)"
               printf '%s\n' "$GIT_DEPLOY_KEY" > /tmp/git_deploy_key
