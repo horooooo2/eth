@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { ArrowDown, ArrowUp } from '@element-plus/icons-vue';
 import { fetchXFeed, type XFeedAccount, type XFeedTweet } from '@/api';
 import { clearXUnread, consumeXSocketTweets, xSocketTweets } from '@/stores/xFeed';
 
@@ -21,6 +22,8 @@ const loaded = ref(false);
 const filterUser = ref('all');
 /** 已展开的推文 id */
 const expandedIds = ref<Set<string>>(new Set());
+/** 显示英文原文的推文 id */
+const originalIds = ref<Set<string>>(new Set());
 /** 正文实际高度超过 200px 的推文 */
 const overflowIds = ref<Set<string>>(new Set());
 const bodyEls = new Map<string, HTMLElement>();
@@ -37,12 +40,24 @@ function canToggle(id: string) {
   return isOverflow(id) || isExpanded(id);
 }
 
+function isShowingOriginal(id: string) {
+  return originalIds.value.has(id);
+}
+
 function toggleExpand(id: string) {
   if (!canToggle(id)) return;
   const next = new Set(expandedIds.value);
   if (next.has(id)) next.delete(id);
   else next.add(id);
   expandedIds.value = next;
+  scheduleMeasure();
+}
+
+function toggleOriginal(id: string) {
+  const next = new Set(originalIds.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  originalIds.value = next;
   scheduleMeasure();
 }
 
@@ -117,11 +132,12 @@ function formatCount(n?: number) {
   return String(v);
 }
 
-function displayText(item: XFeedTweet) {
+function displayText(item: XFeedTweet, showEn = false) {
+  if (showEn && item.text) return String(item.text).trim();
   return (item.textZh || item.text || '').trim();
 }
 
-function showOriginal(item: XFeedTweet) {
+function canShowOriginal(item: XFeedTweet) {
   return Boolean(item.textZh && item.text && item.textZh !== item.text);
 }
 
@@ -240,18 +256,35 @@ onMounted(() => {
             :alt="item.label || item.username"
           />
           <div class="meta">
-            <strong>{{ item.label || item.user?.name || item.username }}</strong>
+            <div class="name-row">
+              <strong>{{ item.label || item.user?.name || item.username }}</strong>
+              <span class="time">{{ formatTime(item.createdAt) }}</span>
+            </div>
             <span class="handle">@{{ item.username || item.user?.username }}</span>
           </div>
+          <div class="who-actions">
+            <button
+              v-if="canShowOriginal(item) || (item.refTweet && canShowOriginal(item.refTweet))"
+              type="button"
+              class="orig-btn"
+              :class="{ on: isShowingOriginal(item.id) }"
+              @click="toggleOriginal(item.id)"
+            >
+              {{ isShowingOriginal(item.id) ? '译文' : '原文' }}
+            </button>
+            <a
+              v-if="item.url"
+              class="open"
+              :href="item.url"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              打开
+            </a>
+          </div>
         </div>
-        <div
-          class="body"
-          :ref="(el) => setBodyRef(item.id, el)"
-          :class="{ clickable: canToggle(item.id) }"
-          @click="toggleExpand(item.id)"
-        >
-          <p class="text">{{ displayText(item) }}</p>
-          <p v-if="showOriginal(item)" class="orig">{{ item.text }}</p>
+        <div class="body" :ref="(el) => setBodyRef(item.id, el)">
+          <p class="text">{{ displayText(item, isShowingOriginal(item.id)) }}</p>
 
           <div v-if="item.refTweet" class="ref">
             <div class="ref-head">
@@ -259,8 +292,7 @@ onMounted(() => {
               <strong>{{ item.refTweet.user?.name || item.refTweet.user?.username }}</strong>
               <span class="handle">@{{ item.refTweet.user?.username }}</span>
             </div>
-            <p class="text">{{ displayText(item.refTweet) }}</p>
-            <p v-if="showOriginal(item.refTweet)" class="orig">{{ item.refTweet.text }}</p>
+            <p class="text">{{ displayText(item.refTweet, isShowingOriginal(item.id)) }}</p>
           </div>
           <div
             v-else-if="item.isQuote || item.isRetweet"
@@ -276,30 +308,22 @@ onMounted(() => {
           />
         </div>
         <div class="foot">
-          <span class="time">{{ formatTime(item.createdAt) }}</span>
           <span>转 {{ formatCount(item.retweets) }}</span>
           <span>赞 {{ formatCount(item.likes) }}</span>
           <span v-if="item.views">阅 {{ formatCount(item.views) }}</span>
-          <button
-            v-if="canToggle(item.id)"
-            type="button"
-            class="expand"
-            @click="toggleExpand(item.id)"
-          >
-            {{ isExpanded(item.id) ? '收起' : '展开' }}
-          </button>
-          <a
-            v-if="item.url"
-            class="open"
-            :class="{ 'ml-auto': !canToggle(item.id) }"
-            :href="item.url"
-            target="_blank"
-            rel="noopener noreferrer"
-            @click.stop
-          >
-            打开
-          </a>
         </div>
+        <button
+          v-if="canToggle(item.id)"
+          type="button"
+          class="expand-icon"
+          :aria-label="isExpanded(item.id) ? '收起' : '展开'"
+          @click="toggleExpand(item.id)"
+        >
+          <el-icon :size="16">
+            <ArrowUp v-if="isExpanded(item.id)" />
+            <ArrowDown v-else />
+          </el-icon>
+        </button>
       </article>
     </div>
   </div>
@@ -374,12 +398,11 @@ onMounted(() => {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: color-mix(in srgb, var(--card) 88%, transparent);
+  cursor: default;
 }
 .body {
   position: relative;
-}
-.body.clickable {
-  cursor: pointer;
+  cursor: default;
 }
 .tweet.collapsible:not(.expanded) .body {
   max-height: 200px;
@@ -404,9 +427,11 @@ onMounted(() => {
 }
 .who {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   margin-bottom: 8px;
+  position: relative;
+  padding-right: 72px;
 }
 .avatar {
   width: 28px;
@@ -414,33 +439,71 @@ onMounted(() => {
   border-radius: 50%;
   object-fit: cover;
   background: var(--border);
+  flex-shrink: 0;
 }
 .meta {
   display: flex;
   flex-direction: column;
   gap: 1px;
   min-width: 0;
+  flex: 1;
+}
+.name-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
 }
 .meta strong {
   font-size: 13px;
   line-height: 1.2;
 }
+.time {
+  font-size: 11px;
+  line-height: 1.2;
+  color: #fff;
+  white-space: nowrap;
+}
 .handle {
   font-size: 11px;
   color: var(--muted);
+}
+.who-actions {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.orig-btn {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent, #1d9bf0);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.2;
+  cursor: default;
+}
+.orig-btn.on {
+  color: #fff;
+}
+.open {
+  color: var(--accent, #1d9bf0);
+  text-decoration: none;
+  font-size: 11px;
+  line-height: 1.2;
+  cursor: default;
+}
+.open:hover {
+  text-decoration: underline;
 }
 .text {
   margin: 0;
   font-size: 13px;
   line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.orig {
-  margin: 6px 0 0;
-  font-size: 11px;
-  line-height: 1.45;
-  color: var(--muted);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -475,28 +538,21 @@ onMounted(() => {
   gap: 10px;
   font-size: 11px;
   color: var(--muted);
+  cursor: default;
 }
-.expand {
-  margin-left: auto;
-  padding: 0;
+.expand-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  margin-top: 4px;
+  padding: 2px 0 0;
   border: 0;
   background: transparent;
-  color: var(--accent, #1d9bf0);
-  font: inherit;
-  font-size: 11px;
+  color: var(--muted);
   cursor: pointer;
 }
-.expand:hover {
-  text-decoration: underline;
-}
-.open {
+.expand-icon:hover {
   color: var(--accent, #1d9bf0);
-  text-decoration: none;
-}
-.open.ml-auto {
-  margin-left: auto;
-}
-.open:hover {
-  text-decoration: underline;
 }
 </style>
