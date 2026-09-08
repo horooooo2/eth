@@ -149,6 +149,8 @@ export const useWhaleStore = defineStore('whale', () => {
   const selectedWhaleName = ref('');
   const alerts = ref<WhaleAlert[]>([]);
   const alertHistory = ref<WhaleAlert[]>(readAlertHistory());
+  /** 实时异动序号：供异动列表监听并静默重拉分页 */
+  const alertRealtimeSeq = ref(0);
   /** 活动流最新一条时间，用于增量拉取 */
   const activityLastSeenTime = ref(0);
   /** 当前列表展示的 20 个 id（稳定，不因静默刷新重排） */
@@ -359,6 +361,7 @@ export const useWhaleStore = defineStore('whale', () => {
   }
 
   function mergeAlertHistory(entries: WhaleAlert[]) {
+    const beforeIds = new Set(alertHistory.value.map((item) => item.id));
     const map = new Map<string, WhaleAlert>();
     for (const item of [...entries, ...alertHistory.value]) {
       const normalized = normalizeStoredAlert(item);
@@ -370,6 +373,11 @@ export const useWhaleStore = defineStore('whale', () => {
       .slice(0, MAX_HISTORY);
     writeAlertHistory(alertHistory.value);
     absorbOpenEvidence(entries.filter((a) => (a.items?.[0]?.kind || a.kind) === 'open'));
+    const added = entries.some((item) => {
+      const id = String(item?.id || '');
+      return id && !beforeIds.has(id);
+    });
+    if (added) alertRealtimeSeq.value += 1;
   }
 
   /** 异动分页：只吸收 open 到轻量证据池（不写全量 localStorage） */
@@ -888,6 +896,7 @@ export const useWhaleStore = defineStore('whale', () => {
     selectedWhaleName,
     alerts,
     alertHistory,
+    alertRealtimeSeq,
     enabledWhales,
     rankedWhales,
     load,

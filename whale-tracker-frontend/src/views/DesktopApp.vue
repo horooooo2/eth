@@ -188,6 +188,7 @@ const {
   } else if (msg.type === 'alert' && msg.alert) {
     const alert = msg.alert as unknown as WhaleAlert;
     whaleStore.ingestRealtimeAlert(alert);
+    // 异动分页列表由 alertRealtimeSeq → NewsList 静默重拉
     if (
       workspace.value !== 'hyperliquid' &&
       alert.whaleId &&

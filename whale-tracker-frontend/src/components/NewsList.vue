@@ -420,13 +420,22 @@ watch(preferredCoinsState, (coins) => {
   if (!coins.includes(alertCoinFilter.value)) alertCoinFilter.value = 'all';
 });
 
-/** 实时新异动：在第 1 页时静默刷新 */
+/** 实时新异动：静默重拉分页（防抖，避免连发刷爆） */
+let realtimeReloadTimer: ReturnType<typeof setTimeout> | undefined;
 watch(
-  () => whaleStore.alertHistory[0]?.id,
-  (id, prev) => {
+  () => whaleStore.alertRealtimeSeq,
+  (seq, prev) => {
     if (!props.bootReady) return;
-    if (!id || id === prev) return;
-    if (alertPage.value === 1) void loadAlertPage(true);
+    if (!seq || seq === prev) return;
+    if (alertPage.value !== 1) {
+      alertPage.value = 1;
+      return;
+    }
+    if (realtimeReloadTimer) clearTimeout(realtimeReloadTimer);
+    realtimeReloadTimer = setTimeout(() => {
+      realtimeReloadTimer = undefined;
+      void loadAlertPage(true);
+    }, 400);
   },
 );
 
