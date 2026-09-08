@@ -290,7 +290,15 @@ function loadPagedAlerts(query = {}) {
   );
   const whaleId = String(query.whaleId || '').trim();
   const kind = String(query.kind || 'all').trim().toLowerCase();
-  const coin = String(query.coin || '').trim().toUpperCase();
+  const coinRaw = String(query.coins || query.coin || '').trim();
+  const coins = [
+    ...new Set(
+      coinRaw
+        .split(/[,\s]+/)
+        .map((item) => String(item || '').trim().toUpperCase())
+        .filter((item) => item && item !== 'ALL'),
+    ),
+  ];
   const side = String(query.side || 'all').trim().toLowerCase();
   const minUsd = Math.max(0, Number(query.minUsd) || 0);
 
@@ -308,11 +316,18 @@ function loadPagedAlerts(query = {}) {
     where.push('kind = ?');
     params.push(kind);
   }
-  if (coin && coin !== 'ALL') {
+  if (coins.length === 1) {
     where.push(
       `UPPER(COALESCE(json_extract(payload_json, '$.items[0].coin'), '')) = ?`,
     );
-    params.push(coin);
+    params.push(coins[0]);
+  } else if (coins.length > 1) {
+    where.push(
+      `UPPER(COALESCE(json_extract(payload_json, '$.items[0].coin'), '')) IN (${coins
+        .map(() => '?')
+        .join(', ')})`,
+    );
+    params.push(...coins);
   }
   if (side === 'long' || side === 'short') {
     where.push(
@@ -360,6 +375,20 @@ function loadPagedAlerts(query = {}) {
   if (kind === 'open' || kind === 'increase') {
     facetWhere.push('kind = ?');
     facetParams.push(kind);
+  }
+  // 多空计数需跟当前币种一致（否则选 BTC 仍显示全市场多空数）
+  if (coins.length === 1) {
+    facetWhere.push(
+      `UPPER(COALESCE(json_extract(payload_json, '$.items[0].coin'), '')) = ?`,
+    );
+    facetParams.push(coins[0]);
+  } else if (coins.length > 1) {
+    facetWhere.push(
+      `UPPER(COALESCE(json_extract(payload_json, '$.items[0].coin'), '')) IN (${coins
+        .map(() => '?')
+        .join(', ')})`,
+    );
+    facetParams.push(...coins);
   }
   if (minUsd > 0) {
     facetWhere.push(

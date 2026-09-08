@@ -117,6 +117,13 @@ function formatTime(ts: number) {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+/** 任务当前持仓浮盈合计 */
+function taskUnrealizedPnl(taskId: string) {
+  return followedPositions.value
+    .filter((p) => p.taskId === taskId && p.status === 'open')
+    .reduce((sum, p) => sum + (Number(p.uPnl) || 0), 0);
+}
+
 function kindLabel(kind: CopyTradeRecord['kind'], item?: CopyTradeRecord) {
   if (item?.status === 'fail' || (item?.note && item.note.startsWith('开仓失败'))) {
     return '开仓失败';
@@ -393,6 +400,24 @@ async function removeSelected() {
   }
   if (!selected.value) return;
   const id = selected.value.id;
+  const openForTask = followedPositions.value.filter(
+    (p) => p.taskId === id && p.status === 'open',
+  );
+  if (openForTask.length) {
+    try {
+      await ElMessageBox.confirm(
+        `该任务仍有 ${openForTask.length} 个正在跟单的仓位，删除后将不再自动跟随该巨鲸。\n确认删除？`,
+        '删除跟单任务',
+        {
+          confirmButtonText: '确认删除',
+          cancelButtonText: '取消',
+          type: 'warning',
+        },
+      );
+    } catch {
+      return;
+    }
+  }
   try {
     if (isLoggedIn.value) await deleteCopyTask(id);
   } catch (err) {
@@ -661,11 +686,7 @@ onUnmounted(() => {
             v-for="task in tasks"
             :key="task.id"
             class="task-card"
-            :class="{
-              active: task.id === filterTaskId,
-              on: task.enabled,
-              off: !task.enabled,
-            }"
+            :class="{ active: task.id === filterTaskId }"
             role="button"
             tabindex="0"
             @click="selectTask(task)"
@@ -673,7 +694,14 @@ onUnmounted(() => {
           >
             <div class="task-row">
               <strong class="task-name">{{ task.name }}</strong>
-              <span class="status-pill">{{ task.enabled ? '开' : '关' }}</span>
+              <span
+                class="task-pnl"
+                :class="taskUnrealizedPnl(task.id) >= 0 ? 'up' : 'down'"
+                :title="'当前跟单浮盈'"
+              >
+                {{ formatUsd(taskUnrealizedPnl(task.id), true) }}
+              </span>
+              <span v-if="task.enabled" class="status-pill following">跟单中</span>
             </div>
             <div class="task-addr" :title="task.whaleAddress || ''">
               {{ shortAddr(task.whaleAddress) }}
@@ -1139,21 +1167,13 @@ onUnmounted(() => {
   border: 1px solid transparent;
   border-radius: 8px;
   font: inherit;
+  color: #e0e3eb;
   cursor: pointer;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  transition: box-shadow 0.15s, border-color 0.15s;
-}
-.task-card.on {
-  background: transparent;
-  border-color: #58bd7d;
-  color: #e0e3eb;
-}
-.task-card.off {
-  background: color-mix(in srgb, #ea5a5a 22%, #0a0e14);
-  border-color: color-mix(in srgb, #ea5a5a 55%, #1e2630);
-  color: #f8d4d4;
+  transition: box-shadow 0.15s;
+  background: color-mix(in srgb, #ffffff 4%, #0a0e14);
 }
 .task-card.active {
   box-shadow: 0 0 0 2px color-mix(in srgb, #f15a24 70%, transparent);
@@ -1176,14 +1196,29 @@ onUnmounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.status-pill {
+.task-pnl {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+.task-pnl.up {
+  color: #58bd7d;
+}
+.task-pnl.down {
+  color: #ea5a5a;
+}
+.status-pill.following {
   flex-shrink: 0;
   font-size: 10px;
-  font-weight: 800;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: color-mix(in srgb, #ffffff 16%, transparent);
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
   letter-spacing: 0.02em;
+  color: #dff7e8;
+  background: color-mix(in srgb, #58bd7d 35%, #0a0e14);
+  border: 1px solid color-mix(in srgb, #58bd7d 70%, transparent);
 }
 .task-addr {
   font-size: 11px;

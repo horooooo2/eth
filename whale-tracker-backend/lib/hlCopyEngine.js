@@ -547,6 +547,11 @@ async function executeForTask(task, alert) {
   const coin = String(item.coin || '').trim();
   const side = item.side === 'short' ? 'short' : 'long';
   if (!coin) return;
+  // HIP-3 美股等（xyz:SNDK）无 OKX 对应合约，跳过
+  if (String(coin).includes(':') || /^@\d+$/i.test(coin)) {
+    console.log(`[copy-engine] skip exotic asset ${task.name} ${coin}`);
+    return;
+  }
 
   // fill 与仓位 diff 可能连续报同一笔开/加，短窗去重
   if (wasRecentlyOpenAdd(task.id, coin, side)) {

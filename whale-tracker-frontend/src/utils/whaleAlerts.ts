@@ -415,7 +415,9 @@ export function snapshotWhales(whales: WhaleProfile[]): Record<string, PositionS
     out[whale.id] = {
       direction: whale.direction,
       error: whale.error,
-      positions: (whale.positions || []).map((pos) => ({
+      positions: (whale.positions || [])
+        .filter((pos) => !isExoticAsset(pos.coin) && !isExoticAsset(pos.coinLabel || ''))
+        .map((pos) => ({
         coin: pos.coin,
         side: pos.side,
         size: pos.size,

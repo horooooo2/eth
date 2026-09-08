@@ -707,9 +707,13 @@ async function focusWhale(payload: { id: string; coin?: string }) {
   await nextTick();
   frozenWhales.value = props.whales.length ? props.whales : [whale];
 
+  // 异动点击始终定位；「无新鲜开仓」不拦截（老仓加仓也算有动作）
   if (freshModeEnabled.value && !whaleHasFreshActivity(whale, Date.now())) {
-    ElMessage.warning('该巨鲸最近无动作');
-    return;
+    // 仍展示卡片：临时钉住，避免被近时列表滤掉
+    frozenWhales.value = [
+      whale,
+      ...frozenWhales.value.filter((item) => item.id !== whale.id),
+    ];
   }
   // 定位高亮
   locatePinId.value = payload.id;

@@ -21,9 +21,10 @@ function normalizeAssetKey(coin: string) {
   return String(coin || '').toUpperCase().replace(/^K/, '');
 }
 
-/** 与转账列表一致：主流币 + 合约 exotic 才进入筛选项 */
+/** 与转账列表一致：仅主流币进入筛选项（HIP-3 美股等不进） */
 export function isSelectableAsset(coin: string) {
-  return isMainstreamAsset(coin) || isExoticAsset(coin);
+  if (isExoticAsset(coin)) return false;
+  return isMainstreamAsset(coin);
 }
 
 export function compareSelectableAssets(a: string, b: string) {

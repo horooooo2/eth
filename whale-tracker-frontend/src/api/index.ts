@@ -179,6 +179,8 @@ export type AlertHistoryQuery = {
   whaleId?: string;
   kind?: 'all' | 'open' | 'increase';
   coin?: string;
+  /** 多币种（「全部」= 偏好币种列表），逗号分隔或数组 */
+  coins?: string | string[];
   side?: 'all' | 'long' | 'short';
   minUsd?: number;
   sinceMs?: number;
@@ -186,6 +188,9 @@ export type AlertHistoryQuery = {
 
 /** 异动服务端分页 */
 export async function fetchPagedAlertHistory(query: AlertHistoryQuery = {}) {
+  const coinsParam = Array.isArray(query.coins)
+    ? query.coins.filter(Boolean).join(',')
+    : String(query.coins || '').trim();
   const { data } = await http.get<{
     alerts: unknown[];
     total: number;
@@ -206,6 +211,7 @@ export async function fetchPagedAlertHistory(query: AlertHistoryQuery = {}) {
       whaleId: query.whaleId || undefined,
       kind: query.kind && query.kind !== 'all' ? query.kind : undefined,
       coin: query.coin && query.coin !== 'all' ? query.coin : undefined,
+      coins: coinsParam || undefined,
       side: query.side && query.side !== 'all' ? query.side : undefined,
       minUsd: query.minUsd || undefined,
       sinceMs: query.sinceMs || undefined,

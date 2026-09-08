@@ -7,12 +7,14 @@ import {
   normalizeStoredAlert,
   scopeAlertToCoin,
   scopeAlertToSide,
+  alertEventTime,
   type AlertLayer,
   type WhaleAlert,
 } from '@/utils/whaleAlerts';
 import { preferredCoinsState, coinMatchesWatch } from '@/utils/watchedCoins';
+import { isExoticAsset } from '@/utils/assets';
 import {
-  alertPassesFreshGate,
+  alertPassesFreshListGate,
   freshModeEnabled,
   freshWindowHours,
   freshWindowMs,
@@ -126,32 +128,125 @@ async function loadAlertPage(silent = false) {
   const seq = ++alertReqSeq;
   if (!silent) alertLoading.value = true;
   try {
-    const data = await fetchPagedAlertHistory({
-      page: alertPage.value,
-      limit: ALERT_PAGE_SIZE,
+    const baseQuery = {
       whaleId: props.filterWhaleId || undefined,
-      kind: openOnly.value ? 'open' : 'all',
-      coin: alertCoinFilter.value !== 'all' ? alertCoinFilter.value : undefined,
-      side: alertSideFilter.value !== 'all' ? alertSideFilter.value : undefined,
+      kind: (openOnly.value ? 'open' : 'all') as 'open' | 'all',
+      // 多空计数要两边都有：请求时不带 side，展示时再筛
       minUsd: alertMinUsd.value || undefined,
       sinceMs: freshModeEnabled.value ? Date.now() - freshWindowMs() : undefined,
-    });
-    if (seq !== alertReqSeq) return;
-    const list = (data.alerts || [])
-      .map((item) => normalizeStoredAlert(item as WhaleAlert))
-      .filter((item): item is WhaleAlert => Boolean(item));
-    pageAlerts.value = list;
-    alertTotal.value = Number(data.total) || list.length;
-    // 同步进 store，供巨鲸近时过滤用开仓异动兜底
-    whaleStore.absorbAlertPage(list);
-    if (data.facets) {
-      facets.value = {
-        all: Number(data.facets.all) || 0,
-        byCoin: data.facets.byCoin || {},
-        long: Number(data.facets.long) || 0,
-        short: Number(data.facets.short) || 0,
-      };
+    };
+
+    const coinTargets =
+      alertCoinFilter.value === 'all'
+        ? preferredCoins.value.length
+          ? [...preferredCoins.value]
+          : []
+        : [alertCoinFilter.value];
+
+    const map = new Map<string, WhaleAlert>();
+    const byCoinRaw: Record<string, number> = {};
+    let serverLong = 0;
+    let serverShort = 0;
+
+    if (!coinTargets.length) {
+      const data = await fetchPagedAlertHistory({
+        ...baseQuery,
+        page: 1,
+        limit: Math.min(100, alertPage.value * ALERT_PAGE_SIZE),
+      });
+      if (seq !== alertReqSeq) return;
+      for (const raw of data.alerts || []) {
+        const item = normalizeStoredAlert(raw as WhaleAlert);
+        if (item?.id) map.set(item.id, item);
+      }
+      serverLong = Number(data.facets?.long) || 0;
+      serverShort = Number(data.facets?.short) || 0;
+      Object.assign(byCoinRaw, data.facets?.byCoin || {});
+    } else {
+      const need = Math.min(100, Math.max(ALERT_PAGE_SIZE, alertPage.value * ALERT_PAGE_SIZE));
+      const pages = await Promise.all(
+        coinTargets.map((coin) =>
+          fetchPagedAlertHistory({
+            ...baseQuery,
+            page: 1,
+            limit: need,
+            coin,
+          }),
+        ),
+      );
+      if (seq !== alertReqSeq) return;
+      for (let i = 0; i < coinTargets.length; i += 1) {
+        const coin = coinTargets[i];
+        const data = pages[i];
+        byCoinRaw[coin] = Number(data.total) || 0;
+        for (const raw of data.alerts || []) {
+          const item = normalizeStoredAlert(raw as WhaleAlert);
+          if (item?.id) map.set(item.id, item);
+        }
+        // 单币请求时 facets 已按该币收窄
+        if (coinTargets.length === 1 && data.facets) {
+          serverLong = Number(data.facets.long) || 0;
+          serverShort = Number(data.facets.short) || 0;
+          Object.assign(byCoinRaw, data.facets.byCoin || {});
+        } else if (data.facets) {
+          // 多币合并时用各币 total 近似；多空改由客户端闸门后重算
+          Object.assign(byCoinRaw, data.facets.byCoin || {});
+        }
+      }
     }
+
+    const pool = [...map.values()]
+      .filter((alert) => {
+        const coin = alert.items?.[0]?.coin;
+        if (isExoticAsset(String(coin || ''))) return false;
+        if (alertCoinFilter.value === 'all' && preferredCoins.value.length) {
+          if (!coinMatchesWatch(coin, preferredCoins.value)) return false;
+        }
+        return alertPassesFreshListGate(alert, whaleOf(alert));
+      })
+      .sort((a, b) => alertEventTime(b) - alertEventTime(a));
+
+    // 与列表同一套闸门后的多空 / 币种计数
+    const byCoin: Record<string, number> = {};
+    let long = 0;
+    let short = 0;
+    for (const alert of pool) {
+      const side = alert.items?.[0]?.side;
+      if (side === 'long') long += 1;
+      else if (side === 'short') short += 1;
+      const coin = String(alert.items?.[0]?.coin || '')
+        .trim()
+        .toUpperCase();
+      if (coin) byCoin[coin] = (byCoin[coin] || 0) + 1;
+    }
+
+    // 非闪电模式且样本可能被 limit 截断时，优先用服务端按币种 facet
+    const truncated =
+      !freshModeEnabled.value &&
+      coinTargets.length === 1 &&
+      (byCoinRaw[coinTargets[0]] || 0) > pool.length;
+    if (truncated) {
+      long = serverLong;
+      short = serverShort;
+      for (const [k, v] of Object.entries(byCoinRaw)) {
+        byCoin[k] = v;
+      }
+    }
+
+    const side = alertSideFilter.value;
+    const sided = side === 'all' ? pool : pool.filter((a) => a.items?.[0]?.side === side);
+    const start = (alertPage.value - 1) * ALERT_PAGE_SIZE;
+    const list = sided.slice(start, start + ALERT_PAGE_SIZE);
+
+    pageAlerts.value = list;
+    alertTotal.value = sided.length;
+    whaleStore.absorbAlertPage(list);
+    facets.value = {
+      all: pool.length,
+      byCoin: truncated ? { ...byCoinRaw, ...byCoin } : byCoin,
+      long,
+      short,
+    };
   } catch (err) {
     if (seq !== alertReqSeq) return;
     if (!silent) {
@@ -208,9 +303,11 @@ function isOpenPositionClosed(alert: WhaleAlert): boolean {
 }
 
 const alertCoinCounts = computed(() => {
-  const counts: Record<string, number> = { all: facets.value.all };
+  const counts: Record<string, number> = { all: 0 };
   for (const coin of preferredCoins.value) {
-    counts[coin] = facets.value.byCoin[coin] || 0;
+    const n = facets.value.byCoin[coin] || 0;
+    counts[coin] = n;
+    counts.all += n;
   }
   return counts;
 });
@@ -260,7 +357,6 @@ function alertItemKind(alert: WhaleAlert) {
 const filteredAlerts = computed(() => {
   const side = alertSideFilter.value;
   return pageAlerts.value
-    .filter((alert) => alertPassesFreshGate(alert, whaleOf(alert)))
     .map((alert) => {
       let scoped = alert;
       if (alertCoinFilter.value !== 'all') {
@@ -275,7 +371,8 @@ const filteredAlerts = computed(() => {
         view,
         closedOpen: isOpenPositionClosed(scoped),
       };
-    });
+    })
+    .filter((row) => Boolean(row.alert?.items?.length));
 });
 
 const alertPageCount = computed(() =>
@@ -293,6 +390,7 @@ watch(
     () => props.filterWhaleId,
     freshModeEnabled,
     freshWindowHours,
+    preferredCoins,
   ],
   () => {
     if (!props.bootReady) return;

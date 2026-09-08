@@ -1021,7 +1021,7 @@ function uniqueAssets(trades) {
     }
   }
   return [...map.values()]
-    .filter((item) => isMainstreamAsset(item.value) || item.exotic)
+    .filter((item) => isMainstreamAsset(item.value) && !item.exotic)
     .sort((a, b) => {
       if (a.exotic !== b.exotic) return a.exotic ? 1 : -1;
       const ia = MAIN_ASSETS.indexOf(String(a.value).toUpperCase());

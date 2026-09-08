@@ -270,12 +270,15 @@ export function alertPositionStillOpen(
 }
 
 export function isFreshPosition(
-  pos: Pick<WhalePosition, 'coin' | 'coinLabel' | 'openTime' | 'firstOpenTime'>,
+  pos: Pick<WhalePosition, 'coin' | 'coinLabel' | 'openTime' | 'firstOpenTime' | 'lastAddTime'>,
   now = Date.now(),
   evidence?: { openCoins?: Set<string> },
 ) {
   const openT = positionOpenTime(pos);
-  if (openT) return isWithinFreshWindow(openT, now);
+  if (openT && isWithinFreshWindow(openT, now)) return true;
+  // 老仓在窗口内加仓也算有动作（异动「加仓」常见）
+  const addT = Number(pos.lastAddTime) || 0;
+  if (addT && isWithinFreshWindow(addT, now)) return true;
   if (!evidence?.openCoins?.size) return false;
   const coin = coinKey(pos.coinLabel || pos.coin);
   return Boolean(coin && evidence.openCoins.has(coin));
@@ -307,6 +310,20 @@ export function alertPassesFreshGate(
     const coin = coinKey(alert.items?.[0]?.coin);
     return Boolean(coin && openCoins.has(coin));
   }
+  return isWithinFreshWindow(alertEventTime(alert), now);
+}
+
+/**
+ * 异动列表用：时间窗 + 仓位仍在即可。
+ * 不加「须有窗口内开仓证据」——分页下「全部」会被其它币/缺证据加仓挤空。
+ */
+export function alertPassesFreshListGate(
+  alert: WhaleAlert,
+  whale?: WhaleProfile | null,
+  now = Date.now(),
+) {
+  if (!freshModeEnabled.value) return true;
+  if (!alertPositionStillOpen(alert, whale)) return false;
   return isWithinFreshWindow(alertEventTime(alert), now);
 }
 
