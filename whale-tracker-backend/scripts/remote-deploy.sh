@@ -116,46 +116,37 @@ fi
 PY=$(command -v python3)
 cd "$ENGINE"
 
-echo "==> ensure pip"
-if ! "$PY" -m pip --version >/dev/null 2>&1; then
-  echo "==> pip missing, bootstrapping"
-  "$PY" -m ensurepip --upgrade >/tmp/ensurepip.log 2>&1 || true
-  if ! "$PY" -m pip --version >/dev/null 2>&1; then
+echo "==> create/reuse venv (avoid RPM idna/urllib3 uninstall conflicts)"
+VENV="$ENGINE/.venv"
+if [ ! -x "$VENV/bin/python" ]; then
+  echo "==> python3 -m venv $VENV"
+  if ! "$PY" -m venv "$VENV"; then
+    echo "==> venv module missing - trying ensurepip / distro packages"
+    "$PY" -m ensurepip --upgrade >/tmp/ensurepip.log 2>&1 || true
     if command -v dnf >/dev/null 2>&1; then
-      dnf install -y python3-pip >/tmp/dnf-pip.log 2>&1 || true
+      dnf install -y python3-pip python3-venv >/tmp/dnf-venv.log 2>&1 || \
+        dnf install -y python3-pip >/tmp/dnf-pip.log 2>&1 || true
     elif command -v yum >/dev/null 2>&1; then
-      yum install -y python3-pip >/tmp/yum-pip.log 2>&1 || true
-    elif command -v apt-get >/dev/null 2>&1; then
-      apt-get update -y >/tmp/apt-update.log 2>&1 || true
-      apt-get install -y python3-pip >/tmp/apt-pip.log 2>&1 || true
+      yum install -y python3-pip python3-venv >/tmp/yum-venv.log 2>&1 || true
     fi
-  fi
-  if ! "$PY" -m pip --version >/dev/null 2>&1; then
-    echo "==> using get-pip.py"
-    curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
-    # PEP 668 distros may need --break-system-packages
-    if ! "$PY" /tmp/get-pip.py; then
-      "$PY" /tmp/get-pip.py --break-system-packages
-    fi
+    "$PY" -m venv "$VENV" || {
+      echo "ERROR: failed to create venv"
+      tail -n 40 /tmp/ensurepip.log /tmp/dnf-venv.log /tmp/dnf-pip.log /tmp/yum-venv.log 2>/dev/null || true
+      exit 12
+    }
   fi
 fi
 
-if ! "$PY" -m pip --version; then
-  echo "ERROR: pip still unavailable"
-  tail -n 50 /tmp/ensurepip.log /tmp/dnf-pip.log /tmp/yum-pip.log /tmp/apt-pip.log 2>/dev/null || true
-  exit 11
-fi
+VENV_PY="$VENV/bin/python"
+VENV_PIP="$VENV/bin/pip"
+test -x "$VENV_PY" || { echo "ERROR: missing $VENV_PY"; exit 12; }
 
-echo "==> pip install requirements"
-"$PY" -m pip install -U pip setuptools wheel || \
-  "$PY" -m pip install -U pip setuptools wheel --break-system-packages || true
-if ! "$PY" -m pip install -r requirements.txt; then
-  echo "==> retry with --break-system-packages"
-  "$PY" -m pip install -r requirements.txt --break-system-packages
-fi
+echo "==> venv python: $VENV_PY"
+"$VENV_PY" -m pip install -U pip setuptools wheel
+echo "==> pip install requirements into venv"
+"$VENV_PY" -m pip install -r requirements.txt
 
-PY_BIN=$(readlink -f "$PY" 2>/dev/null || echo "$PY")
-echo "==> write v41-engine.service (ExecStart=$PY_BIN)"
+echo "==> write v41-engine.service (ExecStart=$VENV_PY)"
 cat > /etc/systemd/system/v41-engine.service <<EOF
 [Unit]
 Description=V4.1 Trading Engine
@@ -164,7 +155,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=${ENGINE}
-ExecStart=${PY_BIN} scripts/run_engine_api.py
+ExecStart=${VENV_PY} scripts/run_engine_api.py
 Restart=always
 RestartSec=3
 EnvironmentFile=${ENGINE}/.env

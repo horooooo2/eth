@@ -51,6 +51,7 @@ jobs:
             --exclude='./.git' \
             --exclude='./data' \
             --exclude='./logs' \
+            --exclude='./.venv' \
             --exclude='./.pytest_cache' \
             --exclude='./__pycache__' \
             --exclude='*/__pycache__' \
