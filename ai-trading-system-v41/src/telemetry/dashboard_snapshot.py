@@ -6,6 +6,12 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from src.core.signal_lifecycle import TradeIntent
+from src.runtime.alpha_execution import (
+    is_runtime_test_fixture,
+    live_trading_enabled,
+    strategy_live_allowed,
+    user_id_ready,
+)
 
 
 def _iso(dt: Any) -> Optional[str]:
@@ -254,6 +260,21 @@ def build_dashboard_snapshot(runtime: Any) -> Dict[str, Any]:
             "last_tick_at": runtime.last_tick_at,
             "active_strategy": runtime.active_strategy,
             "engine_available": runtime.state != "OFFLINE",
+            "alpha_opening_enabled": getattr(runtime, "alpha_opening_enabled", True),
+            "console_mode": getattr(runtime, "console_mode", "ALPHA"),
+            "alpha_execution": getattr(runtime, "alpha_execution", "SHADOW"),
+            "live_permission": live_trading_enabled(),
+            "user_id_ready": user_id_ready(getattr(runtime, "user_id", None)),
+            "last_evaluated_at": (
+                runtime._active_diag().last_evaluated_at
+                if hasattr(runtime, "_active_diag") and runtime._active_diag()
+                else None
+            ),
+            "evaluation_count": (
+                runtime._active_diag().evaluation_count
+                if hasattr(runtime, "_active_diag") and runtime._active_diag()
+                else 0
+            ),
         },
         "s3": serialize_s3(context, data_pool),
         "s5": serialize_s5(context),
@@ -262,14 +283,32 @@ def build_dashboard_snapshot(runtime: Any) -> Dict[str, Any]:
         "trade_intents": serialize_trade_intents(
             intents, context=context, data_pool=data_pool, lifecycle=orch.lifecycle
         ),
-        "order_intents": list(runtime.order_intents),
+        "order_intents": [
+            oi for oi in list(getattr(runtime, "order_intents", []) or []) if not is_runtime_test_fixture(oi)
+        ],
         "execution": {
             "mode": runtime.execution_mode,
+            "alpha_execution": getattr(runtime, "alpha_execution", "SHADOW"),
             "last_orders": list(orch.last_orders or []),
+        },
+        "alpha_execution": getattr(runtime, "alpha_execution", "SHADOW"),
+        "account_environment": None,
+        "live_permission": live_trading_enabled(),
+        "user_id_ready": user_id_ready(getattr(runtime, "user_id", None)),
+        "strategy": {
+            "id": getattr(runtime, "active_strategy", "S1"),
+            "live_allowed": strategy_live_allowed(getattr(runtime, "active_strategy", "S1")),
         },
         "incidents": list(runtime.incidents),
         "edge": context.get("edge_estimate"),
     }
+    if hasattr(runtime, "strategy_diagnostics"):
+        try:
+            raw["strategy_diagnostics"] = runtime.strategy_diagnostics(
+                getattr(runtime, "active_strategy", "S1")
+            )
+        except Exception:
+            raw["strategy_diagnostics"] = None
     raw["view"] = build_personal_view(runtime, raw)
     return raw
 
@@ -307,6 +346,7 @@ def build_personal_view(runtime: Any, snap: Mapping[str, Any]) -> Dict[str, Any]
         i
         for i in (snap.get("trade_intents") or [])
         if str(i.get("strategy_id") or "") == active_id
+        and not is_runtime_test_fixture(i)
         and str(i.get("status") or "")
         not in (
             "STRATEGY_SWITCH_INVALIDATED",
@@ -316,14 +356,17 @@ def build_personal_view(runtime: Any, snap: Mapping[str, Any]) -> Dict[str, Any]
         )
     ][:10]
 
-    recent_orders = list(snap.get("order_intents") or [])[:20]
+    recent_orders = [oi for oi in (snap.get("order_intents") or []) if not is_runtime_test_fixture(oi)][:20]
     eng = snap.get("engine") or {}
 
     return {
         "engine": {
             "available": bool(eng.get("engine_available", runtime.state != "OFFLINE")),
             "state": str(eng.get("state") or runtime.state),
-            "mode": str(eng.get("mode") or runtime.mode),
+            "alpha_execution": str(
+                snap.get("alpha_execution")
+                or getattr(runtime, "alpha_execution", "SHADOW")
+            ),
             "version": str(eng.get("version") or "4.1"),
             "updated_at": eng.get("updated_at") or _now_iso(),
         },

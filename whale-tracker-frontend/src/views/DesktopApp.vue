@@ -289,7 +289,7 @@ onUnmounted(() => {
     :class="{
       busy: pageBusy && isLoggedIn,
       'theme-ai': workspace === 'whale-ai' && isLoggedIn,
-      'login-only': authBootstrapped && !isLoggedIn,
+      'login-only': !authBootstrapped || !isLoggedIn,
     }"
     @pointerdown="unlockAlertSound"
   >
@@ -507,9 +507,12 @@ onUnmounted(() => {
 }
 
 .login-gate {
+  width: 100%;
   min-height: 100vh;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
   padding: 24px;
   background:
     radial-gradient(ellipse 80% 50% at 50% -20%, rgba(31, 111, 235, 0.25), transparent),

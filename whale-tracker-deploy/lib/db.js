@@ -208,6 +208,20 @@ function migrate(database) {
   } catch {
     // ignore
   }
+  const logCols = [
+    ['channel', "TEXT NOT NULL DEFAULT 'SYSTEM'"],
+    ['event_type', 'TEXT'],
+    ['strategy_id', 'TEXT'],
+    ['symbol', 'TEXT'],
+    ['reason_code', 'TEXT'],
+  ];
+  for (const [col, spec] of logCols) {
+    try {
+      database.exec(`ALTER TABLE whale_ai_runtime_logs ADD COLUMN ${col} ${spec}`);
+    } catch {
+      // column exists
+    }
+  }
 }
 
 function getDb() {

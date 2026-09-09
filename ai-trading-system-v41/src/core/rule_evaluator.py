@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Any, Mapping, MutableMapping, Optional, Union
+from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Union
 
 Number = Union[int, float, bool]
 EvalResult = Union[bool, float, int]
@@ -38,6 +38,17 @@ class RuleEvaluator:
             if self.missing_policy == "fail_closed":
                 return False
             raise
+
+    def explain_failures(
+        self,
+        node: Any,
+        context: Optional[MutableMapping[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """List failed leaf conditions. Does not change evaluate() semantics."""
+        ctx = context if context is not None else {}
+        failed: List[Dict[str, Any]] = []
+        self._collect_failures(node, ctx, failed)
+        return failed
 
     def _eval(self, node: Any, ctx: MutableMapping[str, Any]) -> EvalResult:
         if node is None:
@@ -182,6 +193,36 @@ class RuleEvaluator:
         if op == "neq":
             return left != right
         return False
+
+    def _collect_failures(
+        self,
+        node: Any,
+        ctx: MutableMapping[str, Any],
+        out: List[Dict[str, Any]],
+    ) -> None:
+        if not isinstance(node, dict):
+            return
+        if "logic" in node:
+            for cond in node.get("conditions") or []:
+                if not bool(self.evaluate(cond, ctx)):
+                    self._collect_failures(cond, ctx, out)
+            return
+        if node.get("lhs") is None:
+            return
+        if bool(self.evaluate(node, ctx)):
+            return
+        lhs = str(node.get("lhs"))
+        out.append(
+            {
+                "lhs": lhs,
+                "op": node.get("op"),
+                "rhs": node.get("rhs"),
+                "lhs_value": self._resolve_operand(node.get("lhs"), ctx),
+                "rhs_value": self._resolve_operand(node.get("rhs"), ctx)
+                if node.get("op") not in {"in", "not_in"}
+                else node.get("rhs"),
+            }
+        )
 
     def _resolve_operand(self, raw: Any, ctx: MutableMapping[str, Any]) -> Any:
         if raw is None:

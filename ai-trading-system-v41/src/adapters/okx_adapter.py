@@ -32,7 +32,9 @@ class OkxAdapter:
         self._mock_equity = 100_000.0
         self._mock_positions: List[Dict[str, Any]] = []
 
-        if not self.mock:
+        self._init_error = None
+        # Execution credentials only — public candles use OkxPublicMarket (never sandbox).
+        if not self.mock and (self.api_key or mode == "live"):
             try:
                 import ccxt  # type: ignore
 
@@ -45,12 +47,10 @@ class OkxAdapter:
                         "options": {"defaultType": "swap"},
                     }
                 )
-                # paper / sandbox
-                if mode in {"paper", "sandbox", "testnet"}:
+                if mode in {"sandbox", "testnet"}:
                     self._exchange.set_sandbox_mode(True)
             except Exception as exc:  # pragma: no cover
-                # Fall back to mock if ccxt/network unavailable
-                self.mock = True
+                self._exchange = None
                 self._init_error = str(exc)
 
     def _mock_ohlcv(self, symbol: str, timeframe: str, limit: int) -> pd.DataFrame:
@@ -63,13 +63,18 @@ class OkxAdapter:
         open_ = np.roll(close, 1)
         open_[0] = close[0]
         volume = rng.uniform(10, 100, size=n)
-        idx = pd.date_range(end=pd.Timestamp.now(tz="UTC"), periods=n, freq="5min")
+        freq = "1h" if str(timeframe).lower() in {"1h", "1H", "60m"} else "5min"
+        idx = pd.date_range(end=pd.Timestamp.now(tz="UTC"), periods=n, freq=freq)
         return pd.DataFrame(
             {"open": open_, "high": high, "low": low, "close": close, "volume": volume},
             index=idx,
         ).tail(limit)
 
-    def get_klines(self, symbol: str, timeframe: str = "5m", limit: int = 300) -> pd.DataFrame:
+    def get_klines(self, symbol: str, timeframe: str = "1h", limit: int = 200) -> pd.DataFrame:
+        from src.adapters.okx_market_data import get_okx_public_market, use_real_okx_market
+
+        if use_real_okx_market():
+            return get_okx_public_market().fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
         if self.mock or self._exchange is None:
             return self._mock_ohlcv(symbol, timeframe, limit)
         rows = self._exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)

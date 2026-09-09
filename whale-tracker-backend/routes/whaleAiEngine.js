@@ -6,6 +6,43 @@ const express = require('express');
 const { requireUser, canResumeEngine } = require('../lib/authStore');
 const v41 = require('../lib/v41EngineClient');
 const { executeOrderIntent, cancelOrderIntent } = require('../lib/v41ExecutionGateway');
+const { getOkxCredentialsForUser } = require('../lib/userExchangeKeys');
+const alphaGate = require('../lib/v41AlphaLiveGate');
+const userBinding = require('../lib/v41UserBinding');
+
+async function bindSessionUser(req) {
+  const userId = String(req.user?.user?.id || '').trim();
+  if (!userId) return { user_id_ready: false };
+  userBinding.bindEngineOwner(userId);
+  try {
+    return await v41.bindUser(userId);
+  } catch (err) {
+    console.warn('[V41_BIND_USER_FAILED]', err.message || err);
+    return { ok: false, user_id: userId, user_id_ready: true, bind_error: err.message };
+  }
+}
+
+function attachAccountEnvironment(snapshot, userId) {
+  const creds = userId ? getOkxCredentialsForUser(userId) : null;
+  const account_environment = alphaGate.resolveAccountEnvironment(creds);
+  const live_permission = alphaGate.liveTradingEnabled();
+  if (!snapshot || typeof snapshot !== 'object') {
+    return { account_environment, live_permission, user_id_ready: Boolean(userId) };
+  }
+  snapshot.account_environment = account_environment;
+  snapshot.live_permission = live_permission;
+  snapshot.user_id_ready = Boolean(userId);
+  if (snapshot.view && typeof snapshot.view === 'object') {
+    snapshot.view.account_environment = account_environment;
+    snapshot.view.live_permission = live_permission;
+    snapshot.view.user_id_ready = Boolean(userId);
+    if (snapshot.view.engine && typeof snapshot.view.engine === 'object') {
+      snapshot.view.engine.alpha_execution = snapshot.alpha_execution || snapshot.view.engine.alpha_execution;
+      delete snapshot.view.engine.mode;
+    }
+  }
+  return snapshot;
+}
 
 const router = express.Router();
 
@@ -31,8 +68,13 @@ function assertLogin(req, res) {
 
 function withFreshness(payload) {
   const bridge = v41.bridgeStatus();
+  const runtime = String(bridge.engine_runtime_status || bridge.freshness || '').toUpperCase();
   const available =
-    bridge.freshness === 'LIVE' || bridge.freshness === 'STALE';
+    bridge.transport_status === 'CONNECTED' &&
+    runtime !== 'OFFLINE' &&
+    runtime !== 'DISABLED' &&
+    runtime !== 'NEVER' &&
+    runtime !== 'UNKNOWN';
   return {
     ...payload,
     engineAvailable: available,
@@ -67,7 +109,11 @@ router.get('/health', async (req, res) => {
 router.get('/dashboard', async (req, res) => {
   if (!assertLogin(req, res)) return;
   try {
-    const snapshot = await v41.getSnapshot();
+    const sessionId = String(req.user.user.id);
+    if (userBinding.getBoundEngineOwner() !== sessionId) {
+      await bindSessionUser(req);
+    }
+    const snapshot = attachAccountEnvironment(await v41.getSnapshot(), sessionId);
     const view = snapshot?.view || null;
     res.json(
       withFreshness({
@@ -172,6 +218,7 @@ router.get('/incidents', async (req, res) => {
 router.post('/start', async (req, res) => {
   if (!assertLogin(req, res)) return;
   try {
+    await bindSessionUser(req);
     res.json(await v41.start());
   } catch (err) {
     sendErr(res, err);
@@ -364,6 +411,16 @@ router.get('/strategy/active', async (req, res) => {
   }
 });
 
+router.get('/strategy/:id/diagnostics', async (req, res) => {
+  if (!assertLogin(req, res)) return;
+  try {
+    const data = await v41.getStrategyDiagnostics(req.params.id);
+    res.json(withFreshness(data));
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
 router.get('/strategies', async (req, res) => {
   if (!assertLogin(req, res)) return;
   try {
@@ -493,6 +550,7 @@ router.get('/execution/selections', async (req, res) => {
 router.post('/execution/select', async (req, res) => {
   if (!assertLogin(req, res)) return;
   try {
+    await bindSessionUser(req);
     const body = {
       ...(req.body || {}),
       operator_id: String(req.user?.user?.username || req.user?.user?.id || 'system'),

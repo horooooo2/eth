@@ -633,6 +633,11 @@ export type WhaleAiRuntimeLog = {
   lvl: 'info' | 'success' | 'warn' | 'error' | string;
   msg: string;
   source?: string;
+  channel?: 'SYSTEM' | 'POSITION' | string;
+  event_type?: string;
+  strategy_id?: string;
+  symbol?: string;
+  reason_code?: string;
 };
 
 export async function fetchWhaleAiRuntimeLogs(limit = 1000) {
@@ -650,6 +655,11 @@ export async function appendWhaleAiRuntimeLog(body: {
   msg: string;
   source?: string;
   ts?: number;
+  channel?: 'SYSTEM' | 'POSITION' | string;
+  event_type?: string;
+  strategy_id?: string;
+  symbol?: string;
+  reason_code?: string;
 }) {
   const { data } = await http.post<{ ok: boolean; log: WhaleAiRuntimeLog }>(
     '/whale-ai/runtime-logs',
@@ -921,7 +931,7 @@ export type V41PersonalView = {
   engine: {
     available: boolean;
     state: string;
-    mode: string;
+    alpha_execution?: 'SHADOW' | 'EXECUTE' | string;
     version: string;
     updated_at: string;
   };
@@ -954,6 +964,67 @@ export type V41PersonalView = {
   last_update: string;
 };
 
+export type V41StrategyDiagnostics = {
+  strategy_id: string;
+  active?: boolean;
+  runtime_state?: string;
+  alpha_opening_enabled?: boolean;
+  last_tick_at?: string | null;
+  last_evaluated_at?: string | null;
+  evaluation_count?: number;
+  last_raw_signal_at?: string | null;
+  last_trade_intent_at?: string | null;
+  last_order_intent_at?: string | null;
+  raw_signal_count?: number;
+  trade_intent_created_count?: number;
+  trade_intent_expired_count?: number;
+  S3_rejected_count?: number;
+  S5_rejected_count?: number;
+  S6_rejected_count?: number;
+  S7_rejected_count?: number;
+  edge_rejected_count?: number;
+  S4_rejected_count?: number;
+  cost_rejected_count?: number;
+  order_intent_created_count?: number;
+  executed_count?: number;
+  last_decision?: string;
+  last_reason_codes?: string[];
+  market_data?: {
+    source?: string;
+    instrument?: string;
+    timeframe?: string;
+    latest_candle_at?: string | null;
+    latest_closed_candle_at?: string | null;
+    candle_age_seconds?: number | null;
+    bars_loaded?: number;
+    closed_bars?: number;
+    candle_closed?: boolean;
+    state?: string;
+    forming?: boolean;
+    error?: string;
+  };
+  indicators?: Record<string, number | null | undefined>;
+  gates?: Record<string, unknown>;
+  decision?: {
+    direction_candidate?: string;
+    result?: string;
+    reason_codes?: string[];
+  };
+  pending_log_event?: {
+    channel?: string;
+    event_type?: string;
+    strategy_id?: string;
+    symbol?: string;
+    direction?: string;
+    decision?: string;
+    reason_codes?: string[];
+    reason_code?: string;
+    ts?: string;
+  } | null;
+  engineAvailable?: boolean;
+  bridge?: V41BridgeStatus;
+};
+
 export type V41EngineSnapshot = {
   engine: {
     version: string;
@@ -964,6 +1035,11 @@ export type V41EngineSnapshot = {
     last_tick_at?: string | null;
     active_strategy?: string;
     engine_available?: boolean;
+    alpha_opening_enabled?: boolean;
+    console_mode?: string;
+    alpha_execution?: 'SHADOW' | 'EXECUTE';
+    last_evaluated_at?: string | null;
+    evaluation_count?: number;
   };
   s3: V41Regime | null;
   s5: V41RiskBudget | null;
@@ -971,10 +1047,18 @@ export type V41EngineSnapshot = {
   s7: V41StrategyHealth[];
   trade_intents: V41TradeIntent[];
   order_intents: unknown[];
+  open_positions?: unknown[];
   execution: Record<string, unknown>;
   incidents: V41Incident[];
   edge?: unknown;
   view?: V41PersonalView;
+  strategy_diagnostics?: V41StrategyDiagnostics | null;
+  alpha_execution?: 'SHADOW' | 'EXECUTE';
+  account_environment?: 'OKX_DEMO' | 'OKX_LIVE' | null;
+  live_permission?: boolean;
+  qa_backend?: 'EXCHANGE' | 'INTERNAL_SIMULATOR' | null;
+  user_id_ready?: boolean;
+  strategy?: { id?: string; live_allowed?: boolean };
 };
 
 export type V41BridgeStatus = {
@@ -985,6 +1069,13 @@ export type V41BridgeStatus = {
   lastError: string;
   latencyMs: number;
   freshness: string;
+  transport_status?: string;
+  engine_runtime_status?: string;
+  strategy_runtime_status?: string;
+  last_tick_at?: string | null;
+  last_evaluated_at?: string | null;
+  last_tick_age_ms?: number | null;
+  last_eval_age_ms?: number | null;
   staleMs?: number;
   offlineMs?: number;
 };
@@ -1066,6 +1157,15 @@ export async function fetchWhaleAiStrategies() {
       health_state: string;
     }>;
   }>('/whale-ai/engine/strategies', { timeout: 8000 });
+  return data;
+}
+
+export async function fetchWhaleAiStrategyDiagnostics(strategyId = 'S1') {
+  const sid = encodeURIComponent(String(strategyId || 'S1').trim() || 'S1');
+  const { data } = await http.get<V41StrategyDiagnostics>(
+    `/whale-ai/engine/strategy/${sid}/diagnostics`,
+    { timeout: 8000 },
+  );
   return data;
 }
 
@@ -1165,6 +1265,9 @@ export type ExecutionSelection = {
   disabled_reason?: string | null;
   description?: string;
   paper_only?: boolean;
+  release_stage?: string;
+  live_allowed?: boolean;
+  qa_backend?: string;
   execution_target?: string;
   max_position_notional_usdt?: number;
 };

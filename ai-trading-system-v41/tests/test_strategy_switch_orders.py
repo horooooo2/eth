@@ -5,22 +5,27 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.runtime.engine_runtime import EngineRuntime
+from src.runtime.engine_store import EngineStore
+from src.runtime.position_ownership import PositionOwnershipRegistry
 from src.telemetry.dashboard_snapshot import build_dashboard_snapshot
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _runtime(monkeypatch) -> EngineRuntime:
+def _runtime(monkeypatch, tmp_path) -> EngineRuntime:
     monkeypatch.setenv("V41_ENGINE_AUTOSTART", "0")
     rt = EngineRuntime(config_path=ROOT / "config" / "system_config.json", mode="paper")
+    rt.store = EngineStore(tmp_path / "switch.db")
+    rt.positions = PositionOwnershipRegistry()
+    rt.order_intents = []
     rt.active_strategy = "S1"
     rt.orchestrator.active_strategy_id = "S1"
     rt.execution_mode = "paper"
     return rt
 
 
-def test_strategy_switch_cancels_opening_orders(monkeypatch):
-    rt = _runtime(monkeypatch)
+def test_strategy_switch_cancels_opening_orders(monkeypatch, tmp_path):
+    rt = _runtime(monkeypatch, tmp_path)
     opening = {
         "order_intent_id": "oi-open-1",
         "trade_intent_id": "ti-1",
@@ -41,8 +46,8 @@ def test_strategy_switch_cancels_opening_orders(monkeypatch):
     assert all(str(x.get("order_intent_id")) != "oi-open-1" for x in pending if isinstance(x, dict))
 
 
-def test_strategy_switch_preserves_reduce_only(monkeypatch):
-    rt = _runtime(monkeypatch)
+def test_strategy_switch_preserves_reduce_only(monkeypatch, tmp_path):
+    rt = _runtime(monkeypatch, tmp_path)
     protective = {
         "order_intent_id": "oi-ro-1",
         "trade_intent_id": "ti-2",
@@ -60,8 +65,8 @@ def test_strategy_switch_preserves_reduce_only(monkeypatch):
     assert protective["status"] == "SUBMITTED"
 
 
-def test_personal_view_uses_active_strategy_only(monkeypatch):
-    rt = _runtime(monkeypatch)
+def test_personal_view_uses_active_strategy_only(monkeypatch, tmp_path):
+    rt = _runtime(monkeypatch, tmp_path)
     rt.state = "RUNNING"
     # Ensure context has enough for snapshot builders
     rt.orchestrator.context = {

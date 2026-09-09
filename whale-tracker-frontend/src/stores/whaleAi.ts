@@ -4,6 +4,7 @@ import {
   deleteWhaleAiTradeKeys,
   fetchWhaleAiEngineDashboard,
   fetchWhaleAiEngineHealth,
+  fetchWhaleAiStrategyDiagnostics,
   fetchWhaleAiKeyStatus,
   fetchWhaleAiTradeStatus,
   killWhaleAiEngine,
@@ -20,6 +21,7 @@ import {
   type V41Regime,
   type V41RiskBudget,
   type V41Safety,
+  type V41StrategyDiagnostics,
   type V41StrategyHealth,
   type V41TradeIntent,
   type WhaleAiKeyStatus,
@@ -53,6 +55,7 @@ const engineBridge = ref<V41BridgeStatus | null>(null);
 const engineLoading = ref(false);
 const lastEngineUpdate = ref(0);
 const engineError = ref('');
+const strategyDiagnostics = ref<V41StrategyDiagnostics | null>(null);
 
 export const whaleAiEngineSnapshot = computed(() => engineSnapshot.value);
 export const whaleAiEngineView = computed(() => engineView.value);
@@ -61,6 +64,7 @@ export const whaleAiEngineBridge = computed(() => engineBridge.value);
 export const whaleAiEngineLoading = computed(() => engineLoading.value);
 export const whaleAiLastEngineUpdate = computed(() => lastEngineUpdate.value);
 export const whaleAiEngineError = computed(() => engineError.value);
+export const whaleAiStrategyDiagnostics = computed(() => strategyDiagnostics.value);
 
 export const whaleAiEngineState = computed(
   () =>
@@ -68,9 +72,14 @@ export const whaleAiEngineState = computed(
     engineSnapshot.value?.engine?.state ||
     (engineAvailable.value ? 'UNKNOWN' : 'OFFLINE'),
 );
-export const whaleAiEngineMode = computed(
-  () => engineView.value?.engine?.mode || engineSnapshot.value?.engine?.mode || '—',
-);
+export const whaleAiAlphaExecution = computed(() => {
+  const fromSnap = String(engineSnapshot.value?.alpha_execution || '').toUpperCase();
+  const fromView = String(engineView.value?.engine?.alpha_execution || '').toUpperCase();
+  const value = fromSnap || fromView;
+  return value === 'EXECUTE' ? 'EXECUTE' : value === 'SHADOW' ? 'SHADOW' : '—';
+});
+/** Alpha 执行态只读 alpha_execution，不再用 legacy engine.mode。 */
+export const whaleAiEngineMode = computed(() => whaleAiAlphaExecution.value);
 export const whaleAiEngineVersion = computed(
   () => engineView.value?.engine?.version || engineSnapshot.value?.engine?.version || '4.1',
 );
@@ -168,6 +177,7 @@ export function clearWhaleAiEngine() {
   engineBridge.value = null;
   lastEngineUpdate.value = 0;
   engineError.value = '';
+  strategyDiagnostics.value = null;
 }
 
 export async function refreshWhaleAiKeyStatus(force = false) {
@@ -254,7 +264,7 @@ export async function fetchEngineDashboard() {
         engine: data.engine || {
           available: Boolean(data.engineAvailable),
           state: data.snapshot.engine?.state || 'OFFLINE',
-          mode: data.snapshot.engine?.mode || 'paper',
+          alpha_execution: data.snapshot.alpha_execution || data.snapshot.engine?.alpha_execution || 'SHADOW',
           version: data.snapshot.engine?.version || '4.1',
           updated_at: data.snapshot.engine?.updated_at || '',
         },
@@ -268,6 +278,15 @@ export async function fetchEngineDashboard() {
     engineAvailable.value = Boolean(data.engineAvailable);
     lastEngineUpdate.value = Date.now();
     engineError.value = '';
+    const sid =
+      engineView.value?.active_strategy?.id ||
+      engineSnapshot.value?.engine?.active_strategy ||
+      'S1';
+    try {
+      strategyDiagnostics.value = await fetchWhaleAiStrategyDiagnostics(sid);
+    } catch {
+      strategyDiagnostics.value = data.snapshot.strategy_diagnostics || strategyDiagnostics.value;
+    }
     return data.snapshot;
   } catch (err) {
     engineAvailable.value = false;

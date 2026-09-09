@@ -45,6 +45,10 @@ class KillBody(BaseModel):
     operator_id: str = "system"
 
 
+class BindUserBody(BaseModel):
+    user_id: str = Field(min_length=1)
+
+
 class HftSimStartBody(BaseModel):
     symbol: str = "BTC-USDT-SWAP"
     max_position_notional_usdt: float = 50
@@ -105,9 +109,17 @@ def create_app() -> FastAPI:
     async def health(_: None = Depends(require_engine_token)) -> Dict[str, Any]:
         return runtime.health()
 
+    @app.post("/internal/v1/runtime/bind-user")
+    async def bind_user(body: BindUserBody, _: None = Depends(require_engine_token)) -> Dict[str, Any]:
+        return runtime.bind_user(body.user_id)
+
     @app.get("/internal/v1/snapshot")
     async def snapshot(_: None = Depends(require_engine_token)) -> Dict[str, Any]:
         return runtime.snapshot()
+
+    @app.get("/internal/v1/strategy/{strategy_id}/diagnostics")
+    async def strategy_diagnostics(strategy_id: str, _: None = Depends(require_engine_token)) -> Dict[str, Any]:
+        return runtime.strategy_diagnostics(strategy_id)
 
     @app.get("/internal/v1/regime")
     async def regime(_: None = Depends(require_engine_token)) -> Dict[str, Any]:
@@ -231,7 +243,9 @@ def create_app() -> FastAPI:
 
     @app.get("/internal/v1/positions")
     async def positions(_: None = Depends(require_engine_token)) -> Any:
-        return [p.to_dict() for p in runtime.positions.list_open()]
+        from src.runtime.alpha_execution import annotate_position_dict
+
+        return [annotate_position_dict(p.to_dict()) for p in runtime.positions.list_open()]
 
     @app.get("/internal/v1/positions/{position_id}/exit-policy")
     async def position_exit_policy(position_id: str, _: None = Depends(require_engine_token)) -> Dict[str, Any]:

@@ -8,6 +8,10 @@ from pathlib import Path
 from src.core.orchestrator import Orchestrator
 from src.core.signal_lifecycle import SignalLifecycleManager
 from src.runtime.engine_runtime import EngineRuntime
+from src.runtime.engine_store import EngineStore
+from src.runtime.position_ownership import PositionOwnershipRegistry
+from src.runtime.engine_store import EngineStore
+from src.runtime.position_ownership import PositionOwnershipRegistry
 
 ROOT = Path(__file__).resolve().parents[1]
 CFG = json.loads((ROOT / "config" / "system_config.json").read_text(encoding="utf-8"))
@@ -70,9 +74,17 @@ def test_inactive_strategy_cannot_emit_intent(monkeypatch):
     assert all(i["strategy_id"] == "S2" for i in out2["intents"])
 
 
-def test_strategy_switch_invalidates_pending_intents(monkeypatch):
+def _isolated_runtime(monkeypatch, tmp_path) -> EngineRuntime:
     monkeypatch.setenv("V41_ENGINE_AUTOSTART", "0")
     rt = EngineRuntime(config_path=ROOT / "config" / "system_config.json", mode="paper")
+    rt.store = EngineStore(tmp_path / "active.db")
+    rt.positions = PositionOwnershipRegistry()
+    rt.order_intents = []
+    return rt
+
+
+def test_strategy_switch_invalidates_pending_intents(monkeypatch, tmp_path):
+    rt = _isolated_runtime(monkeypatch, tmp_path)
     rt.active_strategy = "S1"
     rt.orchestrator.active_strategy_id = "S1"
 
@@ -94,9 +106,8 @@ def test_strategy_switch_invalidates_pending_intents(monkeypatch):
     assert rt.orchestrator.active_strategy_id == "S2"
 
 
-def test_s6_blocks_switch(monkeypatch):
-    monkeypatch.setenv("V41_ENGINE_AUTOSTART", "0")
-    rt = EngineRuntime(config_path=ROOT / "config" / "system_config.json", mode="paper")
+def test_s6_blocks_switch(monkeypatch, tmp_path):
+    rt = _isolated_runtime(monkeypatch, tmp_path)
     rt.active_strategy = "S1"
     rt.orchestrator.active_strategy_id = "S1"
     rt.orchestrator.s6.level = 2
@@ -106,9 +117,8 @@ def test_s6_blocks_switch(monkeypatch):
     assert rt.active_strategy == "S1"
 
 
-def test_s7_paused_blocks_switch(monkeypatch):
-    monkeypatch.setenv("V41_ENGINE_AUTOSTART", "0")
-    rt = EngineRuntime(config_path=ROOT / "config" / "system_config.json", mode="paper")
+def test_s7_paused_blocks_switch(monkeypatch, tmp_path):
+    rt = _isolated_runtime(monkeypatch, tmp_path)
     rt.active_strategy = "S1"
     rt.orchestrator.active_strategy_id = "S1"
 

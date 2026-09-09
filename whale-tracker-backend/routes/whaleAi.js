@@ -123,7 +123,10 @@ router.get('/runtime-logs', (req, res) => {
   if (!assertLogin(req, res)) return;
   try {
     const limit = Number(req.query.limit) || MAX_PER_USER;
-    const logs = listRuntimeLogs(req.user.user.id, { limit });
+    const logs = listRuntimeLogs(req.user.user.id, {
+      limit,
+      channel: req.query.channel,
+    });
     res.json({ ok: true, limit: MAX_PER_USER, count: logs.length, logs });
   } catch (err) {
     sendErr(res, err);
@@ -140,6 +143,11 @@ router.post('/runtime-logs', (req, res) => {
       msg: body.msg,
       source: body.source || 'ui',
       ts: body.ts,
+      channel: body.channel,
+      event_type: body.event_type,
+      strategy_id: body.strategy_id,
+      symbol: body.symbol,
+      reason_code: body.reason_code,
     });
     res.json({ ok: true, log: row });
   } catch (err) {

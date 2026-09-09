@@ -5,6 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "test:alpha-gate": "node --test tests/test_alpha_live_gate.js",
     "dev": "node --watch --watch-path=./server.js --watch-path=./lib --watch-path=./routes server.js",
     "build:edgeone": "node scripts/build-edgeone.js",
     "refresh:metrics": "node scripts/refresh-whale-metrics.js",

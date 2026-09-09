@@ -150,14 +150,11 @@ server.listen(PORT, '0.0.0.0', () => {
   } catch (err) {
     console.warn('[v41-whale-bridge] 启动失败:', err.message || err);
   }
-  // Warm bridge freshness so /api/health isn't stuck on NEVER until first UI poll
+  // Probe Python last_tick_at on cadence — freshness is NOT last HTTP poll time
   try {
     const v41 = require('./lib/v41EngineClient');
-    v41.health().then((h) => {
-      console.log('[v41-probe]', h?.state || 'ok', JSON.stringify(v41.bridgeStatus()));
-    }).catch((err) => {
-      console.warn('[v41-probe]', err.message || err);
-    });
+    v41.startEngineProbe();
+    console.log('[v41-probe] started interval=5s', JSON.stringify(v41.bridgeStatus()));
   } catch (err) {
     console.warn('[v41-probe] skip:', err.message);
   }

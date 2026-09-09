@@ -39,6 +39,17 @@ function resolveAccountMode(creds) {
   return simulated ? 'OKX_DEMO' : 'OKX_LIVE';
 }
 
+function assertQaLivePermission(accountMode) {
+  if (accountMode === 'OKX_LIVE' && !qaLiveEnabled()) {
+    const err = new Error('QA live trading disabled');
+    err.status = 403;
+    err.code = 'QA_LIVE_TRADING_DISABLED';
+    err.details = { account_mode: accountMode, env_key: 'V41_QA_LIVE_ENABLED' };
+    throw err;
+  }
+  return { accountMode, allowed: true };
+}
+
 function resolveQaCapability(userId) {
   const hft = hftSimEnabled();
   const exchangeOn = qaExchangeEnabled();
@@ -105,13 +116,7 @@ function assertQaExchangeGate(orderIntent, userId) {
   }
   const creds = getOkxCredentialsForUser(userId);
   const mode = resolveAccountMode(creds);
-  if (mode === 'OKX_LIVE' && !qaLiveEnabled()) {
-    const err = new Error('QA live trading disabled');
-    err.status = 403;
-    err.code = 'QA_LIVE_TRADING_DISABLED';
-    err.details = { account_mode: mode, env_key: 'V41_QA_LIVE_ENABLED' };
-    throw err;
-  }
+  assertQaLivePermission(mode);
   const instId = String(orderIntent.symbol || orderIntent.instId || '').toUpperCase();
   const normalized = instId.includes('-') ? instId : `${instId.replace('USDT', '')}-USDT-SWAP`;
   if (!QA_ALLOWED_SYMBOLS.has(normalized) && !QA_ALLOWED_SYMBOLS.has(instId)) {
@@ -262,6 +267,7 @@ module.exports = {
   qaExchangeEnabled,
   qaLiveEnabled,
   resolveAccountMode,
+  assertQaLivePermission,
   resolveQaCapability,
   assertQaExchangeGate,
   notionalToSz,

@@ -21,28 +21,118 @@ function cfg() {
 let lastSuccessfulSnapshotAt = 0;
 let lastError = '';
 let lastLatencyMs = 0;
+let lastEngineHealth = null;
+let probeTimer = null;
+
+function parseIsoMs(iso) {
+  if (!iso) return null;
+  const t = Date.parse(String(iso));
+  return Number.isFinite(t) ? t : null;
+}
+
+function staleThresholdMs(tickSec) {
+  const tick = Math.max(1, Number(tickSec) || 5);
+  return Math.max(tick * 4 * 1000, 20_000);
+}
+
+function rememberEnginePayload(data) {
+  lastSuccessfulSnapshotAt = Date.now();
+  if (!data || typeof data !== 'object') return;
+  const engine = data.engine && typeof data.engine === 'object' ? data.engine : data;
+  lastEngineHealth = {
+    state: String(engine.state || data.state || ''),
+    last_tick_at: engine.last_tick_at || data.last_tick_at || null,
+    last_evaluated_at: engine.last_evaluated_at || data.last_evaluated_at || null,
+    active_strategy: engine.active_strategy || data.active_strategy || null,
+    tick_interval_sec: Number(engine.tick_interval_sec || data.tick_interval_sec || 5),
+    alpha_execution: engine.alpha_execution || data.alpha_execution || null,
+    evaluation_count: engine.evaluation_count || data.evaluation_count || 0,
+  };
+}
+
+function computeRuntimeStatuses(nowMs, cached, transportAt, options = {}) {
+  const enabled = options.enabled !== false;
+  const offlineMs = Math.max(5000, Number(options.offlineMs) || 30000);
+  const now = Number(nowMs) || Date.now();
+  const transportAge = transportAt ? now - transportAt : null;
+  let transport_status = 'DISCONNECTED';
+  if (!enabled) transport_status = 'DISABLED';
+  else if (transportAt && transportAge != null && transportAge <= offlineMs) transport_status = 'CONNECTED';
+
+  const h = cached || {};
+  const state = String(h.state || '').toUpperCase();
+  const tickMs = parseIsoMs(h.last_tick_at);
+  const evalMs = parseIsoMs(h.last_evaluated_at);
+  const thresh = staleThresholdMs(h.tick_interval_sec);
+  const tickAge = tickMs != null ? now - tickMs : null;
+  const evalAge = evalMs != null ? now - evalMs : null;
+
+  let engine_runtime_status = 'OFFLINE';
+  if (!enabled) engine_runtime_status = 'DISABLED';
+  else if (!state || state === 'OFFLINE') engine_runtime_status = 'OFFLINE';
+  else if (state === 'PAUSED') engine_runtime_status = 'PAUSED';
+  else if (state === 'LOCKED') engine_runtime_status = 'LOCKED';
+  else if (tickMs == null) engine_runtime_status = 'OFFLINE';
+  else if (tickAge > thresh) engine_runtime_status = 'STALE';
+  else engine_runtime_status = 'FRESH';
+
+  const sid = String(h.active_strategy || '').toUpperCase();
+  let strategy_runtime_status = 'NOT_EVALUATING';
+  if (!sid) strategy_runtime_status = 'INACTIVE';
+  else if (state !== 'RUNNING') strategy_runtime_status = 'NOT_RUNNING';
+  else if (evalMs == null) strategy_runtime_status = 'NOT_EVALUATING';
+  else if (evalAge > thresh) strategy_runtime_status = 'STALE';
+  else strategy_runtime_status = 'RUNNING';
+
+  return {
+    transport_status,
+    engine_runtime_status,
+    strategy_runtime_status,
+    freshness: engine_runtime_status,
+    last_tick_age_ms: tickAge,
+    last_eval_age_ms: evalAge,
+    staleMs: thresh,
+    last_tick_at: h.last_tick_at || null,
+    last_evaluated_at: h.last_evaluated_at || null,
+  };
+}
 
 function bridgeStatus() {
   const c = cfg();
-  const now = Date.now();
-  const age = lastSuccessfulSnapshotAt ? now - lastSuccessfulSnapshotAt : null;
-  let freshness = 'UNKNOWN';
-  if (!c.enabled) freshness = 'DISABLED';
-  else if (!lastSuccessfulSnapshotAt) freshness = 'NEVER';
-  else if (age > c.offlineMs) freshness = 'OFFLINE';
-  else if (age > c.staleMs) freshness = 'STALE';
-  else freshness = 'LIVE';
+  const runtime = computeRuntimeStatuses(Date.now(), lastEngineHealth, lastSuccessfulSnapshotAt, {
+    enabled: c.enabled,
+    offlineMs: c.offlineMs,
+  });
   return {
     enabled: c.enabled,
-    connected: freshness === 'LIVE' || freshness === 'STALE',
+    connected: runtime.transport_status === 'CONNECTED',
     engineUrl: c.baseUrl,
     lastSnapshotAt: lastSuccessfulSnapshotAt || 0,
     lastError: lastError || '',
     latencyMs: lastLatencyMs,
-    freshness,
-    staleMs: c.staleMs,
+    freshness: runtime.freshness,
+    transport_status: runtime.transport_status,
+    engine_runtime_status: runtime.engine_runtime_status,
+    strategy_runtime_status: runtime.strategy_runtime_status,
+    last_tick_at: runtime.last_tick_at,
+    last_evaluated_at: runtime.last_evaluated_at,
+    last_tick_age_ms: runtime.last_tick_age_ms,
+    last_eval_age_ms: runtime.last_eval_age_ms,
+    staleMs: runtime.staleMs,
     offlineMs: c.offlineMs,
+    alpha_execution: lastEngineHealth?.alpha_execution || null,
   };
+}
+
+function startEngineProbe() {
+  if (probeTimer) return;
+  const intervalMs = 5000;
+  const run = () => {
+    health().catch(() => {});
+  };
+  run();
+  probeTimer = setInterval(run, intervalMs);
+  if (typeof probeTimer.unref === 'function') probeTimer.unref();
 }
 
 function engineError(err, fallbackCode) {
@@ -99,7 +189,9 @@ async function request(method, path, data, timeoutOverrideMs) {
     });
     lastLatencyMs = Date.now() - started;
     lastError = '';
-    if (path.includes('/snapshot') || path.includes('/health')) {
+    if (path.includes('/snapshot') || path.includes('/health') || path.includes('/diagnostics')) {
+      rememberEnginePayload(res.data);
+    } else {
       lastSuccessfulSnapshotAt = Date.now();
     }
     return res.data;
@@ -117,7 +209,7 @@ async function health() {
 
 async function getSnapshot() {
   const data = await request('GET', '/internal/v1/snapshot');
-  lastSuccessfulSnapshotAt = Date.now();
+  rememberEnginePayload(data);
   return data;
 }
 
@@ -149,6 +241,10 @@ async function getIncidents() {
   return request('GET', '/internal/v1/incidents');
 }
 
+async function bindUser(userId) {
+  return request('POST', '/internal/v1/runtime/bind-user', { user_id: String(userId || '') });
+}
+
 async function start() {
   return request('POST', '/internal/v1/control/start', {}, 15_000);
 }
@@ -169,6 +265,11 @@ async function resume(body) {
 
 async function setActiveStrategy(strategyId) {
   return switchStrategy({ strategy_id: strategyId, reason: 'manual_user_switch' });
+}
+
+async function getStrategyDiagnostics(strategyId) {
+  const sid = encodeURIComponent(String(strategyId || 'S1').trim() || 'S1');
+  return request('GET', `/internal/v1/strategy/${sid}/diagnostics`);
 }
 
 async function getActiveStrategy() {
@@ -223,6 +324,9 @@ async function executionSelect(body) {
 module.exports = {
   cfg,
   bridgeStatus,
+  computeRuntimeStatuses,
+  staleThresholdMs,
+  startEngineProbe,
   health,
   getSnapshot,
   getRegime,
@@ -232,12 +336,14 @@ module.exports = {
   getOrderIntents,
   getPositions,
   getIncidents,
+  bindUser,
   start,
   pause,
   kill,
   resume,
   setActiveStrategy,
   getActiveStrategy,
+  getStrategyDiagnostics,
   listStrategies,
   switchStrategy,
   sendExecutionReport,

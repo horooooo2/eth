@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { isLoggedIn } from '@/stores/auth';
 import {
@@ -14,10 +14,13 @@ import {
   unbindWhaleAiKey,
   unbindWhaleAiTradeKeys,
   whaleAiActiveStrategy,
+  whaleAiAlphaExecution,
   whaleAiEngineAvailable,
   whaleAiEngineBridge,
   whaleAiEngineError,
+  whaleAiEngineSnapshot,
   whaleAiEngineState,
+  whaleAiStrategyDiagnostics,
   whaleAiIncidents,
   whaleAiKeyHint,
   whaleAiKeyReady,
@@ -101,10 +104,10 @@ const qaDisabledReason = computed(() => {
   if (qaEnabled.value) return '';
   const qa = executionItems.value.find((i) => i.id === 'QA-HFT-SIM');
   if (qa?.disabled_reason === 'HFT_SIM_DISABLED' || qaStatus.value?.enabled === false) {
-    return '模拟仓测试未启用：Python 引擎未打开 V41_HFT_SIM_ENABLED（需重启引擎进程）';
+    return 'QA 开平仓测试未启用：Python 引擎未打开 V41_HFT_SIM_ENABLED（需重启引擎进程）';
   }
-  if (qaStatus.value == null) return '正在检测模拟仓能力…';
-  return '模拟仓测试不可用';
+  if (qaStatus.value == null) return '正在检测 QA 开平仓测试能力…';
+  return 'QA 开平仓测试不可用';
 });
 
 const isQaConsole = computed(
@@ -114,11 +117,20 @@ const isQaConsole = computed(
 const qaExchangeEnvLabel = computed(() => {
   // Prefer Node capability truth source; do not invent demo/live locally beyond fallback
   const env = qaCapability.value?.exchange_environment;
-  if (env === 'live') return 'OKX 实盘';
+  if (env === 'live') return '⚠ OKX 实盘';
   if (env === 'demo') return 'OKX 模拟盘';
-  if (qaCapability.value?.account_mode === 'OKX_LIVE') return 'OKX 实盘';
+  if (qaCapability.value?.account_mode === 'OKX_LIVE') return '⚠ OKX 实盘';
   if (qaCapability.value?.account_mode === 'OKX_DEMO') return 'OKX 模拟盘';
   return '未解析';
+});
+const accountEnvironmentLabel = computed(() => {
+  const snapEnv = String(whaleAiEngineSnapshot.value?.account_environment || '').toUpperCase();
+  if (snapEnv === 'OKX_LIVE') return '⚠ OKX 实盘';
+  if (snapEnv === 'OKX_DEMO') return 'OKX 模拟盘';
+  if (accountLive.value) {
+    return whaleAiTradeSimulated.value ? 'OKX 模拟盘' : '⚠ OKX 实盘';
+  }
+  return '未同步';
 });
 const qaIsLive = computed(
   () =>
@@ -185,8 +197,10 @@ async function onQaStart() {
     consoleMode.value = 'QA_HFT_SIM';
     alphaOpeningEnabled.value = false;
     const where = qaExchangeEnvLabel.value;
-    ElMessage.success(`${where} 高频开平仓已启动`);
-    pushLog('success', `${where} 模拟仓高频已启动（持续开平仓，不计赚损）`);
+    ElMessage.success(`QA 开平仓链路测试已启动 · ${where}`);
+    pushLog('success', `QA 开平仓链路测试已启动 · ${where}`, {
+      channel: 'SYSTEM',
+    });
   } catch (err: unknown) {
     const anyErr = err as {
       code?: string;
@@ -195,7 +209,7 @@ async function onQaStart() {
     };
     const code = String(anyErr?.details?.code || anyErr?.code || '');
     let msg = anyErr?.message || (err instanceof Error ? err.message : '启动失败');
-    if (code === 'HFT_SIM_DISABLED') msg = '模拟仓测试未启用：V41_HFT_SIM_ENABLED 未打开';
+    if (code === 'HFT_SIM_DISABLED') msg = 'QA 开平仓测试未启用：V41_HFT_SIM_ENABLED 未打开';
     if (code === 'QA_EXCHANGE_DISABLED') msg = '交易所仓未启用：V41_QA_EXCHANGE_ENABLED 未打开';
     if (code === 'QA_LIVE_TRADING_DISABLED') msg = '实盘 QA 测试未授权';
     if (code === 'QA_RUN_ALREADY_ACTIVE') msg = '已有 QA 测试在运行';
@@ -221,19 +235,19 @@ async function refreshExecutionSelections() {
     }
   } catch {
     executionItems.value = [
-      { id: 'S1', kind: 'alpha', name: '趋势跟踪策略', available: true },
-      { id: 'S2', kind: 'alpha', name: '极端情绪反转策略', available: true },
+      { id: 'S1', kind: 'alpha', name: '趋势跟踪 S1', available: true },
+      { id: 'S2', kind: 'alpha', name: '极端情绪反转 S2', available: true },
       {
         id: 'S8',
         kind: 'alpha',
-        name: '巨鲸行为跟随',
+        name: '巨鲸行为共振',
         available: false,
         disabled_reason: 'WARMING_UP_OR_NOT_IMPLEMENTED',
       },
       {
         id: 'QA-HFT-SIM',
         kind: 'qa_test',
-        name: '模拟仓高频测试',
+        name: 'QA 开平仓测试',
         available: false,
         disabled_reason: 'HFT_SIM_DISABLED',
       },
@@ -247,8 +261,10 @@ async function onQaStop() {
     await stopV41HftSim();
     await refreshQaStatus();
     await refreshExecutionSelections();
-    ElMessage.success('已停止模拟仓高频');
-    pushLog('warn', '模拟仓高频已停止（不计赚损；Alpha 开仓未自动恢复）');
+    ElMessage.success('QA 开平仓链路测试已停止');
+    pushLog('warn', 'QA 开平仓链路测试已停止 · Alpha 开仓未自动恢复', {
+      channel: 'SYSTEM',
+    });
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '停止失败');
   } finally {
@@ -309,16 +325,25 @@ type SignalRow = {
   edge: string;
 };
 
+type LogChannel = 'SYSTEM' | 'POSITION';
+
 type LogItem = {
   id?: number;
   ts?: number;
   t: string;
   lvl: 'info' | 'success' | 'warn' | 'error';
   msg: string;
+  channel: LogChannel;
+  event_type?: string;
+  strategy_id?: string;
+  symbol?: string;
+  reason_code?: string;
 };
 
-const LOG_KEEP = 1000;
-const LOG_SHOW = 100;
+const LOG_KEEP = 300;
+const LOG_SHOW = 120;
+const TICK_FRESH_SEC = 20;
+const EVAL_FRESH_SEC = 20;
 
 const equityText = ref('—');
 const availableText = ref('—');
@@ -331,7 +356,13 @@ const accountLive = ref(false);
 
 const positions = ref<PositionRow[]>([]);
 const pendingOrders = ref<OrderRow[]>([]);
-const logs = ref<LogItem[]>([]);
+const systemLogs = ref<LogItem[]>([]);
+const positionLogs = ref<LogItem[]>([]);
+const systemLogBox = ref<HTMLElement | null>(null);
+const positionLogBox = ref<HTMLElement | null>(null);
+const systemPinned = ref(true);
+const positionPinned = ref(true);
+const lastPositionEventKey = ref('');
 const okxLastUpdate = ref('--');
 
 const controlBusy = ref(false);
@@ -341,20 +372,20 @@ const resumeReason = ref('');
 
 const strategyCatalog: Record<string, { name: string; desc: string }> = {
   S1: {
-    name: '趋势跟踪策略',
+    name: '趋势跟踪 S1',
     desc: '适合趋势行情，结合均线、趋势强度和波动率过滤寻找顺势机会。',
   },
   S2: {
-    name: '极端情绪反转策略',
+    name: '极端情绪反转 S2',
     desc: '适合极端超买或超卖行情，在情绪、资金费率和持仓变化同时满足时寻找反转机会。',
   },
   S8: {
-    name: '巨鲸行为跟随',
-    desc: '多巨鲸共识跟随（尚未开放）。',
+    name: '巨鲸行为共振',
+    desc: '多巨鲸共识共振（尚未开放）。',
   },
   'QA-HFT-SIM': {
-    name: '模拟仓高频测试',
-    desc: '与其他策略相同启停逻辑；高频开平仓（≤50U），不计入策略赚损 / S7 / Edge。',
+    name: 'QA 开平仓测试',
+    desc: '开平仓链路测试（≤50U），不计入策略赚损 / S7 / Edge。账户环境由 Node 根据当前 OKX 密钥识别。',
   },
 };
 
@@ -432,33 +463,186 @@ const emergencyLocked = computed(() => {
   return state === 'LOCKED' || String(s6 || '').toUpperCase() === 'LOCKED';
 });
 
+function parseIsoMs(iso?: string | null) {
+  if (!iso) return null;
+  const ms = Date.parse(String(iso));
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function ageSeconds(iso?: string | null) {
+  const ms = parseIsoMs(iso);
+  if (ms == null) return null;
+  return Math.max(0, Math.round((Date.now() - ms) / 1000));
+}
+
+function ageText(iso?: string | null) {
+  const s = ageSeconds(iso);
+  if (s == null) return '未知';
+  if (s < 60) return `${s}秒前`;
+  if (s < 3600) return `${Math.floor(s / 60)}分钟前`;
+  return `${Math.floor(s / 3600)}小时前`;
+}
+
+function engineStateLabelZh(state: string) {
+  const map: Record<string, string> = {
+    RUNNING: '运行中',
+    PAUSED: '已暂停',
+    LOCKED: '紧急停止',
+    RECOVERY: '恢复检查中',
+    OFFLINE: '引擎离线',
+    UNKNOWN: '未知',
+  };
+  return map[String(state || '').toUpperCase()] || state;
+}
+
+function decisionLabelZh(decision: string) {
+  const map: Record<string, string> = {
+    ALLOW: '允许开仓',
+    NO_TRADE: '不开仓',
+    BLOCK: '拦截',
+    NONE: '无',
+  };
+  return map[String(decision || '').toUpperCase()] || decision;
+}
+
+function directionLabelZh(direction: string) {
+  const map: Record<string, string> = {
+    LONG: '做多',
+    SHORT: '做空',
+    NONE: '无方向',
+  };
+  return map[String(direction || '').toUpperCase()] || direction || '无方向';
+}
+
+function reasonLabelZh(code: string) {
+  const map: Record<string, string> = {
+    CLOSE_VS_EMA20: '收盘价未站上EMA20',
+    EMA20_VS_EMA50: 'EMA20未上穿EMA50',
+    TREND_SLOPE: '趋势斜率不足',
+    TREND_QUALITY_BELOW_THRESHOLD: '趋势质量低于阈值',
+    S3_DIRECTION_BLOCK: 'S3方向不允许',
+    S3_REGIME_BLOCK: 'S3行情状态不允许',
+    VOLATILITY_CONDITION: '波动率条件不满足',
+    EXPECTED_EDGE_TOO_LOW: '预期优势不足',
+    EDGE_UNAVAILABLE: '优势估计不可用',
+    MARKET_DATA_WARMING_UP: '行情预热中',
+    MARKET_DATA_STALE: '行情过期',
+    ALPHA_OPENINGS_PAUSED: 'Alpha开仓已暂停',
+    S6_ENTRIES_BLOCKED: 'S6安全门拦截开仓',
+    MISSING_PRICE_OR_ATR: '缺少价格或ATR',
+    S1_DISABLED: 'S1已关闭',
+    S1_NO_DIRECTION: '无多空方向',
+    S1_LONG_OK: '多头条件满足',
+    S1_SHORT_OK: '空头条件满足',
+    DUPLICATE_CLOSED_CANDLE: '同一根已收盘K线已发过信号',
+    S5_BUDGET_BLOCK: 'S5风险预算拦截',
+  };
+  return map[code] || code;
+}
+
+function qaSideLabelZh(side: string) {
+  const key = String(side || '').toUpperCase();
+  const map: Record<string, string> = {
+    FLAT: '空仓',
+    LONG: '做多',
+    SHORT: '做空',
+    OPENING_LONG: '正在开多',
+    OPENING_SHORT: '正在开空',
+    CLOSING: '正在平仓',
+    FLAT_CONFIRMED: '已确认空仓',
+  };
+  return map[key] || side;
+}
+
+const s1Diagnostics = computed(() => whaleAiStrategyDiagnostics.value);
+const lastTickAt = computed(
+  () => s1Diagnostics.value?.last_tick_at || whaleAiEngineSnapshot.value?.engine?.last_tick_at || null,
+);
+const lastEvaluatedAt = computed(
+  () =>
+    s1Diagnostics.value?.last_evaluated_at ||
+    whaleAiEngineSnapshot.value?.engine?.last_evaluated_at ||
+    null,
+);
+const tickFresh = computed(() => {
+  const s = ageSeconds(lastTickAt.value);
+  return s != null && s <= TICK_FRESH_SEC;
+});
+const evalFresh = computed(() => {
+  const s = ageSeconds(lastEvaluatedAt.value);
+  return s != null && s <= EVAL_FRESH_SEC;
+});
+const alphaOpeningsOn = computed(() => {
+  if (typeof s1Diagnostics.value?.alpha_opening_enabled === 'boolean') {
+    return s1Diagnostics.value.alpha_opening_enabled;
+  }
+  if (typeof whaleAiEngineSnapshot.value?.engine?.alpha_opening_enabled === 'boolean') {
+    return whaleAiEngineSnapshot.value.engine.alpha_opening_enabled;
+  }
+  return alphaOpeningEnabled.value;
+});
+const marketDataState = computed(() =>
+  String(s1Diagnostics.value?.market_data?.state || '').toUpperCase(),
+);
+const alphaFullyRunning = computed(() => {
+  const state = String(whaleAiEngineState.value || '').toUpperCase();
+  return (
+    engineOnline.value &&
+    !emergencyLocked.value &&
+    state === 'RUNNING' &&
+    Boolean(activeStrategy.value) &&
+    alphaOpeningsOn.value &&
+    tickFresh.value &&
+    evalFresh.value &&
+    marketDataState.value !== 'STALE' &&
+    marketDataState.value !== 'WARMING_UP'
+  );
+});
+
 const strategyStatusLabel = computed(() => {
   if (isQaConsole.value) {
-    if (qaStatus.value?.running) return '已运行';
-    return '已暂停';
+    return qaStatus.value?.running ? 'QA 开平仓测试 · 运行中' : 'QA 开平仓测试 · 已停止';
   }
-  if (!engineOnline.value) return '引擎离线';
-  if (emergencyLocked.value) return '已锁定';
+  const sid = activeStrategy.value;
+  if (!engineOnline.value) return `${sid} · 引擎离线`;
+  if (emergencyLocked.value) return `${sid} · 已锁定`;
   const state = String(whaleAiEngineState.value || '').toUpperCase();
-  if (state === 'PAUSED') return '已暂停';
-  if (state === 'RECOVERY') return '恢复中';
-  if (state === 'RUNNING') return '已运行';
-  return systemStateLabel.value;
+  if (state === 'PAUSED') return `${sid} · 引擎暂停`;
+  if (state === 'RECOVERY') return `${sid} · 恢复中`;
+  if (marketDataState.value === 'STALE') return `${sid} · 行情异常`;
+  if (marketDataState.value === 'WARMING_UP') return `${sid} · 行情预热`;
+  if (!alphaOpeningsOn.value) return `${sid} · Alpha开仓暂停`;
+  if (alphaFullyRunning.value) return `${sid} · 运行中`;
+  return `${sid} · 已选择但未运行`;
 });
 
 const strategyStatusClass = computed(() => {
   if (isQaConsole.value) return qaStatus.value?.running ? 'tag-on' : 'tag-warn';
-  if (!engineOnline.value || emergencyLocked.value) return 'tag-off';
-  const state = String(whaleAiEngineState.value || '').toUpperCase();
-  if (state === 'PAUSED' || state === 'RECOVERY') return 'tag-warn';
-  if (state === 'RUNNING') return 'tag-on';
-  return 'tag-neutral';
+  if (!engineOnline.value || emergencyLocked.value || marketDataState.value === 'STALE') {
+    return 'tag-off';
+  }
+  if (alphaFullyRunning.value) return 'tag-on';
+  return 'tag-warn';
 });
 
-/** 当前策略是否在跑：Alpha 看引擎；模拟仓高频看 QA runner */
+/** 启动按钮：Alpha 必须引擎循环 + 开仓开关都开；QA 看 runner */
 const strategyIsRunning = computed(() => {
   if (isQaConsole.value) return Boolean(qaStatus.value?.running);
-  return String(whaleAiEngineState.value || '').toUpperCase() === 'RUNNING';
+  return String(whaleAiEngineState.value || '').toUpperCase() === 'RUNNING' && alphaOpeningsOn.value;
+});
+
+const activePositionCount = computed(() => {
+  if (positions.value.length) return positions.value.length;
+  const enginePos = whaleAiEngineSnapshot.value?.open_positions;
+  if (!Array.isArray(enginePos)) return 0;
+  return enginePos.filter((p) => {
+    const row = p as { legacy_mark?: string; metadata?: { source?: string; legacy_mark?: string } };
+    return (
+      row?.legacy_mark !== 'LEGACY_PAPER_POSITION' &&
+      row?.metadata?.legacy_mark !== 'LEGACY_PAPER_POSITION' &&
+      row?.metadata?.source !== 'paper_adapter'
+    );
+  }).length;
 });
 
 const healthScoreText = computed(() => {
@@ -577,10 +761,15 @@ const marketLatency = computed(() => {
 
 const exchangeState = computed(() => {
   if (!engineOnline.value || !whaleAiSafety.value) {
-    return whaleAiTradeReady.value ? (whaleAiTradeSimulated.value ? '模拟盘' : '已绑定') : '—';
+    return whaleAiTradeReady.value ? accountEnvironmentLabel.value : '—';
   }
   if (!whaleAiSafety.value.exchange_connected) return '断开';
-  return whaleAiTradeSimulated.value ? '模拟盘' : '正常';
+  return accountEnvironmentLabel.value;
+});
+
+const alphaExecutionLabel = computed(() => {
+  const v = String(whaleAiAlphaExecution.value || '').toUpperCase();
+  return v === 'EXECUTE' || v === 'SHADOW' ? v : 'SHADOW';
 });
 
 const reconcileState = computed(() => {
@@ -634,8 +823,13 @@ const lastUpdate = computed(() => {
 const bridgeHint = computed(() => {
   const b = whaleAiEngineBridge.value;
   if (!b) return '';
-  if (b.freshness) return String(b.freshness);
-  return b.connected ? 'CONNECTED' : 'DISCONNECTED';
+  const transport = String(b.transport_status || (b.connected ? 'CONNECTED' : 'DISCONNECTED'));
+  const engineRt = String(b.engine_runtime_status || b.freshness || '').toUpperCase();
+  const strategyRt = String(b.strategy_runtime_status || '').toUpperCase();
+  const parts = [`transport ${transport}`];
+  if (engineRt) parts.push(`engine ${engineRt}`);
+  if (strategyRt) parts.push(`strategy ${strategyRt}`);
+  return parts.join(' · ');
 });
 
 let enginePollTimer: number | undefined;
@@ -651,7 +845,25 @@ function onPrivateRealtime(msg: PrivateRealtimeMessage) {
     pushLog('warn', '引擎事件序号缺口，正在重新拉取快照');
   }
   if (et === 'strategy.active.changed') {
-    pushLog('info', `策略已切换为 ${String((msg.payload as { active_strategy_id?: string })?.active_strategy_id || '')}`);
+    pushLog('info', `策略已切换为 ${String((msg.payload as { active_strategy_id?: string })?.active_strategy_id || '')}`, {
+      channel: 'SYSTEM',
+    });
+  }
+  if (et === 'strategy.decision') {
+    applyPositionDecision(msg.payload as Record<string, unknown>);
+  }
+  if (et === 'trade_intent.created') {
+    const p = (msg.payload || {}) as { strategy_id?: string; symbol?: string; direction?: string };
+    pushLog(
+      'success',
+      `[信号] ${p.strategy_id || activeStrategy.value} · ${p.symbol || ''} · ${directionLabelZh(String(p.direction || ''))}`,
+      {
+        channel: 'POSITION',
+        event_type: '信号',
+        strategy_id: p.strategy_id,
+        symbol: p.symbol,
+      },
+    );
   }
   if (mainConsoleVisible.value) void pollEngineDashboard();
 }
@@ -687,12 +899,88 @@ function formatLogTime(ts?: number) {
   });
 }
 
-function pushLog(lvl: LogItem['lvl'], msg: string, opts?: { persist?: boolean; source?: string }) {
+function logsFor(channel: LogChannel) {
+  return channel === 'POSITION' ? positionLogs : systemLogs;
+}
+
+function onLogScroll(channel: LogChannel) {
+  const el = channel === 'POSITION' ? positionLogBox.value : systemLogBox.value;
+  if (!el) return;
+  const pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 28;
+  if (channel === 'POSITION') positionPinned.value = pinned;
+  else systemPinned.value = pinned;
+}
+
+function scrollLogToLatest(channel: LogChannel) {
+  void nextTick(() => {
+    const el = channel === 'POSITION' ? positionLogBox.value : systemLogBox.value;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    if (channel === 'POSITION') positionPinned.value = true;
+    else systemPinned.value = true;
+  });
+}
+
+function applyPositionDecision(payload?: Record<string, unknown> | null) {
+  if (!payload) return;
+  const strategyId = String(payload.strategy_id || activeStrategy.value || 'S1');
+  const symbol = String(payload.symbol || s1Diagnostics.value?.market_data?.instrument || '');
+  const direction = String(payload.direction || payload.direction_candidate || 'NONE');
+  const decision = String(payload.decision || payload.result || 'NO_TRADE');
+  const codes = Array.isArray(payload.reason_codes)
+    ? payload.reason_codes.map((x) => String(x))
+    : payload.reason_code
+      ? [String(payload.reason_code)]
+      : [];
+  const eventType = String(payload.event_type || (decision === 'ALLOW' ? '信号' : decision === 'BLOCK' ? '拒绝' : '拒绝'));
+  const key = `${strategyId}|${symbol}|${direction}|${codes.join(',')}`;
+  if (key === lastPositionEventKey.value) return;
+  lastPositionEventKey.value = key;
+  const lvl: LogItem['lvl'] = decision === 'ALLOW' ? 'success' : decision === 'BLOCK' ? 'warn' : 'info';
+  const reasonsZh = codes.length ? codes.map(reasonLabelZh).join('；') : '无明确原因';
+  pushLog(
+    lvl,
+    `[${eventType}] ${strategyId} · ${symbol || '—'} · ${directionLabelZh(direction)} · ${decisionLabelZh(decision)} · ${reasonsZh}`,
+    {
+      channel: 'POSITION',
+      event_type: eventType,
+      strategy_id: strategyId,
+      symbol,
+      reason_code: codes[0] || '',
+    },
+  );
+}
+
+function pushLog(
+  lvl: LogItem['lvl'],
+  msg: string,
+  opts?: {
+    persist?: boolean;
+    source?: string;
+    channel?: LogChannel;
+    event_type?: string;
+    strategy_id?: string;
+    symbol?: string;
+    reason_code?: string;
+  },
+) {
   const text = String(msg || '').trim();
   if (!text) return;
   const ts = Date.now();
-  logs.value.push({ ts, t: formatLogTime(ts), lvl, msg: text });
-  if (logs.value.length > LOG_KEEP) logs.value = logs.value.slice(-LOG_KEEP);
+  const channel: LogChannel = opts?.channel === 'POSITION' ? 'POSITION' : 'SYSTEM';
+  const bucket = logsFor(channel);
+  bucket.value.push({
+    ts,
+    t: formatLogTime(ts),
+    lvl,
+    msg: text,
+    channel,
+    event_type: opts?.event_type,
+    strategy_id: opts?.strategy_id,
+    symbol: opts?.symbol,
+    reason_code: opts?.reason_code,
+  });
+  if (bucket.value.length > LOG_KEEP) bucket.value = bucket.value.slice(-LOG_KEEP);
   const shouldPersist = opts?.persist !== false;
   if (shouldPersist && isLoggedIn.value) {
     void appendWhaleAiRuntimeLog({
@@ -700,6 +988,11 @@ function pushLog(lvl: LogItem['lvl'], msg: string, opts?: { persist?: boolean; s
       msg: text,
       source: opts?.source || 'ui',
       ts,
+      channel,
+      event_type: opts?.event_type,
+      strategy_id: opts?.strategy_id,
+      symbol: opts?.symbol,
+      reason_code: opts?.reason_code,
     }).catch(() => {
       /* ignore persist errors — console still shows locally */
     });
@@ -709,17 +1002,29 @@ function pushLog(lvl: LogItem['lvl'], msg: string, opts?: { persist?: boolean; s
 async function loadRuntimeLogs() {
   if (!isLoggedIn.value) return;
   try {
-    const data = await fetchWhaleAiRuntimeLogs(LOG_KEEP);
+    const data = await fetchWhaleAiRuntimeLogs(LOG_KEEP * 2);
     const rows = Array.isArray(data.logs) ? data.logs : [];
-    logs.value = rows.map((r) => ({
-      id: r.id,
-      ts: Number(r.ts) || Date.now(),
-      t: formatLogTime(Number(r.ts) || Date.now()),
-      lvl: (['info', 'success', 'warn', 'error'].includes(String(r.lvl))
-        ? r.lvl
-        : 'info') as LogItem['lvl'],
-      msg: String(r.msg || ''),
-    }));
+    const mapped = rows.map((r) => {
+      const channel: LogChannel = String(r.channel || 'SYSTEM').toUpperCase() === 'POSITION' ? 'POSITION' : 'SYSTEM';
+      return {
+        id: r.id,
+        ts: Number(r.ts) || Date.now(),
+        t: formatLogTime(Number(r.ts) || Date.now()),
+        lvl: (['info', 'success', 'warn', 'error'].includes(String(r.lvl))
+          ? r.lvl
+          : 'info') as LogItem['lvl'],
+        msg: String(r.msg || ''),
+        channel,
+        event_type: r.event_type,
+        strategy_id: r.strategy_id,
+        symbol: r.symbol,
+        reason_code: r.reason_code,
+      };
+    });
+    systemLogs.value = mapped.filter((r) => r.channel === 'SYSTEM').slice(-LOG_KEEP);
+    positionLogs.value = mapped.filter((r) => r.channel === 'POSITION').slice(-LOG_KEEP);
+    scrollLogToLatest('SYSTEM');
+    scrollLogToLatest('POSITION');
   } catch {
     /* keep whatever is in memory */
   }
@@ -958,8 +1263,8 @@ async function pollEngineDashboard() {
   } catch (err) {
     const msg = err instanceof Error ? err.message : whaleAiEngineError.value || '引擎离线';
     // Avoid flooding logs every 3s — only note once per consecutive failure burst via bridge freshness
-    if (logs.value[logs.value.length - 1]?.msg !== `引擎拉取失败：${msg}`) {
-      pushLog('warn', `引擎拉取失败：${msg}`);
+    if (systemLogs.value[systemLogs.value.length - 1]?.msg !== `引擎拉取失败：${msg}`) {
+      pushLog('warn', `引擎拉取失败：${msg}`, { channel: 'SYSTEM' });
     }
   }
 }
@@ -1099,9 +1404,9 @@ function onApplyStrategy() {
   if (!item.available) {
     ElMessage.warning(
       item.disabled_reason === 'HFT_SIM_DISABLED'
-        ? '模拟仓测试未启用：服务端未打开 V41_HFT_SIM_ENABLED'
+        ? 'QA 开平仓测试未启用：服务端未打开 V41_HFT_SIM_ENABLED'
         : item.disabled_reason === 'WARMING_UP_OR_NOT_IMPLEMENTED'
-          ? '巨鲸行为跟随尚未开放'
+          ? '巨鲸行为共振尚未开放'
           : '当前选项不可用',
     );
     return;
@@ -1133,8 +1438,8 @@ async function confirmSwitch() {
     showSwitchModal.value = false;
     if (item.kind === 'qa_test') {
       await refreshQaStatus();
-      pushLog('success', '已切换到模拟仓高频：应用后点「启动」开始开平仓（不计赚损）');
-      ElMessage.success('已切换到模拟仓高频');
+      pushLog('success', '已进入 QA 开平仓链路测试：应用后点「启动」开始开平仓（不计赚损）');
+      ElMessage.success('已进入 QA 开平仓链路测试');
     } else {
       await fetchEngineDashboard();
       pushLog('success', `交易策略已切换为「${item.name}」`);
@@ -1146,8 +1451,8 @@ async function confirmSwitch() {
     const code = String(anyErr?.details?.code || anyErr?.code || '');
     let msg = anyErr?.message || (err instanceof Error ? err.message : '切换失败');
     if (code === 'STRATEGY_SWITCH_SAFETY_BLOCKED') msg = '当前安全状态不允许切换策略';
-    else if (code === 'HFT_SIM_DISABLED') msg = '模拟仓测试未启用';
-    else if (code === 'WARMING_UP_OR_NOT_IMPLEMENTED') msg = '巨鲸行为跟随尚未开放';
+    else if (code === 'HFT_SIM_DISABLED') msg = 'QA 开平仓测试未启用';
+    else if (code === 'WARMING_UP_OR_NOT_IMPLEMENTED') msg = '巨鲸行为共振尚未开放';
     else if (code === 'V41_ENGINE_UNAVAILABLE' || code === 'V41_ENGINE_TIMEOUT') msg = '引擎离线，无法切换';
     pendingExecutionId.value = selectedExecutionId.value;
     ElMessage.error(msg);
@@ -1170,7 +1475,7 @@ async function onStart() {
   controlBusy.value = true;
   try {
     await startEngine();
-    pushLog('success', '交易系统已启动');
+    pushLog('success', '交易系统已启动（引擎运行中 · Alpha开仓已启用）', { channel: 'SYSTEM' });
     ElMessage.success('引擎已启动');
   } catch (err) {
     const msg = err instanceof Error ? err.message : '启动失败';
@@ -1194,7 +1499,7 @@ async function onStop() {
   controlBusy.value = true;
   try {
     await pauseEngine();
-    pushLog('warn', '引擎已停止（暂停新开仓与行情决策循环）');
+    pushLog('warn', '引擎已停止（决策循环已暂停 · Alpha 不再评价）', { channel: 'SYSTEM' });
     ElMessage.success('已停止');
   } catch (err) {
     const anyErr = err as { code?: string; message?: string };
@@ -1249,14 +1554,47 @@ function logStrategyHeartbeat() {
     const pos = Number(st?.position_notional_usdt || 0).toFixed(2);
     const side = String(st?.position_side || st?.state || 'FLAT');
     pushLog(
-      'info',
-      `策略状态：模拟仓高频 · ${running ? '运行中' : '已停止'} · ${qaExchangeEnvLabel.value} · cycle ${cycle} · ${side} ${pos}U`,
+      running ? 'info' : 'warn',
+      `QA 开平仓测试 · ${running ? '运行中' : '已停止'} · ${qaExchangeEnvLabel.value} · 第${cycle}轮 · ${qaSideLabelZh(side)} ${pos}U`,
+      { channel: 'SYSTEM' },
+    );
+    return;
+  }
+  const sid = activeStrategy.value;
+  const engineState = String(whaleAiEngineState.value || 'UNKNOWN').toUpperCase();
+  const md = s1Diagnostics.value?.market_data || {};
+  const evals = Number(s1Diagnostics.value?.evaluation_count || 0);
+  const signals = Number(s1Diagnostics.value?.raw_signal_count || 0);
+  const intents = Number(s1Diagnostics.value?.trade_intent_created_count || 0);
+  const mdState = String(md.state || '').toUpperCase();
+  if (engineState === 'PAUSED' || !engineOnline.value) {
+    pushLog(
+      'warn',
+      `${sid} · 已暂停 · 决策循环已停止 · 上次心跳 ${ageText(lastTickAt.value)}`,
+      { channel: 'SYSTEM', strategy_id: sid },
+    );
+    return;
+  }
+  if (mdState === 'STALE') {
+    pushLog(
+      'error',
+      `${sid} · 行情过期 · ${md.source || 'OKX'} ${md.instrument || ''} ${md.timeframe === '1h' ? '1小时线' : md.timeframe || '1小时线'}`,
+      { channel: 'SYSTEM', strategy_id: sid, symbol: String(md.instrument || '') },
+    );
+    return;
+  }
+  if (mdState === 'WARMING_UP') {
+    pushLog(
+      'warn',
+      `${sid} · 行情预热 · 已加载 ${Number(md.bars_loaded || 0)} 根K线 · 评估 ${evals} 次`,
+      { channel: 'SYSTEM', strategy_id: sid },
     );
     return;
   }
   pushLog(
     'info',
-    `策略状态：${currentStrategy.value.name}（${activeStrategy.value}）· ${strategyStatusLabel.value} · 健康度 ${healthScoreText.value} · 风险 ${riskUsedText.value}/${riskLimitText.value}`,
+    `${sid} · ${engineStateLabelZh(engineState)} · 最近计算 ${ageText(lastEvaluatedAt.value)} · 评估 ${evals} 次 · 信号 ${signals} · 意图 ${intents}`,
+    { channel: 'SYSTEM', strategy_id: sid },
   );
 }
 
@@ -1322,8 +1660,45 @@ watch(isLoggedIn, (logged) => {
 
 watch(isLoggedIn, (ok) => {
   if (ok) void loadRuntimeLogs();
-  else logs.value = [];
+  else {
+    systemLogs.value = [];
+    positionLogs.value = [];
+  }
 });
+
+watch(whaleAiStrategyDiagnostics, (diag) => {
+  if (!diag) return;
+  if (typeof diag.alpha_opening_enabled === 'boolean') {
+    alphaOpeningEnabled.value = diag.alpha_opening_enabled;
+  }
+  if (diag.pending_log_event) {
+    applyPositionDecision(diag.pending_log_event as Record<string, unknown>);
+  } else if (diag.last_decision) {
+    applyPositionDecision({
+      strategy_id: diag.strategy_id,
+      symbol: diag.market_data?.instrument,
+      direction: diag.decision?.direction_candidate || 'NONE',
+      decision: diag.last_decision,
+      reason_codes: diag.last_reason_codes || [],
+      event_type: diag.last_decision === 'ALLOW' ? '信号' : '拒绝',
+    });
+  }
+});
+
+watch(
+  systemLogs,
+  () => {
+    if (systemPinned.value) scrollLogToLatest('SYSTEM');
+  },
+  { deep: true },
+);
+watch(
+  positionLogs,
+  () => {
+    if (positionPinned.value) scrollLogToLatest('POSITION');
+  },
+  { deep: true },
+);
 
 watch(whaleAiTradeReady, () => {
   void loadAccountSnapshot();
@@ -1346,12 +1721,17 @@ onMounted(() => {
     void refreshWhaleAiKeyStatus(true);
     void refreshWhaleAiTradeStatus(true).then(() => loadAccountSnapshot());
     void loadRuntimeLogs().then(() => {
-      if (!logs.value.length) {
-        pushLog('info', '个人交易舱已加载：账户/持仓接 OKX，策略与信号接 V4.1 引擎');
+      if (!systemLogs.value.length) {
+        pushLog('info', '个人交易舱已加载：账户/持仓接 OKX，策略与信号接 V4.1 引擎', {
+          channel: 'SYSTEM',
+        });
       }
     });
   } else {
-    pushLog('info', '个人交易舱已加载：登录后可持久化策略运行日志', { persist: false });
+    pushLog('info', '个人交易舱已加载：登录后可持久化策略运行日志', {
+      persist: false,
+      channel: 'SYSTEM',
+    });
   }
   if (mainConsoleVisible.value) {
     startPolling();
@@ -1460,6 +1840,10 @@ onUnmounted(() => {
             <strong>{{ systemStateLabel }}</strong>
           </div>
           <div class="pill">
+            Alpha执行：
+            <strong>{{ alphaExecutionLabel }}</strong>
+          </div>
+          <div class="pill">
             安全状态：
             <strong :class="safetyTone">{{ safetyLabel }}</strong>
           </div>
@@ -1527,6 +1911,10 @@ onUnmounted(() => {
                 <div class="k">预期收益</div>
                 <div class="v">{{ strategyExpectancyText }}</div>
               </div>
+              <div class="mini">
+                <div class="k">Alpha执行</div>
+                <div class="v">{{ alphaExecutionLabel }}</div>
+              </div>
             </div>
             <div v-else class="strategy-details">
               <div class="mini">
@@ -1585,7 +1973,7 @@ onUnmounted(() => {
                 :disabled="controlBusy || qaBusy || (isQaConsole && (!qaEnabled || !qaCanRunExchange))"
                 @click="onStart"
               >
-                启动
+                {{ isQaConsole ? '启动' : '启动交易系统' }}
               </button>
               <button
                 v-else
@@ -1643,7 +2031,7 @@ onUnmounted(() => {
         <div class="card">
           <div class="section-title">
             <span>当前交易信号</span>
-            <span class="section-sub">{{ engineOnline ? 'TradeIntent' : '引擎离线' }}</span>
+            <span class="section-sub">{{ engineOnline ? '交易意图' : '引擎离线' }}</span>
           </div>
           <div v-if="!signals.length" class="empty">暂无信号</div>
           <div v-else class="signal-list">
@@ -1668,9 +2056,7 @@ onUnmounted(() => {
         <div class="card">
           <div class="section-title">
             <span>当前持仓</span>
-            <span class="section-sub">{{
-              accountLive ? (whaleAiTradeSimulated ? 'OKX 模拟盘' : 'OKX 实盘') : '未同步'
-            }}</span>
+            <span class="section-sub">{{ accountEnvironmentLabel }}</span>
           </div>
           <table>
             <thead>
@@ -1730,17 +2116,69 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section class="card">
-        <div class="section-title">
-          <span>系统日志</span>
-          <span class="section-sub">最近 {{ Math.min(logs.length, LOG_SHOW) }} / {{ logs.length }} 条（每账号最多 {{ LOG_KEEP }}）</span>
-        </div>
-        <div class="log-box">
-          <div v-if="!logs.length" class="log-entry">暂无运行日志</div>
-          <div v-for="(l, idx) in logs.slice(-LOG_SHOW)" :key="`${l.id || l.ts || l.t}-${idx}`" class="log-entry">
-            <span class="log-time">{{ l.t }}</span>
-            <span :class="`log-${l.lvl}`">[{{ logLevelLabel(l.lvl) }}]</span>
-            {{ l.msg }}
+      <section class="card log-panel">
+        <div class="log-split">
+          <div class="log-col log-col-system">
+            <div class="section-title">
+              <span>系统运行日志</span>
+              <span class="section-sub">
+                <span class="log-badge" :class="engineOnline ? 'on' : 'off'">
+                  引擎{{ engineOnline ? '在线' : '离线' }}
+                </span>
+                {{ Math.min(systemLogs.length, LOG_SHOW) }}/{{ systemLogs.length }}
+              </span>
+            </div>
+            <button
+              v-if="!systemPinned && systemLogs.length"
+              type="button"
+              class="log-jump"
+              @click="scrollLogToLatest('SYSTEM')"
+            >
+              回到最新
+            </button>
+            <div ref="systemLogBox" class="log-box" @scroll="onLogScroll('SYSTEM')">
+              <div v-if="!systemLogs.length" class="log-entry">暂无系统运行日志</div>
+              <div
+                v-for="(l, idx) in systemLogs.slice(-LOG_SHOW)"
+                :key="`sys-${l.id || l.ts || l.t}-${idx}`"
+                class="log-entry"
+              >
+                <span class="log-time">{{ l.t }}</span>
+                <span :class="`log-${l.lvl}`">[{{ logLevelLabel(l.lvl) }}]</span>
+                {{ l.msg }}
+              </div>
+            </div>
+          </div>
+          <div class="log-col log-col-position">
+            <div class="section-title">
+              <span>仓位日志</span>
+              <span class="section-sub">
+                <span class="log-badge" :class="activePositionCount > 0 ? 'on' : 'off'">
+                  当前持仓 {{ activePositionCount }}
+                </span>
+                {{ Math.min(positionLogs.length, LOG_SHOW) }}/{{ positionLogs.length }}
+              </span>
+            </div>
+            <button
+              v-if="!positionPinned && positionLogs.length"
+              type="button"
+              class="log-jump"
+              @click="scrollLogToLatest('POSITION')"
+            >
+              回到最新
+            </button>
+            <div ref="positionLogBox" class="log-box" @scroll="onLogScroll('POSITION')">
+              <div v-if="!positionLogs.length" class="log-entry">暂无仓位生命周期事件</div>
+              <div
+                v-for="(l, idx) in positionLogs.slice(-LOG_SHOW)"
+                :key="`pos-${l.id || l.ts || l.t}-${idx}`"
+                class="log-entry"
+              >
+                <span class="log-time">{{ l.t }}</span>
+                <span :class="`log-${l.lvl}`">[{{ logLevelLabel(l.lvl) }}]</span>
+                {{ l.msg }}
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -1756,8 +2194,8 @@ onUnmounted(() => {
       <div class="modal">
         <h3>确认切换执行模式</h3>
         <p v-if="pendingSelection?.kind === 'qa_test'">
-          将进入「🧪 模拟仓高频测试」。不会修改 active_strategy_id（当前注册 Alpha 仍为
-          {{ activeStrategy }}），但会暂停新的 Alpha 开仓；测试只走 Simulator。
+          将进入「QA 开平仓链路测试」。不会修改 active_strategy_id（当前注册 Alpha 仍为
+          {{ activeStrategy }}），但会暂停新的 Alpha 开仓；账户环境由 Node 根据当前 OKX 密钥识别。
         </p>
         <p v-else>
           将切换到「{{ pendingSelection?.name || pendingExecutionId }}」。旧策略停止产生新信号，现有持仓继续按原风控规则管理。
@@ -2319,6 +2757,50 @@ th {
   margin-bottom: 14px;
 }
 
+.log-panel {
+  position: relative;
+}
+.log-split {
+  display: grid;
+  grid-template-columns: 55% 45%;
+  gap: 12px;
+  align-items: stretch;
+}
+.log-col {
+  min-width: 0;
+  position: relative;
+}
+.log-col .section-title {
+  margin-bottom: 8px;
+}
+.log-badge {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+}
+.log-badge.on {
+  color: var(--green);
+  border-color: #2da44e66;
+}
+.log-badge.off {
+  color: var(--muted);
+}
+.log-jump {
+  position: absolute;
+  right: 10px;
+  top: 42px;
+  z-index: 2;
+  border: 1px solid var(--border);
+  background: #21262d;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
 .log-box {
   height: 280px;
   overflow: auto;
@@ -2413,7 +2895,8 @@ textarea {
 }
 @media (max-width: 850px) {
   .grid-2,
-  .grid-3 {
+  .grid-3,
+  .log-split {
     grid-template-columns: 1fr;
   }
   .metrics {

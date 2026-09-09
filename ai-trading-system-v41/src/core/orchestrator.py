@@ -51,7 +51,8 @@ class Orchestrator:
                     "sample_count": 100,
                 }
             )
-        self.adapter = adapter or OkxAdapter(config, mode="mock" if mode == "paper" else mode, mock=(mode == "paper"))
+        # paper = no live Alpha orders; market data is independent (real OKX unless tests/mock env)
+        self.adapter = adapter or OkxAdapter(config, mode=mode, mock=False)
         self.reconciler = DataReconciler(self.adapter, config)
 
         self.s1 = S1TrendStrategy(config, self.evaluator, self.lifecycle)
@@ -66,6 +67,18 @@ class Orchestrator:
         self.last_orders: List[Dict[str, Any]] = []
         # Invariant: exactly one active alpha strategy (S1 or S2)
         self.active_strategy_id: str = "S1"
+        self.alpha_opening_enabled: bool = True
+        self.s1_timeframe: str = str((config.get("S1_trend") or {}).get("timeframe") or "1h")
+        self.market_warmup_bars: int = 100
+        self.market_fetch_limit: int = 200
+        self.market_state: str = "WARMING_UP"
+        self.market_meta: Dict[str, Any] = {}
+        from src.runtime.strategy_diagnostics import StrategyDiagnostics
+
+        self.diagnostics: Dict[str, StrategyDiagnostics] = {
+            "S1": StrategyDiagnostics("S1"),
+            "S2": StrategyDiagnostics("S2"),
+        }
 
     @classmethod
     def from_config_path(
@@ -86,22 +99,45 @@ class Orchestrator:
     async def run_cycle(self, bars=None, microstructure=None) -> Dict[str, Any]:
         active = self.active_strategy_id if self.active_strategy_id in ("S1", "S2") else "S1"
         self.active_strategy_id = active
+        alpha_open = bool(getattr(self, "alpha_opening_enabled", True))
         self.context = {
             "mode": self.mode,
             "symbol": self.symbol,
             "live_trading_allowed": bool(self.config.get("meta", {}).get("live_trading_allowed", False)),
             "global_drawdown_multiplier": 1.0,
             "daily_loss_multiplier": 1.0,
-            "execution_mode": getattr(self, "execution_mode", "paper"),
+            "execution_mode": getattr(self, "execution_mode", "node_gateway_shadow"),
+            "alpha_execution": getattr(self, "alpha_execution", "SHADOW"),
             "user_id": getattr(self, "user_id", None),
             "account_scope": getattr(self, "account_scope", "default"),
             "pending_order_intents": [],
             "active_strategy_id": active,
             "strategy_runtime": {"active_strategy_id": active},
+            "alpha_opening_enabled": alpha_open,
+            "_diagnostics": self.diagnostics,
         }
         if bars is None:
-            bars = self.adapter.get_klines(self.symbol, timeframe="5m", limit=300)
-        self.data_pool.update_from_bars(bars, microstructure=microstructure)
+            try:
+                bars = self.adapter.get_klines(
+                    self.symbol,
+                    timeframe=self.s1_timeframe or "1h",
+                    limit=self.market_fetch_limit,
+                )
+            except Exception as exc:  # noqa: BLE001
+                from src.adapters.okx_market_data import to_okx_inst_id, use_real_okx_market
+
+                self.market_state = "STALE"
+                self.market_meta = {
+                    "source": "OKX" if use_real_okx_market() else "MOCK",
+                    "instrument": to_okx_inst_id(self.symbol),
+                    "timeframe": self.s1_timeframe or "1h",
+                    "state": "STALE",
+                    "error": str(exc),
+                    "bars_loaded": 0,
+                }
+                self.context["market_data"] = dict(self.market_meta)
+                raise
+        self._apply_market_bars(bars, microstructure=microstructure)
         account = self.adapter.get_account_info()
         self.context["equity"] = account.get("equity")
 
@@ -127,6 +163,57 @@ class Orchestrator:
             required=required,
         )
         return dict(self.context)
+
+    def _apply_market_bars(self, bars, microstructure=None) -> None:
+        from src.adapters.okx_market_data import (
+            split_closed_bars,
+            to_okx_inst_id,
+            use_real_okx_market,
+        )
+
+        tf = self.s1_timeframe or "1h"
+        closed, forming, candle_closed = split_closed_bars(bars, timeframe=tf)
+        compute = closed if (closed is not None and not getattr(closed, "empty", True)) else bars
+        self.data_pool.update_from_bars(compute, microstructure=microstructure)
+        bars_loaded = int(len(bars)) if bars is not None else 0
+        closed_n = int(len(compute)) if compute is not None else 0
+        latest_closed = None
+        latest_any = None
+        if compute is not None and len(compute) and isinstance(compute.index, type(bars.index)):
+            latest_closed = str(compute.index[-1])
+        if bars is not None and len(bars):
+            latest_any = str(bars.index[-1])
+        age = None
+        try:
+            import pandas as pd
+
+            ref = compute.index[-1] if compute is not None and len(compute) else None
+            if ref is not None:
+                ts = pd.Timestamp(ref)
+                if ts.tzinfo is None:
+                    ts = ts.tz_localize("UTC")
+                age = max(0, int((pd.Timestamp.now(tz="UTC") - ts).total_seconds()))
+        except Exception:
+            age = None
+        ready = closed_n >= self.market_warmup_bars
+        self.market_state = "READY" if ready else "WARMING_UP"
+        if age is not None and age > 4 * 3600:
+            self.market_state = "STALE"
+        self.market_meta = {
+            "source": "OKX" if use_real_okx_market() else "MOCK",
+            "instrument": to_okx_inst_id(self.symbol),
+            "timeframe": tf,
+            "latest_candle_at": latest_any,
+            "latest_closed_candle_at": latest_closed,
+            "candle_age_seconds": age,
+            "bars_loaded": bars_loaded,
+            "closed_bars": closed_n,
+            "candle_closed": candle_closed,
+            "state": self.market_state,
+            "forming": forming is not None,
+        }
+        self.context["market_data"] = dict(self.market_meta)
+        self.data_pool.set_context({"market_data_state": self.market_state})
 
     # --- decision_order steps ---
 
@@ -228,23 +315,32 @@ class Orchestrator:
             }
         )
 
-        # QA console / explicit pause: keep exit risk mgmt, block new Alpha openings
+        market_ready = str(self.market_state) == "READY"
+        emit_intents = bool(self.context.get("alpha_opening_enabled", True)) and market_ready
+        extra_block: List[str] = []
+        if not market_ready:
+            extra_block.append("MARKET_DATA_WARMING_UP" if self.market_state == "WARMING_UP" else "MARKET_DATA_STALE")
         if self.context.get("alpha_opening_enabled") is False:
-            self.context["trade_intents"] = []
-            return {
-                "count": 0,
-                "active_strategy_id": active,
-                "alpha_opening_enabled": False,
-                "intents": [],
-                "blocked_reason": "ALPHA_OPENINGS_PAUSED",
-            }
+            extra_block.append("ALPHA_OPENINGS_PAUSED")
+        if int(self.context.get("S6.level") or 0) >= 2:
+            extra_block.append("S6_ENTRIES_BLOCKED")
 
-        # Invariant: only the active alpha strategy may emit new TradeIntents
+        # Always evaluate active Alpha for diagnostics; emit intents only when allowed
         intents: List[TradeIntent] = []
         if active == "S1":
-            intents.extend(self.s1.generate(symbol=self.symbol, data_pool=self.data_pool, context=self.context))
+            intents.extend(
+                self.s1.generate(
+                    symbol=self.symbol,
+                    data_pool=self.data_pool,
+                    context=self.context,
+                    emit_intents=emit_intents,
+                    extra_reason_codes=extra_block,
+                )
+            )
         elif active == "S2":
             intents.extend(self.s2.generate(symbol=self.symbol, data_pool=self.data_pool, context=self.context))
+            if not emit_intents:
+                intents = []
         # Defense in depth: drop any mismatched emits
         filtered: List[TradeIntent] = []
         for intent in intents:
@@ -273,6 +369,9 @@ class Orchestrator:
             for intent in self.context.get("confirmed_intents") or []:
                 if intent.status == "CONFIRMED":
                     self.lifecycle.transition(intent, "COST_REJECTED")
+                    diag = self.diagnostics.get(str(intent.strategy_id))
+                    if diag:
+                        diag.note_cost_reject()
         return {"ok": ok, "edge": edge, "min_r": min_r, "stress_multipliers": stresses}
 
     def final_order_creation(self) -> Dict[str, Any]:
@@ -281,15 +380,24 @@ class Orchestrator:
         confirmed: List[TradeIntent] = list(self.context.get("confirmed_intents") or [])
         created = []
 
-        cold = self.config.get("cost_model", {}).get("edge_estimator", {}).get("cold_start", {})
-        paper_only = bool(self.context.get("paper_only_edge")) or bool(
-            cold.get("if_validated_prior_missing", {}).get("paper_trading_only", False)
+        from src.runtime.alpha_execution import (
+            ALPHA_SHADOW,
+            normalize_alpha_execution,
+            strategy_live_allowed,
         )
-        live_allowed = bool(self.config.get("meta", {}).get("live_trading_allowed", False))
-        allow_place = True
-        if self.mode == "live" and (not live_allowed or paper_only):
-            allow_place = False
-            self.context["order_blocked_reason"] = "live_trading_disallowed_or_paper_only"
+
+        raw_mode = str(
+            self.context.get("alpha_execution")
+            or self.context.get("execution_mode")
+            or getattr(self, "alpha_execution", None)
+            or getattr(self, "execution_mode", None)
+            or ""
+        )
+        if raw_mode.upper() in ("SHADOW", "EXECUTE"):
+            norm = normalize_alpha_execution(raw_alpha=raw_mode, warn=False)
+        else:
+            norm = normalize_alpha_execution(raw_legacy=raw_mode or None, warn=False)
+        alpha_execution = norm["alpha_execution"]
 
         for intent in confirmed:
             if intent.status != "CONFIRMED":
@@ -329,12 +437,15 @@ class Orchestrator:
             gate_ok = bool(self.evaluator.evaluate(gate, self.context)) if gate else validity["valid"]
             if not gate_ok:
                 self.lifecycle.transition(intent, "RISK_REJECTED")
+                diag = self.diagnostics.get(str(intent.strategy_id))
+                if diag:
+                    diag.note_s4_reject()
                 continue
             if int(self.context.get("S6.level", 0)) >= 2:
                 self.lifecycle.transition(intent, "SAFETY_REJECTED")
-                continue
-            if not allow_place:
-                created.append({"intent_id": intent.intent_id, "blocked": True, "reason": self.context.get("order_blocked_reason")})
+                diag = self.diagnostics.get(str(intent.strategy_id))
+                if diag:
+                    diag.S6_rejected_count += 1
                 continue
 
             side = "buy" if str(intent.direction).lower() == "long" else "sell"
@@ -345,105 +456,65 @@ class Orchestrator:
             if qty <= 0:
                 qty = 0.001
 
-            execution_mode = str(
-                self.context.get("execution_mode")
-                or getattr(self, "execution_mode", None)
-                or "paper"
-            )
-            if execution_mode in ("node_gateway", "node_gateway_shadow"):
-                import uuid
-                from datetime import datetime, timezone
+            import uuid
+            from datetime import datetime, timezone
 
-                policy = self.lifecycle.get_policy(intent.strategy_id)
-                order_intent = {
-                    "order_intent_id": str(uuid.uuid4()),
-                    "trade_intent_id": intent.intent_id,
+            policy = self.lifecycle.get_policy(intent.strategy_id)
+            order_intent = {
+                "order_intent_id": str(uuid.uuid4()),
+                "trade_intent_id": intent.intent_id,
+                "strategy_id": intent.strategy_id,
+                "active_strategy_id_at_creation": active,
+                "origin_strategy_id": intent.strategy_id,
+                "alpha_execution": alpha_execution,
+                "shadow": alpha_execution == ALPHA_SHADOW,
+                "live_allowed": strategy_live_allowed(intent.strategy_id),
+                "user_id": getattr(self, "user_id", None) or self.context.get("user_id"),
+                "account_scope": self.context.get("account_scope") or "default",
+                "symbol": intent.symbol.replace("/", "-").replace(":USDT", "-SWAP")
+                if "/" in intent.symbol
+                else intent.symbol,
+                "side": side,
+                "position_side": "long" if side == "buy" else "short",
+                "order_type": "market",
+                "quantity": str(round(qty, 6)),
+                "reduce_only": False,
+                "client_order_id": f"v41_{intent.intent_id[:8]}_{uuid.uuid4().hex[:8]}",
+                "risk_snapshot": {
                     "strategy_id": intent.strategy_id,
-                    "active_strategy_id_at_creation": active,
+                    "risk_pct": risk_pct,
+                    "S6.level": self.context.get("S6.level"),
+                },
+                "entry_risk_snapshot": {
+                    "strategy_id": intent.strategy_id,
+                    "risk_pct": risk_pct,
+                    "equity": equity,
+                    "atr": atr,
+                    "quantity": qty,
+                },
+                "exit_policy_snapshot": {
                     "origin_strategy_id": intent.strategy_id,
-                    "shadow": execution_mode == "node_gateway_shadow",
-                    "user_id": self.context.get("user_id"),
-                    "account_scope": self.context.get("account_scope") or "default",
-                    "symbol": intent.symbol.replace("/", "-").replace(":USDT", "-SWAP")
-                    if "/" in intent.symbol
-                    else intent.symbol,
-                    "side": side,
-                    "position_side": "long" if side == "buy" else "short",
-                    "order_type": "market",
-                    "quantity": str(round(qty, 6)),
-                    "reduce_only": False,
-                    "client_order_id": f"v41_{intent.intent_id[:8]}_{uuid.uuid4().hex[:8]}",
-                    "risk_snapshot": {
-                        "strategy_id": intent.strategy_id,
-                        "risk_pct": risk_pct,
-                        "S6.level": self.context.get("S6.level"),
-                    },
-                    "entry_risk_snapshot": {
-                        "strategy_id": intent.strategy_id,
-                        "risk_pct": risk_pct,
-                        "equity": equity,
-                        "atr": atr,
-                        "quantity": qty,
-                    },
-                    "exit_policy_snapshot": {
-                        "origin_strategy_id": intent.strategy_id,
-                        "lifecycle_policy": policy,
-                    },
-                    "stop_policy_snapshot": {
-                        "origin_strategy_id": intent.strategy_id,
-                        "reference_atr": float(intent.reference_atr),
-                    },
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "status": "PENDING_GATEWAY",
-                }
-                # OKX SWAP instId form BTC-USDT-SWAP
-                sym = str(intent.symbol)
-                if "USDT" in sym and "-SWAP" not in sym:
-                    base = sym.split("/")[0] if "/" in sym else sym.replace("USDT", "").replace(":USDT", "")
-                    order_intent["symbol"] = f"{base}-USDT-SWAP"
-                pending = self.context.setdefault("pending_order_intents", [])
-                pending.append(order_intent)
-                created.append({"intent_id": intent.intent_id, "order_intent": order_intent})
-                self.last_orders.append(order_intent)
-                continue
-
-            order_res = self.adapter.place_order(
-                symbol=intent.symbol,
-                side=side,
-                order_type="market",
-                quantity=float(qty),
-            )
-            if order_res.get("ok"):
-                self.lifecycle.transition(intent, "EXECUTED")
-                policy = self.lifecycle.get_policy(intent.strategy_id)
-                candidates = self.context.setdefault("opened_position_candidates", [])
-                candidates.append(
-                    {
-                        "symbol": intent.symbol,
-                        "side": "long" if side == "buy" else "short",
-                        "quantity": float(qty),
-                        "origin_strategy_id": intent.strategy_id,
-                        "origin_trade_intent_id": intent.intent_id,
-                        "entry_risk_snapshot": {
-                            "strategy_id": intent.strategy_id,
-                            "risk_pct": risk_pct,
-                            "equity": equity,
-                            "atr": atr,
-                            "quantity": qty,
-                        },
-                        "exit_policy_snapshot": {
-                            "origin_strategy_id": intent.strategy_id,
-                            "lifecycle_policy": policy,
-                        },
-                        "stop_policy_snapshot": {
-                            "origin_strategy_id": intent.strategy_id,
-                            "reference_atr": float(intent.reference_atr),
-                        },
-                        "metadata": {"source": "paper_adapter", "order": order_res},
-                    }
-                )
-            created.append({"intent_id": intent.intent_id, "order": order_res})
-            self.last_orders.append(order_res)
+                    "lifecycle_policy": policy,
+                },
+                "stop_policy_snapshot": {
+                    "origin_strategy_id": intent.strategy_id,
+                    "reference_atr": float(intent.reference_atr),
+                },
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "status": "PENDING_GATEWAY",
+            }
+            # OKX SWAP instId form BTC-USDT-SWAP
+            sym = str(intent.symbol)
+            if "USDT" in sym and "-SWAP" not in sym:
+                base = sym.split("/")[0] if "/" in sym else sym.replace("USDT", "").replace(":USDT", "")
+                order_intent["symbol"] = f"{base}-USDT-SWAP"
+            pending = self.context.setdefault("pending_order_intents", [])
+            pending.append(order_intent)
+            created.append({"intent_id": intent.intent_id, "order_intent": order_intent})
+            self.last_orders.append(order_intent)
+            diag = self.diagnostics.get(str(intent.strategy_id))
+            if diag:
+                diag.note_order_intent()
 
         self.context["orders_created"] = created
         return {"orders": created}

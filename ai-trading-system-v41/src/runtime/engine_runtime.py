@@ -12,6 +12,19 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from src.core.orchestrator import Orchestrator
+from src.runtime.alpha_execution import (
+    ALPHA_EXECUTE,
+    ALPHA_SHADOW,
+    LEGACY_PAPER_SOURCE,
+    annotate_legacy_paper_metadata,
+    annotate_position_dict,
+    is_legacy_paper_position,
+    is_runtime_test_fixture,
+    live_trading_enabled,
+    resolve_runtime_execution,
+    strategy_live_allowed,
+    user_id_ready,
+)
 from src.runtime.engine_store import EngineStore
 from src.runtime.position_ownership import PositionOwnershipRegistry
 from src.telemetry.dashboard_snapshot import build_dashboard_snapshot
@@ -21,12 +34,20 @@ ROOT = Path(__file__).resolve().parents[2]
 
 STRATEGY_META = {
     "S1": {
-        "name": "趋势跟踪策略",
+        "name": "趋势跟踪 S1",
         "description": "适合趋势行情，结合趋势强度和波动率过滤寻找顺势机会。",
+        "live_allowed": True,
     },
     "S2": {
-        "name": "极端情绪反转策略",
+        "name": "极端情绪反转 S2",
         "description": "在极端超买超卖、资金费率和持仓变化同时满足时寻找反转机会。",
+        "live_allowed": True,
+    },
+    "S8": {
+        "name": "巨鲸行为共振",
+        "description": "多巨鲸共识共振（尚未开放）。",
+        "live_allowed": False,
+        "release_stage": "RESEARCH",
     },
 }
 
@@ -54,7 +75,10 @@ class EngineRuntime:
         self.mode = mode
         self.symbol = symbol
         self.tick_interval_sec = float(tick_interval_sec)
-        self.execution_mode = execution_mode
+        exec_norm = resolve_runtime_execution(execution_mode)
+        self.alpha_execution = exec_norm["alpha_execution"]
+        self.execution_mode = exec_norm["gateway_mode"]
+        self.alpha_execution_meta = exec_norm
         default_active = "S1"
         try:
             import json as _json
@@ -74,9 +98,11 @@ class EngineRuntime:
         self.orchestrator = Orchestrator.from_config_path(
             self.config_path, mode=mode, symbol=symbol
         )
-        self.orchestrator.execution_mode = execution_mode
+        self.orchestrator.execution_mode = self.execution_mode
+        self.orchestrator.alpha_execution = self.alpha_execution
         self.orchestrator.user_id = self.user_id
         self.orchestrator.account_scope = self.account_scope
+        self.orchestrator.context["user_id"] = self.user_id
         self.config_version = str((self.orchestrator.config.get("meta") or {}).get("version") or "4.1")
         self.runtime_model = str(
             (self.orchestrator.config.get("meta") or {}).get("runtime_model")
@@ -87,11 +113,20 @@ class EngineRuntime:
             f"CONFIG_LOADED version={self.config_version} "
             f"runtime_model={self.runtime_model} path={self.config_path}"
         )
+        print(
+            f"AlphaExecution = {self.alpha_execution} "
+            f"AccountEnvironment = OKX_DEMO / OKX_LIVE "
+            f"LivePermission = {str(live_trading_enabled()).lower()} "
+            f"MarketData = REAL_OKX"
+        )
+        if exec_norm.get("deprecation_code"):
+            print(exec_norm["deprecation_code"])
 
         self.store = EngineStore()
         self.bus = get_event_bus()
         self.positions = PositionOwnershipRegistry()
         self.positions.load(self.store.list_open_positions(200))
+        self._annotate_loaded_positions()
         self.state = "OFFLINE"
         self.started_at: Optional[str] = None
         self.last_tick_at: Optional[str] = None
@@ -138,6 +173,13 @@ class EngineRuntime:
     def ok(self) -> bool:
         return self.state != "OFFLINE"
 
+    def bind_user(self, user_id: Any) -> Dict[str, Any]:
+        uid = str(user_id or "").strip()
+        self.user_id = uid or None
+        self.orchestrator.user_id = self.user_id
+        self.orchestrator.context["user_id"] = self.user_id
+        return {"ok": True, "user_id": self.user_id, "user_id_ready": user_id_ready(self.user_id)}
+
     def health(self) -> Dict[str, Any]:
         if self.state == "OFFLINE":
             return {
@@ -148,6 +190,8 @@ class EngineRuntime:
                 "started_at": self.started_at,
                 "last_tick_at": self.last_tick_at,
                 "event_loop_lag_ms": self.event_loop_lag_ms,
+                "tick_interval_sec": self.tick_interval_sec,
+                "alpha_execution": getattr(self, "alpha_execution", ALPHA_SHADOW),
                 "version": getattr(self, "config_version", "4.1"),
             }
         return {
@@ -158,16 +202,68 @@ class EngineRuntime:
             "started_at": self.started_at,
             "last_tick_at": self.last_tick_at,
             "event_loop_lag_ms": self.event_loop_lag_ms,
+            "tick_interval_sec": self.tick_interval_sec,
             "version": getattr(self, "config_version", "4.1"),
             "runtime_model": getattr(self, "runtime_model", None),
             "active_strategy": self.active_strategy,
             "execution_mode": self.execution_mode,
+            "alpha_execution": getattr(self, "alpha_execution", ALPHA_SHADOW),
+            "live_permission": live_trading_enabled(),
+            "user_id_ready": user_id_ready(self.user_id),
             "console_mode": getattr(self, "console_mode", "ALPHA"),
             "alpha_opening_enabled": getattr(self, "alpha_opening_enabled", True),
             "hft_sim_enabled": self.hft_sim_enabled(),
             "last_error": self.last_error,
             "event_sequence": self.bus.sequence,
+            "last_evaluated_at": self._active_diag().last_evaluated_at if self._active_diag() else None,
+            "evaluation_count": self._active_diag().evaluation_count if self._active_diag() else 0,
         }
+
+    def _s1_diag(self):
+        return (getattr(self.orchestrator, "diagnostics", {}) or {}).get("S1")
+
+    def _active_diag(self):
+        sid = self.active_strategy if self.active_strategy in ("S1", "S2") else "S1"
+        return (getattr(self.orchestrator, "diagnostics", {}) or {}).get(sid)
+
+    def strategy_diagnostics(self, strategy_id: str = "S1") -> Dict[str, Any]:
+        sid = strategy_id if strategy_id in ("S1", "S2") else "S1"
+        diag = (getattr(self.orchestrator, "diagnostics", {}) or {}).get(sid)
+        pool = self.orchestrator.data_pool
+        indicators = {
+            "close": pool.get("close"),
+            "ema20": pool.get("ema20"),
+            "ema50": pool.get("ema50"),
+            "adx14": pool.get("adx14"),
+            "atr14": pool.get("atr14"),
+            "trend_slope_6": pool.get("trend_slope_6"),
+            "trend_quality_score": pool.get("trend_quality_score"),
+        }
+        gates = {
+            "S1": {"result": (diag.last_decision if diag else "NO_TRADE")},
+            "S3": {"regime": (self.orchestrator.context or {}).get("S3.regime"), "result": "BLOCK" if (diag and any(c.startswith("S3_") for c in (diag.last_reason_codes or []))) else "ALLOW"},
+            "S5": {"result": "NOT_REACHED" if not diag or diag.last_decision != "ALLOW" else "ALLOW"},
+            "S6": {"level": (self.orchestrator.context or {}).get("S6.level", 0), "result": "ALLOW" if int((self.orchestrator.context or {}).get("S6.level") or 0) < 2 else "BLOCK"},
+            "S7": {"result": "NOT_REACHED"},
+            "edge": {"expected_edge_after_cost_R": (self.orchestrator.context or {}).get("expected_edge_after_cost_R")},
+            "S4": {"result": "NOT_REACHED" if not diag or not diag.trade_intent_created_count else "ALLOW"},
+        }
+        payload = (
+            diag.to_dict(
+                active=self.active_strategy == sid,
+                runtime_state=self.state,
+                alpha_opening_enabled=self.alpha_opening_enabled,
+                last_tick_at=self.last_tick_at,
+                market_data=dict(getattr(self.orchestrator, "market_meta", {}) or {}),
+                indicators=indicators,
+                gates=gates,
+            )
+            if diag
+            else {"strategy_id": sid, "active": self.active_strategy == sid, "runtime_state": self.state}
+        )
+        if diag and diag.pending_log_event:
+            payload["pending_log_event"] = dict(diag.pending_log_event)
+        return payload
 
     def snapshot(self) -> Dict[str, Any]:
         if self.state == "OFFLINE" and not self.orchestrator.context:
@@ -181,22 +277,23 @@ class EngineRuntime:
                     "last_tick_at": self.last_tick_at,
                     "active_strategy": self.active_strategy,
                     "engine_available": False,
+                    "alpha_execution": getattr(self, "alpha_execution", ALPHA_SHADOW),
                 },
                 "s3": None,
                 "s5": None,
                 "s6": None,
                 "s7": [],
                 "trade_intents": [],
-                "order_intents": list(self.order_intents),
-                "open_positions": [p.to_dict() for p in self.positions.list_open()],
-                "execution": {"mode": self.execution_mode, "last_orders": []},
+                "order_intents": self._current_order_intents(),
+                "open_positions": self._serialize_open_positions(),
+                "execution": self._execution_snapshot([]),
                 "incidents": list(self.incidents),
                 "edge": None,
                 "view": {
                     "engine": {
                         "available": False,
                         "state": "OFFLINE",
-                        "mode": self.mode,
+                        "alpha_execution": getattr(self, "alpha_execution", ALPHA_SHADOW),
                         "version": "4.1",
                         "updated_at": _now_iso(),
                     },
@@ -212,9 +309,10 @@ class EngineRuntime:
         snap["trade_intents"] = [
             i for i in intents if str(i.get("strategy_id") or "") == self.active_strategy
         ]
-        snap["order_intents"] = list(self.order_intents)
-        snap["open_positions"] = [p.to_dict() for p in self.positions.list_open()]
+        snap["order_intents"] = self._current_order_intents()
+        snap["open_positions"] = self._serialize_open_positions()
         snap["active_strategy"] = self.get_active_strategy()
+        self._attach_execution_architecture(snap)
         return snap
 
     async def start(self) -> Dict[str, Any]:
@@ -224,15 +322,23 @@ class EngineRuntime:
             self._pause.set()
             if self.state != "LOCKED":
                 self.state = "RUNNING"
+            if self.console_mode != "QA_HFT_SIM":
+                self.alpha_opening_enabled = True
+                self.orchestrator.alpha_opening_enabled = True
+                self.orchestrator.context["alpha_opening_enabled"] = True
             self.bus.emit("engine.status", {"state": self.state})
-            return {"ok": True, "state": self.state}
+            return {"ok": True, "state": self.state, "alpha_opening_enabled": self.alpha_opening_enabled}
         self._stop.clear()
         self._pause.set()
         self.started_at = self.started_at or _now_iso()
         self.state = "RUNNING"
+        if self.console_mode != "QA_HFT_SIM":
+            self.alpha_opening_enabled = True
+            self.orchestrator.alpha_opening_enabled = True
+            self.orchestrator.context["alpha_opening_enabled"] = True
         self._task = asyncio.create_task(self._loop(), name="v41-engine-loop")
         self.bus.emit("engine.status", {"state": self.state})
-        return {"ok": True, "state": self.state}
+        return {"ok": True, "state": self.state, "alpha_opening_enabled": self.alpha_opening_enabled}
 
     def _interrupt_qa(self) -> None:
         """Allow control endpoints to stop QA without waiting for cycle completion."""
@@ -324,6 +430,7 @@ class EngineRuntime:
             "risk_budget_pct_equity": float(budgets.get(sid) or 0.0),
             "expectancy_R": None,
             "changed_at": self._active_strategy_changed_at,
+            "live_allowed": strategy_live_allowed(sid),
         }
 
     def list_strategies(self) -> Dict[str, Any]:
@@ -341,6 +448,7 @@ class EngineRuntime:
                     "available": state not in ("PAUSED", "OFF"),
                     "health_score": float(s7.get("health_score") or 0.0),
                     "health_state": state,
+                    "live_allowed": strategy_live_allowed(sid),
                 }
             )
         return {"active_strategy_id": self.active_strategy, "strategies": items}
@@ -353,6 +461,51 @@ class EngineRuntime:
             "yes",
             "on",
         }
+
+    def _annotate_loaded_positions(self) -> None:
+        for pos in list(self.positions.positions.values()):
+            pos.metadata = annotate_legacy_paper_metadata(pos.metadata)
+
+    def _current_order_intents(self) -> List[Dict[str, Any]]:
+        return [oi for oi in list(self.order_intents) if not is_runtime_test_fixture(oi)]
+
+    def _serialize_open_positions(self) -> List[Dict[str, Any]]:
+        return [annotate_position_dict(p.to_dict()) for p in self.positions.list_open()]
+
+    def list_exchange_open_positions(self) -> List[Dict[str, Any]]:
+        return [p for p in self._serialize_open_positions() if not is_legacy_paper_position(p)]
+
+    def _execution_snapshot(self, last_orders: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        meta = getattr(self, "alpha_execution_meta", {}) or {}
+        return {
+            "mode": self.execution_mode,
+            "alpha_execution": getattr(self, "alpha_execution", ALPHA_SHADOW),
+            "legacy_execution_mode": meta.get("legacy_execution_mode"),
+            "deprecated": bool(meta.get("deprecated")),
+            "replacement": meta.get("replacement"),
+            "last_orders": list(last_orders or []),
+        }
+
+    def _attach_execution_architecture(self, snap: Dict[str, Any]) -> Dict[str, Any]:
+        sid = self.active_strategy if self.active_strategy in ("S1", "S2") else "S1"
+        snap["alpha_execution"] = getattr(self, "alpha_execution", ALPHA_SHADOW)
+        snap["account_environment"] = snap.get("account_environment")
+        snap["live_permission"] = live_trading_enabled()
+        snap["qa_backend"] = "EXCHANGE" if self.console_mode == "QA_HFT_SIM" else None
+        snap["user_id_ready"] = user_id_ready(self.user_id)
+        snap["strategy"] = {
+            "id": sid,
+            "live_allowed": strategy_live_allowed(sid),
+        }
+        engine = dict(snap.get("engine") or {})
+        engine["alpha_execution"] = snap["alpha_execution"]
+        engine["live_permission"] = snap["live_permission"]
+        engine["user_id_ready"] = snap["user_id_ready"]
+        snap["engine"] = engine
+        exec_block = dict(snap.get("execution") or {})
+        exec_block.update(self._execution_snapshot(exec_block.get("last_orders")))
+        snap["execution"] = exec_block
+        return snap
 
     def list_execution_selections(self) -> Dict[str, Any]:
         """Unified selector: alpha strategies + QA test modes (QA is not alpha)."""
@@ -370,6 +523,7 @@ class EngineRuntime:
                     "available": state not in ("PAUSED", "OFF"),
                     "health_state": state,
                     "health_score": float(s7.get("health_score") or 0.0),
+                    "live_allowed": strategy_live_allowed(sid),
                 }
             )
         # S8 placeholder — not implemented; do not fake available
@@ -377,10 +531,11 @@ class EngineRuntime:
             {
                 "id": "S8",
                 "kind": "alpha",
-                "name": "巨鲸行为跟随",
-                "description": "多巨鲸共识跟随（尚未开放）",
+                "name": "巨鲸行为共振",
+                "description": "多巨鲸共识共振（尚未开放）",
                 "available": False,
-                "paper_only": True,
+                "release_stage": "RESEARCH",
+                "live_allowed": False,
                 "disabled_reason": "WARMING_UP_OR_NOT_IMPLEMENTED",
             }
         )
@@ -389,10 +544,11 @@ class EngineRuntime:
             {
                 "id": "QA-HFT-SIM",
                 "kind": "qa_test",
-                "name": "模拟仓高频测试",
-                "description": "仅 Simulator，名义仓位≤50U，不进 S7/Edge，禁止真实 OKX",
+                "name": "QA 开平仓测试",
+                "description": "开平仓链路测试（≤50U），不计 S7/Edge；账户环境由当前用户 OKX 密钥识别",
                 "available": hft_on,
-                "execution_target": "simulator",
+                "execution_target": "exchange",
+                "qa_backend": "EXCHANGE",
                 "max_position_notional_usdt": 50,
                 "disabled_reason": None if hft_on else "HFT_SIM_DISABLED",
             }
@@ -423,6 +579,7 @@ class EngineRuntime:
             self.previous_active_strategy_id = self.active_strategy
         self.console_mode = "QA_HFT_SIM"
         self.alpha_opening_enabled = False
+        self.orchestrator.alpha_opening_enabled = False
         self.orchestrator.context["alpha_opening_enabled"] = False
         self.orchestrator.context["console_mode"] = self.console_mode
         self.bus.emit(
@@ -473,6 +630,7 @@ class EngineRuntime:
         self.console_mode = "ALPHA"
         # Do not auto-resume openings unless requested AND flat
         self.alpha_opening_enabled = bool(resume_alpha_openings and flat_ok)
+        self.orchestrator.alpha_opening_enabled = self.alpha_opening_enabled
         self.orchestrator.context["alpha_opening_enabled"] = self.alpha_opening_enabled
         self.orchestrator.context["console_mode"] = self.console_mode
         self.bus.emit(
@@ -767,8 +925,8 @@ class EngineRuntime:
 
     def _request_node_cancel_order(self, oi: Dict[str, Any]) -> bool:
         """Ask Node execution gateway to cancel an opening order on OKX."""
-        if self.execution_mode == "paper":
-            # Paper: treat as cancelled locally; no exchange call
+        if self.execution_mode in ("paper", "node_gateway_shadow") or getattr(self, "alpha_execution", None) == ALPHA_SHADOW:
+            # SHADOW / legacy paper: no exchange order exists
             return True
         payload = {
             "order_intent_id": oi.get("order_intent_id"),
@@ -796,6 +954,11 @@ class EngineRuntime:
 
     def register_owned_position(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
         """Stamp ownership; origin_strategy_id never flips on later active changes."""
+        meta = dict(candidate.get("metadata") or {})
+        if str(meta.get("source") or "") == LEGACY_PAPER_SOURCE:
+            raise ValueError("LEGACY_PAPER_POSITION: paper_adapter cannot create new owned positions")
+        if str(meta.get("execution_status") or "").upper() == "WOULD_SUBMIT":
+            raise ValueError("WOULD_SUBMIT cannot create position ownership")
         origin = str(candidate.get("origin_strategy_id") or "").strip()
         if origin not in ("S1", "S2"):
             raise ValueError("origin_strategy_id required")
@@ -863,54 +1026,55 @@ class EngineRuntime:
                 ti = str(item.get("trade_intent_id") or "")
                 intent = self.orchestrator.lifecycle.get(ti) if ti else None
                 status_u = str(report.get("status", "")).upper()
-                if intent and status_u in ("FILLED", "WOULD_SUBMIT"):
-                    if status_u == "FILLED" or (
-                        status_u == "WOULD_SUBMIT" and self.execution_mode == "node_gateway_shadow"
-                    ):
-                        # Shadow: record ownership without exchange fill; live FILLED: same
-                        if not bool(item.get("reduce_only")):
-                            self.register_owned_position(
-                                {
-                                    "symbol": item.get("symbol") or (intent.symbol if intent else ""),
-                                    "side": item.get("position_side")
-                                    or ("long" if str(intent.direction).lower() == "long" else "short"),
-                                    "quantity": float(
-                                        report.get("filled_quantity")
-                                        or item.get("quantity")
-                                        or 0.0
-                                    ),
-                                    "origin_strategy_id": item.get("origin_strategy_id")
-                                    or intent.strategy_id,
-                                    "origin_trade_intent_id": intent.intent_id,
-                                    "entry_risk_snapshot": item.get("entry_risk_snapshot")
-                                    or item.get("risk_snapshot")
-                                    or {},
-                                    "exit_policy_snapshot": item.get("exit_policy_snapshot") or {},
-                                    "stop_policy_snapshot": item.get("stop_policy_snapshot") or {},
-                                    "metadata": {
-                                        "order_intent_id": oid,
-                                        "execution_status": status_u,
-                                    },
-                                }
-                            )
-                    if status_u == "FILLED":
-                        self.orchestrator.lifecycle.transition(intent, "EXECUTED")
-                        self.orchestrator.s7.add_trade(
-                            intent.strategy_id,
+                shadow_report = bool(report.get("shadow")) or status_u == "WOULD_SUBMIT"
+                if intent and status_u == "FILLED" and not shadow_report:
+                    if not bool(item.get("reduce_only")):
+                        self.register_owned_position(
                             {
-                                "r_multiple": float(report.get("realized_R") or 0.1),
-                                "slippage_vs_model_ratio": 1.0,
-                                "regime": self.orchestrator.context.get("S3.regime", "range"),
-                                "win": True,
-                            },
+                                "symbol": item.get("symbol") or (intent.symbol if intent else ""),
+                                "side": item.get("position_side")
+                                or ("long" if str(intent.direction).lower() == "long" else "short"),
+                                "quantity": float(
+                                    report.get("filled_quantity")
+                                    or item.get("quantity")
+                                    or 0.0
+                                ),
+                                "origin_strategy_id": item.get("origin_strategy_id")
+                                or intent.strategy_id,
+                                "origin_trade_intent_id": intent.intent_id,
+                                "entry_risk_snapshot": item.get("entry_risk_snapshot")
+                                or item.get("risk_snapshot")
+                                or {},
+                                "exit_policy_snapshot": item.get("exit_policy_snapshot") or {},
+                                "stop_policy_snapshot": item.get("stop_policy_snapshot") or {},
+                                "metadata": {
+                                    "order_intent_id": oid,
+                                    "execution_status": status_u,
+                                    "source": "node_gateway_filled",
+                                },
+                            }
                         )
+                    self.orchestrator.lifecycle.transition(intent, "EXECUTED")
+                    self.orchestrator.s7.add_trade(
+                        intent.strategy_id,
+                        {
+                            "r_multiple": float(report.get("realized_R") or 0.1),
+                            "slippage_vs_model_ratio": 1.0,
+                            "regime": self.orchestrator.context.get("S3.regime", "range"),
+                            "win": True,
+                        },
+                    )
                 self.bus.emit("order_intent.updated", item)
                 break
         self.store.snapshot_row("execution_metrics", report, _now_iso())
         return {"ok": True}
 
     async def _dispatch_order_intents(self, intents: List[Dict[str, Any]]) -> None:
-        if self.execution_mode not in ("node_gateway", "node_gateway_shadow") or not intents:
+        gateway_ok = getattr(self, "alpha_execution", None) in (ALPHA_SHADOW, ALPHA_EXECUTE) or self.execution_mode in (
+            "node_gateway",
+            "node_gateway_shadow",
+        )
+        if not gateway_ok or not intents:
             return
         if int(self.orchestrator.s6.level) >= 2:
             # L2+ block new opening intents
@@ -921,8 +1085,15 @@ class EngineRuntime:
             return
         async with httpx.AsyncClient(timeout=30.0) as client:
             for oi in intents:
-                if self.execution_mode == "node_gateway_shadow":
+                if getattr(self, "alpha_execution", None) == ALPHA_SHADOW or self.execution_mode == "node_gateway_shadow":
                     oi["shadow"] = True
+                    oi["alpha_execution"] = ALPHA_SHADOW
+                else:
+                    oi["alpha_execution"] = getattr(self, "alpha_execution", ALPHA_EXECUTE)
+                oi["live_allowed"] = strategy_live_allowed(
+                    oi.get("origin_strategy_id") or oi.get("strategy_id")
+                )
+                oi["user_id"] = self.user_id or self.orchestrator.context.get("user_id")
                 self.order_intents.insert(0, oi)
                 self.order_intents = self.order_intents[:100]
                 self.store.upsert_order_intent(
@@ -1011,19 +1182,29 @@ class EngineRuntime:
                 continue
             t0 = asyncio.get_event_loop().time()
             try:
+                # Loop heartbeat — independent of whether S1 finishes an evaluation
+                self.last_tick_at = _now_iso()
                 self.orchestrator.active_strategy_id = self.active_strategy
+                self.orchestrator.alpha_opening_enabled = self.alpha_opening_enabled
                 ctx = await self.orchestrator.run_cycle(microstructure=dict(self._default_micro))
                 for cand in list(ctx.get("opened_position_candidates") or []):
+                    src = str((cand.get("metadata") or {}).get("source") or "")
+                    if src == LEGACY_PAPER_SOURCE:
+                        continue
                     try:
                         self.register_owned_position(cand)
                     except Exception as err:  # noqa: BLE001
                         self.last_error = f"position_register: {err}"
                 pending = list(ctx.get("pending_order_intents") or [])
                 await self._dispatch_order_intents(pending)
-                self.last_tick_at = _now_iso()
                 self.last_error = None
                 if self.state not in ("PAUSED", "LOCKED", "RECOVERY"):
                     self.state = "RUNNING"
+                for sid, diag in (getattr(self.orchestrator, "diagnostics", {}) or {}).items():
+                    ev = diag.consume_log_event()
+                    if ev:
+                        ev["symbol"] = getattr(self.orchestrator, "market_meta", {}).get("instrument") or self.symbol
+                        self.bus.emit("strategy.decision", ev)
                 snap = self.snapshot()
                 self._persist_and_emit(snap)
             except Exception as err:  # noqa: BLE001
@@ -1060,11 +1241,11 @@ def get_runtime() -> EngineRuntime:
         mode = os.getenv("V41_ENGINE_MODE", "paper")
         symbol = os.getenv("V41_ENGINE_SYMBOL", "BTC/USDT:USDT")
         tick = float(os.getenv("V41_ENGINE_TICK_SEC", "5"))
-        execution_mode = os.getenv("V41_ENGINE_EXECUTION_MODE", "paper")
+        exec_norm = resolve_runtime_execution()
         _runtime = EngineRuntime(
             mode=mode,
             symbol=symbol,
             tick_interval_sec=tick,
-            execution_mode=execution_mode,
+            execution_mode=exec_norm["alpha_execution"],
         )
     return _runtime

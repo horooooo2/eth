@@ -11,6 +11,7 @@ const { placeOrder, cancelOrder, withTradeCredentials } = require('./okxTradeCli
 const v41 = require('./v41EngineClient');
 const axios = require('axios');
 const qaEx = require('./v41QaExchange');
+const alphaGate = require('./v41AlphaLiveGate');
 
 function hftSimEnabled() {
   return qaEx.hftSimEnabled();
@@ -122,11 +123,11 @@ function upsertRecord(row) {
     );
 }
 
-function resolveUserId(orderIntent) {
-  // 只用意图显式 user_id，或单租户 OWNER；禁止「第一个有 OKX 的用户」串仓
-  const fromBody = String(orderIntent?.user_id || '').trim();
-  if (fromBody) return fromBody;
-  return String(process.env.V41_ENGINE_OWNER_USER_ID || '').trim();
+const userBinding = require('./v41UserBinding');
+
+function resolveUserId(orderIntent, auth = {}) {
+  // Never trust OrderIntent / browser body.user_id.
+  return userBinding.resolveTrustedUserId(auth);
 }
 
 function toOkxInstId(symbol) {
@@ -141,8 +142,12 @@ function toOkxInstId(symbol) {
 /**
  * Execute one OrderIntent exactly once.
  */
-async function executeOrderIntent(orderIntent) {
+async function executeOrderIntent(orderIntent, auth = {}) {
   ensureTable();
+  const incoming = alphaGate.normalizeIncomingAlpha(orderIntent || {});
+  orderIntent = incoming.orderIntent;
+  const forgedBodyUserId = String(orderIntent.user_id || '').trim();
+  delete orderIntent.user_id;
   const orderIntentId = String(orderIntent.order_intent_id || '').trim();
   const clientOrderId = String(orderIntent.client_order_id || '').trim();
   if (!orderIntentId) {
@@ -200,12 +205,17 @@ async function executeOrderIntent(orderIntent) {
     }
   }
 
-  const shadow =
-    !isQaExchange &&
-    (Boolean(orderIntent.shadow) ||
-      String(process.env.V41_ENGINE_EXECUTION_MODE || '').toLowerCase() === 'node_gateway_shadow');
+  const shadow = !isQaExchange && alphaGate.isAlphaShadow(orderIntent);
 
-  const userId = resolveUserId(orderIntent) || (shadow || isSimTest ? 'shadow' : '');
+  const trustedUserId = resolveUserId(orderIntent, auth);
+  if (!shadow && !isSimTest && !isQaExchange) {
+    userBinding.assertExecuteUserReady(trustedUserId);
+  }
+  const userId = trustedUserId || (shadow || isSimTest ? 'shadow' : '');
+  orderIntent.user_id = userId;
+  if (forgedBodyUserId && trustedUserId && forgedBodyUserId !== trustedUserId) {
+    console.log('[V41_USER_ID_BODY_IGNORED]', forgedBodyUserId, '→', trustedUserId);
+  }
   if (!shadow && !isSimTest && (!userId || !isOkxReadyForUser(userId))) {
     const err = new Error('no OKX credentials for engine owner');
     err.status = 400;
@@ -263,7 +273,15 @@ async function executeOrderIntent(orderIntent) {
       created_at: now,
     });
     console.log('[V41_ORDER_SIM_FILLED]', orderIntentId, status);
-    return { ok: true, simulator: true, idempotent: Boolean(simResult?.idempotent), report, simResult };
+    return {
+      ok: true,
+      simulator: true,
+      idempotent: Boolean(simResult?.idempotent),
+      report,
+      simResult,
+      deprecated: incoming.deprecated || undefined,
+      replacement: incoming.replacement || undefined,
+    };
   }
 
   if (shadow) {
@@ -304,7 +322,13 @@ async function executeOrderIntent(orderIntent) {
     } catch (err) {
       console.error('[V41_EXECUTION_REPORT_SENT] shadow failed', err.message || err);
     }
-    return { ok: true, shadow: true, report };
+    return {
+      ok: true,
+      shadow: true,
+      report,
+      deprecated: incoming.deprecated || undefined,
+      replacement: incoming.replacement || undefined,
+    };
   }
 
   // ----- QA Exchange → real OKX (demo/live by user.simulated) -----
@@ -464,6 +488,34 @@ async function executeOrderIntent(orderIntent) {
   }
 
   const creds = getOkxCredentialsForUser(userId);
+  let liveGate;
+  try {
+    liveGate = alphaGate.assertAlphaLiveExecution(orderIntent, creds);
+  } catch (err) {
+    const report = {
+      order_intent_id: orderIntentId,
+      trade_intent_id: orderIntent.trade_intent_id,
+      client_order_id: clientOrderId,
+      exchange_order_id: null,
+      status: 'REJECTED',
+      reason_code: err.code || 'LIVE_EXECUTION_NOT_AUTHORIZED',
+      error: err.message || String(err),
+      account_environment: err.details?.account_environment || alphaGate.resolveAccountEnvironment(creds),
+      submitted_at: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
+    };
+    upsertRecord({
+      order_intent_id: orderIntentId,
+      user_id: userId,
+      client_order_id: clientOrderId,
+      exchange_order_id: '',
+      status: 'REJECTED',
+      request_json: JSON.stringify(orderIntent),
+      response_json: JSON.stringify(report),
+      created_at: now,
+    });
+    throw err;
+  }
   const instId = toOkxInstId(orderIntent.symbol);
   const side = String(orderIntent.side || '').toLowerCase();
   const sz = String(orderIntent.quantity || '').trim();
@@ -553,7 +605,15 @@ async function executeOrderIntent(orderIntent) {
     console.error('[V41_EXECUTION_REPORT_SENT] failed', err.message || err);
   }
 
-  return { ok: true, idempotent: false, report, order: ord };
+  return {
+    ok: true,
+    idempotent: false,
+    report,
+    order: ord,
+    account_environment: liveGate.accountEnvironment,
+    deprecated: incoming.deprecated || undefined,
+    replacement: incoming.replacement || undefined,
+  };
 }
 
 /**
@@ -655,4 +715,6 @@ module.exports = {
   findRecord,
   assertTestOrderSafe,
   hftSimEnabled,
+  alphaGate,
+  resolveUserId,
 };
