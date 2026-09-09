@@ -70,8 +70,10 @@ const qaStatus = ref<{
   enabled?: boolean;
   running?: boolean;
   cycle_id?: number;
-  target_cycles?: number;
+  target_cycles?: number | null;
+  continuous?: boolean;
   state?: string;
+  position_side?: string;
   position_notional_usdt?: number;
   max_position_notional_usdt?: number;
   actual_leverage?: number;
