@@ -143,3 +143,97 @@ jobs:
             export PATH="/usr/local/lighthouse/softwares/nodejs/node/bin:/root/.local/bin:/root/bin:${PATH}"
             echo "===== RUN remote-deploy.sh (bash -x) ====="
             bash -x "$PACK/remote-deploy.sh" "$PACK"
+
+  flip_execute_v1:
+    if: contains(github.event.head_commit.message, '[stage3-execute]')
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Flip ENV to OKX_DEMO EXECUTE without autostart
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
+          command_timeout: 15m
+          script: |
+            set -euo pipefail
+            ENGINE=/root/ai-trading-system-v41
+            DEPLOY=/root/whale-tracker-deploy
+            export PATH="/usr/local/lighthouse/softwares/nodejs/node/bin:/root/.local/bin:/root/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:${PATH}"
+
+            upsert_env() {
+              local file="$1" key="$2" val="$3"
+              if grep -q "^${key}=" "$file" 2>/dev/null; then
+                sed -i "s|^${key}=.*|${key}=${val}|" "$file"
+              else
+                echo "${key}=${val}" >> "$file"
+              fi
+            }
+
+            print_safe_env() {
+              local file="$1" label="$2"
+              echo "==> non-secret ENV ($label)"
+              grep -E '^(V41_ALPHA_EXECUTION|V41_ENGINE_EXECUTION_MODE|V41_LIVE_TRADING_ENABLED|V41_QA_LIVE_ENABLED|V41_MARKET_DATA_SOURCE|V41_ENGINE_AUTOSTART|V41_ENGINE_OWNER_USER_ID)=' "$file" | sed 's/\r$//' || true
+            }
+
+            if grep -qiE '^V41_LIVE_TRADING_ENABLED=(true|1|yes|on)' "$ENGINE/.env" "$DEPLOY/.env" 2>/dev/null; then
+              echo "ERROR: live trading already enabled — abort flip"
+              exit 51
+            fi
+
+            for FILE in "$ENGINE/.env" "$DEPLOY/.env"; do
+              upsert_env "$FILE" V41_ALPHA_EXECUTION EXECUTE
+              upsert_env "$FILE" V41_ENGINE_EXECUTION_MODE node_gateway
+              upsert_env "$FILE" V41_ENGINE_AUTOSTART 0
+              upsert_env "$FILE" V41_LIVE_TRADING_ENABLED false
+              upsert_env "$FILE" V41_QA_LIVE_ENABLED false
+              upsert_env "$FILE" V41_MARKET_DATA_SOURCE okx
+              upsert_env "$FILE" V41_ENGINE_OWNER_USER_ID user_0ca100ec361b9b42
+            done
+
+            print_safe_env "$ENGINE/.env" "engine after flip"
+            print_safe_env "$DEPLOY/.env" "node after flip"
+
+            NODE_TOKEN=$(grep '^V41_ENGINE_INTERNAL_TOKEN=' "$DEPLOY/.env" | head -1 | cut -d= -f2- | tr -d '\r')
+            NODE_TOKEN=${NODE_TOKEN:-dev-internal-token}
+
+            echo "==> restart Python (AUTOSTART=0)"
+            systemctl restart v41-engine
+            py_ok=0
+            for i in $(seq 1 20); do
+              sleep 2
+              if curl -sf --max-time 3 -H "X-Engine-Token: ${NODE_TOKEN}" http://127.0.0.1:8711/internal/v1/health >/dev/null; then
+                echo "Python health 200 (attempt $i)"
+                py_ok=1
+                break
+              fi
+              echo "engine health not ready, attempt $i"
+            done
+            if [ "$py_ok" != "1" ]; then
+              echo "ERROR: Python 8711 health failed after EXECUTE flip"
+              journalctl -u v41-engine -n 80 --no-pager || true
+              exit 7
+            fi
+
+            echo "==> restart Node"
+            systemctl restart whale-tracker
+            ok=0
+            for i in $(seq 1 15); do
+              sleep 2
+              if curl -sf --max-time 3 http://127.0.0.1/api/health >/dev/null \
+                && curl -sf --max-time 3 -H "X-Engine-Token: ${NODE_TOKEN}" http://127.0.0.1:8711/internal/v1/health >/dev/null; then
+                echo "node + engine health 200 (attempt $i)"
+                ok=1
+                break
+              fi
+              echo "post-flip health not ready, attempt $i"
+            done
+            if [ "$ok" != "1" ]; then
+              echo "ERROR: health failed after EXECUTE flip"
+              journalctl -u whale-tracker -n 40 --no-pager || true
+              journalctl -u v41-engine -n 40 --no-pager || true
+              exit 7
+            fi
+            echo "==> EXECUTE flip finished (AUTOSTART still 0)"
