@@ -71,11 +71,27 @@ for ENV_FILE in "$DEPLOY/.env" ; do
     grep -q '^OKX_ALLOW_ENV_CREDS=' "$ENV_FILE" && sed -i -E 's/^OKX_ALLOW_ENV_CREDS=.*/OKX_ALLOW_ENV_CREDS=0/' "$ENV_FILE"
   fi
 done
+
+# upsert KEY=VALUE in an env file (create or replace line)
+upsert_env() {
+  local file="$1" key="$2" val="$3"
+  if grep -q "^${key}=" "$file" 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=${val}|" "$file"
+  else
+    echo "${key}=${val}" >> "$file"
+  fi
+}
+
 grep -q '^V41_ENGINE_ENABLED=' "$DEPLOY/.env" || echo 'V41_ENGINE_ENABLED=true' >> "$DEPLOY/.env"
 grep -q '^V41_ENGINE_BASE_URL=' "$DEPLOY/.env" || echo 'V41_ENGINE_BASE_URL=http://127.0.0.1:8711' >> "$DEPLOY/.env"
 if ! grep -q '^V41_ENGINE_INTERNAL_TOKEN=' "$DEPLOY/.env"; then
   echo 'V41_ENGINE_INTERNAL_TOKEN=dev-internal-token' >> "$DEPLOY/.env"
 fi
+# Node capability gate for「运行开平仓测试」(OKX 模拟盘)；实盘 QA 默认关
+upsert_env "$DEPLOY/.env" V41_HFT_SIM_ENABLED true
+upsert_env "$DEPLOY/.env" V41_QA_EXCHANGE_ENABLED true
+upsert_env "$DEPLOY/.env" V41_QA_LIVE_ENABLED false
+echo "==> Node QA flags: HFT_SIM=true QA_EXCHANGE=true QA_LIVE=false"
 NODE_TOKEN=$(grep '^V41_ENGINE_INTERNAL_TOKEN=' "$DEPLOY/.env" | head -1 | cut -d= -f2- | tr -d '\r')
 NODE_TOKEN=${NODE_TOKEN:-dev-internal-token}
 echo "==> engine token length=${#NODE_TOKEN}"
@@ -120,13 +136,16 @@ else
   grep -q '^V41_ENGINE_HOST=' "$ENGINE/.env" || echo 'V41_ENGINE_HOST=127.0.0.1' >> "$ENGINE/.env"
   grep -q '^V41_ENGINE_PORT=' "$ENGINE/.env" || echo 'V41_ENGINE_PORT=8711' >> "$ENGINE/.env"
   grep -q '^V41_NODE_GATEWAY_URL=' "$ENGINE/.env" || echo 'V41_NODE_GATEWAY_URL=http://127.0.0.1:80' >> "$ENGINE/.env"
+  upsert_env "$ENGINE/.env" V41_HFT_SIM_ENABLED true
+  upsert_env "$ENGINE/.env" V41_QA_EXCHANGE_ENABLED true
+  upsert_env "$ENGINE/.env" V41_QA_LIVE_ENABLED false
   if grep -qE '^OKX_API_(KEY|SECRET|PASSPHRASE)=' "$ENGINE/.env"; then
     echo "==> strip global OKX_API_* from engine .env"
     sed -i -E 's/^OKX_API_KEY=.*/# OKX_API_KEY= (removed: Node uses per-user keys)/' "$ENGINE/.env"
     sed -i -E 's/^OKX_API_SECRET=.*/# OKX_API_SECRET= (removed)/' "$ENGINE/.env"
     sed -i -E 's/^OKX_API_PASSPHRASE=.*/# OKX_API_PASSPHRASE= (removed)/' "$ENGINE/.env"
   fi
-  echo "==> updated existing $ENGINE/.env"
+  echo "==> updated existing $ENGINE/.env (QA exchange enabled)"
 fi
 
 PY=$(command -v python3)
