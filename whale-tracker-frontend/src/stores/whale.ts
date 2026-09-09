@@ -327,11 +327,11 @@ export const useWhaleStore = defineStore('whale', () => {
     writeAlertSnap(snapshotWhales(nextWhales));
     writeSeenTradeIds(result.seenIds);
     // 主路径：仅仓位快照 diff；成交仅作新开仓后的按需验证
-    mergeAlertHistory(result.alerts.filter((item) => isTrackedAlertKind(item.kind)));
+    const historyAlerts = result.alerts.filter((item) => isTrackedAlertKind(item.kind));
+    mergeAlertHistory(historyAlerts);
+    if (historyAlerts.length) alertRealtimeSeq.value += 1;
 
-    const freshDiffs = filterFreshDockAlerts(
-      result.alerts.filter((item) => isTrackedAlertKind(item.kind)),
-    );
+    const freshDiffs = filterFreshDockAlerts(historyAlerts);
     const dockAlerts = mergeDockAlerts(filterDockAlerts(freshDiffs));
     // 新异动可入栏；已展示卡片不按时间老化踢掉，仅手动关闭；顺带清掉减仓/平仓旧卡
     alerts.value = mergeDockAlerts(
@@ -361,7 +361,6 @@ export const useWhaleStore = defineStore('whale', () => {
   }
 
   function mergeAlertHistory(entries: WhaleAlert[]) {
-    const beforeIds = new Set(alertHistory.value.map((item) => item.id));
     const map = new Map<string, WhaleAlert>();
     for (const item of [...entries, ...alertHistory.value]) {
       const normalized = normalizeStoredAlert(item);
@@ -373,11 +372,6 @@ export const useWhaleStore = defineStore('whale', () => {
       .slice(0, MAX_HISTORY);
     writeAlertHistory(alertHistory.value);
     absorbOpenEvidence(entries.filter((a) => (a.items?.[0]?.kind || a.kind) === 'open'));
-    const added = entries.some((item) => {
-      const id = String(item?.id || '');
-      return id && !beforeIds.has(id);
-    });
-    if (added) alertRealtimeSeq.value += 1;
   }
 
   /** 异动分页：只吸收 open 到轻量证据池（不写全量 localStorage） */
@@ -397,6 +391,8 @@ export const useWhaleStore = defineStore('whale', () => {
     const normalized = normalizeStoredAlert(alert);
     if (!normalized || !isPositionDiffAlert(normalized)) return;
     mergeAlertHistory([normalized]);
+    // 无论是否重复 id，都通知异动列表重拉（避免只靠 history 顶栏 id）
+    alertRealtimeSeq.value += 1;
     // 近时过滤开启时：老仓补仓不进 dock
     if (freshModeEnabled.value) {
       const whale = whales.value.find((item) => item.id === normalized.whaleId) || null;

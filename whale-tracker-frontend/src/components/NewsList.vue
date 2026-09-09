@@ -105,13 +105,27 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (nowTickTimer) clearInterval(nowTickTimer);
+  if (realtimeReloadTimer) clearTimeout(realtimeReloadTimer);
+  if (alertPollTimer) clearInterval(alertPollTimer);
 });
+
+/** Socket 丢包时兜底：可见时每 15s 静默拉一次异动 */
+let alertPollTimer: ReturnType<typeof setInterval> | undefined;
+function startAlertPoll() {
+  if (alertPollTimer) return;
+  alertPollTimer = setInterval(() => {
+    if (!props.bootReady) return;
+    if (typeof document !== 'undefined' && document.hidden) return;
+    void loadAlertPage(true);
+  }, 15_000);
+}
 
 watch(
   () => props.bootReady,
   (ready) => {
     if (!ready) return;
     void loadAlertPage();
+    startAlertPoll();
   },
 );
 
@@ -422,25 +436,81 @@ watch(preferredCoinsState, (coins) => {
 
 /** 实时新异动：静默重拉分页（防抖，避免连发刷爆） */
 let realtimeReloadTimer: ReturnType<typeof setTimeout> | undefined;
+function scheduleRealtimeReload() {
+  if (realtimeReloadTimer) clearTimeout(realtimeReloadTimer);
+  realtimeReloadTimer = setTimeout(() => {
+    realtimeReloadTimer = undefined;
+    if (!props.bootReady) return;
+    if (alertPage.value !== 1) {
+      alertPage.value = 1;
+      return;
+    }
+    void loadAlertPage(true);
+  }, 350);
+}
+
+function alertMatchesListFilters(alert: WhaleAlert) {
+  if (props.filterWhaleId && alert.whaleId !== props.filterWhaleId) return false;
+  const coin = alert.items?.[0]?.coin;
+  if (isExoticAsset(String(coin || ''))) return false;
+  if (alertCoinFilter.value === 'all') {
+    if (preferredCoins.value.length && !coinMatchesWatch(coin, preferredCoins.value)) return false;
+  } else if (!coinMatchesWatch(coin, [alertCoinFilter.value])) {
+    return false;
+  }
+  if (openOnly.value) {
+    const kind = alert.items?.[0]?.kind || alert.kind;
+    if (kind !== 'open') return false;
+  }
+  if (alertSideFilter.value !== 'all' && alert.items?.[0]?.side !== alertSideFilter.value) {
+    return false;
+  }
+  const usd = Math.abs(Number(alert.items?.[0]?.usd) || 0);
+  if (alertMinUsd.value > 0 && usd < alertMinUsd.value) return false;
+  return alertPassesFreshListGate(alert, whaleOf(alert));
+}
+
+/** Socket 推送：先插入列表，再静默对齐服务端 */
+function pushRealtimeAlert(raw: WhaleAlert | Record<string, unknown>) {
+  const alert = normalizeStoredAlert(raw as WhaleAlert);
+  if (!alert) {
+    scheduleRealtimeReload();
+    return false;
+  }
+  whaleStore.absorbAlertPage([alert]);
+  if (alertMatchesListFilters(alert)) {
+    if (alertPage.value !== 1) alertPage.value = 1;
+    if (!pageAlerts.value.some((item) => item.id === alert.id)) {
+      pageAlerts.value = [alert, ...pageAlerts.value].slice(0, ALERT_PAGE_SIZE);
+      alertTotal.value += 1;
+      const side = alert.items?.[0]?.side;
+      const coin = String(alert.items?.[0]?.coin || '')
+        .trim()
+        .toUpperCase();
+      const nextFacets = { ...facets.value, byCoin: { ...facets.value.byCoin } };
+      nextFacets.all += 1;
+      if (side === 'long') nextFacets.long += 1;
+      if (side === 'short') nextFacets.short += 1;
+      if (coin) nextFacets.byCoin[coin] = (nextFacets.byCoin[coin] || 0) + 1;
+      facets.value = nextFacets;
+    }
+  }
+  scheduleRealtimeReload();
+  return true;
+}
+
 watch(
   () => whaleStore.alertRealtimeSeq,
   (seq, prev) => {
     if (!props.bootReady) return;
     if (!seq || seq === prev) return;
-    if (alertPage.value !== 1) {
-      alertPage.value = 1;
-      return;
-    }
-    if (realtimeReloadTimer) clearTimeout(realtimeReloadTimer);
-    realtimeReloadTimer = setTimeout(() => {
-      realtimeReloadTimer = undefined;
-      void loadAlertPage(true);
-    }, 400);
+    scheduleRealtimeReload();
   },
 );
 
 defineExpose({
   reloadAlerts: (silent = true) => loadAlertPage(silent),
+  pushRealtimeAlert,
 });
 
 function whaleOf(alert: WhaleAlert) {

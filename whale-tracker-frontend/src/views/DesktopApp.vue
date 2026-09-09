@@ -188,7 +188,8 @@ const {
   } else if (msg.type === 'alert' && msg.alert) {
     const alert = msg.alert as unknown as WhaleAlert;
     whaleStore.ingestRealtimeAlert(alert);
-    // 异动分页列表由 alertRealtimeSeq → NewsList 静默重拉
+    // 直接喂给异动列表（不依赖仅 store 序号）
+    newsListRef.value?.pushRealtimeAlert?.(alert);
     if (
       workspace.value !== 'hyperliquid' &&
       alert.whaleId &&
@@ -198,6 +199,8 @@ const {
     }
   } else if (msg.type === 'whalePatch' && msg.whaleId && msg.patch) {
     whaleStore.ingestRealtimeWhalePatch(msg.whaleId, msg.patch as Partial<WhaleProfile>);
+    // 仓位 diff 也可能写出新异动，稍后对齐列表
+    window.setTimeout(() => newsListRef.value?.reloadAlerts?.(true), 600);
   } else if (msg.type === 'xTweet' && Array.isArray(msg.tweets)) {
     noteXTweets(msg.tweets as unknown as XFeedTweet[]);
   } else if (msg.type === 'copyUpdate') {
