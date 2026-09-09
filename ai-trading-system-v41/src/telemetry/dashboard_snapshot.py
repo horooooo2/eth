@@ -83,7 +83,16 @@ def serialize_s5(context: Mapping[str, Any]) -> Dict[str, Any]:
     final = s5.get("final_shares") or {}
     raw = s5.get("raw_shares") or {}
     budgets = s5.get("strategy_risk_budget_pct_equity") or {}
-    used_portfolio = float(context.get("open_portfolio_risk_pct_equity") or 0.0)
+    usage = context.get("risk_usage") if isinstance(context.get("risk_usage"), dict) else {}
+    used_map = (usage.get("strategy_risk_used_pct_equity") if usage else None) or s5.get(
+        "strategy_risk_used_pct_equity"
+    ) or {}
+    caps = s5.get("strategy_risk_cap_pct_equity") or s5.get("strategy_risk_limit_pct_equity") or {}
+    used_portfolio = float(
+        (usage or {}).get("portfolio_risk_used_pct_equity")
+        or s5.get("portfolio_risk_used_pct_equity")
+        or 0.0
+    )
     portfolio_budget = float(s5.get("portfolio_risk_budget_pct_equity") or 0.0)
     reserve = float(s5.get("reserve_fraction") or 0.15)
     strategies: Dict[str, Any] = {}
@@ -95,7 +104,8 @@ def serialize_s5(context: Mapping[str, Any]) -> Dict[str, Any]:
             "raw_share": float(raw.get(sid, 0.0) or 0.0),
             "final_share": float(final.get(sid, 0.0) or 0.0),
             "risk_budget": float(budgets.get(sid, 0.0) or 0.0),
-            "risk_used": 0.0,
+            "risk_used": float(used_map.get(sid, 0.0) or 0.0),
+            "risk_cap": float(caps.get(sid, 0.0) or 0.0),
         }
     return {
         "portfolio": {
@@ -241,9 +251,29 @@ def serialize_trade_intents(
     return out
 
 
+def refresh_context_risk_usage(runtime: Any, context: Dict[str, Any]) -> Dict[str, Any]:
+    """Recompute used risk from live ownership so the dashboard is not a handwritten field."""
+    from src.runtime.risk_usage import compute_risk_usage
+
+    positions: List[Any] = []
+    registry = getattr(runtime, "positions", None)
+    if registry is not None and hasattr(registry, "list_open"):
+        positions = [p.to_dict() if hasattr(p, "to_dict") else p for p in registry.list_open()]
+    elif context.get("owned_open_positions"):
+        positions = list(context.get("owned_open_positions") or [])
+    usage = compute_risk_usage(positions, current_equity=context.get("equity"))
+    context["risk_usage"] = usage
+    context["portfolio_risk_used_pct_equity"] = usage.get("portfolio_risk_used_pct_equity")
+    return usage
+
+
 def build_dashboard_snapshot(runtime: Any) -> Dict[str, Any]:
     orch = runtime.orchestrator
     context = orch.context or {}
+    if not isinstance(context, dict):
+        context = {}
+        orch.context = context
+    refresh_context_risk_usage(runtime, context)
     data_pool = orch.data_pool
     intents = list(orch.lifecycle.intents.values())
     # Prefer live lifecycle intents; fall back to last cycle list
@@ -382,6 +412,8 @@ def build_personal_view(runtime: Any, snap: Mapping[str, Any]) -> Dict[str, Any]
                 or (strategies.get(active_id) or {}).get("risk_budget")
                 or 0.0
             ),
+            "strategy_risk_used_pct_equity": float(active_budget.get("risk_used") or 0.0),
+            "strategy_risk_limit_pct_equity": float(active_budget.get("risk_cap") or 0.0),
             "expectancy_R": s7_active.get("expectancy_R"),
         },
         "market_risk": {

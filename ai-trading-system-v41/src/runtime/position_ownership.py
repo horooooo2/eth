@@ -118,6 +118,28 @@ class PositionOwnershipRegistry:
             return None
         pos.status = "CLOSED"
         pos.closed_at = _now_iso()
+        snap = dict(pos.entry_risk_snapshot or {})
+        snap["filled_base_quantity"] = 0.0
+        snap["initial_risk_used_pct_equity"] = 0.0
+        snap["risk_pct_equity"] = 0.0
+        snap["risk_amount_quote"] = 0.0
+        pos.entry_risk_snapshot = snap
+        pos.quantity = 0.0
+        return pos
+
+    def reduce_quantity(self, position_id: str, close_qty: float) -> Optional[OwnedPosition]:
+        """Partial exit: keep ownership, scale initial risk with remaining qty."""
+        from src.runtime.risk_usage import scale_snapshot_for_remaining_qty
+
+        pos = self.positions.get(position_id)
+        if not pos or pos.status != "OPEN":
+            return None
+        close_qty = min(max(0.0, float(close_qty)), float(pos.quantity))
+        remaining = float(pos.quantity) - close_qty
+        if remaining <= 1e-12:
+            return self.close(position_id)
+        pos.quantity = remaining
+        pos.entry_risk_snapshot = scale_snapshot_for_remaining_qty(pos.entry_risk_snapshot, remaining)
         return pos
 
     def exit_owner_for(self, position_id: str) -> Optional[str]:

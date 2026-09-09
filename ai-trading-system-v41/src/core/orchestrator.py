@@ -115,6 +115,8 @@ class Orchestrator:
             "strategy_runtime": {"active_strategy_id": active},
             "alpha_opening_enabled": alpha_open,
             "_diagnostics": self.diagnostics,
+            "owned_open_positions": list(getattr(self, "owned_open_positions", None) or []),
+            "reserved_opening_risk_pct_equity": 0.0,
         }
         if bars is None:
             try:
@@ -140,6 +142,12 @@ class Orchestrator:
         self._apply_market_bars(bars, microstructure=microstructure)
         account = self.adapter.get_account_info()
         self.context["equity"] = account.get("equity")
+        from src.runtime.risk_usage import compute_risk_usage
+
+        self.context["risk_usage"] = compute_risk_usage(
+            self.context.get("owned_open_positions") or [],
+            current_equity=self.context.get("equity"),
+        )
 
         for step in self.decision_order():
             method = getattr(self, step, None)
@@ -258,8 +266,18 @@ class Orchestrator:
     def global_portfolio_risk_gate(self) -> Dict[str, Any]:
         gr = self.config.get("global_risk", {})
         cap = float(gr.get("max_initial_risk_all_open_positions_pct_equity", 0.02))
-        used = float(self.context.get("open_portfolio_risk_pct_equity", 0.0))
+        from src.runtime.risk_usage import compute_risk_usage, empty_risk_usage
+
+        usage = self.context.get("risk_usage") or empty_risk_usage()
+        if not self.context.get("risk_usage"):
+            usage = compute_risk_usage(
+                self.context.get("owned_open_positions") or [],
+                current_equity=self.context.get("equity"),
+            )
+            self.context["risk_usage"] = usage
+        used = float(usage.get("portfolio_risk_used_pct_equity") or 0.0)
         self.context["global_portfolio_risk_cap"] = cap
+        self.context["portfolio_risk_used_pct_equity"] = used
         self.context["portfolio_risk_ok"] = used <= cap
         self.data_pool.set_context(
             {
@@ -415,10 +433,9 @@ class Orchestrator:
             self.context["signal_lifecycle_valid"] = validity["valid"]
             self.context["source_strategy_revalidation_passed"] = validity["valid"]
             self.context["trade_intent"] = intent.to_dict()
-            # portfolio risk after order placeholder
             budgets = self.context.get("S5", {}).get("strategy_risk_budget_pct_equity", {})
-            add_risk = float(budgets.get(intent.strategy_id, 0.0))
-            used = float(self.context.get("open_portfolio_risk_pct_equity", 0.0)) + add_risk
+            usage = self.context.get("risk_usage") or {}
+            used = float(usage.get("portfolio_risk_used_pct_equity") or 0.0)
             self.context["portfolio_risk_after_order"] = used
             self.data_pool.set_context(
                 {
@@ -460,13 +477,23 @@ class Orchestrator:
                 signal_key,
             )
 
+            from src.runtime.risk_usage import (
+                authorize_opening,
+                enrich_entry_risk_snapshot,
+                planned_trade_risk_pct,
+                strategy_initial_risk_cap,
+            )
+
             side = "buy" if str(intent.direction).lower() == "long" else "sell"
             equity = float(self.context.get("equity") or 100000.0)
             s1_cfg = self.config.get("S1_trend") or {}
-            if str(intent.strategy_id).upper() == "S1":
-                risk_pct = float(s1_cfg.get("risk_per_trade_pct_equity") or budgets.get("S1") or 0.004)
-            else:
-                risk_pct = float(budgets.get(intent.strategy_id, 0.002))
+            planned_risk_pct = planned_trade_risk_pct(self.config, intent.strategy_id)
+            if planned_risk_pct <= 0:
+                if str(intent.strategy_id).upper() == "S1":
+                    planned_risk_pct = float(s1_cfg.get("risk_per_trade_pct_equity") or 0.004)
+                else:
+                    planned_risk_pct = float(budgets.get(intent.strategy_id, 0.003))
+            risk_pct = planned_risk_pct
             atr = max(float(intent.reference_atr), 1e-12)
             entry_price = float(intent.reference_price or 0.0)
             closed_candles = None
@@ -517,6 +544,75 @@ class Orchestrator:
                 self.lifecycle.transition(intent, "RISK_REJECTED")
                 continue
 
+            s5_ctx = self.context.get("S5") or {}
+            portfolio_limit = float(s5_ctx.get("portfolio_risk_budget_pct_equity") or 0.0)
+            if portfolio_limit <= 0:
+                # Same S5 formula; do not treat a missing allocate() result as a 0% budget.
+                portfolio_limit = float(self.s5._portfolio_budget(self.context))
+            strategy_limit = float(
+                (s5_ctx.get("strategy_risk_cap_pct_equity") or {}).get(intent.strategy_id)
+                or strategy_initial_risk_cap(self.config, intent.strategy_id)
+            )
+            auth = authorize_opening(
+                strategy_id=str(intent.strategy_id),
+                planned_trade_risk_pct_equity=planned_risk_pct,
+                usage=self.context.get("risk_usage") or {},
+                portfolio_risk_limit_pct_equity=portfolio_limit,
+                strategy_risk_limit_pct_equity=strategy_limit,
+                reserved_opening_risk_pct_equity=float(
+                    self.context.get("reserved_opening_risk_pct_equity") or 0.0
+                ),
+            )
+            self.context["s5_opening_authorization"] = auth.to_dict()
+            if auth.action == "BLOCK":
+                self.lifecycle.transition(intent, "RISK_REJECTED")
+                intent.metadata["s5_risk_reason"] = auth.reason_code
+                intent.metadata["terminal"] = True
+                intent.metadata["terminal_reason"] = auth.reason_code
+                self.context["s5_opening_block"] = auth.reason_code
+                diag = self.diagnostics.get(str(intent.strategy_id))
+                if diag:
+                    diag.note_s4_reject()
+                continue
+            if auth.action == "SHRINK" and auth.allowed_risk_pct_equity > 0:
+                risk_pct = float(auth.allowed_risk_pct_equity)
+                if stop_price:
+                    try:
+                        sizing = compute_base_quantity(
+                            equity=equity,
+                            risk_pct=risk_pct,
+                            entry_price=entry_price,
+                            stop_price=stop_price,
+                        )
+                    except ValueError:
+                        sizing = None
+            self.context["reserved_opening_risk_pct_equity"] = float(
+                self.context.get("reserved_opening_risk_pct_equity") or 0.0
+            ) + float(auth.allowed_risk_pct_equity)
+            self.context["portfolio_risk_after_order"] = float(auth.projected_portfolio_risk_pct_equity)
+            self.data_pool.set_context({"portfolio_risk_after_order": auth.projected_portfolio_risk_pct_equity})
+
+            planned_qty = sizing["base_quantity"] if sizing else None
+            entry_snap = enrich_entry_risk_snapshot(
+                {
+                    "strategy_id": intent.strategy_id,
+                    "risk_pct": planned_risk_pct,
+                    "equity": equity,
+                    "atr": atr,
+                    "base_quantity": planned_qty,
+                    "entry_price": entry_price or None,
+                    "stop_price": stop_price,
+                    "risk_amount_quote": sizing["risk_amount_quote"] if sizing else None,
+                },
+                filled_base_quantity=float(planned_qty or 0.0),
+                origin_strategy_id=str(intent.strategy_id),
+                entry_price=entry_price or None,
+                stop_price=stop_price,
+                equity=equity,
+                planned_base_quantity=planned_qty,
+                planned_risk_pct=risk_pct,
+            )
+
             order_intent = {
                 "order_intent_id": str(uuid.uuid4()),
                 "trade_intent_id": intent.intent_id,
@@ -540,6 +636,9 @@ class Orchestrator:
                 "stop_price": stop_price,
                 "risk_amount_quote": sizing["risk_amount_quote"] if sizing else None,
                 "risk_pct": risk_pct,
+                "planned_trade_risk_pct_equity": planned_risk_pct,
+                "s5_opening_action": auth.action,
+                "s5_opening_reason": auth.reason_code,
                 "signal_key": skey if candle_at else None,
                 "reduce_only": False,
                 "client_order_id": clord_id_from_signal(skey) if candle_at else f"v41_{intent.intent_id[:8]}{uuid.uuid4().hex[:8]}"[:32],
@@ -557,13 +656,7 @@ class Orchestrator:
                     "structure_candle_timestamp": (stop_info or {}).get("structure_candle_timestamp"),
                     "atr14": atr,
                 },
-                "entry_risk_snapshot": {
-                    "strategy_id": intent.strategy_id,
-                    "risk_pct": risk_pct,
-                    "equity": equity,
-                    "atr": atr,
-                    "base_quantity": sizing["base_quantity"] if sizing else None,
-                },
+                "entry_risk_snapshot": entry_snap,
                 "exit_policy_snapshot": {
                     "origin_strategy_id": intent.strategy_id,
                     "lifecycle_policy": policy,

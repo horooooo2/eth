@@ -1,0 +1,47 @@
+---
+description: Production deploy only via existing GitHub Actions; SHADOW until explicit Stage 3 approval
+alwaysApply: true
+---
+
+# Production deploy (CI/CD only)
+
+WhaleTracker 生产只走现有 GitHub Actions：
+
+代码 → 本地测试 → commit → push `main` → `.github/workflows/deploy.yml` → pack/upload → `remote-deploy.sh` → systemd → health
+
+禁止：手工 tar/scp/rsync、新写第二套部署脚本、Cursor 本机 SSH 发布、绕过 Actions 改生产文件、手工复制 backend/frontend/engine。
+
+CI 失败只排查：workflow / pack / upload / `remote-deploy.sh` / systemd / health。不要为绕过失败而手工部署。
+
+公网：http://43.160.208.168/#/  health：http://43.160.208.168/api/health
+
+## 配置不得漂移
+
+不要在生产服务器手工改 `.env`。正式值必须在仓库（`remote-deploy.sh` / `.env.example` / workflow）里，由 Actions 带到生产。
+
+当前默认（未获 Stage 3 批准）必须保持：
+
+- `V41_ALPHA_EXECUTION=SHADOW`
+- `V41_LIVE_TRADING_ENABLED=false`
+- `V41_QA_LIVE_ENABLED=false`
+- `V41_MARKET_DATA_SOURCE=okx`
+- `V41_ENGINE_AUTOSTART=0`
+
+不要使用 `flip_execute_v1`（commit 含 `[stage3-execute]`）去 SSH 改生产 `.env`。那会和 `remote-deploy.sh` 强制 SHADOW 打架。
+
+## Stage 3（必须用户明确批准）
+
+批准后才改仓库正式部署配置为 `V41_ALPHA_EXECUTION=EXECUTE`，其余四项不变。EXECUTE 只表示订单可进 Node Gateway；账户仍须由登录用户解析为 `OKX_DEMO`，否则 Preflight 禁止启动 S1。禁止 OKX_LIVE。
+
+workflow success ≠ 可启动。验收：
+
+1. `/api/health` = 200
+2. `transport_status=CONNECTED`
+3. `alpha_execution` 符合本轮配置（未批准则为 SHADOW）
+4. `live_permission=false`
+5. Engine = OFFLINE / PAUSED（AUTOSTART=0）
+6. 登录后：`user_id_ready=true`、`account_environment=OKX_DEMO`、`execution_recovery_status=READY`、BTC exchange/owned=FLAT、pending opening=0、protective algo=0、`net_mode`/`cross`、leverage ≤ S1 cap、instrument READY
+
+全部 PASS 后，才允许用户手动 select S1 → start。
+
+报告必须含：commit hash、Actions run id、workflow result、public health、`alpha_execution`、Engine 是否未自动启动、Preflight 是否全部 PASS。

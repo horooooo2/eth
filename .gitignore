@@ -10,3 +10,4 @@ whale-tracker-backend/cache/*.json
 !whale-tracker-backend/cache/.gitkeep
 .vscode/
 .idea/
+.tmp-edge-profile/

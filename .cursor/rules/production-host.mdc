@@ -1,0 +1,13 @@
+---
+description: WhaleTracker production public host
+alwaysApply: true
+---
+
+# Production public host
+
+WhaleTracker 公网地址已变更为：
+
+- Site: http://43.160.208.168/#/
+- Health: http://43.160.208.168/api/health
+
+旧地址 `http://43.143.207.156` 已废弃，不要再用来探测生产或写文档/代理注释。

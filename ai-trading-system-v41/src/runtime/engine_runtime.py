@@ -1029,6 +1029,56 @@ class EngineRuntime:
             oi["cancel_error"] = str(err)
             return False
 
+    def _entry_risk_snapshot_for_fill(self, candidate: Dict[str, Any], fill_qty: float) -> Dict[str, Any]:
+        from src.runtime.risk_usage import enrich_entry_risk_snapshot
+
+        raw = dict(candidate.get("entry_risk_snapshot") or candidate.get("risk_snapshot") or {})
+        stop_pol = dict(candidate.get("stop_policy_snapshot") or {})
+        # First real fill is the open anchor (not the planned order-intent qty).
+        raw.pop("initial_filled_base_quantity", None)
+        raw.pop("initial_risk_used_pct_equity_at_open", None)
+        raw.pop("initial_risk_amount_quote_at_open", None)
+        return enrich_entry_risk_snapshot(
+            raw,
+            filled_base_quantity=fill_qty,
+            origin_strategy_id=str(candidate.get("origin_strategy_id") or raw.get("origin_strategy_id") or ""),
+            entry_price=candidate.get("entry_price") or raw.get("entry_price"),
+            stop_price=candidate.get("stop_price") or raw.get("stop_price") or stop_pol.get("stop_price"),
+            equity=raw.get("equity_at_entry") or raw.get("equity") or (self.orchestrator.context or {}).get("equity"),
+            planned_base_quantity=raw.get("base_quantity") or candidate.get("base_quantity"),
+            planned_risk_pct=raw.get("risk_pct") or raw.get("risk_pct_equity") or candidate.get("risk_pct"),
+        )
+
+    def reduce_owned_position(
+        self,
+        *,
+        position_id: Optional[str] = None,
+        symbol: Optional[str] = None,
+        origin_strategy_id: Optional[str] = None,
+        close_qty: float,
+    ) -> Optional[Dict[str, Any]]:
+        pos = self.positions.get(str(position_id or "")) if position_id else None
+        if pos is None:
+            for item in self.positions.list_open():
+                if symbol and str(item.symbol) != str(symbol):
+                    continue
+                if origin_strategy_id and str(item.origin_strategy_id) != str(origin_strategy_id):
+                    continue
+                pos = item
+                break
+        if pos is None:
+            return None
+        updated = self.positions.reduce_quantity(pos.position_id, close_qty)
+        if updated is None:
+            return None
+        payload = updated.to_dict()
+        self.store.upsert_open_position(payload, _now_iso())
+        if updated.status == "CLOSED":
+            self.bus.emit("position.closed", payload)
+        else:
+            self.bus.emit("position.reduced", payload)
+        return payload
+
     def register_owned_position(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
         """Stamp ownership; origin_strategy_id never flips on later active changes."""
         meta = dict(candidate.get("metadata") or {})
@@ -1044,10 +1094,14 @@ class EngineRuntime:
             raise ValueError("origin_trade_intent_id required")
         # Idempotent: one open position per trade_intent; qty follows real fill, not request.
         fill_qty = float(candidate.get("quantity") or 0.0)
+        snap = self._entry_risk_snapshot_for_fill(candidate, fill_qty)
         for existing in self.positions.list_open():
             if existing.origin_trade_intent_id == ti:
                 if fill_qty > 0:
                     existing.quantity = fill_qty
+                    existing.entry_risk_snapshot = snap
+                    if candidate.get("stop_policy_snapshot"):
+                        existing.stop_policy_snapshot = dict(candidate.get("stop_policy_snapshot") or {})
                     payload = existing.to_dict()
                     self.store.upsert_open_position(payload, _now_iso())
                     return payload
@@ -1058,7 +1112,7 @@ class EngineRuntime:
             quantity=fill_qty,
             origin_strategy_id=origin,
             origin_trade_intent_id=ti,
-            entry_risk_snapshot=dict(candidate.get("entry_risk_snapshot") or {}),
+            entry_risk_snapshot=snap,
             stop_policy_snapshot=dict(candidate.get("stop_policy_snapshot") or {}),
             exit_policy_snapshot=dict(candidate.get("exit_policy_snapshot") or {}),
             metadata=dict(candidate.get("metadata") or {}),
@@ -1111,37 +1165,49 @@ class EngineRuntime:
                 status_u = str(report.get("status", "")).upper()
                 shadow_report = bool(report.get("shadow")) or status_u == "WOULD_SUBMIT"
                 fill_statuses = {"FILLED", "PARTIAL", "PARTIALLY_FILLED"}
-                if intent and status_u in fill_statuses and not shadow_report:
-                    if not bool(item.get("reduce_only")):
-                        filled_qty = float(
-                            report.get("filled_base_qty")
-                            if report.get("filled_base_qty") is not None
-                            else report.get("filled_quantity")
-                            or 0.0
-                        )
+                if status_u in fill_statuses and not shadow_report:
+                    filled_qty = float(
+                        report.get("filled_base_qty")
+                        if report.get("filled_base_qty") is not None
+                        else report.get("filled_quantity")
+                        or 0.0
+                    )
+                    if bool(item.get("reduce_only")):
                         if filled_qty > 0:
-                            self.register_owned_position(
-                                {
-                                    "symbol": item.get("symbol") or (intent.symbol if intent else ""),
-                                    "side": item.get("position_side")
-                                    or ("long" if str(intent.direction).lower() == "long" else "short"),
-                                    "quantity": filled_qty,
-                                    "origin_strategy_id": item.get("origin_strategy_id")
-                                    or intent.strategy_id,
-                                    "origin_trade_intent_id": intent.intent_id,
-                                    "entry_risk_snapshot": item.get("entry_risk_snapshot")
-                                    or item.get("risk_snapshot")
-                                    or {},
-                                    "exit_policy_snapshot": item.get("exit_policy_snapshot") or {},
-                                    "stop_policy_snapshot": item.get("stop_policy_snapshot") or {},
-                                    "metadata": {
-                                        "order_intent_id": oid,
-                                        "execution_status": status_u,
-                                        "source": "node_gateway_filled",
-                                    },
-                                }
+                            self.reduce_owned_position(
+                                position_id=item.get("position_id"),
+                                symbol=item.get("symbol") or (intent.symbol if intent else None),
+                                origin_strategy_id=item.get("origin_strategy_id")
+                                or (intent.strategy_id if intent else None),
+                                close_qty=filled_qty,
                             )
-                    if status_u == "FILLED":
+                    elif intent and filled_qty > 0:
+                        self.register_owned_position(
+                            {
+                                "symbol": item.get("symbol") or (intent.symbol if intent else ""),
+                                "side": item.get("position_side")
+                                or ("long" if str(intent.direction).lower() == "long" else "short"),
+                                "quantity": filled_qty,
+                                "origin_strategy_id": item.get("origin_strategy_id")
+                                or intent.strategy_id,
+                                "origin_trade_intent_id": intent.intent_id,
+                                "entry_price": item.get("entry_price") or report.get("avg_fill_price"),
+                                "stop_price": item.get("stop_price"),
+                                "base_quantity": item.get("base_quantity"),
+                                "risk_pct": item.get("risk_pct"),
+                                "entry_risk_snapshot": item.get("entry_risk_snapshot")
+                                or item.get("risk_snapshot")
+                                or {},
+                                "exit_policy_snapshot": item.get("exit_policy_snapshot") or {},
+                                "stop_policy_snapshot": item.get("stop_policy_snapshot") or {},
+                                "metadata": {
+                                    "order_intent_id": oid,
+                                    "execution_status": status_u,
+                                    "source": "node_gateway_filled",
+                                },
+                            }
+                        )
+                    if status_u == "FILLED" and intent and not bool(item.get("reduce_only")):
                         self.orchestrator.lifecycle.transition(intent, "EXECUTED")
                         self.orchestrator.s7.add_trade(
                             intent.strategy_id,
@@ -1280,6 +1346,7 @@ class EngineRuntime:
                 self.last_tick_at = _now_iso()
                 self.orchestrator.active_strategy_id = self.active_strategy
                 self.orchestrator.alpha_opening_enabled = self.alpha_opening_enabled
+                self.orchestrator.owned_open_positions = [p.to_dict() for p in self.positions.list_open()]
                 ctx = await self.orchestrator.run_cycle(microstructure=dict(self._default_micro))
                 for cand in list(ctx.get("opened_position_candidates") or []):
                     src = str((cand.get("metadata") or {}).get("source") or "")

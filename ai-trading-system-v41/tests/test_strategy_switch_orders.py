@@ -68,12 +68,32 @@ def test_strategy_switch_preserves_reduce_only(monkeypatch, tmp_path):
 def test_personal_view_uses_active_strategy_only(monkeypatch, tmp_path):
     rt = _runtime(monkeypatch, tmp_path)
     rt.state = "RUNNING"
-    # Ensure context has enough for snapshot builders
+    rt.register_owned_position(
+        {
+            "symbol": "BTC-USDT-SWAP",
+            "side": "long",
+            "quantity": 0.1,
+            "origin_strategy_id": "S1",
+            "origin_trade_intent_id": "ti-view-1",
+            "entry_price": 100000.0,
+            "stop_price": 99000.0,
+            "entry_risk_snapshot": {
+                "equity": 10000.0,
+                "equity_at_entry": 10000.0,
+                "risk_pct": 0.01,
+                "entry_price": 100000.0,
+                "stop_price": 99000.0,
+                "base_quantity": 0.1,
+            },
+            "metadata": {"source": "node_gateway_filled", "execution_status": "FILLED"},
+        }
+    )
+    # Used risk comes from ownership (1% = 0.1 BTC * 1000 / 10000), not a handwritten field.
     rt.orchestrator.context = {
+        "equity": 10000.0,
         "S3.regime": "range",
         "S3.direction_bias": 0.2,
         "S6.level": 0,
-        "open_portfolio_risk_pct_equity": 0.01,
         "positions_reconciled": True,
         "orders_reconciled": True,
         "S5": {

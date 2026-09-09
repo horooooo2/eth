@@ -44,7 +44,10 @@ const { getHlInfoConfig } = require('./lib/hlInfoClient');
 const { attachRealtimeHub } = require('./lib/realtimeHub');
 const { startRealtimeBridge, syncFromCache, getRealtimeStatus } = require('./lib/realtimeBridge');
 const { startV41RealtimeBridge, getV41RealtimeBridgeStatus } = require('./lib/v41RealtimeBridge');
-const { ensureTable: ensureV41ExecTable } = require('./lib/v41ExecutionGateway');
+const {
+  ensureTable: ensureV41ExecTable,
+  runStartupRecovery: runV41StartupRecovery,
+} = require('./lib/v41ExecutionGateway');
 const { startFillBackfill, getBackfillStatus } = require('./lib/fillBackfill');
 const {
   startPositionBackfill,
@@ -139,6 +142,9 @@ server.listen(PORT, '0.0.0.0', () => {
   }
   try {
     ensureV41ExecTable();
+    runV41StartupRecovery()
+      .then((st) => console.log('[v41-recovery]', JSON.stringify(st)))
+      .catch((err) => console.warn('[v41-recovery] failed', err.message || err));
     startV41RealtimeBridge();
     console.log('[v41-bridge]', JSON.stringify(getV41RealtimeBridgeStatus()));
   } catch (err) {

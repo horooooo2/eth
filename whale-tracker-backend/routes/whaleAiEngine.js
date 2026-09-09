@@ -5,11 +5,7 @@
 const express = require('express');
 const { requireUser, canResumeEngine } = require('../lib/authStore');
 const v41 = require('../lib/v41EngineClient');
-const {
-  executeOrderIntent,
-  cancelOrderIntent,
-  getExecutionRecoveryStatus,
-} = require('../lib/v41ExecutionGateway');
+const { executeOrderIntent, cancelOrderIntent } = require('../lib/v41ExecutionGateway');
 const { getOkxCredentialsForUser } = require('../lib/userExchangeKeys');
 const alphaGate = require('../lib/v41AlphaLiveGate');
 const userBinding = require('../lib/v41UserBinding');
@@ -119,18 +115,10 @@ router.get('/dashboard', async (req, res) => {
     }
     const snapshot = attachAccountEnvironment(await v41.getSnapshot(), sessionId);
     const view = snapshot?.view || null;
-    const execution_recovery_status = getExecutionRecoveryStatus();
-    if (snapshot && typeof snapshot === 'object') {
-      snapshot.execution_recovery_status = execution_recovery_status;
-      if (snapshot.view && typeof snapshot.view === 'object') {
-        snapshot.view.execution_recovery_status = execution_recovery_status;
-      }
-    }
     res.json(
       withFreshness({
         snapshot,
         view,
-        execution_recovery_status,
         // Flatten personal ViewModel fields for Vue convenience
         ...(view
           ? {

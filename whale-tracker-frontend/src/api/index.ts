@@ -865,6 +865,7 @@ export type V41RiskBudget = {
       final_share: number;
       risk_budget: number;
       risk_used: number;
+      risk_cap?: number;
     }
   >;
   updated_at: string;
@@ -943,6 +944,8 @@ export type V41PersonalView = {
     health_score: number | null;
     health_state: string;
     risk_budget_pct_equity: number;
+    strategy_risk_used_pct_equity?: number;
+    strategy_risk_limit_pct_equity?: number;
     expectancy_R?: number | null;
   };
   market_risk: {

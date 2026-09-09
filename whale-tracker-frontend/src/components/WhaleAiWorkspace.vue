@@ -666,10 +666,32 @@ const healthTone = computed(() => {
   return h >= 80 ? 'green' : 'yellow';
 });
 
+const strategyRiskUsed = computed(() => {
+  if (!engineOnline.value) return null;
+  const fromView = whaleAiActiveStrategyHealth.value;
+  if (fromView?.strategy_risk_used_pct_equity != null && Number.isFinite(fromView.strategy_risk_used_pct_equity)) {
+    return fromView.strategy_risk_used_pct_equity;
+  }
+  const n = whaleAiRiskBudget.value?.strategies?.[activeStrategy.value]?.risk_used;
+  return n != null && Number.isFinite(n) ? n : null;
+});
+
+const strategyRiskCap = computed(() => {
+  if (!engineOnline.value) return null;
+  const fromView = whaleAiActiveStrategyHealth.value;
+  if (fromView?.strategy_risk_limit_pct_equity != null && Number.isFinite(fromView.strategy_risk_limit_pct_equity)) {
+    return fromView.strategy_risk_limit_pct_equity;
+  }
+  const n = whaleAiRiskBudget.value?.strategies?.[activeStrategy.value]?.risk_cap;
+  return n != null && Number.isFinite(n) ? n : null;
+});
+
 const strategyRiskBudgetText = computed(() => {
   if (!engineOnline.value) return '—';
-  const budget = activeRiskShare.value?.risk_budget;
-  return formatPct(budget);
+  const used = strategyRiskUsed.value;
+  const cap = strategyRiskCap.value;
+  if (used == null && cap == null) return '—';
+  return `${formatPct(used ?? 0)} / ${formatPct(cap)}`;
 });
 
 const strategyExpectancyText = computed(() => {
@@ -1928,7 +1950,7 @@ onUnmounted(() => {
                 <div class="v" :class="healthTone">{{ healthScoreText }}</div>
               </div>
               <div class="mini">
-                <div class="k">风险预算</div>
+                <div class="k">{{ activeStrategy }}风险</div>
                 <div class="v blue">{{ strategyRiskBudgetText }}</div>
               </div>
               <div class="mini">

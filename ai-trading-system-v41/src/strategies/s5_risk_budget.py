@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Mapping
 
+from src.runtime.risk_usage import attach_usage_to_s5, empty_risk_usage, strategy_initial_risk_cap
+
 _EPS = 1e-12
 
 
@@ -87,30 +89,42 @@ class S5RiskBudgetAllocator:
         raw[active] = raw_active
 
         portfolio_budget = self._portfolio_budget(context)
-        strategy_caps = self.config.get("global_risk", {}).get("per_strategy_initial_risk_cap_pct_equity") or {}
+        # Allocated share budget is informational. Hard opening caps come from
+        # S1_trend / S2_reversal.strategy_initial_risk_cap_pct_equity — not the
+        # missing global_risk.per_strategy_initial_risk_cap_pct_equity map.
         strategy_budget = {"S1": 0.0, "S2": 0.0}
+        strategy_caps = {
+            "S1": strategy_initial_risk_cap(self.config, "S1"),
+            "S2": strategy_initial_risk_cap(self.config, "S2"),
+        }
         for sid, share in final.items():
             budget = portfolio_budget * share
             cap = strategy_caps.get(sid)
-            if cap is not None:
+            if cap:
                 budget = min(budget, float(cap))
             strategy_budget[sid] = budget
 
-        result = {
-            "allocation_mode": "single_active_alpha",
-            "active_strategy_id": active,
-            "raw_shares": raw,
-            "scale": 1.0,  # no renormalize-up
-            "final_shares": final,
-            "unused_share": 1.0 - final_active,
-            "reserve_fraction": reserve,
-            "capped_base_share": capped_base,
-            "regime_multiplier": rm,
-            "health_multiplier": hm,
-            "execution_engine_is_allocation_target": False,
-            "portfolio_risk_budget_pct_equity": portfolio_budget,
-            "strategy_risk_budget_pct_equity": strategy_budget,
-        }
+        usage = context.get("risk_usage") or empty_risk_usage()
+        result = attach_usage_to_s5(
+            {
+                "allocation_mode": "single_active_alpha",
+                "active_strategy_id": active,
+                "raw_shares": raw,
+                "scale": 1.0,  # no renormalize-up
+                "final_shares": final,
+                "unused_share": 1.0 - final_active,
+                "reserve_fraction": reserve,
+                "capped_base_share": capped_base,
+                "regime_multiplier": rm,
+                "health_multiplier": hm,
+                "execution_engine_is_allocation_target": False,
+                "portfolio_risk_budget_pct_equity": portfolio_budget,
+                "strategy_risk_budget_pct_equity": strategy_budget,
+                "strategy_risk_cap_pct_equity": strategy_caps,
+            },
+            usage,
+            self.config,
+        )
         context["S5"] = result
         return result
 
@@ -145,16 +159,20 @@ class S5RiskBudgetAllocator:
 
         portfolio_budget = self._portfolio_budget(context)
         strategy_budget = {sid: portfolio_budget * share for sid, share in final.items()}
-
-        result = {
-            "allocation_mode": "multi_strategy",
-            "raw_shares": raw,
-            "scale": scale,
-            "final_shares": final,
-            "unused_share": 1.0 - sum(final.values()),
-            "reserve_fraction": reserve,
-            "portfolio_risk_budget_pct_equity": portfolio_budget,
-            "strategy_risk_budget_pct_equity": strategy_budget,
-        }
+        usage = context.get("risk_usage") or empty_risk_usage()
+        result = attach_usage_to_s5(
+            {
+                "allocation_mode": "multi_strategy",
+                "raw_shares": raw,
+                "scale": scale,
+                "final_shares": final,
+                "unused_share": 1.0 - sum(final.values()),
+                "reserve_fraction": reserve,
+                "portfolio_risk_budget_pct_equity": portfolio_budget,
+                "strategy_risk_budget_pct_equity": strategy_budget,
+            },
+            usage,
+            self.config,
+        )
         context["S5"] = result
         return result

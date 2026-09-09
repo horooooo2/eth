@@ -132,6 +132,8 @@ export const whaleAiActiveStrategyHealth = computed(() => {
       health_score: a.health_score,
       state: a.health_state,
       risk_budget_pct_equity: a.risk_budget_pct_equity,
+      strategy_risk_used_pct_equity: a.strategy_risk_used_pct_equity,
+      strategy_risk_limit_pct_equity: a.strategy_risk_limit_pct_equity,
     };
   }
   const sid = whaleAiActiveStrategy.value;
@@ -142,6 +144,8 @@ export const whaleAiActiveStrategyHealth = computed(() => {
         health_score: row.health_score,
         state: row.state,
         risk_budget_pct_equity: null as number | null,
+        strategy_risk_used_pct_equity: null as number | null,
+        strategy_risk_limit_pct_equity: null as number | null,
       }
     : null;
 });
