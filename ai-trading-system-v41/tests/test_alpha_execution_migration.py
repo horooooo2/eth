@@ -146,6 +146,47 @@ def test_would_submit_does_not_open_position(monkeypatch, tmp_path):
     assert len(rt.orchestrator.s7.trade_history.get("S1") or []) == s7_before
 
 
+def test_partial_fill_owns_filled_qty_not_request(monkeypatch, tmp_path):
+    rt = _runtime(monkeypatch, tmp_path, execution_mode="EXECUTE")
+    intent = _intent()
+    rt.orchestrator.lifecycle.intents[intent.intent_id] = intent
+    oi = {
+        "order_intent_id": "oi-partial-1",
+        "trade_intent_id": intent.intent_id,
+        "origin_strategy_id": "S1",
+        "symbol": "BTC-USDT-SWAP",
+        "position_side": "long",
+        "quantity": "100",
+        "reduce_only": False,
+    }
+    rt.order_intents = [oi]
+    s7_before = len(rt.orchestrator.s7.trade_history.get("S1") or [])
+    rt.apply_execution_report(
+        {
+            "order_intent_id": "oi-partial-1",
+            "status": "PARTIAL",
+            "filled_quantity": "40",
+        }
+    )
+    opened = rt.positions.list_open()
+    assert len(opened) == 1
+    assert opened[0].quantity == 40.0
+    assert opened[0].origin_trade_intent_id == intent.intent_id
+    assert oi["status"] == "PARTIAL"
+    assert len(rt.orchestrator.s7.trade_history.get("S1") or []) == s7_before
+    rt.apply_execution_report(
+        {
+            "order_intent_id": "oi-partial-1",
+            "status": "FILLED",
+            "filled_quantity": "100",
+            "realized_R": 0.1,
+        }
+    )
+    still = rt.positions.list_open()
+    assert len(still) == 1
+    assert still[0].quantity == 100.0
+
+
 def test_filled_creates_position_ownership(monkeypatch, tmp_path):
     rt = _runtime(monkeypatch, tmp_path, execution_mode="EXECUTE")
     intent = _intent()

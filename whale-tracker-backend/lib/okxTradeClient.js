@@ -246,6 +246,88 @@ function qs(params) {
   return s ? `?${s}` : '';
 }
 
+async function okxPublic(pathWithQuery, options = {}) {
+  const requestPath = pathWithQuery.startsWith('/') ? pathWithQuery : `/${pathWithQuery}`;
+  const url = `${tradeBase()}${requestPath}`;
+  const axiosCfg = buildAxiosConfig(options.timeoutMs || 15_000);
+  const res = await axios.request({ ...axiosCfg, method: 'GET', url });
+  const data = res.data;
+  if (!data || String(data.code) !== '0') {
+    const err = new Error((data && data.msg) || `OKX public error ${res.status}`);
+    err.status = 502;
+    err.code = (data && data.code) || 'OKX_PUBLIC_ERROR';
+    throw err;
+  }
+  return data;
+}
+
+async function getPublicInstrument(instId) {
+  const id = String(instId || '').trim();
+  const data = await okxPublic(`/api/v5/public/instruments${qs({ instType: 'SWAP', instId: id })}`);
+  return (data.data && data.data[0]) || null;
+}
+
+async function getLeverageInfo({ instId, mgnMode = 'cross' }) {
+  const data = await okxPrivate(
+    'GET',
+    `/api/v5/account/leverage-info${qs({ instId, mgnMode })}`,
+  );
+  return data.data || [];
+}
+
+async function getOrder({ instId, ordId, clOrdId }) {
+  const data = await okxPrivate(
+    'GET',
+    `/api/v5/trade/order${qs({ instId, ordId, clOrdId })}`,
+  );
+  return (data.data && data.data[0]) || null;
+}
+
+async function placeAlgoOrder(input) {
+  const body = { ...input };
+  const data = await okxPrivate('POST', '/api/v5/trade/order-algo', body);
+  return (data.data && data.data[0]) || null;
+}
+
+async function getAlgoOrder({ algoId, algoClOrdId }) {
+  const data = await okxPrivate(
+    'GET',
+    `/api/v5/trade/order-algo${qs({ algoId, algoClOrdId })}`,
+  );
+  return (data.data && data.data[0]) || null;
+}
+
+async function getAlgoOrdersPending(params = {}) {
+  const data = await okxPrivate(
+    'GET',
+    `/api/v5/trade/orders-algo-pending${qs({ ordType: params.ordType || 'conditional', ...params })}`,
+  );
+  return data.data || [];
+}
+
+async function getAlgoOrdersHistory(params = {}) {
+  const data = await okxPrivate(
+    'GET',
+    `/api/v5/trade/orders-algo-history${qs({
+      ordType: params.ordType || 'conditional',
+      state: params.state,
+      algoId: params.algoId,
+      instId: params.instId,
+    })}`,
+  );
+  return data.data || [];
+}
+
+async function amendAlgoOrder(input) {
+  const data = await okxPrivate('POST', '/api/v5/trade/amend-algos', input);
+  return (data.data && data.data[0]) || null;
+}
+
+async function cancelAlgoOrders(items) {
+  const data = await okxPrivate('POST', '/api/v5/trade/cancel-algos', items);
+  return data.data || [];
+}
+
 async function getAccountConfig(options = {}) {
   const timeoutMs =
     Number(options.timeoutMs) || Number(process.env.OKX_TIMEOUT_MS) || 60_000;
@@ -288,7 +370,19 @@ async function setLeverage({ instId, lever, mgnMode, posSide }) {
  */
 let cachedPosMode = ''; // net_mode | long_short_mode
 
-async function resolvePosMode() {
+function clearPosModeCache() {
+  cachedPosMode = '';
+}
+
+function getCachedPosMode() {
+  return cachedPosMode || '';
+}
+
+async function resolvePosMode(options = {}) {
+  const requireKnown = options.requireKnown === true;
+  if (options.forceRefresh) {
+    cachedPosMode = '';
+  }
   if (cachedPosMode === 'net_mode' || cachedPosMode === 'long_short_mode') {
     return cachedPosMode;
   }
@@ -301,18 +395,31 @@ async function resolvePosMode() {
     cachedPosMode = 'long_short_mode';
     return cachedPosMode;
   }
-  // Prefer live account config — do NOT assume net (demo accounts are often long_short)
-  cachedPosMode = 'net_mode';
   try {
     const cfg = await getAccountConfig();
     const mode = String(cfg?.posMode || '').toLowerCase();
     if (mode === 'long_short_mode' || mode === 'net_mode') {
       cachedPosMode = mode;
+      console.log('[okx-trade] account posMode=', mode);
+      return cachedPosMode;
     }
-    console.log('[okx-trade] account posMode=', mode || '(empty)', '→', cachedPosMode);
   } catch (err) {
     console.warn('[okx-trade] account/config:', err.message || err);
+    if (requireKnown) {
+      const e = new Error('OKX position mode unknown');
+      e.status = 403;
+      e.code = 'POSITION_MODE_UNKNOWN';
+      throw e;
+    }
   }
+  if (requireKnown) {
+    const e = new Error('OKX position mode unknown');
+    e.status = 403;
+    e.code = 'POSITION_MODE_UNKNOWN';
+    throw e;
+  }
+  // QA / manual trade only: last-resort net, then 51000 retry may flip.
+  cachedPosMode = 'net_mode';
   return cachedPosMode;
 }
 
@@ -379,7 +486,7 @@ async function placeOrder(input = {}) {
     throw Object.assign(new Error('tdMode 无效'), { status: 400 });
   }
 
-  let posMode = await resolvePosMode();
+  let posMode = await resolvePosMode({ requireKnown: input.requireKnownPosMode === true });
 
   // 默认不下单前改杠杆（易 socket hang up）；需要时 setLeverage=1
   const wantLeverage =
@@ -474,11 +581,24 @@ module.exports = {
   getCredentials,
   withTradeCredentials,
   getAccountConfig,
+  getPublicInstrument,
+  getLeverageInfo,
+  getOrder,
   getBalance,
   getAccountPositions,
   getPendingOrders,
   setLeverage,
   placeOrder,
   cancelOrder,
+  placeAlgoOrder,
+  getAlgoOrder,
+  getAlgoOrdersPending,
+  getAlgoOrdersHistory,
+  amendAlgoOrder,
+  cancelAlgoOrders,
   summarizeBalance,
+  resolvePosMode,
+  clearPosModeCache,
+  getCachedPosMode,
+  buildOrderBody,
 };

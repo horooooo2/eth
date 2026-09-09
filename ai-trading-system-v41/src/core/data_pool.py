@@ -18,6 +18,7 @@ class FeatureDataPool:
         self._values: Dict[str, Any] = {}
         self._series: Dict[str, pd.Series] = {}
         self._bars: Optional[pd.DataFrame] = None
+        self._closed_bars: Optional[pd.DataFrame] = None
         self._context: Dict[str, Any] = {}
 
     def set_context(self, updates: Mapping[str, Any]) -> None:
@@ -52,6 +53,13 @@ class FeatureDataPool:
 
     def get_series(self, name: str) -> Optional[pd.Series]:
         return self._series.get(name)
+
+    def set_closed_bars(self, bars: Optional[pd.DataFrame]) -> None:
+        """Closed OKX candles only. Forming bars must never be stored here."""
+        self._closed_bars = bars
+
+    def get_closed_bars(self) -> Optional[pd.DataFrame]:
+        return self._closed_bars
 
     def update_from_bars(
         self,

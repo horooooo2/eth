@@ -175,6 +175,7 @@ class Orchestrator:
         closed, forming, candle_closed = split_closed_bars(bars, timeframe=tf)
         compute = closed if (closed is not None and not getattr(closed, "empty", True)) else bars
         self.data_pool.update_from_bars(compute, microstructure=microstructure)
+        self.data_pool.set_closed_bars(closed if closed is not None else None)
         bars_loaded = int(len(bars)) if bars is not None else 0
         closed_n = int(len(compute)) if compute is not None else 0
         latest_closed = None
@@ -381,6 +382,7 @@ class Orchestrator:
         created = []
 
         from src.runtime.alpha_execution import (
+            ALPHA_EXECUTE,
             ALPHA_SHADOW,
             normalize_alpha_execution,
             strategy_live_allowed,
@@ -448,49 +450,119 @@ class Orchestrator:
                     diag.S6_rejected_count += 1
                 continue
 
+            from src.runtime.demo_execute_v1 import (
+                clord_id_from_signal,
+                compute_base_quantity,
+                demo_execute_v1_allowed,
+                normalize_swap_symbol,
+                opening_signal_already_used,
+                resolve_s1_stop_price,
+                signal_key,
+            )
+
             side = "buy" if str(intent.direction).lower() == "long" else "sell"
             equity = float(self.context.get("equity") or 100000.0)
-            risk_pct = float(budgets.get(intent.strategy_id, 0.002))
+            s1_cfg = self.config.get("S1_trend") or {}
+            if str(intent.strategy_id).upper() == "S1":
+                risk_pct = float(s1_cfg.get("risk_per_trade_pct_equity") or budgets.get("S1") or 0.004)
+            else:
+                risk_pct = float(budgets.get(intent.strategy_id, 0.002))
             atr = max(float(intent.reference_atr), 1e-12)
-            qty = max((equity * risk_pct) / atr, 0.0)
-            if qty <= 0:
-                qty = 0.001
+            entry_price = float(intent.reference_price or 0.0)
+            closed_candles = None
+            if hasattr(self.data_pool, "get_closed_bars"):
+                closed_candles = self.data_pool.get_closed_bars()
+            stop_info = resolve_s1_stop_price(
+                direction=str(intent.direction),
+                entry_price=entry_price,
+                atr14=atr,
+                s1_cfg=s1_cfg,
+                closed_candles=closed_candles,
+            )
+            stop_price = (
+                float(stop_info["stop_price"])
+                if stop_info and stop_info.get("stop_price") is not None
+                else None
+            )
+            sizing = None
+            if stop_price:
+                try:
+                    sizing = compute_base_quantity(
+                        equity=equity,
+                        risk_pct=risk_pct,
+                        entry_price=entry_price,
+                        stop_price=stop_price,
+                    )
+                except ValueError:
+                    sizing = None
 
             import uuid
             from datetime import datetime, timezone
 
             policy = self.lifecycle.get_policy(intent.strategy_id)
+            symbol = normalize_swap_symbol(intent.symbol)
+            md = self.context.get("market_data") or self.market_meta or {}
+            candle_at = str(md.get("latest_closed_candle_at") or "")
+            skey = signal_key(
+                strategy_id=str(intent.strategy_id),
+                symbol=symbol,
+                direction=str(intent.direction),
+                closed_candle_at=candle_at,
+            )
+            existing = list(self.context.get("pending_order_intents") or []) + list(self.last_orders or [])
+            if candle_at and opening_signal_already_used(existing, skey):
+                self.lifecycle.transition(intent, "RISK_REJECTED")
+                continue
+            if alpha_execution == ALPHA_EXECUTE and not demo_execute_v1_allowed(intent.strategy_id):
+                self.lifecycle.transition(intent, "RISK_REJECTED")
+                continue
+
             order_intent = {
                 "order_intent_id": str(uuid.uuid4()),
                 "trade_intent_id": intent.intent_id,
+                "origin_trade_intent_id": intent.intent_id,
                 "strategy_id": intent.strategy_id,
                 "active_strategy_id_at_creation": active,
                 "origin_strategy_id": intent.strategy_id,
                 "alpha_execution": alpha_execution,
                 "shadow": alpha_execution == ALPHA_SHADOW,
+                "demo_execute_v1_allowed": demo_execute_v1_allowed(intent.strategy_id),
                 "live_allowed": strategy_live_allowed(intent.strategy_id),
                 "user_id": getattr(self, "user_id", None) or self.context.get("user_id"),
                 "account_scope": self.context.get("account_scope") or "default",
-                "symbol": intent.symbol.replace("/", "-").replace(":USDT", "-SWAP")
-                if "/" in intent.symbol
-                else intent.symbol,
+                "symbol": symbol,
                 "side": side,
                 "position_side": "long" if side == "buy" else "short",
                 "order_type": "market",
-                "quantity": str(round(qty, 6)),
+                "quantity_unit": "BASE",
+                "base_quantity": sizing["base_quantity"] if sizing else None,
+                "entry_price": entry_price or None,
+                "stop_price": stop_price,
+                "risk_amount_quote": sizing["risk_amount_quote"] if sizing else None,
+                "risk_pct": risk_pct,
+                "signal_key": skey if candle_at else None,
                 "reduce_only": False,
-                "client_order_id": f"v41_{intent.intent_id[:8]}_{uuid.uuid4().hex[:8]}",
+                "client_order_id": clord_id_from_signal(skey) if candle_at else f"v41_{intent.intent_id[:8]}{uuid.uuid4().hex[:8]}"[:32],
                 "risk_snapshot": {
                     "strategy_id": intent.strategy_id,
                     "risk_pct": risk_pct,
+                    "risk_amount_quote": sizing["risk_amount_quote"] if sizing else None,
+                    "entry_price": entry_price or None,
+                    "stop_price": stop_price,
+                    "base_quantity": sizing["base_quantity"] if sizing else None,
                     "S6.level": self.context.get("S6.level"),
+                    "stop_source": (stop_info or {}).get("source"),
+                    "structure_method": (stop_info or {}).get("structure_method"),
+                    "structure_invalidation_price": (stop_info or {}).get("structure_invalidation_price"),
+                    "structure_candle_timestamp": (stop_info or {}).get("structure_candle_timestamp"),
+                    "atr14": atr,
                 },
                 "entry_risk_snapshot": {
                     "strategy_id": intent.strategy_id,
                     "risk_pct": risk_pct,
                     "equity": equity,
                     "atr": atr,
-                    "quantity": qty,
+                    "base_quantity": sizing["base_quantity"] if sizing else None,
                 },
                 "exit_policy_snapshot": {
                     "origin_strategy_id": intent.strategy_id,
@@ -499,9 +571,45 @@ class Orchestrator:
                 "stop_policy_snapshot": {
                     "origin_strategy_id": intent.strategy_id,
                     "reference_atr": float(intent.reference_atr),
+                    "stop_price": stop_price,
+                    "formula": "min(1.5*atr14, structure_invalidation_distance)",
+                    "structure_method": (stop_info or {}).get("structure_method"),
+                    "complete": bool(stop_price),
                 },
                 "created_at": datetime.now(timezone.utc).isoformat(),
-                "status": "PENDING_GATEWAY",
+                "status": "CREATED",
+                "demo_execute_v1_ready": bool(
+                    sizing
+                    and stop_price
+                    and demo_execute_v1_allowed(intent.strategy_id)
+                    and candle_at
+                ),
+                "demo_execute_v1_missing": [
+                    name
+                    for name, ok in (
+                        (
+                            (stop_info or {}).get("reason")
+                            if (stop_info or {}).get("reason")
+                            in {"S1_STRUCTURE_STOP_NOT_FOUND", "INVALID_STOP_PRICE"}
+                            else "stop_price",
+                            bool(stop_price),
+                        ),
+                        ("base_quantity", bool(sizing)),
+                        ("signal_key", bool(candle_at)),
+                        ("strategy_allowed", demo_execute_v1_allowed(intent.strategy_id)),
+                    )
+                    if not ok
+                ],
+                "atr14": atr,
+                "structure_method": (stop_info or {}).get("structure_method"),
+                "structure_lookback_bars": (stop_info or {}).get("structure_lookback_bars"),
+                "structure_invalidation_price": (stop_info or {}).get("structure_invalidation_price"),
+                "structure_invalidation_distance": (stop_info or {}).get("structure_invalidation_distance"),
+                "structure_candle_timestamp": (stop_info or {}).get("structure_candle_timestamp"),
+                "atr_stop_distance": (stop_info or {}).get("atr_stop_distance"),
+                "minimum_stop_distance": (stop_info or {}).get("minimum_stop_distance"),
+                "final_stop_distance": (stop_info or {}).get("final_stop_distance")
+                or (stop_info or {}).get("stop_distance"),
             }
             # OKX SWAP instId form BTC-USDT-SWAP
             sym = str(intent.symbol)
@@ -515,6 +623,8 @@ class Orchestrator:
             diag = self.diagnostics.get(str(intent.strategy_id))
             if diag:
                 diag.note_order_intent()
+                if str(intent.strategy_id).upper() == "S1":
+                    diag.note_structure(stop_info)
 
         self.context["orders_created"] = created
         return {"orders": created}

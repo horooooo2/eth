@@ -323,19 +323,15 @@ class EngineRuntime:
             if self.state != "LOCKED":
                 self.state = "RUNNING"
             if self.console_mode != "QA_HFT_SIM":
-                self.alpha_opening_enabled = True
-                self.orchestrator.alpha_opening_enabled = True
-                self.orchestrator.context["alpha_opening_enabled"] = True
-            self.bus.emit("engine.status", {"state": self.state})
+                self._set_alpha_opening(True)
+            self.bus.emit("engine.status", {"state": self.state, "alpha_opening_enabled": self.alpha_opening_enabled})
             return {"ok": True, "state": self.state, "alpha_opening_enabled": self.alpha_opening_enabled}
         self._stop.clear()
         self._pause.set()
         self.started_at = self.started_at or _now_iso()
         self.state = "RUNNING"
         if self.console_mode != "QA_HFT_SIM":
-            self.alpha_opening_enabled = True
-            self.orchestrator.alpha_opening_enabled = True
-            self.orchestrator.context["alpha_opening_enabled"] = True
+            self._set_alpha_opening(True)
         self._task = asyncio.create_task(self._loop(), name="v41-engine-loop")
         self.bus.emit("engine.status", {"state": self.state})
         return {"ok": True, "state": self.state, "alpha_opening_enabled": self.alpha_opening_enabled}
@@ -349,15 +345,27 @@ class EngineRuntime:
         except Exception:
             pass
 
+    def _set_alpha_opening(self, enabled: bool) -> None:
+        self.alpha_opening_enabled = bool(enabled)
+        self.orchestrator.alpha_opening_enabled = self.alpha_opening_enabled
+        self.orchestrator.context["alpha_opening_enabled"] = self.alpha_opening_enabled
+
     async def pause(self) -> Dict[str, Any]:
         self._interrupt_qa()
         if self.state == "LOCKED":
             # Already stopped harder than pause — treat as success for UI「停止」
-            return {"ok": True, "state": self.state, "note": "already_locked"}
+            self._set_alpha_opening(False)
+            return {
+                "ok": True,
+                "state": self.state,
+                "alpha_opening_enabled": False,
+                "note": "already_locked",
+            }
         self._pause.clear()
         self.state = "PAUSED"
-        self.bus.emit("engine.status", {"state": self.state})
-        return {"ok": True, "state": self.state}
+        self._set_alpha_opening(False)
+        self.bus.emit("engine.status", {"state": self.state, "alpha_opening_enabled": False})
+        return {"ok": True, "state": self.state, "alpha_opening_enabled": False}
 
     async def kill(self, *, reason: str = "MANUAL_EMERGENCY_STOP", operator_id: str = "system") -> Dict[str, Any]:
         self._interrupt_qa()
@@ -365,6 +373,7 @@ class EngineRuntime:
         self.orchestrator.s6.evaluate_signals(self.orchestrator.data_pool, self.orchestrator.context)
         self._pause.clear()
         self.state = "LOCKED"
+        self._set_alpha_opening(False)
         incident = {
             "incident_id": f"INC-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}",
             "type": reason,
@@ -381,8 +390,76 @@ class EngineRuntime:
         self.store.upsert_incident(incident["incident_id"], incident, _now_iso())
         self.bus.emit("system.safety.updated", {"level": 3, "status": "LOCKED", "reason": reason})
         self.bus.emit("incident.created", incident)
+        cancelled = self._cancel_owned_pending_openings(reason=reason)
+        exit_intent = None
+        owned = [
+            p
+            for p in self.positions.list_open(origin_strategy_id="S1")
+            if "BTC" in str(getattr(p, "symbol", "") or "").upper() and float(getattr(p, "quantity", 0) or 0) > 0
+        ]
+        if len(owned) == 1:
+            pos = owned[0]
+            exit_intent = {
+                "order_intent_id": f"exit-{pos.position_id}",
+                "position_id": pos.position_id,
+                "origin_strategy_id": "S1",
+                "origin_trade_intent_id": pos.origin_trade_intent_id,
+                "symbol": pos.symbol,
+                "side": "sell" if str(pos.side).lower() in ("long", "buy") else "buy",
+                "reduce_only": True,
+                "purpose": "exit",
+                "quantity_unit": "BASE",
+                "base_quantity": float(pos.quantity),
+                "owned_remaining_base_qty": float(pos.quantity),
+                "status": "CREATED",
+            }
+            pending = self.orchestrator.context.setdefault("pending_order_intents", [])
+            pending.append(exit_intent)
         self.bus.emit("engine.status", {"state": self.state})
-        return {"ok": True, "state": self.state, "s6_level": self.orchestrator.s6.level, "incident": incident}
+        return {
+            "ok": True,
+            "state": self.state,
+            "s6_level": self.orchestrator.s6.level,
+            "incident": incident,
+            "kill_v1": {
+                "locked": True,
+                "alpha_opening": False,
+                "cancelled_opening_ids": cancelled,
+                "reduce_only_exit": exit_intent,
+                "flatten_account": False,
+                "touch_external": False,
+            },
+        }
+
+    def _cancel_owned_pending_openings(self, *, reason: str) -> List[str]:
+        """Kill V1: cancel owned pending openings only. Never flatten the account."""
+        cancelled: List[str] = []
+        for oi in list(self.order_intents):
+            if not isinstance(oi, dict) or bool(oi.get("reduce_only")):
+                continue
+            status = str(oi.get("status") or "").upper()
+            if status not in ("CREATED", "PENDING_GATEWAY", "SUBMITTED", "PARTIALLY_FILLED", "PARTIAL", "RECEIVED"):
+                continue
+            oid = str(oi.get("order_intent_id") or "")
+            if str(oi.get("status") or "").upper() in ("SUBMITTED", "PARTIAL", "PARTIALLY_FILLED") or oi.get(
+                "exchange_order_id"
+            ):
+                self._request_node_cancel_order(oi)
+                oi["status"] = "CANCEL_REQUESTED"
+            else:
+                oi["status"] = "CANCEL_REQUESTED"
+            oi["cancel_reason"] = reason
+            if oid:
+                cancelled.append(oid)
+                self.store.upsert_order_intent(
+                    oid,
+                    str(oi.get("trade_intent_id") or ""),
+                    str(oi.get("status")),
+                    oi,
+                    _now_iso(),
+                )
+                self.bus.emit("order_intent.updated", oi)
+        return cancelled
 
     async def resume(
         self,
@@ -965,14 +1042,20 @@ class EngineRuntime:
         ti = str(candidate.get("origin_trade_intent_id") or "").strip()
         if not ti:
             raise ValueError("origin_trade_intent_id required")
-        # Idempotent: one open position per trade_intent
+        # Idempotent: one open position per trade_intent; qty follows real fill, not request.
+        fill_qty = float(candidate.get("quantity") or 0.0)
         for existing in self.positions.list_open():
             if existing.origin_trade_intent_id == ti:
+                if fill_qty > 0:
+                    existing.quantity = fill_qty
+                    payload = existing.to_dict()
+                    self.store.upsert_open_position(payload, _now_iso())
+                    return payload
                 return existing.to_dict()
         pos = self.positions.open_from_fill(
             symbol=str(candidate.get("symbol") or ""),
             side=str(candidate.get("side") or ""),
-            quantity=float(candidate.get("quantity") or 0.0),
+            quantity=fill_qty,
             origin_strategy_id=origin,
             origin_trade_intent_id=ti,
             entry_risk_snapshot=dict(candidate.get("entry_risk_snapshot") or {}),
@@ -1027,43 +1110,48 @@ class EngineRuntime:
                 intent = self.orchestrator.lifecycle.get(ti) if ti else None
                 status_u = str(report.get("status", "")).upper()
                 shadow_report = bool(report.get("shadow")) or status_u == "WOULD_SUBMIT"
-                if intent and status_u == "FILLED" and not shadow_report:
+                fill_statuses = {"FILLED", "PARTIAL", "PARTIALLY_FILLED"}
+                if intent and status_u in fill_statuses and not shadow_report:
                     if not bool(item.get("reduce_only")):
-                        self.register_owned_position(
-                            {
-                                "symbol": item.get("symbol") or (intent.symbol if intent else ""),
-                                "side": item.get("position_side")
-                                or ("long" if str(intent.direction).lower() == "long" else "short"),
-                                "quantity": float(
-                                    report.get("filled_quantity")
-                                    or item.get("quantity")
-                                    or 0.0
-                                ),
-                                "origin_strategy_id": item.get("origin_strategy_id")
-                                or intent.strategy_id,
-                                "origin_trade_intent_id": intent.intent_id,
-                                "entry_risk_snapshot": item.get("entry_risk_snapshot")
-                                or item.get("risk_snapshot")
-                                or {},
-                                "exit_policy_snapshot": item.get("exit_policy_snapshot") or {},
-                                "stop_policy_snapshot": item.get("stop_policy_snapshot") or {},
-                                "metadata": {
-                                    "order_intent_id": oid,
-                                    "execution_status": status_u,
-                                    "source": "node_gateway_filled",
-                                },
-                            }
+                        filled_qty = float(
+                            report.get("filled_base_qty")
+                            if report.get("filled_base_qty") is not None
+                            else report.get("filled_quantity")
+                            or 0.0
                         )
-                    self.orchestrator.lifecycle.transition(intent, "EXECUTED")
-                    self.orchestrator.s7.add_trade(
-                        intent.strategy_id,
-                        {
-                            "r_multiple": float(report.get("realized_R") or 0.1),
-                            "slippage_vs_model_ratio": 1.0,
-                            "regime": self.orchestrator.context.get("S3.regime", "range"),
-                            "win": True,
-                        },
-                    )
+                        if filled_qty > 0:
+                            self.register_owned_position(
+                                {
+                                    "symbol": item.get("symbol") or (intent.symbol if intent else ""),
+                                    "side": item.get("position_side")
+                                    or ("long" if str(intent.direction).lower() == "long" else "short"),
+                                    "quantity": filled_qty,
+                                    "origin_strategy_id": item.get("origin_strategy_id")
+                                    or intent.strategy_id,
+                                    "origin_trade_intent_id": intent.intent_id,
+                                    "entry_risk_snapshot": item.get("entry_risk_snapshot")
+                                    or item.get("risk_snapshot")
+                                    or {},
+                                    "exit_policy_snapshot": item.get("exit_policy_snapshot") or {},
+                                    "stop_policy_snapshot": item.get("stop_policy_snapshot") or {},
+                                    "metadata": {
+                                        "order_intent_id": oid,
+                                        "execution_status": status_u,
+                                        "source": "node_gateway_filled",
+                                    },
+                                }
+                            )
+                    if status_u == "FILLED":
+                        self.orchestrator.lifecycle.transition(intent, "EXECUTED")
+                        self.orchestrator.s7.add_trade(
+                            intent.strategy_id,
+                            {
+                                "r_multiple": float(report.get("realized_R") or 0.1),
+                                "slippage_vs_model_ratio": 1.0,
+                                "regime": self.orchestrator.context.get("S3.regime", "range"),
+                                "win": True,
+                            },
+                        )
                 self.bus.emit("order_intent.updated", item)
                 break
         self.store.snapshot_row("execution_metrics", report, _now_iso())
@@ -1083,8 +1171,15 @@ class EngineRuntime:
                     oi["status"] = "SAFETY_BLOCKED"
                     self.bus.emit("order_intent.updated", oi)
             return
+        from src.runtime.demo_execute_v1 import opening_signal_already_used
+
         async with httpx.AsyncClient(timeout=30.0) as client:
             for oi in intents:
+                skey = str(oi.get("signal_key") or "")
+                if skey and opening_signal_already_used(self.order_intents, skey):
+                    oi["status"] = "SIGNAL_KEY_DUPLICATE"
+                    self.bus.emit("order_intent.updated", oi)
+                    continue
                 if getattr(self, "alpha_execution", None) == ALPHA_SHADOW or self.execution_mode == "node_gateway_shadow":
                     oi["shadow"] = True
                     oi["alpha_execution"] = ALPHA_SHADOW
@@ -1120,11 +1215,10 @@ class EngineRuntime:
                             body = res.json()
                         except Exception:
                             body = {}
-                        if body.get("shadow") or body.get("report", {}).get("status") == "WOULD_SUBMIT":
-                            report = body.get("report") or {
-                                "order_intent_id": oi.get("order_intent_id"),
-                                "status": "WOULD_SUBMIT",
-                            }
+                        report = body.get("report")
+                        if report:
+                            if body.get("shadow") or str(report.get("status") or "") == "WOULD_SUBMIT":
+                                report = {**report, "shadow": True, "status": "WOULD_SUBMIT"}
                             self.apply_execution_report(report)
                 except Exception as err:  # noqa: BLE001
                     oi["status"] = "GATEWAY_ERROR"

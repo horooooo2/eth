@@ -53,6 +53,7 @@ class StrategyDiagnostics:
         self.last_emit_key: Optional[str] = None
         self.last_emit_at: Optional[str] = None
         self.pending_log_event: Optional[Dict[str, Any]] = None
+        self.last_structure: Optional[Dict[str, Any]] = None
 
     def record_evaluation(
         self,
@@ -101,6 +102,9 @@ class StrategyDiagnostics:
     def note_order_intent(self) -> None:
         self.order_intent_created_count += 1
         self.last_order_intent_at = _now_iso()
+
+    def note_structure(self, payload: Optional[Dict[str, Any]]) -> None:
+        self.last_structure = dict(payload or {})
 
     def note_executed(self) -> None:
         self.executed_count += 1
@@ -188,4 +192,22 @@ class StrategyDiagnostics:
                 "reason_codes": list(self.last_reason_codes),
             },
             "pending_log_event": self.pending_log_event,
+            **self._structure_fields(),
+        }
+
+    def _structure_fields(self) -> Dict[str, Any]:
+        if self.strategy_id != "S1" and not self.last_structure:
+            return {}
+        src = dict(self.last_structure or {})
+        return {
+            "structure_method": src.get("structure_method") or "CONFIRMED_SWING_2X2",
+            "structure_lookback_bars": src.get("structure_lookback_bars", 20),
+            "structure_invalidation_price": src.get("structure_invalidation_price"),
+            "structure_invalidation_distance": src.get("structure_invalidation_distance"),
+            "atr14": src.get("atr14"),
+            "atr_stop_distance": src.get("atr_stop_distance"),
+            "minimum_stop_distance": src.get("minimum_stop_distance"),
+            "final_stop_distance": src.get("final_stop_distance"),
+            "stop_price": src.get("stop_price"),
+            "structure_candle_timestamp": src.get("structure_candle_timestamp"),
         }

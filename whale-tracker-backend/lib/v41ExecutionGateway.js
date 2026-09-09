@@ -2,12 +2,72 @@
  * V4.1 OrderIntent → OKX execution gateway (idempotent)
  */
 const { getDb } = require('./db');
+const keysMod = require('./userExchangeKeys');
+const okxTrade = require('./okxTradeClient');
+const executeReady = require('./v41ExecuteReadiness');
+const demoV1 = require('./v41DemoExecuteV1');
+const prot = require('./v41ProtectiveStop');
+const startupRecovery = require('./v41StartupRecovery');
 const {
   getOkxCredentialsForUser,
   isOkxReadyForUser,
   listExchangeKeys,
-} = require('./userExchangeKeys');
-const { placeOrder, cancelOrder, withTradeCredentials } = require('./okxTradeClient');
+} = keysMod;
+const { placeOrder, cancelOrder, withTradeCredentials } = okxTrade;
+
+const executeDeps = {
+  getOkxCredentialsForUser,
+  isOkxReadyForUser,
+  placeOrder,
+  cancelOrder,
+  withTradeCredentials,
+  resolvePosMode: (...a) => okxTrade.resolvePosMode(...a),
+  readiness: executeReady,
+  getOrder: (...a) => okxTrade.getOrder(...a),
+  getPublicInstrument: (...a) => okxTrade.getPublicInstrument(...a),
+  getLeverageInfo: (...a) => okxTrade.getLeverageInfo(...a),
+  getAccountPositions: (...a) => okxTrade.getAccountPositions(...a),
+  getAlgoOrder: (...a) => okxTrade.getAlgoOrder(...a),
+  placeAlgoOrder: (...a) => okxTrade.placeAlgoOrder(...a),
+  amendAlgoOrder: (...a) => okxTrade.amendAlgoOrder(...a),
+  cancelAlgoOrders: (...a) => okxTrade.cancelAlgoOrders(...a),
+};
+
+let openingSafetyLock = null;
+
+function setOpeningSafetyLock(code) {
+  openingSafetyLock = code || null;
+}
+
+function getOpeningSafetyLock() {
+  return openingSafetyLock;
+}
+
+function _setExecuteDeps(partial) {
+  Object.assign(executeDeps, partial || {});
+}
+
+async function resolveInstrumentSpec(instId) {
+  let spec = null;
+  try {
+    spec = executeDeps.readiness.getCachedInstrument(instId);
+  } catch (err) {
+    throw err;
+  }
+  if (spec) return spec;
+  if (typeof executeDeps.getPublicInstrument === 'function') {
+    const raw = await executeDeps.getPublicInstrument(instId);
+    spec = demoV1.mapPublicInstrument(raw);
+    if (spec) executeDeps.readiness.rememberInstrument(instId, spec);
+  }
+  if (!spec) {
+    const err = new Error('instrument metadata unavailable');
+    err.code = 'INSTRUMENT_METADATA_UNAVAILABLE';
+    err.status = 403;
+    throw err;
+  }
+  return spec;
+}
 const v41 = require('./v41EngineClient');
 const axios = require('axios');
 const qaEx = require('./v41QaExchange');
@@ -76,6 +136,20 @@ function ensureTable() {
       ON v41_execution_records(client_order_id)
       WHERE client_order_id IS NOT NULL AND client_order_id != '';
   `);
+  const cols = getDb().prepare('PRAGMA table_info(v41_execution_records)').all();
+  if (!cols.some((c) => c.name === 'signal_key')) {
+    try {
+      getDb().exec('ALTER TABLE v41_execution_records ADD COLUMN signal_key TEXT');
+    } catch (err) {
+      if (!String(err.message || err).includes('duplicate column')) throw err;
+    }
+  }
+  getDb().exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_v41_exec_signal_open
+      ON v41_execution_records(signal_key)
+      WHERE signal_key IS NOT NULL AND signal_key != ''
+        AND status IN ('CREATED','RECEIVED','SUBMITTED','PARTIALLY_FILLED','CANCEL_REQUESTED');
+  `);
 }
 
 function findRecord(orderIntentId) {
@@ -99,8 +173,8 @@ function upsertRecord(row) {
     .prepare(
       `INSERT INTO v41_execution_records(
         order_intent_id, user_id, client_order_id, exchange_order_id, status,
-        request_json, response_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        request_json, response_json, created_at, updated_at, signal_key
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(order_intent_id) DO UPDATE SET
         user_id=excluded.user_id,
         client_order_id=excluded.client_order_id,
@@ -108,7 +182,8 @@ function upsertRecord(row) {
         status=excluded.status,
         request_json=excluded.request_json,
         response_json=excluded.response_json,
-        updated_at=excluded.updated_at`,
+        updated_at=excluded.updated_at,
+        signal_key=excluded.signal_key`,
     )
     .run(
       row.order_intent_id,
@@ -120,7 +195,29 @@ function upsertRecord(row) {
       row.response_json || '',
       row.created_at || now,
       now,
+      row.signal_key || '',
     );
+}
+
+function findBySignalKey(signalKey) {
+  ensureTable();
+  const key = String(signalKey || '').trim();
+  if (!key) return null;
+  return getDb()
+    .prepare(
+      `SELECT * FROM v41_execution_records WHERE signal_key = ? ORDER BY updated_at DESC LIMIT 1`,
+    )
+    .get(key);
+}
+
+function listNonterminalRecords() {
+  ensureTable();
+  return getDb()
+    .prepare(
+      `SELECT * FROM v41_execution_records
+       WHERE status IN ('CREATED','RECEIVED','SUBMITTED','PARTIALLY_FILLED','CANCEL_REQUESTED')`,
+    )
+    .all();
 }
 
 const userBinding = require('./v41UserBinding');
@@ -159,8 +256,25 @@ async function executeOrderIntent(orderIntent, auth = {}) {
   // Dual hard-gate: test orders never reach real OKX
   assertTestOrderSafe(orderIntent);
 
-  const existing = findRecord(orderIntentId) || (clientOrderId ? findByClientOrderId(clientOrderId) : null);
-  if (existing && ['SUBMITTED', 'FILLED', 'PARTIAL', 'WOULD_SUBMIT', 'SIM_FILLED'].includes(String(existing.status))) {
+  const signalKey = String(orderIntent.signal_key || '').trim();
+  const existing =
+    findRecord(orderIntentId) ||
+    (clientOrderId ? findByClientOrderId(clientOrderId) : null) ||
+    (signalKey ? findBySignalKey(signalKey) : null);
+  if (
+    existing &&
+    [
+      'CREATED',
+      'RECEIVED',
+      'SUBMITTED',
+      'PARTIALLY_FILLED',
+      'PARTIAL',
+      'FILLED',
+      'WOULD_SUBMIT',
+      'SIM_FILLED',
+      'CANCEL_REQUESTED',
+    ].includes(String(existing.status))
+  ) {
     console.log('[V41_ORDER_INTENT_RECEIVED] idempotent hit', orderIntentId);
     return {
       ok: true,
@@ -216,7 +330,7 @@ async function executeOrderIntent(orderIntent, auth = {}) {
   if (forgedBodyUserId && trustedUserId && forgedBodyUserId !== trustedUserId) {
     console.log('[V41_USER_ID_BODY_IGNORED]', forgedBodyUserId, '→', trustedUserId);
   }
-  if (!shadow && !isSimTest && (!userId || !isOkxReadyForUser(userId))) {
+  if (!shadow && !isSimTest && (!userId || !executeDeps.isOkxReadyForUser(userId))) {
     const err = new Error('no OKX credentials for engine owner');
     err.status = 400;
     err.code = 'OKX_NOT_READY';
@@ -236,10 +350,11 @@ async function executeOrderIntent(orderIntent, auth = {}) {
     user_id: userId,
     client_order_id: clientOrderId,
     exchange_order_id: '',
-    status: 'RECEIVED',
+    status: 'CREATED',
     request_json: JSON.stringify(orderIntent),
     response_json: '',
     created_at: now,
+    signal_key: signalKey,
   });
   console.log(
     '[V41_ORDER_INTENT_RECEIVED]',
@@ -487,7 +602,7 @@ async function executeOrderIntent(orderIntent, auth = {}) {
     };
   }
 
-  const creds = getOkxCredentialsForUser(userId);
+  const creds = executeDeps.getOkxCredentialsForUser(userId);
   let liveGate;
   try {
     liveGate = alphaGate.assertAlphaLiveExecution(orderIntent, creds);
@@ -518,38 +633,19 @@ async function executeOrderIntent(orderIntent, auth = {}) {
   }
   const instId = toOkxInstId(orderIntent.symbol);
   const side = String(orderIntent.side || '').toLowerCase();
-  const sz = String(orderIntent.quantity || '').trim();
   const posSide = String(orderIntent.position_side || '').toLowerCase();
-
-  const submittedAt = new Date().toISOString();
-  let orderResult = null;
-  try {
-    orderResult = await withTradeCredentials(creds, () =>
-      placeOrder({
-        instId,
-        side,
-        ordType: String(orderIntent.order_type || 'market'),
-        sz,
-        reduceOnly,
-        posSide: posSide === 'long' || posSide === 'short' ? posSide : undefined,
-        clOrdId: clientOrderId || undefined,
-      }),
-    );
-  } catch (err) {
+  const tdMode = String(orderIntent.td_mode || orderIntent.tdMode || 'cross').toLowerCase();
+  const rejectExec = (err) => {
     const report = {
       order_intent_id: orderIntentId,
       trade_intent_id: orderIntent.trade_intent_id,
       client_order_id: clientOrderId,
       exchange_order_id: null,
       status: 'REJECTED',
-      submitted_at: submittedAt,
-      first_fill_at: null,
-      completed_at: new Date().toISOString(),
-      average_fill_price: null,
-      filled_quantity: null,
-      fee: null,
-      actual_slippage_bps: null,
+      reason_code: err.code || 'EXECUTE_NOT_READY',
       error: err.message || String(err),
+      submitted_at: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
     };
     upsertRecord({
       order_intent_id: orderIntentId,
@@ -560,30 +656,237 @@ async function executeOrderIntent(orderIntent, auth = {}) {
       request_json: JSON.stringify(orderIntent),
       response_json: JSON.stringify(report),
       created_at: now,
+      signal_key: signalKey,
     });
-    try {
-      await v41.sendExecutionReport(report);
-    } catch {
-      // ignore
+    return err;
+  };
+
+  let ready;
+  try {
+    if (!reduceOnly && openingSafetyLock) {
+      const err = new Error(`new openings blocked: ${openingSafetyLock}`);
+      err.code = openingSafetyLock;
+      err.status = 403;
+      throw err;
     }
-    throw err;
+    if (!reduceOnly) {
+      startupRecovery.assertRecoveryAllowsOpening();
+    }
+    const posMode = await executeDeps.resolvePosMode({ requireKnown: true, forceRefresh: true });
+    const spec = await resolveInstrumentSpec(instId);
+    if (reduceOnly) {
+      executeDeps.readiness.assertTdMode(tdMode);
+      executeDeps.readiness.assertReduceOnlyExit({ ...orderIntent, reduce_only: true, purpose: 'exit' });
+      const ownedBase =
+        executeDeps.ownedRemainingBaseQty != null
+          ? Number(executeDeps.ownedRemainingBaseQty)
+          : Number(orderIntent.owned_remaining_base_qty || orderIntent.base_quantity || 0);
+      const capped = executeDeps.readiness.capExitToOwned(orderIntent, ownedBase);
+      const converted = executeDeps.readiness.convertBaseToOkxSz(
+        { ...orderIntent, base_quantity: capped.base_quantity },
+        spec,
+      );
+      ready = { converted, posMode, tdMode, risk: null, exit: capped, spec };
+    } else {
+      const accountEnvironment = liveGate.accountEnvironment;
+      let actualLeverage = executeDeps.actualLeverage;
+      if (actualLeverage === undefined && typeof executeDeps.getLeverageInfo === 'function') {
+        try {
+          const rows = await executeDeps.withTradeCredentials(creds, () =>
+            executeDeps.getLeverageInfo({ instId, mgnMode: 'cross' }),
+          );
+          actualLeverage = demoV1.parseActualLeverage(rows, instId);
+        } catch {
+          actualLeverage = null;
+        }
+      }
+      let exchangeQty = executeDeps.exchangeQty;
+      if (exchangeQty === undefined && typeof executeDeps.getAccountPositions === 'function') {
+        try {
+          const rows = await executeDeps.withTradeCredentials(creds, () =>
+            executeDeps.getAccountPositions('SWAP', instId),
+          );
+          exchangeQty = demoV1.parseExchangeQty(rows, instId);
+        } catch (posErr) {
+          const err = new Error(posErr.message || 'OKX private API unavailable');
+          err.code = 'OKX_PRIVATE_API_UNAVAILABLE';
+          err.status = 503;
+          throw err;
+        }
+      }
+      const ownedOpen =
+        executeDeps.ownedOpen !== undefined
+          ? executeDeps.ownedOpen
+          : listNonterminalRecords().some((r) => String(r.status) === 'PARTIALLY_FILLED') ||
+            Boolean(
+              findBySignalKey(signalKey) &&
+                ['FILLED', 'PARTIALLY_FILLED'].includes(String(findBySignalKey(signalKey).status)),
+            );
+      const hasNonterminalOpening =
+        executeDeps.hasNonterminalOpening !== undefined
+          ? executeDeps.hasNonterminalOpening
+          : listNonterminalRecords().some((r) => r.order_intent_id !== orderIntentId);
+      await demoV1.assertDemoV1Opening(orderIntent, {
+        instId,
+        accountEnvironment,
+        tdMode,
+        posMode,
+        actualLeverage,
+        leverageCap: executeDeps.leverageCap || demoV1.S1_LEVERAGE_CAP,
+        exchangeQty,
+        ownedOpen,
+        hasNonterminalOpening,
+      });
+      ready = executeDeps.readiness.assertBeforeAlphaSubmit(orderIntent, {
+        instId,
+        posMode,
+        tdMode,
+        instrument: spec,
+      });
+    }
+  } catch (err) {
+    throw rejectExec(err);
+  }
+
+  const submittedAt = new Date().toISOString();
+  let orderResult = null;
+  try {
+    orderResult = await executeDeps.withTradeCredentials(creds, () =>
+      executeDeps.placeOrder({
+        instId,
+        side,
+        ordType: String(orderIntent.order_type || 'market'),
+        sz: ready.converted.final_okx_sz,
+        tdMode: ready.tdMode,
+        reduceOnly,
+        posSide: posSide === 'long' || posSide === 'short' ? posSide : undefined,
+        clOrdId: clientOrderId || undefined,
+        requireKnownPosMode: true,
+      }),
+    );
+  } catch (err) {
+    throw rejectExec(err);
   }
 
   const ord = orderResult?.order || orderResult || {};
   const exchangeOrderId = String(ord.ordId || ord.orderId || '');
+  let status = 'SUBMITTED';
+  let filledContracts = null;
+  let avgPx = null;
+  if (typeof executeDeps.getOrder === 'function') {
+    const q = await executeDeps.getOrder({
+      instId,
+      ordId: exchangeOrderId || undefined,
+      clOrdId: clientOrderId || undefined,
+    });
+    if (q) {
+      status = demoV1.mapOkxOrderState(q);
+      filledContracts = demoV1.filledContractsFromOrder(q);
+      avgPx = Number(q.avgPx || q.fillPx) || null;
+    }
+  }
+
+  const ownership =
+    filledContracts != null
+      ? demoV1.applyFillOwnership(
+          { filled_contracts: filledContracts, average_fill_price: avgPx },
+          ready.converted,
+        )
+      : null;
+
+  let stopState = null;
+  if ((status === 'FILLED' || status === 'PARTIALLY_FILLED') && !reduceOnly) {
+    const stopIntent = {
+      ...orderIntent,
+      stop_price: (ready && ready.stop_price) || orderIntent.stop_price,
+      position_id: orderIntent.position_id || orderIntent.origin_trade_intent_id || orderIntentId,
+    };
+    try {
+      stopState = await demoV1.submitProtectiveStop(
+        stopIntent,
+        {
+          status,
+          ownership,
+          exchangeOrderId,
+          filled_contracts: filledContracts,
+          owned_contracts: filledContracts,
+          position_id: stopIntent.position_id,
+        },
+        executeDeps,
+      );
+    } catch (err) {
+      stopState = { ok: false, code: err.code || 'PROTECTIVE_STOP_MISSING', error: err.message };
+      setOpeningSafetyLock(err.code || 'PROTECTIVE_STOP_MISSING');
+      if (typeof executeDeps.onProtectiveStopMissing === 'function') {
+        executeDeps.onProtectiveStopMissing(err);
+      }
+      try {
+        await demoV1.confirmCancel(
+          {
+            order_intent_id: orderIntentId,
+            client_order_id: clientOrderId,
+            exchange_order_id: exchangeOrderId,
+            request_json: JSON.stringify(orderIntent),
+            status: 'SUBMITTED',
+          },
+          {
+            instId,
+            cancelOrder: executeDeps.cancelOrder,
+            getOrder: executeDeps.getOrder,
+            upsert: upsertRecord,
+          },
+        );
+      } catch {
+        // keep lock
+      }
+      if (typeof executeDeps.emergencyReduceOnlyExit === 'function' && filledContracts > 0) {
+        try {
+          await executeDeps.emergencyReduceOnlyExit({
+            reduce_only: true,
+            purpose: 'exit',
+            base_quantity: ownership ? ownership.filled_base_qty : null,
+            owned_contracts: filledContracts,
+            symbol: instId,
+            side: side === 'buy' ? 'sell' : 'buy',
+          });
+        } catch {
+          // stay LOCKED
+        }
+      }
+    }
+  } else if (reduceOnly && status === 'FILLED') {
+    try {
+      const pid = orderIntent.position_id || orderIntent.origin_trade_intent_id;
+      if (pid) {
+        stopState = await prot.cancelProtectiveStop(pid, executeDeps);
+      }
+    } catch (err) {
+      setOpeningSafetyLock(err.code || 'ORPHAN_PROTECTIVE_STOP');
+      stopState = { ok: false, code: err.code, error: err.message };
+    }
+  }
+
   const report = {
     order_intent_id: orderIntentId,
     trade_intent_id: orderIntent.trade_intent_id,
+    origin_trade_intent_id: orderIntent.origin_trade_intent_id || orderIntent.trade_intent_id,
+    origin_strategy_id: orderIntent.origin_strategy_id || 'S1',
+    origin_order_intent_id: orderIntentId,
     client_order_id: clientOrderId,
+    signal_key: signalKey,
     exchange_order_id: exchangeOrderId || null,
-    status: 'FILLED',
+    status,
     submitted_at: submittedAt,
-    first_fill_at: new Date().toISOString(),
-    completed_at: new Date().toISOString(),
-    average_fill_price: Number(ord.avgPx || ord.px || 0) || null,
-    filled_quantity: String(ord.sz || sz),
-    fee: ord.fee || null,
-    actual_slippage_bps: null,
+    first_fill_at: ownership ? new Date().toISOString() : null,
+    completed_at: status === 'FILLED' ? new Date().toISOString() : null,
+    average_fill_price: avgPx,
+    filled_contracts: filledContracts,
+    filled_quantity: ownership ? String(ownership.filled_base_qty) : null,
+    filled_base_qty: ownership ? ownership.filled_base_qty : null,
+    conversion: ready.converted,
+    risk_sanity: ready.risk,
+    protective_stop: stopState,
+    account_environment: liveGate.accountEnvironment,
   };
 
   upsertRecord({
@@ -591,13 +894,14 @@ async function executeOrderIntent(orderIntent, auth = {}) {
     user_id: userId,
     client_order_id: clientOrderId,
     exchange_order_id: exchangeOrderId,
-    status: 'FILLED',
+    status,
     request_json: JSON.stringify(orderIntent),
     response_json: JSON.stringify(report),
     created_at: now,
+    signal_key: signalKey,
   });
 
-  console.log('[V41_ORDER_EXECUTED]', orderIntentId, exchangeOrderId);
+  console.log('[V41_ORDER_SUBMITTED]', orderIntentId, status, exchangeOrderId);
   try {
     await v41.sendExecutionReport(report);
     console.log('[V41_EXECUTION_REPORT_SENT]', orderIntentId);
@@ -669,33 +973,35 @@ async function cancelOrderIntent(payload) {
     throw err;
   }
 
-  const creds = getOkxCredentialsForUser(userId);
+  const creds = executeDeps.getOkxCredentialsForUser(userId);
   console.log('[V41_ORDER_CANCEL_REQUESTED]', orderIntentId, ordId || clOrdId);
-  const result = await withTradeCredentials(creds, () =>
-    cancelOrder({
-      instId,
-      ordId: ordId || undefined,
-      clOrdId: clOrdId || undefined,
-    }),
-  );
-
-  const now = Date.now();
-  upsertRecord({
-    order_intent_id: orderIntentId || clOrdId || ordId,
-    user_id: userId,
+  const rec = existing || {
+    order_intent_id: orderIntentId,
     client_order_id: clOrdId,
     exchange_order_id: ordId,
-    status: 'CANCELLED',
     request_json: JSON.stringify(request),
-    response_json: JSON.stringify(result || {}),
-    created_at: existing?.created_at || now,
+    status: 'SUBMITTED',
+  };
+  const sync = await demoV1.confirmCancel(rec, {
+    instId,
+    cancelOrder: (input) => executeDeps.withTradeCredentials(creds, () => executeDeps.cancelOrder(input)),
+    getOrder: executeDeps.getOrder
+      ? (q) => executeDeps.withTradeCredentials(creds, () => executeDeps.getOrder(q))
+      : undefined,
+    upsert: (row) =>
+      upsertRecord({
+        ...rec,
+        ...row,
+        user_id: userId,
+        created_at: existing?.created_at || Date.now(),
+      }),
   });
 
   const report = {
     order_intent_id: orderIntentId,
     client_order_id: clOrdId,
-    exchange_order_id: ordId || null,
-    status: 'CANCELLED',
+    exchange_order_id: sync.exchange_order_id || ordId || null,
+    status: sync.status,
     reason: payload.reason || 'ACTIVE_STRATEGY_CHANGED',
     completed_at: new Date().toISOString(),
   };
@@ -704,8 +1010,8 @@ async function cancelOrderIntent(payload) {
   } catch {
     // ignore
   }
-  console.log('[V41_ORDER_CANCELLED]', orderIntentId, ordId || clOrdId);
-  return { ok: true, report, result };
+  console.log('[V41_ORDER_CANCEL_SYNC]', orderIntentId, report.status);
+  return { ok: true, report, result: sync };
 }
 
 module.exports = {
@@ -713,8 +1019,38 @@ module.exports = {
   executeOrderIntent,
   cancelOrderIntent,
   findRecord,
+  findBySignalKey,
+  listNonterminalRecords,
   assertTestOrderSafe,
   hftSimEnabled,
   alphaGate,
   resolveUserId,
+  recoverNonterminalRecords: (deps = {}) =>
+    demoV1.recoverNonterminal({
+      listNonterminal: deps.listNonterminal || listNonterminalRecords,
+      getOrder: deps.getOrder || executeDeps.getOrder,
+      upsert: deps.upsert || upsertRecord,
+      ...deps,
+    }),
+  reconcileV1: demoV1.reconcileV1,
+  killV1: demoV1.killV1,
+  setOpeningSafetyLock,
+  getOpeningSafetyLock,
+  runStartupRecovery: (extra = {}) =>
+    startupRecovery.runStartupRecovery({
+      ensureExecTable: ensureTable,
+      listNonterminal: listNonterminalRecords,
+      getOrder: extra.getOrder || executeDeps.getOrder,
+      upsertOrder: extra.upsertOrder || upsertRecord,
+      getAlgoOrder: extra.getAlgoOrder || executeDeps.getAlgoOrder,
+      getOkxCredentialsForUser: extra.getOkxCredentialsForUser || executeDeps.getOkxCredentialsForUser,
+      listRecoverableStops: extra.listRecoverableStops,
+      ownedContractsByPosition: extra.ownedContractsByPosition,
+      reconcile: extra.reconcile,
+      ownerUserId: extra.ownerUserId,
+      ...extra,
+    }),
+  getExecutionRecoveryStatus: startupRecovery.getExecutionRecoveryStatus,
+  setExecutionRecoveryStatus: startupRecovery.setExecutionRecoveryStatus,
+  _setExecuteDeps,
 };

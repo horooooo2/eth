@@ -362,6 +362,7 @@ const systemLogBox = ref<HTMLElement | null>(null);
 const positionLogBox = ref<HTMLElement | null>(null);
 const systemPinned = ref(true);
 const positionPinned = ref(true);
+let logScrollLock = 0;
 const lastPositionEventKey = ref('');
 const okxLastUpdate = ref('--');
 
@@ -904,6 +905,7 @@ function logsFor(channel: LogChannel) {
 }
 
 function onLogScroll(channel: LogChannel) {
+  if (logScrollLock) return;
   const el = channel === 'POSITION' ? positionLogBox.value : systemLogBox.value;
   if (!el) return;
   const pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 28;
@@ -911,13 +913,31 @@ function onLogScroll(channel: LogChannel) {
   else systemPinned.value = pinned;
 }
 
+function pinLogChannel(channel: LogChannel, pinned: boolean) {
+  if (channel === 'POSITION') positionPinned.value = pinned;
+  else systemPinned.value = pinned;
+}
+
+function applyLogScroll(channel: LogChannel) {
+  const el = channel === 'POSITION' ? positionLogBox.value : systemLogBox.value;
+  if (!el) return false;
+  logScrollLock += 1;
+  el.scrollTop = el.scrollHeight;
+  pinLogChannel(channel, true);
+  requestAnimationFrame(() => {
+    logScrollLock = Math.max(0, logScrollLock - 1);
+  });
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 28;
+}
+
 function scrollLogToLatest(channel: LogChannel) {
+  pinLogChannel(channel, true);
   void nextTick(() => {
-    const el = channel === 'POSITION' ? positionLogBox.value : systemLogBox.value;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-    if (channel === 'POSITION') positionPinned.value = true;
-    else systemPinned.value = true;
+    applyLogScroll(channel);
+    requestAnimationFrame(() => {
+      applyLogScroll(channel);
+      requestAnimationFrame(() => applyLogScroll(channel));
+    });
   });
 }
 
@@ -1023,6 +1043,8 @@ async function loadRuntimeLogs() {
     });
     systemLogs.value = mapped.filter((r) => r.channel === 'SYSTEM').slice(-LOG_KEEP);
     positionLogs.value = mapped.filter((r) => r.channel === 'POSITION').slice(-LOG_KEEP);
+    pinLogChannel('SYSTEM', true);
+    pinLogChannel('POSITION', true);
     scrollLogToLatest('SYSTEM');
     scrollLogToLatest('POSITION');
   } catch {
@@ -1690,14 +1712,14 @@ watch(
   () => {
     if (systemPinned.value) scrollLogToLatest('SYSTEM');
   },
-  { deep: true },
+  { deep: true, flush: 'post' },
 );
 watch(
   positionLogs,
   () => {
     if (positionPinned.value) scrollLogToLatest('POSITION');
   },
-  { deep: true },
+  { deep: true, flush: 'post' },
 );
 
 watch(whaleAiTradeReady, () => {
@@ -1726,6 +1748,8 @@ onMounted(() => {
           channel: 'SYSTEM',
         });
       }
+      scrollLogToLatest('SYSTEM');
+      scrollLogToLatest('POSITION');
     });
   } else {
     pushLog('info', '个人交易舱已加载：登录后可持久化策略运行日志', {
@@ -2804,6 +2828,7 @@ th {
 .log-box {
   height: 280px;
   overflow: auto;
+  overflow-anchor: none;
   background: var(--panel2);
   border: 1px solid var(--border2);
   border-radius: 10px;
