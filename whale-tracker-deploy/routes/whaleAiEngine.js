@@ -5,12 +5,6 @@
 const express = require('express');
 const { requireUser, canResumeEngine } = require('../lib/authStore');
 const v41 = require('../lib/v41EngineClient');
-const { getOkxCredentialsForUser, isOkxReadyForUser } = require('../lib/userExchangeKeys');
-const {
-  getAccountPositions,
-  placeOrder,
-  withTradeCredentials,
-} = require('../lib/okxTradeClient');
 const { executeOrderIntent, cancelOrderIntent } = require('../lib/v41ExecutionGateway');
 
 const router = express.Router();
@@ -196,50 +190,14 @@ router.post('/pause', async (req, res) => {
 router.post('/kill', async (req, res) => {
   if (!assertLogin(req, res)) return;
   try {
-    const userId = req.user.user.id;
     const operatorId = String(req.user.user.username || req.user.user.id);
+    // Engine lock only — do NOT synchronously flatten all OKX positions (timeout + wrong-account risk).
     const engineResult = await v41.kill({
       reason: String(req.body?.reason || 'MANUAL_EMERGENCY_STOP'),
       operator_id: operatorId,
     });
-
-    let closed = 0;
-    const closeErrors = [];
-    if (isOkxReadyForUser(userId)) {
-      try {
-        const creds = getOkxCredentialsForUser(userId);
-        await withTradeCredentials(creds, async () => {
-          const positions = await getAccountPositions('SWAP');
-          for (const row of positions || []) {
-            const instId = String(row.instId || '').trim();
-            const pos = Number(row.pos || row.availPos || 0);
-            if (!instId || !(Math.abs(pos) > 0)) continue;
-            const posSide = String(row.posSide || '').toLowerCase();
-            let side = 'sell';
-            if (posSide === 'short' || pos < 0) side = 'buy';
-            else if (posSide === 'long' || pos > 0) side = 'sell';
-            try {
-              await placeOrder({
-                instId,
-                side,
-                ordType: 'market',
-                sz: String(Math.abs(pos)),
-                reduceOnly: true,
-                posSide: posSide === 'long' || posSide === 'short' ? posSide : undefined,
-              });
-              closed += 1;
-            } catch (e) {
-              closeErrors.push(e.message || String(e));
-            }
-          }
-        });
-      } catch (e) {
-        closeErrors.push(e.message || String(e));
-      }
-    }
-
-    console.log('[V41_KILL_SWITCH] engine=%s closed=%s', engineResult?.state, closed);
-    res.json({ ok: true, engine: engineResult, closed, closeErrors });
+    console.log('[V41_KILL_SWITCH] engine=%s', engineResult?.state);
+    res.json({ ok: true, engine: engineResult, closed: 0, closeErrors: [] });
   } catch (err) {
     sendErr(res, err);
   }
@@ -298,6 +256,84 @@ router.post('/internal/cancel-order', async (req, res) => {
   try {
     const result = await cancelOrderIntent(req.body || {});
     res.json(result);
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+/** QA capability + account mode (demo/live from user.simulated) */
+router.get('/test/hft-sim/capability', async (req, res) => {
+  if (!assertLogin(req, res)) return;
+  try {
+    const qaEx = require('../lib/v41QaExchange');
+    const userId = String(req.user.user.id);
+    const cap = qaEx.resolveQaCapability(userId);
+    // Also merge Python enabled flag
+    let py = {};
+    try {
+      py = await v41.hftSimStatus();
+    } catch {
+      py = { enabled: false, engine_available: false };
+    }
+    res.json({
+      ...cap,
+      enabled: Boolean(py.enabled ?? cap.hft_sim_enabled),
+      engine_available: py.engine_available !== false,
+      python_env_resolved: py.env_resolved,
+    });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+router.post('/internal/qa/ensure-leverage', async (req, res) => {
+  const token = String(req.headers['x-engine-token'] || '');
+  const expected = String(process.env.V41_ENGINE_INTERNAL_TOKEN || 'dev-internal-token');
+  if (!token || token !== expected) {
+    return res.status(401).json({ code: 'UNAUTHORIZED', error: 'invalid engine token' });
+  }
+  try {
+    const qaEx = require('../lib/v41QaExchange');
+    const userId =
+      String(req.body?.user_id || process.env.V41_ENGINE_OWNER_USER_ID || '').trim() ||
+      (() => {
+        const { isOkxReadyForUser } = require('../lib/userExchangeKeys');
+        const { getDb } = require('../lib/db');
+        const users = getDb().prepare('SELECT id FROM users ORDER BY created_at ASC LIMIT 20').all();
+        for (const u of users) if (isOkxReadyForUser(u.id)) return u.id;
+        return '';
+      })();
+    const result = await qaEx.ensureLeverage(userId, {
+      instId: String(req.body?.instId || req.body?.symbol || 'BTC-USDT-SWAP'),
+      lever: Number(req.body?.lever || req.body?.target_leverage || 3),
+      mgnMode: String(req.body?.mgnMode || 'cross'),
+    });
+    res.json(result);
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+router.get('/internal/qa/position', async (req, res) => {
+  const token = String(req.headers['x-engine-token'] || '');
+  const expected = String(process.env.V41_ENGINE_INTERNAL_TOKEN || 'dev-internal-token');
+  if (!token || token !== expected) {
+    return res.status(401).json({ code: 'UNAUTHORIZED', error: 'invalid engine token' });
+  }
+  try {
+    const qaEx = require('../lib/v41QaExchange');
+    const userId =
+      String(req.query?.user_id || process.env.V41_ENGINE_OWNER_USER_ID || '').trim() ||
+      (() => {
+        const { isOkxReadyForUser } = require('../lib/userExchangeKeys');
+        const { getDb } = require('../lib/db');
+        const users = getDb().prepare('SELECT id FROM users ORDER BY created_at ASC LIMIT 20').all();
+        for (const u of users) if (isOkxReadyForUser(u.id)) return u.id;
+        return '';
+      })();
+    const instId = String(req.query?.instId || req.query?.symbol || 'BTC-USDT-SWAP');
+    const snap = await qaEx.fetchQaPosition(userId, instId);
+    res.json({ ok: true, user_id: userId, ...snap });
   } catch (err) {
     sendErr(res, err);
   }
@@ -364,21 +400,51 @@ router.get('/bridge-status', (req, res) => {
   res.json(v41.bridgeStatus());
 });
 
-function assertHftSimEnv(res) {
-  const on = String(process.env.V41_HFT_SIM_ENABLED || 'false').toLowerCase() === 'true'
-    || String(process.env.V41_HFT_SIM_ENABLED || '') === '1';
-  if (!on) {
-    res.status(403).json({ code: 'HFT_SIM_DISABLED', error: 'QA-HFT-SIM disabled' });
-    return false;
-  }
-  return true;
-}
-
+/** Python is truth source for HFT enabled — do not gate on Node-only env.
+ *  demo/live must come from server-side OKX keys (user.simulated), never browser forge.
+ */
 router.post('/test/hft-sim/start', async (req, res) => {
   if (!assertLogin(req, res)) return;
-  if (!assertHftSimEnv(res)) return;
   try {
-    res.json(await v41.hftSimStart(req.body || {}));
+    const body = { ...(req.body || {}) };
+    const mode = String(body.execution_mode || 'simulator').toLowerCase();
+    // Strip client-forged account fields
+    delete body.account_mode;
+    delete body.live_money;
+    delete body.exchange_environment;
+
+    if (mode === 'exchange') {
+      const qaEx = require('../lib/v41QaExchange');
+      const userId = String(req.user.user.id);
+      const cap = qaEx.resolveQaCapability(userId);
+      if (!cap.exchange_available) {
+        const err = new Error(
+          cap.account_mode === 'OKX_LIVE' && !cap.qa_live_enabled
+            ? 'QA live trading disabled'
+            : !cap.qa_exchange_enabled
+              ? 'QA exchange path disabled'
+              : 'OKX credentials not ready for QA',
+        );
+        err.status = 403;
+        err.code =
+          cap.account_mode === 'OKX_LIVE' && !cap.qa_live_enabled
+            ? 'QA_LIVE_TRADING_DISABLED'
+            : !cap.qa_exchange_enabled
+              ? 'QA_EXCHANGE_DISABLED'
+              : 'OKX_NOT_READY';
+        err.details = cap;
+        throw err;
+      }
+      body.execution_mode = 'exchange';
+      body.exchange_environment = cap.exchange_environment; // demo | live from DB
+      body.symbol = 'BTC-USDT-SWAP';
+      body.max_position_notional_usdt = Math.min(Number(body.max_position_notional_usdt || 50), 50);
+      body.inject_failures = false;
+    } else {
+      body.execution_mode = 'simulator';
+      body.exchange_environment = null;
+    }
+    res.json(await v41.hftSimStart(body));
   } catch (err) {
     sendErr(res, err);
   }
@@ -386,7 +452,6 @@ router.post('/test/hft-sim/start', async (req, res) => {
 
 router.post('/test/hft-sim/stop', async (req, res) => {
   if (!assertLogin(req, res)) return;
-  if (!assertHftSimEnv(res)) return;
   try {
     res.json(await v41.hftSimStop());
   } catch (err) {
@@ -396,7 +461,6 @@ router.post('/test/hft-sim/stop', async (req, res) => {
 
 router.get('/test/hft-sim/status', async (req, res) => {
   if (!assertLogin(req, res)) return;
-  if (!assertHftSimEnv(res)) return;
   try {
     res.json(await v41.hftSimStatus());
   } catch (err) {
@@ -406,9 +470,30 @@ router.get('/test/hft-sim/status', async (req, res) => {
 
 router.get('/test/hft-sim/report', async (req, res) => {
   if (!assertLogin(req, res)) return;
-  if (!assertHftSimEnv(res)) return;
   try {
     res.json(await v41.hftSimReport());
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+router.get('/execution/selections', async (req, res) => {
+  if (!assertLogin(req, res)) return;
+  try {
+    res.json(await v41.executionSelections());
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+router.post('/execution/select', async (req, res) => {
+  if (!assertLogin(req, res)) return;
+  try {
+    const body = {
+      ...(req.body || {}),
+      operator_id: String(req.user?.user?.username || req.user?.user?.id || 'system'),
+    };
+    res.json(await v41.executionSelect(body));
   } catch (err) {
     sendErr(res, err);
   }

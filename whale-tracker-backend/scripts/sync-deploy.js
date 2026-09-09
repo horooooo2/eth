@@ -49,6 +49,7 @@ const FILES = [
   'lib/v41EngineClient.js',
   'lib/v41RealtimeBridge.js',
   'lib/v41ExecutionGateway.js',
+  'lib/v41QaExchange.js',
   'lib/v41WhaleDataBridge.js',
   'routes/auth.js',
   'routes/whales.js',

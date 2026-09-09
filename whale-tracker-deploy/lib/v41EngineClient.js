@@ -76,7 +76,7 @@ function engineError(err, fallbackCode) {
   return out;
 }
 
-async function request(method, path, data) {
+async function request(method, path, data, timeoutOverrideMs) {
   const c = cfg();
   if (!c.enabled) {
     const err = new Error('V4.1 engine disabled');
@@ -90,7 +90,7 @@ async function request(method, path, data) {
       method,
       url: `${c.baseUrl}${path}`,
       data,
-      timeout: c.timeoutMs,
+      timeout: Math.max(500, Number(timeoutOverrideMs) || c.timeoutMs),
       headers: {
         'X-Engine-Token': c.token,
         'Content-Type': 'application/json',
@@ -150,16 +150,16 @@ async function getIncidents() {
 }
 
 async function start() {
-  return request('POST', '/internal/v1/control/start', {});
+  return request('POST', '/internal/v1/control/start', {}, 15_000);
 }
 
 async function pause() {
-  return request('POST', '/internal/v1/control/pause', {});
+  return request('POST', '/internal/v1/control/pause', {}, 15_000);
 }
 
 async function kill(body = {}) {
   console.log('[V41_KILL_SWITCH]', body?.reason || 'MANUAL_EMERGENCY_STOP');
-  return request('POST', '/internal/v1/control/kill', body);
+  return request('POST', '/internal/v1/control/kill', body, 15_000);
 }
 
 async function resume(body) {
@@ -190,11 +190,14 @@ async function sendExecutionReport(report) {
 }
 
 async function hftSimStart(body) {
-  return request('POST', '/internal/v1/test/hft-sim/start', body || {});
+  // Exchange QA can take many minutes (state-driven open/close + reconcile)
+  const longMs = Math.max(600_000, Number(process.env.V41_QA_START_TIMEOUT_MS) || 900_000);
+  return request('POST', '/internal/v1/test/hft-sim/start', body || {}, longMs);
 }
 
 async function hftSimStop() {
-  return request('POST', '/internal/v1/test/hft-sim/stop', {});
+  const longMs = Math.max(120_000, Number(process.env.V41_QA_STOP_TIMEOUT_MS) || 180_000);
+  return request('POST', '/internal/v1/test/hft-sim/stop', {}, longMs);
 }
 
 async function hftSimStatus() {
@@ -207,6 +210,14 @@ async function hftSimReport() {
 
 async function whaleTelemetry() {
   return request('GET', '/internal/v1/data/whale-telemetry');
+}
+
+async function executionSelections() {
+  return request('GET', '/internal/v1/execution/selections');
+}
+
+async function executionSelect(body) {
+  return request('POST', '/internal/v1/execution/select', body || {});
 }
 
 module.exports = {
@@ -235,4 +246,6 @@ module.exports = {
   hftSimStatus,
   hftSimReport,
   whaleTelemetry,
+  executionSelections,
+  executionSelect,
 };

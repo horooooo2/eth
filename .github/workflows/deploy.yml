@@ -115,12 +115,17 @@ jobs:
                 if curl -sf --max-time 3 http://127.0.0.1/api/health; then
                   echo
                   echo "deploy ok (attempt $i)"
-                  # 探活跟单路由：未登录应为 401，不能是 404
-                  code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 -X PUT http://127.0.0.1/api/copy-trade/exchange-keys/okx || true)
-                  echo "copy-trade exchange-keys PUT => HTTP $code"
+                  # 探活个人交易舱路由：未登录应为 401，不能是 404
+                  code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1/api/whale-ai/trade/status || true)
+                  echo "whale-ai trade/status => HTTP $code"
                   if [ "$code" = "404" ]; then
-                    echo "ERROR: copy-trade 路由仍为 404，后端未更新成功"
+                    echo "ERROR: whale-ai trade 路由仍为 404，后端未更新成功"
                     exit 8
+                  fi
+                  # 确认 QA gateway 依赖文件已随包部署
+                  if [ ! -f "$DEPLOY/lib/v41QaExchange.js" ]; then
+                    echo "ERROR: missing lib/v41QaExchange.js in deploy package"
+                    exit 9
                   fi
                   ok=1
                   break

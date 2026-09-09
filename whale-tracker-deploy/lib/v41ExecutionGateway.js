@@ -10,28 +10,31 @@ const {
 const { placeOrder, cancelOrder, withTradeCredentials } = require('./okxTradeClient');
 const v41 = require('./v41EngineClient');
 const axios = require('axios');
+const qaEx = require('./v41QaExchange');
 
 function hftSimEnabled() {
-  return String(process.env.V41_HFT_SIM_ENABLED || 'false').toLowerCase() === 'true'
-    || String(process.env.V41_HFT_SIM_ENABLED || '') === '1';
+  return qaEx.hftSimEnabled();
 }
 
 function assertTestOrderSafe(orderIntent) {
   const testMode = Boolean(orderIntent.test_mode);
   const target = String(orderIntent.execution_target || '').toLowerCase();
   if (!testMode) return;
-  if (target !== 'simulator') {
-    const err = new Error('test_mode orders cannot target real OKX');
-    err.status = 403;
-    err.code = 'TEST_ORDER_REAL_EXCHANGE_BLOCKED';
-    throw err;
+
+  if (target === 'simulator') {
+    return; // Python simulator path
   }
-  if (!hftSimEnabled()) {
-    const err = new Error('QA-HFT-SIM disabled');
-    err.status = 403;
-    err.code = 'HFT_SIM_DISABLED';
-    throw err;
+
+  if (target === 'node_gateway' && orderIntent.qa_execution) {
+    // Allowed only through QA Exchange Gate (checked later with userId)
+    return;
   }
+
+  // Legacy / unsafe: test_mode without simulator and without qa_execution flag
+  const err = new Error('test_mode orders must use simulator or qa_execution+node_gateway');
+  err.status = 403;
+  err.code = 'TEST_ORDER_REAL_EXCHANGE_BLOCKED';
+  throw err;
 }
 
 async function submitToPythonSimulator(orderIntent) {
@@ -180,6 +183,10 @@ async function executeOrderIntent(orderIntent) {
   const isSimTest =
     Boolean(orderIntent.test_mode) &&
     String(orderIntent.execution_target || '').toLowerCase() === 'simulator';
+  const isQaExchange =
+    Boolean(orderIntent.test_mode) &&
+    Boolean(orderIntent.qa_execution) &&
+    String(orderIntent.execution_target || '').toLowerCase() === 'node_gateway';
 
   if (!reduceOnly && !isSimTest) {
     try {
@@ -204,8 +211,9 @@ async function executeOrderIntent(orderIntent) {
   }
 
   const shadow =
-    Boolean(orderIntent.shadow) ||
-    String(process.env.V41_ENGINE_EXECUTION_MODE || '').toLowerCase() === 'node_gateway_shadow';
+    !isQaExchange &&
+    (Boolean(orderIntent.shadow) ||
+      String(process.env.V41_ENGINE_EXECUTION_MODE || '').toLowerCase() === 'node_gateway_shadow');
 
   const userId = resolveUserId(orderIntent) || (shadow || isSimTest ? 'shadow' : '');
   if (!shadow && !isSimTest && (!userId || !isOkxReadyForUser(userId))) {
@@ -213,6 +221,12 @@ async function executeOrderIntent(orderIntent) {
     err.status = 400;
     err.code = 'OKX_NOT_READY';
     throw err;
+  }
+
+  // QA Exchange Gate (after userId resolved)
+  let qaGate = null;
+  if (isQaExchange) {
+    qaGate = qaEx.assertQaExchangeGate(orderIntent, userId);
   }
 
   const now = Date.now();
@@ -227,7 +241,12 @@ async function executeOrderIntent(orderIntent) {
     response_json: '',
     created_at: now,
   });
-  console.log('[V41_ORDER_INTENT_RECEIVED]', orderIntentId, clientOrderId, isSimTest ? 'simulator' : shadow ? 'shadow' : 'live');
+  console.log(
+    '[V41_ORDER_INTENT_RECEIVED]',
+    orderIntentId,
+    clientOrderId,
+    isSimTest ? 'simulator' : isQaExchange ? `qa_exchange:${qaGate.accountMode}` : shadow ? 'shadow' : 'live',
+  );
 
   if (isSimTest) {
     const simResult = await submitToPythonSimulator(orderIntent);
@@ -296,6 +315,162 @@ async function executeOrderIntent(orderIntent) {
       console.error('[V41_EXECUTION_REPORT_SENT] shadow failed', err.message || err);
     }
     return { ok: true, shadow: true, report };
+  }
+
+  // ----- QA Exchange → real OKX (demo/live by user.simulated) -----
+  if (isQaExchange) {
+    const creds = qaGate.creds;
+    const instId = qaGate.instId;
+    const side = String(orderIntent.side || '').toLowerCase();
+    const targetNotional = Number(orderIntent.target_notional_usdt || 0);
+    const targetLev = Number(orderIntent.target_leverage || orderIntent.leverage || 0);
+
+    // Position snapshot for mark price / reduce sizing
+    let posSnap = await qaEx.fetchQaPosition(userId, instId);
+    const mark = posSnap.mark_price || Number(orderIntent.mark_price) || 100000;
+    let sz = String(orderIntent.quantity || '').trim();
+    if (!sz || !(Number(sz) > 0)) {
+      const converted = qaEx.notionalToSz(targetNotional || 50, mark);
+      if (converted.estimatedNotional > qaEx.QA_MAX_NOTIONAL + 1) {
+        const err = new Error(`estimated notional ${converted.estimatedNotional} > 50`);
+        err.status = 400;
+        err.code = 'QA_POSITION_CAP_EXCEEDED';
+        throw err;
+      }
+      sz = converted.sz;
+    }
+    // Cap check on estimated
+    const est = Number(sz) * 0.01 * mark;
+    if (!reduceOnly && est > qaEx.QA_MAX_NOTIONAL + 1) {
+      const err = new Error(`estimated notional ${est} exceeds 50U`);
+      err.status = 400;
+      err.code = 'QA_POSITION_CAP_EXCEEDED';
+      throw err;
+    }
+
+    if (!reduceOnly && targetLev > 0) {
+      await qaEx.ensureLeverage(userId, { instId, lever: targetLev, mgnMode: 'cross' });
+    }
+
+    const posSide = String(orderIntent.position_side || '').toLowerCase();
+    // Hedge accounts: reduce-only must close the existing side (sell→long, buy→short)
+    let resolvedPosSide = posSide === 'long' || posSide === 'short' ? posSide : undefined;
+    if (reduceOnly && !resolvedPosSide) {
+      if (posSnap.hedge_mode || Number(posSnap.long_qty) > 0 || Number(posSnap.short_qty) > 0) {
+        resolvedPosSide = side === 'sell' ? 'long' : 'short';
+      }
+    } else if (!reduceOnly && !resolvedPosSide) {
+      // open: buy→long / sell→short in hedge
+      if (posSnap.hedge_mode) {
+        resolvedPosSide = side === 'sell' ? 'short' : 'long';
+      }
+    }
+    const submittedAt = new Date().toISOString();
+    let orderResult = null;
+    try {
+      orderResult = await withTradeCredentials(creds, () =>
+        placeOrder({
+          instId,
+          side,
+          ordType: String(orderIntent.order_type || 'market'),
+          sz,
+          reduceOnly,
+          posSide: resolvedPosSide,
+          clOrdId: String(clientOrderId || '').slice(0, 32) || undefined,
+          setLeverage: targetLev > 0 ? '1' : undefined,
+          lever: targetLev > 0 ? targetLev : undefined,
+          tag: 'QAHFT',
+        }),
+      );
+    } catch (err) {
+      const report = {
+        order_intent_id: orderIntentId,
+        client_order_id: clientOrderId,
+        exchange_order_id: null,
+        status: 'REJECTED',
+        test_mode: true,
+        qa_execution: true,
+        execution_target: 'node_gateway',
+        exchange_environment: qaGate.accountMode === 'OKX_LIVE' ? 'live' : 'demo',
+        source: 'QA_HFT',
+        exclude_from_strategy_health: true,
+        exclude_from_expected_edge: true,
+        exclude_from_live_pnl_stats: true,
+        error: err.message || String(err),
+        code: err.code,
+        submitted_at: submittedAt,
+        completed_at: new Date().toISOString(),
+      };
+      upsertRecord({
+        order_intent_id: orderIntentId,
+        user_id: userId,
+        client_order_id: clientOrderId,
+        exchange_order_id: '',
+        status: 'REJECTED',
+        request_json: JSON.stringify(orderIntent),
+        response_json: JSON.stringify(report),
+        created_at: now,
+      });
+      throw err;
+    }
+
+    // Brief settle then reconcile position
+    await new Promise((r) => setTimeout(r, 800));
+    posSnap = await qaEx.fetchQaPosition(userId, instId);
+    const ord = orderResult?.order || orderResult || {};
+    const exchangeOrderId = String(ord.ordId || ord.orderId || '');
+    const report = {
+      order_intent_id: orderIntentId,
+      trade_intent_id: orderIntent.trade_intent_id,
+      client_order_id: clientOrderId,
+      exchange_order_id: exchangeOrderId || null,
+      status: 'FILLED',
+      submitted_at: submittedAt,
+      first_fill_at: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
+      average_fill_price: Number(ord.avgPx || ord.px || mark) || null,
+      filled_quantity: String(ord.sz || sz),
+      fee: ord.fee || null,
+      test_mode: true,
+      qa_execution: true,
+      execution_target: 'node_gateway',
+      exchange_environment: qaGate.accountMode === 'OKX_LIVE' ? 'live' : 'demo',
+      live_money: qaGate.accountMode === 'OKX_LIVE',
+      source: 'QA_HFT',
+      exclude_from_strategy_health: true,
+      exclude_from_expected_edge: true,
+      exclude_from_live_pnl_stats: true,
+      position_reconciled: {
+        position_notional_usdt: posSnap.position_notional_usdt,
+        position_side: posSnap.position_side,
+        qty: posSnap.qty,
+        leverage: posSnap.leverage,
+      },
+    };
+    upsertRecord({
+      order_intent_id: orderIntentId,
+      user_id: userId,
+      client_order_id: clientOrderId,
+      exchange_order_id: exchangeOrderId,
+      status: 'FILLED',
+      request_json: JSON.stringify(orderIntent),
+      response_json: JSON.stringify(report),
+      created_at: now,
+    });
+    console.log('[V41_ORDER_QA_EXCHANGE]', orderIntentId, exchangeOrderId, qaGate.accountMode);
+    try {
+      await v41.sendExecutionReport(report);
+    } catch (err) {
+      console.error('[V41_EXECUTION_REPORT_SENT] qa failed', err.message || err);
+    }
+    return {
+      ok: true,
+      qa_exchange: true,
+      account_mode: qaGate.accountMode,
+      report,
+      order: ord,
+      position: posSnap,
+    };
   }
 
   const creds = getOkxCredentialsForUser(userId);
