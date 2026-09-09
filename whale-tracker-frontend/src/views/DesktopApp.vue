@@ -54,10 +54,11 @@ function reloadNewsAlerts() {
   return Promise.resolve(newsListRef.value?.reloadAlerts?.(false));
 }
 
-const loginOpen = ref(false);
 const loginUser = ref('');
 const loginPass = ref('');
 const loginBusy = ref(false);
+const authBootstrapped = ref(false);
+let sessionStarted = false;
 
 async function submitLogin() {
   if (loginBusy.value) return;
@@ -65,7 +66,6 @@ async function submitLogin() {
   try {
     await authLogin(loginUser.value.trim(), loginPass.value);
     ElMessage.success(`已登录：${authUser.value?.username || ''}`);
-    loginOpen.value = false;
     loginPass.value = '';
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '登录失败');
@@ -76,11 +76,7 @@ async function submitLogin() {
 
 function openWhaleAiWorkspace() {
   workspace.value = 'whale-ai';
-  if (!isLoggedIn.value) {
-    loginOpen.value = true;
-  } else {
-    void refreshWhaleAiKeyStatus(true);
-  }
+  void refreshWhaleAiKeyStatus(true);
 }
 
 function onLogout() {
@@ -242,25 +238,48 @@ watch(
 
 let timer: number | undefined;
 
+async function startAppSession() {
+  if (sessionStarted) return;
+  sessionStarted = true;
+  void getAuthUiSettings();
+  void refreshWhaleAiKeyStatus(true);
+  await loadAll(false);
+  whaleStore.startActivityPolling();
+  startRealtime();
+  if (!timer) {
+    timer = window.setInterval(() => {
+      void pollNewsAndQuotes();
+    }, 60 * 1000);
+  }
+}
+
+function stopAppSession() {
+  sessionStarted = false;
+  if (timer) {
+    window.clearInterval(timer);
+    timer = undefined;
+  }
+  whaleStore.stopActivityPolling();
+  stopRealtime();
+}
+
 onMounted(async () => {
   document.documentElement.classList.add('dark');
   document.documentElement.classList.remove('light');
   unlockAlertSound();
   await bootstrapAuth();
-  void getAuthUiSettings();
-  if (isLoggedIn.value) void refreshWhaleAiKeyStatus(true);
-  await loadAll(false);
-  whaleStore.startActivityPolling();
-  startRealtime();
-  timer = window.setInterval(() => {
-    void pollNewsAndQuotes();
-  }, 60 * 1000);
+  authBootstrapped.value = true;
+  if (isLoggedIn.value) await startAppSession();
+});
+
+watch(isLoggedIn, (ok) => {
+  if (!authBootstrapped.value) return;
+  if (ok) void startAppSession();
+  else stopAppSession();
 });
 
 onUnmounted(() => {
-  if (timer) window.clearInterval(timer);
-  whaleStore.stopActivityPolling();
-  stopRealtime();
+  stopAppSession();
 });
 </script>
 
@@ -268,11 +287,57 @@ onUnmounted(() => {
   <div
     class="app-shell"
     :class="{
-      busy: pageBusy,
-      'theme-ai': workspace === 'whale-ai',
+      busy: pageBusy && isLoggedIn,
+      'theme-ai': workspace === 'whale-ai' && isLoggedIn,
+      'login-only': authBootstrapped && !isLoggedIn,
     }"
     @pointerdown="unlockAlertSound"
   >
+    <div v-if="!authBootstrapped" class="login-gate">
+      <div class="login-gate-card">
+        <p class="login-gate-title">Whale Tracker</p>
+        <p class="login-gate-sub">正在验证登录状态…</p>
+      </div>
+    </div>
+
+    <div v-else-if="!isLoggedIn" class="login-gate">
+      <div class="login-gate-card">
+        <p class="login-gate-title">Whale Tracker</p>
+        <p class="login-gate-sub">请先登录后进入网站</p>
+        <el-form class="login-form" label-position="top" @submit.prevent="submitLogin">
+          <el-form-item label="用户名">
+            <el-input
+              v-model="loginUser"
+              size="large"
+              autocomplete="username"
+              autofocus
+              @keyup.enter="submitLogin"
+            />
+          </el-form-item>
+          <el-form-item label="密码">
+            <el-input
+              v-model="loginPass"
+              type="password"
+              size="large"
+              show-password
+              autocomplete="current-password"
+              @keyup.enter="submitLogin"
+            />
+          </el-form-item>
+          <el-button
+            type="primary"
+            size="large"
+            class="login-gate-submit"
+            :loading="loginBusy || authLoading"
+            @click="submitLogin"
+          >
+            登录
+          </el-button>
+        </el-form>
+      </div>
+    </div>
+
+    <template v-else>
     <div v-if="pageBusy" class="page-mask">
       <div class="page-mask-card">
         <p class="mask-title">正在加载首页</p>
@@ -349,7 +414,6 @@ onUnmounted(() => {
         <FreshModeControl variant="sidebar" :reload-alerts="reloadNewsAlerts" />
         <CoinPreferences variant="sidebar" />
         <button
-          v-if="isLoggedIn"
           type="button"
           class="nav-item account"
           :title="authUser?.username || '账户'"
@@ -357,17 +421,6 @@ onUnmounted(() => {
         >
           <span class="nav-mark user">{{ (authUser?.username || 'U').slice(0, 1).toUpperCase() }}</span>
           <span class="account-name">{{ authUser?.username || '账户' }}</span>
-        </button>
-        <button
-          v-else
-          type="button"
-          class="nav-item account"
-          title="登录"
-          :disabled="authLoading"
-          @click="loginOpen = true"
-        >
-          <span class="nav-mark user">登</span>
-          <span>登录</span>
         </button>
       </div>
     </aside>
@@ -384,41 +437,6 @@ onUnmounted(() => {
           @focus-whale="onFocusWhaleCard"
         />
       </header>
-
-      <el-dialog
-        v-model="loginOpen"
-        title="登录"
-        width="420px"
-        destroy-on-close
-        class="login-dialog"
-      >
-        <el-form class="login-form" label-position="top" @submit.prevent="submitLogin">
-          <el-form-item label="用户名">
-            <el-input
-              v-model="loginUser"
-              size="large"
-              autocomplete="username"
-              @keyup.enter="submitLogin"
-            />
-          </el-form-item>
-          <el-form-item label="密码">
-            <el-input
-              v-model="loginPass"
-              type="password"
-              size="large"
-              show-password
-              autocomplete="current-password"
-              @keyup.enter="submitLogin"
-            />
-          </el-form-item>
-        </el-form>
-        <template #footer>
-          <el-button size="large" @click="loginOpen = false">取消</el-button>
-          <el-button type="primary" size="large" :loading="loginBusy" @click="submitLogin">
-            登录
-          </el-button>
-        </template>
-      </el-dialog>
 
       <el-alert
         v-if="workspace === 'hyperliquid' && (whaleStore.error || newsStore.error)"
@@ -466,8 +484,9 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <WhaleAiWorkspace v-show="workspace === 'whale-ai'" @request-login="loginOpen = true" />
+      <WhaleAiWorkspace v-show="workspace === 'whale-ai'" />
     </div>
+    </template>
   </div>
 </template>
 
@@ -479,9 +498,48 @@ onUnmounted(() => {
   background: #0b0e14;
   color: #e8edf5;
 }
+.app-shell.login-only {
+  display: block;
+}
 .app-shell.busy {
   pointer-events: none;
   user-select: none;
+}
+
+.login-gate {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(31, 111, 235, 0.25), transparent),
+    #0b0e14;
+}
+.login-gate-card {
+  width: min(400px, 100%);
+  padding: 32px 28px 28px;
+  border-radius: 16px;
+  border: 1px solid #1f2937;
+  background: #141a24;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.35);
+}
+.login-gate-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #e8edf5;
+}
+.login-gate-sub {
+  margin: 8px 0 24px;
+  font-size: 14px;
+  color: #8b9bb5;
+}
+.login-gate-submit {
+  width: 100%;
+  margin-top: 4px;
+  min-height: 44px;
+  border-radius: 12px !important;
 }
 
 /* ===== 鲸鱼AI 模块主题 ===== */
@@ -887,40 +945,5 @@ onUnmounted(() => {
     height: auto;
     overflow: visible;
   }
-}
-</style>
-
-<style>
-.login-dialog.el-dialog {
-  background: #141a24 !important;
-  border: 1px solid #1f2937;
-  border-radius: 16px;
-  overflow: hidden;
-}
-.login-dialog .el-dialog__header {
-  padding: 16px 24px 8px;
-  margin: 0;
-}
-.login-dialog .el-dialog__title {
-  color: #e8edf5;
-  font-weight: 700;
-}
-.login-dialog .el-dialog__body {
-  padding: 8px 24px 4px;
-}
-.login-dialog .el-dialog__footer {
-  padding: 12px 24px 20px;
-}
-.login-dialog .el-button {
-  border-radius: 12px;
-  font-weight: 700;
-}
-.login-dialog .el-button--primary {
-  background: #2a4a6a;
-  border-color: #2a4a6a;
-}
-.login-dialog .el-button--primary:hover {
-  background: #345878;
-  border-color: #345878;
 }
 </style>
