@@ -954,6 +954,8 @@ export type V41BridgeStatus = {
   lastError: string;
   latencyMs: number;
   freshness: string;
+  staleMs?: number;
+  offlineMs?: number;
 };
 
 export async function fetchWhaleAiEngineHealth() {

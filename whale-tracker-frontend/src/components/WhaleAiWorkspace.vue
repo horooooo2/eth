@@ -53,7 +53,6 @@ const emit = defineEmits<{
 }>();
 
 const qaBusy = ref(false);
-const qaExecutionMode = ref<'simulator' | 'exchange'>('simulator');
 const qaCapability = ref<{
   enabled?: boolean;
   qa_exchange_enabled?: boolean;
@@ -109,27 +108,41 @@ const isQaConsole = computed(
 );
 
 const qaExchangeEnvLabel = computed(() => {
-  const env =
-    qaCapability.value?.exchange_environment ||
-    (whaleAiTradeSimulated.value ? 'demo' : 'live');
+  // Prefer Node capability truth source; do not invent demo/live locally beyond fallback
+  const env = qaCapability.value?.exchange_environment;
   if (env === 'live') return 'OKX 实盘';
-  return 'OKX 模拟盘';
+  if (env === 'demo') return 'OKX 模拟盘';
+  if (qaCapability.value?.account_mode === 'OKX_LIVE') return 'OKX 实盘';
+  if (qaCapability.value?.account_mode === 'OKX_DEMO') return 'OKX 模拟盘';
+  return '未解析';
 });
-const qaCycleButtonLabel = computed(() => {
-  if (qaExecutionMode.value === 'exchange') {
-    return whaleAiTradeSimulated.value ? 'OKX 模拟盘' : 'OKX 实盘';
-  }
-  return '模拟仓';
-});
+const qaIsLive = computed(
+  () =>
+    qaCapability.value?.exchange_environment === 'live' ||
+    qaCapability.value?.account_mode === 'OKX_LIVE' ||
+    qaCapability.value?.live_money === true,
+);
 const qaCanRunExchange = computed(() => Boolean(qaCapability.value?.exchange_available));
+const qaRunDisabledReason = computed(() => {
+  if (!qaEnabled.value) return qaDisabledReason.value;
+  if (qaCanRunExchange.value) return '';
+  if (qaIsLive.value && !qaCapability.value?.qa_live_enabled) {
+    return '实盘 QA 测试未授权（需 V41_QA_LIVE_ENABLED=true）';
+  }
+  if (!qaCapability.value?.qa_exchange_enabled) {
+    return '交易所 QA 未启用：需 V41_QA_EXCHANGE_ENABLED=true';
+  }
+  if (!qaCapability.value?.okx_ready) return '未绑定可用的 OKX 交易密钥';
+  return '交易所仓不可用';
+});
 
 async function refreshQaStatus() {
   try {
     const st = await fetchV41HftSimStatus();
     const enabled =
       st?.enabled === true ||
-      st?.enabled === 1 ||
-      String(st?.enabled || '').toLowerCase() === 'true';
+      String(st?.enabled ?? '').toLowerCase() === 'true' ||
+      String(st?.enabled ?? '') === '1';
     qaStatus.value = { ...st, enabled };
   } catch (err) {
     console.warn('[qa-hft] status failed', err);
@@ -147,25 +160,22 @@ async function refreshQaStatus() {
   }
 }
 
-async function onQaStart(cycles: number, inject: boolean) {
+async function onQaStart() {
   if (qaBusy.value || !qaEnabled.value) return;
-  if (qaExecutionMode.value === 'exchange' && !qaCanRunExchange.value) {
-    ElMessage.error(
-      qaCapability.value?.account_mode === 'OKX_LIVE' && !qaCapability.value?.qa_live_enabled
-        ? '当前为 OKX 实盘，但 V41_QA_LIVE_ENABLED 未开启'
-        : '交易所仓未启用：需 V41_QA_EXCHANGE_ENABLED=true 且已绑定 OKX',
-    );
+  if (!qaCanRunExchange.value) {
+    ElMessage.error(qaRunDisabledReason.value || '交易所仓不可用');
     return;
   }
+  const cycles = 20;
   qaBusy.value = true;
   try {
-    // demo/live resolved server-side from user_exchange_keys.simulated — do not send from browser
+    // Only exchange; demo/live resolved server-side — never send from browser
     const res = (await startV41HftSim({
       cycles,
       seed: 20260909,
-      inject_failures: qaExecutionMode.value === 'simulator' ? inject : false,
+      inject_failures: false,
       max_position_notional_usdt: 50,
-      execution_mode: qaExecutionMode.value,
+      execution_mode: 'exchange',
     })) as { passed?: boolean; status?: typeof qaStatus.value; ok?: boolean };
     qaStatus.value = res?.status || (await fetchV41HftSimStatus());
     selectedExecutionId.value = 'QA-HFT-SIM';
@@ -173,10 +183,10 @@ async function onQaStart(cycles: number, inject: boolean) {
     consoleMode.value = 'QA_HFT_SIM';
     alphaOpeningEnabled.value = false;
     const passed = res.passed;
-    const where = qaCycleButtonLabel.value;
+    const where = qaExchangeEnvLabel.value;
     if (passed) ElMessage.success(`${where} ${cycles} cycles PASS`);
     else ElMessage.warning(`${where} ${cycles} cycles FAIL`);
-    pushLog(passed ? 'success' : 'warn', `${where} 高频测试 ${cycles} cycles ${passed ? 'PASS' : 'FAIL'}`);
+    pushLog(passed ? 'success' : 'warn', `${where} 开平仓测试 ${cycles} cycles ${passed ? 'PASS' : 'FAIL'}`);
   } catch (err: unknown) {
     const anyErr = err as {
       code?: string;
@@ -187,7 +197,7 @@ async function onQaStart(cycles: number, inject: boolean) {
     let msg = anyErr?.message || (err instanceof Error ? err.message : '启动失败');
     if (code === 'HFT_SIM_DISABLED') msg = '模拟仓测试未启用：V41_HFT_SIM_ENABLED 未打开';
     if (code === 'QA_EXCHANGE_DISABLED') msg = '交易所仓未启用：V41_QA_EXCHANGE_ENABLED 未打开';
-    if (code === 'QA_LIVE_TRADING_DISABLED') msg = '实盘 QA 未启用：V41_QA_LIVE_ENABLED 未打开';
+    if (code === 'QA_LIVE_TRADING_DISABLED') msg = '实盘 QA 测试未授权';
     if (code === 'QA_RUN_ALREADY_ACTIVE') msg = '已有 QA 测试在运行';
     ElMessage.error(msg);
     pushLog('error', msg);
@@ -1460,70 +1470,38 @@ onUnmounted(() => {
           </div>
 
           <div v-if="isQaConsole" class="qa-inline" style="margin-top: 14px">
-            <div class="field" style="margin-bottom: 10px">
-              <label>执行仓位</label>
-              <div class="buttons" style="margin-top: 6px">
-                <button
-                  type="button"
-                  class="btn"
-                  :class="qaExecutionMode === 'simulator' ? 'btn-primary' : ''"
-                  @click="qaExecutionMode = 'simulator'"
-                >
-                  模拟仓
-                </button>
-                <button
-                  type="button"
-                  class="btn"
-                  :class="qaExecutionMode === 'exchange' ? 'btn-primary' : ''"
-                  :disabled="!qaCanRunExchange"
-                  @click="qaExecutionMode = 'exchange'"
-                >
-                  交易所仓
-                </button>
-              </div>
-              <div class="section-sub" style="margin-top: 6px">
-                <template v-if="qaExecutionMode === 'simulator'">执行环境：内部 ExchangeSimulator（不打 OKX）</template>
-                <template v-else>
-                  执行环境：{{ qaExchangeEnvLabel }}
-                  <span v-if="!whaleAiTradeSimulated" style="color: var(--yellow)"> ⚠ 当前为 OKX 实盘账户</span>
-                </template>
-              </div>
+            <div class="section-sub" style="margin-bottom: 8px">
+              执行环境：{{ qaExchangeEnvLabel }}
+              <span v-if="qaIsLive" style="color: var(--yellow)"> ⚠ 当前为 OKX 实盘</span>
             </div>
             <div class="section-sub" style="margin-bottom: 8px">
-              状态 {{ qaStatus?.state || '—' }} · cycle {{ qaStatus?.cycle_id || 0 }}/{{
-                qaStatus?.target_cycles || 0
+              状态 {{ qaStatus?.state || 'FLAT' }} · cycle {{ qaStatus?.cycle_id || 0 }}/{{
+                qaStatus?.target_cycles || 20
               }}
-              · 仓位 {{ Number(qaStatus?.position_notional_usdt || 0).toFixed(1) }}U/50U · 杠杆
-              {{ qaStatus?.actual_leverage || '—' }}x→{{ qaStatus?.target_leverage || '—' }}x
+              · 仓位 {{ Number(qaStatus?.position_notional_usdt || 0).toFixed(2) }} / 50U · 目标杠杆
+              {{ qaStatus?.target_leverage || '—' }}x · 实际杠杆 {{ qaStatus?.actual_leverage || '—' }}x
               · {{ qaStatus?.passed === true ? 'PASS' : qaStatus?.passed === false ? 'FAIL' : '—' }}
             </div>
-            <p v-if="!qaEnabled" class="section-sub" style="color: var(--yellow); margin-bottom: 8px">
-              {{ qaDisabledReason }}
+            <p
+              v-if="!qaEnabled || !qaCanRunExchange"
+              class="section-sub"
+              style="color: var(--yellow); margin-bottom: 8px"
+            >
+              {{ qaRunDisabledReason }}
             </p>
             <div class="buttons">
-              <button type="button" class="btn" :disabled="qaBusy || !qaEnabled" @click="onQaStart(20, false)">
-                20 cycles · {{ qaCycleButtonLabel }}
-              </button>
               <button
                 type="button"
                 class="btn btn-primary"
-                :disabled="qaBusy || !qaEnabled"
-                @click="onQaStart(200, false)"
+                :disabled="qaBusy || !qaEnabled || !qaCanRunExchange"
+                @click="onQaStart"
               >
-                200 cycles · {{ qaCycleButtonLabel }}
-              </button>
-              <button
-                type="button"
-                class="btn btn-warning"
-                :disabled="qaBusy || !qaEnabled || qaExecutionMode === 'exchange'"
-                @click="onQaStart(40, true)"
-              >
-                40 + 故障注入
+                运行开平仓测试
               </button>
               <button type="button" class="btn" :disabled="qaBusy" @click="onQaStop">停止</button>
             </div>
             <div class="section-sub tip" style="margin-top: 8px">
-              QA 点 cycles 即启动测试，无需再点「启动」。「启动 / 停止」只控制 Alpha 引擎。
+              默认 20 cycles · 交易所路径（Node → OKX）。点测试即运行，无需再点「启动」。
             </div>
           </div>
         </div>
