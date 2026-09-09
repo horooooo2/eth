@@ -55,6 +55,7 @@ class HftSimStartBody(BaseModel):
     inject_failures: bool = False
     execution_mode: str = "simulator"  # simulator | exchange
     exchange_environment: Optional[str] = None  # demo | live (from Node, not browser trust)
+    user_id: Optional[str] = None  # logged-in user; required for exchange QA OKX keys
 
 
 def _hft_sim_enabled() -> bool:
@@ -261,6 +262,14 @@ def create_app() -> FastAPI:
                         "details": {"env_key": "V41_QA_EXCHANGE_ENABLED"},
                     },
                 )
+            if not str(body.user_id or "").strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "code": "USER_ID_REQUIRED",
+                        "message": "exchange QA requires user_id (per-user OKX keys)",
+                    },
+                )
         from src.qa.hft_sim_runner import get_hft_runner
 
         entered = runtime.enter_qa_hft_sim()
@@ -280,6 +289,7 @@ def create_app() -> FastAPI:
             action_interval_seconds=body.action_interval_seconds,
             execution_mode=mode,
             exchange_environment=body.exchange_environment,
+            user_id=body.user_id,
         )
         if not result.get("ok"):
             raise HTTPException(status_code=409, detail=result.get("error") or {"code": "QA_START_FAILED"})

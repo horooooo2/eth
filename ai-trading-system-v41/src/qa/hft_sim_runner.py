@@ -200,6 +200,7 @@ class HftSimRunner:
         action_interval_seconds: float = 0,
         execution_mode: str = "simulator",
         exchange_environment: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         if self.running:
             return {
@@ -212,6 +213,18 @@ class HftSimRunner:
                 "ok": False,
                 "error": {"code": "HFT_SIM_CONFIG_INVALID", "message": f"bad execution_mode={execution_mode}"},
             }
+        # Bind Node gateway to the logged-in user's OKX keys (required for exchange QA)
+        uid = str(user_id or "").strip()
+        if mode == "exchange" and not uid:
+            return {
+                "ok": False,
+                "error": {
+                    "code": "USER_ID_REQUIRED",
+                    "message": "exchange QA requires user_id (per-user OKX keys)",
+                },
+            }
+        if uid:
+            self.node = NodeGatewayClient(user_id=uid)
         sym = (symbol or self.symbol or "BTC-USDT-SWAP").upper()
         if sym not in QA_ALLOWED_SYMBOLS:
             return {
@@ -231,7 +244,7 @@ class HftSimRunner:
         baseline_qty = 0.0
         if mode == "exchange":
             try:
-                base = self.node.get_position(self.symbol)
+                base = self.node.get_position(sym)
                 baseline_qty = float(base.get("qty") or 0)
             except Exception as exc:  # noqa: BLE001
                 code = getattr(exc, "code", None) or "POSITION_QUERY_FAILED"

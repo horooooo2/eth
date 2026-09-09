@@ -412,6 +412,7 @@ router.post('/test/hft-sim/start', async (req, res) => {
     delete body.account_mode;
     delete body.live_money;
     delete body.exchange_environment;
+    delete body.user_id; // always from session — never trust browser
 
     if (mode === 'exchange') {
       const qaEx = require('../lib/v41QaExchange');
@@ -437,12 +438,14 @@ router.post('/test/hft-sim/start', async (req, res) => {
       }
       body.execution_mode = 'exchange';
       body.exchange_environment = cap.exchange_environment; // demo | live from DB
+      body.user_id = userId; // per-user OKX keys for QA position / orders
       body.symbol = 'BTC-USDT-SWAP';
       body.max_position_notional_usdt = Math.min(Number(body.max_position_notional_usdt || 50), 50);
       body.inject_failures = false;
     } else {
       body.execution_mode = 'simulator';
       body.exchange_environment = null;
+      body.user_id = String(req.user.user.id);
     }
     res.json(await v41.hftSimStart(body));
   } catch (err) {
