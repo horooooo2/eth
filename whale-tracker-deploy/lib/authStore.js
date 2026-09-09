@@ -221,6 +221,16 @@ function deleteUser(userId) {
   } catch {
     /* table may not exist on very old DBs mid-migrate */
   }
+  try {
+    database.prepare('DELETE FROM user_ai_keys WHERE user_id = ?').run(id);
+  } catch {
+    /* ignore */
+  }
+  try {
+    database.prepare('DELETE FROM whale_ai_runtime_logs WHERE user_id = ?').run(id);
+  } catch {
+    /* ignore */
+  }
   database.prepare('DELETE FROM users WHERE id = ?').run(id);
   return { id, username: user.username };
 }

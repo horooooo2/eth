@@ -38,6 +38,8 @@ import {
   fetchWhaleAiTradeBalance,
   fetchWhaleAiTradeOrdersPending,
   fetchWhaleAiTradePositions,
+  fetchWhaleAiRuntimeLogs,
+  appendWhaleAiRuntimeLog,
   fetchV41HftSimStatus,
   fetchV41HftSimCapability,
   fetchExecutionSelections,
@@ -309,7 +311,16 @@ type SignalRow = {
   edge: string;
 };
 
-type LogItem = { t: string; lvl: 'info' | 'success' | 'warn' | 'error'; msg: string };
+type LogItem = {
+  id?: number;
+  ts?: number;
+  t: string;
+  lvl: 'info' | 'success' | 'warn' | 'error';
+  msg: string;
+};
+
+const LOG_KEEP = 1000;
+const LOG_SHOW = 100;
 
 const equityText = ref('—');
 const availableText = ref('—');
@@ -646,13 +657,61 @@ watch(
   },
 );
 
-function nowTime() {
-  return new Date().toLocaleTimeString('zh-CN', { hour12: false });
+function nowTime(ts = Date.now()) {
+  return new Date(ts).toLocaleTimeString('zh-CN', { hour12: false });
 }
 
-function pushLog(lvl: LogItem['lvl'], msg: string) {
-  logs.value.push({ t: nowTime(), lvl, msg });
-  if (logs.value.length > 50) logs.value = logs.value.slice(-50);
+function formatLogTime(ts?: number) {
+  if (!ts || !Number.isFinite(ts)) return nowTime();
+  const d = new Date(ts);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  if (sameDay) return d.toLocaleTimeString('zh-CN', { hour12: false });
+  return d.toLocaleString('zh-CN', {
+    hour12: false,
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+function pushLog(lvl: LogItem['lvl'], msg: string, opts?: { persist?: boolean; source?: string }) {
+  const text = String(msg || '').trim();
+  if (!text) return;
+  const ts = Date.now();
+  logs.value.push({ ts, t: formatLogTime(ts), lvl, msg: text });
+  if (logs.value.length > LOG_KEEP) logs.value = logs.value.slice(-LOG_KEEP);
+  const shouldPersist = opts?.persist !== false;
+  if (shouldPersist && isLoggedIn.value) {
+    void appendWhaleAiRuntimeLog({
+      lvl,
+      msg: text,
+      source: opts?.source || 'ui',
+      ts,
+    }).catch(() => {
+      /* ignore persist errors — console still shows locally */
+    });
+  }
+}
+
+async function loadRuntimeLogs() {
+  if (!isLoggedIn.value) return;
+  try {
+    const data = await fetchWhaleAiRuntimeLogs(LOG_KEEP);
+    const rows = Array.isArray(data.logs) ? data.logs : [];
+    logs.value = rows.map((r) => ({
+      id: r.id,
+      ts: Number(r.ts) || Date.now(),
+      t: formatLogTime(Number(r.ts) || Date.now()),
+      lvl: (['info', 'success', 'warn', 'error'].includes(String(r.lvl))
+        ? r.lvl
+        : 'info') as LogItem['lvl'],
+      msg: String(r.msg || ''),
+    }));
+  } catch {
+    /* keep whatever is in memory */
+  }
 }
 
 function logLevelLabel(lvl: LogItem['lvl']) {
@@ -1207,6 +1266,11 @@ watch(isLoggedIn, (logged) => {
   }
 });
 
+watch(isLoggedIn, (ok) => {
+  if (ok) void loadRuntimeLogs();
+  else logs.value = [];
+});
+
 watch(whaleAiTradeReady, () => {
   void loadAccountSnapshot();
 });
@@ -1227,8 +1291,14 @@ onMounted(() => {
   if (isLoggedIn.value) {
     void refreshWhaleAiKeyStatus(true);
     void refreshWhaleAiTradeStatus(true).then(() => loadAccountSnapshot());
+    void loadRuntimeLogs().then(() => {
+      if (!logs.value.length) {
+        pushLog('info', '个人交易舱已加载：账户/持仓接 OKX，策略与信号接 V4.1 引擎');
+      }
+    });
+  } else {
+    pushLog('info', '个人交易舱已加载：登录后可持久化策略运行日志', { persist: false });
   }
-  pushLog('info', '个人交易舱已加载：账户/持仓接 OKX，策略与信号接 V4.1 引擎');
   if (mainConsoleVisible.value) {
     startPolling();
     startPrivateWs();
@@ -1628,10 +1698,11 @@ onUnmounted(() => {
       <section class="card">
         <div class="section-title">
           <span>系统日志</span>
-          <span class="section-sub">最近 20 条</span>
+          <span class="section-sub">最近 {{ Math.min(logs.length, LOG_SHOW) }} / {{ logs.length }} 条（每账号最多 {{ LOG_KEEP }}）</span>
         </div>
         <div class="log-box">
-          <div v-for="(l, idx) in logs.slice(-20)" :key="`${l.t}-${idx}`" class="log-entry">
+          <div v-if="!logs.length" class="log-entry">暂无运行日志</div>
+          <div v-for="(l, idx) in logs.slice(-LOG_SHOW)" :key="`${l.id || l.ts || l.t}-${idx}`" class="log-entry">
             <span class="log-time">{{ l.t }}</span>
             <span :class="`log-${l.lvl}`">[{{ logLevelLabel(l.lvl) }}]</span>
             {{ l.msg }}
@@ -2214,7 +2285,7 @@ th {
 }
 
 .log-box {
-  height: 200px;
+  height: 280px;
   overflow: auto;
   background: var(--panel2);
   border: 1px solid var(--border2);

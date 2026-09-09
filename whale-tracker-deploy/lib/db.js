@@ -182,6 +182,17 @@ function migrate(database) {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS whale_ai_runtime_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      ts INTEGER NOT NULL,
+      lvl TEXT NOT NULL DEFAULT 'info',
+      msg TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'ui'
+    );
+    CREATE INDEX IF NOT EXISTS idx_whale_ai_runtime_logs_user_ts
+      ON whale_ai_runtime_logs(user_id, ts DESC);
   `);
 
   // soft migrations

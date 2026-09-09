@@ -46,6 +46,7 @@ const FILES = [
   'lib/userAiKeys.js',
   'lib/okxTradeClient.js',
   'lib/userExchangeKeys.js',
+  'lib/whaleAiRuntimeLogs.js',
   'lib/v41EngineClient.js',
   'lib/v41RealtimeBridge.js',
   'lib/v41ExecutionGateway.js',

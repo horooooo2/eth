@@ -627,6 +627,37 @@ export async function deleteWhaleAiKey() {
   return data;
 }
 
+export type WhaleAiRuntimeLog = {
+  id?: number;
+  ts: number;
+  lvl: 'info' | 'success' | 'warn' | 'error' | string;
+  msg: string;
+  source?: string;
+};
+
+export async function fetchWhaleAiRuntimeLogs(limit = 1000) {
+  const { data } = await http.get<{
+    ok: boolean;
+    limit: number;
+    count: number;
+    logs: WhaleAiRuntimeLog[];
+  }>('/whale-ai/runtime-logs', { params: { limit } });
+  return data;
+}
+
+export async function appendWhaleAiRuntimeLog(body: {
+  lvl: string;
+  msg: string;
+  source?: string;
+  ts?: number;
+}) {
+  const { data } = await http.post<{ ok: boolean; log: WhaleAiRuntimeLog }>(
+    '/whale-ai/runtime-logs',
+    body,
+  );
+  return data;
+}
+
 export async function analyzeWithWhaleAi(body: {
   source: 'x' | 'macro';
   title?: string;

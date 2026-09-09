@@ -8,6 +8,11 @@ const {
   getRawAiKey,
 } = require('../lib/userAiKeys');
 const { verifyDeepseekKey, analyzeWithDeepseek } = require('../lib/deepseekClient');
+const {
+  MAX_PER_USER,
+  appendRuntimeLog,
+  listRuntimeLogs,
+} = require('../lib/whaleAiRuntimeLogs');
 
 const router = express.Router();
 router.use('/trade', require('./whaleAiTrade'));
@@ -108,6 +113,35 @@ router.post('/analyze', async (req, res) => {
       meta: body.meta,
     });
     res.json({ ok: true, source, ...result });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+/** GET /api/whale-ai/runtime-logs — per-user strategy console logs (max 1000) */
+router.get('/runtime-logs', (req, res) => {
+  if (!assertLogin(req, res)) return;
+  try {
+    const limit = Number(req.query.limit) || MAX_PER_USER;
+    const logs = listRuntimeLogs(req.user.user.id, { limit });
+    res.json({ ok: true, limit: MAX_PER_USER, count: logs.length, logs });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+/** POST /api/whale-ai/runtime-logs */
+router.post('/runtime-logs', (req, res) => {
+  if (!assertLogin(req, res)) return;
+  try {
+    const body = req.body || {};
+    const row = appendRuntimeLog(req.user.user.id, {
+      lvl: body.lvl,
+      msg: body.msg,
+      source: body.source || 'ui',
+      ts: body.ts,
+    });
+    res.json({ ok: true, log: row });
   } catch (err) {
     sendErr(res, err);
   }
