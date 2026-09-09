@@ -421,20 +421,6 @@ const activeHealth = computed(() => {
   return whaleAiStrategyHealth.value.find((h) => h.strategy_id === activeStrategy.value) || null;
 });
 
-const activeRiskShare = computed(() => {
-  if (!engineOnline.value) return null;
-  const fromView = whaleAiActiveStrategyHealth.value;
-  if (fromView?.risk_budget_pct_equity != null && fromView.strategy_id === activeStrategy.value) {
-    return {
-      risk_budget: fromView.risk_budget_pct_equity,
-      raw_share: 0,
-      final_share: 0,
-      risk_used: 0,
-    };
-  }
-  return whaleAiRiskBudget.value?.strategies?.[activeStrategy.value] || null;
-});
-
 const systemStateLabel = computed(() => {
   if (!engineOnline.value) return '引擎离线';
   const state = String(whaleAiEngineState.value || '').toUpperCase();

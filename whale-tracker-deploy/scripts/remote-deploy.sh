@@ -47,13 +47,9 @@ print_safe_env() {
   grep -E '^(V41_ALPHA_EXECUTION|V41_ENGINE_EXECUTION_MODE|V41_LIVE_TRADING_ENABLED|V41_QA_LIVE_ENABLED|V41_MARKET_DATA_SOURCE|V41_ENGINE_AUTOSTART|V41_ENGINE_HOST|V41_ENGINE_PORT|V41_ENGINE_ENABLED|V41_HFT_SIM_ENABLED|V41_QA_EXCHANGE_ENABLED)=' "$file" | sed 's/\r$//' || true
 }
 
-abort_if_live_execute() {
+abort_if_live_trading() {
   local file="$1"
   [ -f "$file" ] || return 0
-  if grep -qE '^V41_ALPHA_EXECUTION=EXECUTE' "$file"; then
-    echo "ERROR: $file has V41_ALPHA_EXECUTION=EXECUTE — abort deploy"
-    exit 50
-  fi
   if grep -qiE '^V41_LIVE_TRADING_ENABLED=(true|1|yes|on)' "$file"; then
     echo "ERROR: $file has V41_LIVE_TRADING_ENABLED=true — abort deploy"
     exit 51
@@ -62,8 +58,8 @@ abort_if_live_execute() {
 
 print_safe_env "$ENGINE/.env" "current engine"
 print_safe_env "$DEPLOY/.env" "current node"
-abort_if_live_execute "$ENGINE/.env"
-abort_if_live_execute "$DEPLOY/.env"
+abort_if_live_trading "$ENGINE/.env"
+abort_if_live_trading "$DEPLOY/.env"
 
 NODE_TOKEN=""
 if [ -f "$DEPLOY/.env" ] && grep -q '^V41_ENGINE_INTERNAL_TOKEN=' "$DEPLOY/.env"; then
@@ -85,8 +81,8 @@ V41_ENGINE_INTERNAL_TOKEN=${NODE_TOKEN}
 V41_ENGINE_AUTOSTART=0
 V41_ENGINE_HOST=127.0.0.1
 V41_ENGINE_PORT=8711
-V41_ALPHA_EXECUTION=SHADOW
-V41_ENGINE_EXECUTION_MODE=node_gateway_shadow
+V41_ALPHA_EXECUTION=EXECUTE
+V41_ENGINE_EXECUTION_MODE=node_gateway
 V41_LIVE_TRADING_ENABLED=false
 V41_MARKET_DATA_SOURCE=okx
 V41_NODE_GATEWAY_URL=http://127.0.0.1:80
@@ -109,10 +105,10 @@ else
   upsert_env "$ENGINE/.env" V41_HFT_SIM_ENABLED true
   upsert_env "$ENGINE/.env" V41_QA_EXCHANGE_ENABLED true
   upsert_env "$ENGINE/.env" V41_QA_LIVE_ENABLED false
-  upsert_env "$ENGINE/.env" V41_ALPHA_EXECUTION SHADOW
+  upsert_env "$ENGINE/.env" V41_ALPHA_EXECUTION EXECUTE
   upsert_env "$ENGINE/.env" V41_LIVE_TRADING_ENABLED false
-  upsert_env "$ENGINE/.env" V41_ENGINE_EXECUTION_MODE node_gateway_shadow
-  grep -q '^V41_MARKET_DATA_SOURCE=' "$ENGINE/.env" || echo 'V41_MARKET_DATA_SOURCE=okx' >> "$ENGINE/.env"
+  upsert_env "$ENGINE/.env" V41_ENGINE_EXECUTION_MODE node_gateway
+  upsert_env "$ENGINE/.env" V41_MARKET_DATA_SOURCE okx
   if grep -qE '^OKX_API_(KEY|SECRET|PASSPHRASE)=' "$ENGINE/.env"; then
     echo "==> strip global OKX_API_* from engine .env"
     sed -i -E 's/^OKX_API_KEY=.*/# OKX_API_KEY= (removed: Node uses per-user keys)/' "$ENGINE/.env"
@@ -122,7 +118,7 @@ else
 fi
 
 print_safe_env "$ENGINE/.env" "engine after upsert"
-abort_if_live_execute "$ENGINE/.env"
+abort_if_live_trading "$ENGINE/.env"
 
 PY=$(command -v python3)
 cd "$ENGINE"
@@ -226,10 +222,12 @@ upsert_env "$DEPLOY/.env" V41_HFT_SIM_ENABLED true
 upsert_env "$DEPLOY/.env" V41_QA_EXCHANGE_ENABLED true
 upsert_env "$DEPLOY/.env" V41_QA_LIVE_ENABLED false
 upsert_env "$DEPLOY/.env" V41_LIVE_TRADING_ENABLED false
-upsert_env "$DEPLOY/.env" V41_ALPHA_EXECUTION SHADOW
-upsert_env "$DEPLOY/.env" V41_ENGINE_EXECUTION_MODE node_gateway_shadow
+upsert_env "$DEPLOY/.env" V41_ALPHA_EXECUTION EXECUTE
+upsert_env "$DEPLOY/.env" V41_ENGINE_EXECUTION_MODE node_gateway
+upsert_env "$DEPLOY/.env" V41_MARKET_DATA_SOURCE okx
+upsert_env "$DEPLOY/.env" V41_ENGINE_AUTOSTART 0
 print_safe_env "$DEPLOY/.env" "node after upsert"
-abort_if_live_execute "$DEPLOY/.env"
+abort_if_live_trading "$DEPLOY/.env"
 
 test -f "$DEPLOY/lib/v41UserBinding.js" || { echo "ERROR: missing v41UserBinding.js"; exit 9; }
 test -f "$DEPLOY/lib/v41QaExchange.js" || { echo "ERROR: missing v41QaExchange.js"; exit 9; }
