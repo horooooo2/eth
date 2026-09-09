@@ -7,10 +7,28 @@ PACK="${1:-/tmp/whale-deploy-pack}"
 DEPLOY="${DEPLOY:-/root/whale-tracker-deploy}"
 ENGINE="${ENGINE:-/root/ai-trading-system-v41}"
 
+# Non-login CI SSH often misses Lighthouse / nvm node paths
+export PATH="/usr/local/lighthouse/softwares/nodejs/node/bin:/root/.local/bin:/root/bin:${PATH}"
+# shellcheck disable=SC1091
+[ -f /etc/profile ] && . /etc/profile >/dev/null 2>&1 || true
+[ -f /root/.bash_profile ] && . /root/.bash_profile >/dev/null 2>&1 || true
+[ -f /root/.bashrc ] && . /root/.bashrc >/dev/null 2>&1 || true
+# Re-prepend after profile (profile may reset PATH)
+export PATH="/usr/local/lighthouse/softwares/nodejs/node/bin:/root/.local/bin:/root/bin:${PATH}"
+
 echo "==> PATH=$PATH"
 echo -n "==> node: "; command -v node || true
 echo -n "==> npm: "; command -v npm || true
 echo -n "==> python3: "; command -v python3 || true
+
+if ! command -v npm >/dev/null 2>&1; then
+  # Last-resort scan for npm under lighthouse
+  FOUND_NPM=$(find /usr/local/lighthouse -type f -name npm 2>/dev/null | head -1 || true)
+  if [ -n "${FOUND_NPM}" ]; then
+    export PATH="$(dirname "$FOUND_NPM"):${PATH}"
+    echo "==> found npm at $FOUND_NPM"
+  fi
+fi
 
 command -v npm >/dev/null 2>&1 || { echo "ERROR: npm not found"; exit 127; }
 command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 not found"; exit 127; }

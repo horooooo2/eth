@@ -87,4 +87,5 @@ jobs:
             test -f "$PACK/remote-deploy.sh"
             test -f "$PACK/engine.tgz"
             chmod +x "$PACK/remote-deploy.sh"
-            bash "$PACK/remote-deploy.sh" "$PACK"
+            # login shell so Lighthouse node/npm PATH is available
+            bash -lc "bash '$PACK/remote-deploy.sh' '$PACK'"
