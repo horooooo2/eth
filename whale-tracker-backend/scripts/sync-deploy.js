@@ -59,6 +59,7 @@ const FILES = [
   'routes/whaleAi.js',
   'routes/whaleAiTrade.js',
   'routes/whaleAiEngine.js',
+  'scripts/remote-deploy.sh',
 ];
 
 function copyFile(src, dest) {

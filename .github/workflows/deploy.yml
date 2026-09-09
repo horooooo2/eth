@@ -34,7 +34,6 @@ jobs:
         run: |
           set -e
           mkdir -p .deploy-pack
-          # Node 后端（不含 .env / data / cache / node_modules / .git）
           tar -C whale-tracker-deploy -czf .deploy-pack/code.tgz \
             --exclude='./node_modules' \
             --exclude='./public' \
@@ -44,9 +43,7 @@ jobs:
             --exclude='./.git' \
             --exclude='./.env.*' \
             .
-          # 前端静态资源
           tar -C whale-tracker-deploy/public -czf .deploy-pack/public.tgz .
-          # Python V4.1 引擎（不含 .env / data / logs / 缓存）
           tar -C ai-trading-system-v41 -czf .deploy-pack/engine.tgz \
             --exclude='./.env' \
             --exclude='./.env.*' \
@@ -58,6 +55,11 @@ jobs:
             --exclude='*/__pycache__' \
             --exclude='*.pyc' \
             .
+          # Also ship remote-deploy.sh at pack root for first-boot before extract
+          cp whale-tracker-backend/scripts/remote-deploy.sh .deploy-pack/remote-deploy.sh
+          chmod +x .deploy-pack/remote-deploy.sh
+          test -s .deploy-pack/engine.tgz
+          test -s .deploy-pack/code.tgz
           ls -lh .deploy-pack
 
       - name: Upload deploy payload
@@ -78,185 +80,11 @@ jobs:
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script_stop: true
-          # Engine pip + start can exceed default command timeout
-          command_timeout: 20m
+          command_timeout: 30m
           script: |
             set -e
-            bash -lc 'set -e
-              echo "shell PATH=$PATH"
-              echo -n "which node: "; which node || true
-              echo -n "which npm: "; which npm || true
-              echo -n "which python3: "; which python3 || true
-              if ! command -v npm >/dev/null 2>&1; then
-                echo "ERROR: npm still not found after login shell"
-                exit 127
-              fi
-              if ! command -v python3 >/dev/null 2>&1; then
-                echo "ERROR: python3 not found on server"
-                exit 127
-              fi
-
-              DEPLOY=/root/whale-tracker-deploy
-              ENGINE=/root/ai-trading-system-v41
-              PACK=/tmp/whale-deploy-pack
-              mkdir -p "$DEPLOY" "$ENGINE" "$PACK"
-              test -f "$PACK/code.tgz"
-              test -f "$PACK/public.tgz"
-              test -f "$PACK/engine.tgz"
-
-              # ----- Node 后端 + 前端 -----
-              tar -C "$DEPLOY" -xzf "$PACK/code.tgz"
-              mkdir -p "$DEPLOY/public"
-              rm -rf "$DEPLOY/public/assets"
-              tar -C "$DEPLOY/public" -xzf "$PACK/public.tgz"
-              cd "$DEPLOY"
-              npm install --omit=dev
-
-              # 确保 Node 能连本机引擎
-              touch "$DEPLOY/.env"
-              grep -q "^V41_ENGINE_ENABLED=" "$DEPLOY/.env" || echo "V41_ENGINE_ENABLED=true" >> "$DEPLOY/.env"
-              grep -q "^V41_ENGINE_BASE_URL=" "$DEPLOY/.env" || echo "V41_ENGINE_BASE_URL=http://127.0.0.1:8711" >> "$DEPLOY/.env"
-              if ! grep -q "^V41_ENGINE_INTERNAL_TOKEN=" "$DEPLOY/.env"; then
-                echo "V41_ENGINE_INTERNAL_TOKEN=dev-internal-token" >> "$DEPLOY/.env"
-              fi
-              NODE_TOKEN=$(grep "^V41_ENGINE_INTERNAL_TOKEN=" "$DEPLOY/.env" | head -1 | cut -d= -f2- | tr -d "\r")
-              [ -n "$NODE_TOKEN" ] || NODE_TOKEN=dev-internal-token
-
-              if systemctl cat whale-tracker >/dev/null 2>&1; then
-                systemctl restart whale-tracker
-                systemctl --no-pager --full status whale-tracker || true
-              else
-                echo "systemd 服务 whale-tracker 不存在，改用 node 重启"
-                if command -v fuser >/dev/null 2>&1; then
-                  fuser -k 80/tcp || true
-                else
-                  pid=$(ss -lntp | awk "/:80 /{print \$NF}" | grep -oE "[0-9]+" | head -1 || true)
-                  [ -n "${pid:-}" ] && kill "$pid" || true
-                fi
-                sleep 1
-                nohup node server.js >/tmp/whale-tracker.log 2>&1 &
-              fi
-
-              # ----- Python V4.1 引擎 -----
-              tar -C "$ENGINE" -xzf "$PACK/engine.tgz"
-              if [ ! -f "$ENGINE/.env" ]; then
-                cat > "$ENGINE/.env" <<EOF
-            V41_ENGINE_INTERNAL_TOKEN=$NODE_TOKEN
-            V41_ENGINE_AUTOSTART=1
-            V41_ENGINE_HOST=127.0.0.1
-            V41_ENGINE_PORT=8711
-            V41_ENGINE_EXECUTION_MODE=paper
-            V41_NODE_GATEWAY_URL=http://127.0.0.1:80
-            V41_HFT_SIM_ENABLED=true
-            V41_QA_EXCHANGE_ENABLED=true
-            V41_QA_LIVE_ENABLED=false
-            V41_WHALE_BRIDGE_ENABLED=false
-            EOF
-                # 去掉 heredoc 因缩进产生的前导空格
-                sed -i "s/^[[:space:]]*//" "$ENGINE/.env"
-                echo "created $ENGINE/.env"
-              else
-                # 已有 .env：只同步 token，避免两边不一致
-                if grep -q "^V41_ENGINE_INTERNAL_TOKEN=" "$ENGINE/.env"; then
-                  sed -i "s|^V41_ENGINE_INTERNAL_TOKEN=.*|V41_ENGINE_INTERNAL_TOKEN=$NODE_TOKEN|" "$ENGINE/.env"
-                else
-                  echo "V41_ENGINE_INTERNAL_TOKEN=$NODE_TOKEN" >> "$ENGINE/.env"
-                fi
-                grep -q "^V41_ENGINE_HOST=" "$ENGINE/.env" || echo "V41_ENGINE_HOST=127.0.0.1" >> "$ENGINE/.env"
-                grep -q "^V41_ENGINE_PORT=" "$ENGINE/.env" || echo "V41_ENGINE_PORT=8711" >> "$ENGINE/.env"
-                grep -q "^V41_NODE_GATEWAY_URL=" "$ENGINE/.env" || echo "V41_NODE_GATEWAY_URL=http://127.0.0.1:80" >> "$ENGINE/.env"
-              fi
-
-              PY=$(command -v python3)
-              cd "$ENGINE"
-
-              # OpenCloudOS/精简镜像常见：python3 无 pip
-              if ! "$PY" -m pip --version >/dev/null 2>&1; then
-                echo "pip missing — bootstrapping"
-                if "$PY" -m ensurepip --upgrade >/dev/null 2>&1; then
-                  echo "ensurepip ok"
-                elif command -v dnf >/dev/null 2>&1; then
-                  dnf install -y python3-pip
-                elif command -v yum >/dev/null 2>&1; then
-                  yum install -y python3-pip
-                elif command -v apt-get >/dev/null 2>&1; then
-                  apt-get update -y && apt-get install -y python3-pip
-                else
-                  # 最后手段：官方 get-pip
-                  curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
-                  "$PY" /tmp/get-pip.py
-                fi
-              fi
-              if ! "$PY" -m pip --version >/dev/null 2>&1; then
-                echo "ERROR: still no pip after bootstrap"
-                exit 11
-              fi
-              "$PY" -m pip install -U pip
-              "$PY" -m pip install -r requirements.txt
-
-              PY_BIN=$(readlink -f "$PY" 2>/dev/null || echo "$PY")
-              cat > /etc/systemd/system/v41-engine.service <<EOF
-            [Unit]
-            Description=V4.1 Trading Engine
-            After=network.target
-
-            [Service]
-            Type=simple
-            WorkingDirectory=/root/ai-trading-system-v41
-            ExecStart=$PY_BIN scripts/run_engine_api.py
-            Restart=always
-            RestartSec=3
-            EnvironmentFile=/root/ai-trading-system-v41/.env
-
-            [Install]
-            WantedBy=multi-user.target
-            EOF
-              sed -i "s/^[[:space:]]*//" /etc/systemd/system/v41-engine.service
-
-              systemctl daemon-reload
-              systemctl enable v41-engine >/dev/null 2>&1 || true
-              systemctl restart v41-engine
-              sleep 2
-              systemctl --no-pager --full status v41-engine || true
-              journalctl -u v41-engine -n 30 --no-pager || true
-
-              # ----- 健康检查：Node + Engine -----
-              ok=0
-              for i in 1 2 3 4 5 6 7 8 9 10 11 12 15; do
-                sleep 2
-                if ! curl -sf --max-time 3 http://127.0.0.1/api/health >/dev/null; then
-                  echo "node health not ready, attempt $i"
-                  continue
-                fi
-                if ! curl -sf --max-time 3 -H "X-Engine-Token: $NODE_TOKEN" http://127.0.0.1:8711/internal/v1/health >/dev/null; then
-                  echo "engine health not ready, attempt $i"
-                  continue
-                fi
-                echo
-                echo "deploy ok (attempt $i) — node + engine"
-                code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1/api/whale-ai/trade/status || true)
-                echo "whale-ai trade/status => HTTP $code"
-                if [ "$code" = "404" ]; then
-                  echo "ERROR: whale-ai trade 路由仍为 404，后端未更新成功"
-                  exit 8
-                fi
-                if [ ! -f "$DEPLOY/lib/v41QaExchange.js" ]; then
-                  echo "ERROR: missing lib/v41QaExchange.js in deploy package"
-                  exit 9
-                fi
-                if [ ! -f "$ENGINE/scripts/run_engine_api.py" ]; then
-                  echo "ERROR: missing engine scripts/run_engine_api.py"
-                  exit 10
-                fi
-                ok=1
-                break
-              done
-              if [ "$ok" != "1" ]; then
-                echo "health check failed"
-                systemctl --no-pager --full status whale-tracker || true
-                systemctl --no-pager --full status v41-engine || true
-                journalctl -u whale-tracker -n 40 --no-pager || true
-                journalctl -u v41-engine -n 80 --no-pager || true
-                exit 7
-              fi
-            '
+            PACK=/tmp/whale-deploy-pack
+            test -f "$PACK/remote-deploy.sh"
+            test -f "$PACK/engine.tgz"
+            chmod +x "$PACK/remote-deploy.sh"
+            bash "$PACK/remote-deploy.sh" "$PACK"
