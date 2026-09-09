@@ -33,6 +33,7 @@ jobs:
       - name: Pack deploy payload
         run: |
           set -e
+          rm -rf .deploy-pack
           mkdir -p .deploy-pack
           tar -C whale-tracker-deploy -czf .deploy-pack/code.tgz \
             --exclude='./node_modules' \
@@ -55,12 +56,20 @@ jobs:
             --exclude='*/__pycache__' \
             --exclude='*.pyc' \
             .
-          # Also ship remote-deploy.sh at pack root for first-boot before extract
           cp whale-tracker-backend/scripts/remote-deploy.sh .deploy-pack/remote-deploy.sh
           chmod +x .deploy-pack/remote-deploy.sh
-          test -s .deploy-pack/engine.tgz
-          test -s .deploy-pack/code.tgz
-          ls -lh .deploy-pack
+
+          echo "===== LOCAL DEPLOY PACK ====="
+          ls -lah .deploy-pack
+          find .deploy-pack -maxdepth 1 -type f -print
+
+          test -f .deploy-pack/code.tgz || { echo "ERROR: missing local code.tgz"; exit 31; }
+          test -f .deploy-pack/public.tgz || { echo "ERROR: missing local public.tgz"; exit 32; }
+          test -f .deploy-pack/engine.tgz || { echo "ERROR: missing local engine.tgz"; exit 33; }
+          test -f .deploy-pack/remote-deploy.sh || { echo "ERROR: missing local remote-deploy.sh"; exit 34; }
+          test -s .deploy-pack/engine.tgz || { echo "ERROR: empty engine.tgz"; exit 35; }
+          test -s .deploy-pack/remote-deploy.sh || { echo "ERROR: empty remote-deploy.sh"; exit 36; }
+          echo "LOCAL PACK OK"
 
       - name: Upload deploy payload
         uses: appleboy/scp-action@v0.1.7
@@ -68,10 +77,12 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: '.deploy-pack/*'
-          target: '/tmp/whale-deploy-pack'
+          # Explicit files — avoid glob/strip nesting under /tmp/whale-deploy-pack/.deploy-pack/
+          source: ".deploy-pack/code.tgz,.deploy-pack/public.tgz,.deploy-pack/engine.tgz,.deploy-pack/remote-deploy.sh"
+          target: "/tmp/whale-deploy-pack"
           strip_components: 1
           overwrite: true
+          rm: true
 
       - name: Install deps and restart
         uses: appleboy/ssh-action@v1.0.0
@@ -84,8 +95,50 @@ jobs:
           script: |
             set -e
             PACK=/tmp/whale-deploy-pack
-            test -f "$PACK/remote-deploy.sh"
-            test -f "$PACK/engine.tgz"
+
+            echo "===== REMOTE PACK ====="
+            ls -lah "$PACK" || true
+            find "$PACK" -maxdepth 3 -type f -print || true
+
+            # Tolerate accidental nesting from older scp layouts
+            if [ ! -f "$PACK/remote-deploy.sh" ] && [ -f "$PACK/.deploy-pack/remote-deploy.sh" ]; then
+              echo "WARN: files nested under $PACK/.deploy-pack — flattening"
+              mv "$PACK/.deploy-pack/"* "$PACK"/ || true
+              rmdir "$PACK/.deploy-pack" 2>/dev/null || true
+              ls -lah "$PACK" || true
+            fi
+
+            if [ ! -f "$PACK/remote-deploy.sh" ]; then
+              echo "ERROR: missing remote-deploy.sh"
+              echo "expected: $PACK/remote-deploy.sh"
+              find /tmp -maxdepth 4 -name 'remote-deploy.sh' -print 2>/dev/null || true
+              exit 21
+            fi
+
+            if [ ! -f "$PACK/engine.tgz" ]; then
+              echo "ERROR: missing engine.tgz"
+              echo "expected: $PACK/engine.tgz"
+              find /tmp -maxdepth 4 -name 'engine.tgz' -print 2>/dev/null || true
+              exit 22
+            fi
+
+            if [ ! -f "$PACK/code.tgz" ]; then
+              echo "ERROR: missing code.tgz"
+              exit 23
+            fi
+
+            if [ ! -f "$PACK/public.tgz" ]; then
+              echo "ERROR: missing public.tgz"
+              exit 24
+            fi
+
+            echo "REMOTE PACK OK"
+            echo "remote-deploy.sh => $(ls -lah "$PACK/remote-deploy.sh")"
+            echo "engine.tgz => $(ls -lah "$PACK/engine.tgz")"
+
             chmod +x "$PACK/remote-deploy.sh"
-            # login shell so Lighthouse node/npm PATH is available
-            bash -lc "bash '$PACK/remote-deploy.sh' '$PACK'"
+
+            # Trace remote deploy; keep Lighthouse PATH via login shell
+            export PATH="/usr/local/lighthouse/softwares/nodejs/node/bin:/root/.local/bin:/root/bin:${PATH}"
+            echo "===== RUN remote-deploy.sh (bash -x) ====="
+            bash -x "$PACK/remote-deploy.sh" "$PACK"
