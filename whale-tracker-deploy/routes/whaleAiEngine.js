@@ -294,15 +294,15 @@ router.post('/internal/qa/ensure-leverage', async (req, res) => {
   }
   try {
     const qaEx = require('../lib/v41QaExchange');
-    const userId =
-      String(req.body?.user_id || process.env.V41_ENGINE_OWNER_USER_ID || '').trim() ||
-      (() => {
-        const { isOkxReadyForUser } = require('../lib/userExchangeKeys');
-        const { getDb } = require('../lib/db');
-        const users = getDb().prepare('SELECT id FROM users ORDER BY created_at ASC LIMIT 20').all();
-        for (const u of users) if (isOkxReadyForUser(u.id)) return u.id;
-        return '';
-      })();
+    const userId = String(
+      req.body?.user_id || process.env.V41_ENGINE_OWNER_USER_ID || '',
+    ).trim();
+    if (!userId) {
+      return res.status(400).json({
+        code: 'USER_ID_REQUIRED',
+        error: 'qa ensure-leverage requires user_id (per-user OKX keys)',
+      });
+    }
     const result = await qaEx.ensureLeverage(userId, {
       instId: String(req.body?.instId || req.body?.symbol || 'BTC-USDT-SWAP'),
       lever: Number(req.body?.lever || req.body?.target_leverage || 3),
@@ -322,15 +322,15 @@ router.get('/internal/qa/position', async (req, res) => {
   }
   try {
     const qaEx = require('../lib/v41QaExchange');
-    const userId =
-      String(req.query?.user_id || process.env.V41_ENGINE_OWNER_USER_ID || '').trim() ||
-      (() => {
-        const { isOkxReadyForUser } = require('../lib/userExchangeKeys');
-        const { getDb } = require('../lib/db');
-        const users = getDb().prepare('SELECT id FROM users ORDER BY created_at ASC LIMIT 20').all();
-        for (const u of users) if (isOkxReadyForUser(u.id)) return u.id;
-        return '';
-      })();
+    const userId = String(
+      req.query?.user_id || process.env.V41_ENGINE_OWNER_USER_ID || '',
+    ).trim();
+    if (!userId) {
+      return res.status(400).json({
+        code: 'USER_ID_REQUIRED',
+        error: 'qa position requires user_id (per-user OKX keys)',
+      });
+    }
     const instId = String(req.query?.instId || req.query?.symbol || 'BTC-USDT-SWAP');
     const snap = await qaEx.fetchQaPosition(userId, instId);
     res.json({ ok: true, user_id: userId, ...snap });

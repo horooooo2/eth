@@ -61,6 +61,16 @@ cd "$DEPLOY"
 npm install --omit=dev
 
 touch "$DEPLOY/.env"
+# 清空全局 OKX 交易密钥：仓位/下单只认各用户在前端绑定的 Key
+for ENV_FILE in "$DEPLOY/.env" ; do
+  if [ -f "$ENV_FILE" ] && grep -qE '^OKX_API_(KEY|SECRET|PASSPHRASE)=' "$ENV_FILE"; then
+    echo "==> strip global OKX_API_* from $ENV_FILE (per-user keys only)"
+    sed -i -E 's/^OKX_API_KEY=.*/# OKX_API_KEY= (removed: use per-user binding)/' "$ENV_FILE"
+    sed -i -E 's/^OKX_API_SECRET=.*/# OKX_API_SECRET= (removed: use per-user binding)/' "$ENV_FILE"
+    sed -i -E 's/^OKX_API_PASSPHRASE=.*/# OKX_API_PASSPHRASE= (removed: use per-user binding)/' "$ENV_FILE"
+    grep -q '^OKX_ALLOW_ENV_CREDS=' "$ENV_FILE" && sed -i -E 's/^OKX_ALLOW_ENV_CREDS=.*/OKX_ALLOW_ENV_CREDS=0/' "$ENV_FILE"
+  fi
+done
 grep -q '^V41_ENGINE_ENABLED=' "$DEPLOY/.env" || echo 'V41_ENGINE_ENABLED=true' >> "$DEPLOY/.env"
 grep -q '^V41_ENGINE_BASE_URL=' "$DEPLOY/.env" || echo 'V41_ENGINE_BASE_URL=http://127.0.0.1:8711' >> "$DEPLOY/.env"
 if ! grep -q '^V41_ENGINE_INTERNAL_TOKEN=' "$DEPLOY/.env"; then
@@ -110,6 +120,12 @@ else
   grep -q '^V41_ENGINE_HOST=' "$ENGINE/.env" || echo 'V41_ENGINE_HOST=127.0.0.1' >> "$ENGINE/.env"
   grep -q '^V41_ENGINE_PORT=' "$ENGINE/.env" || echo 'V41_ENGINE_PORT=8711' >> "$ENGINE/.env"
   grep -q '^V41_NODE_GATEWAY_URL=' "$ENGINE/.env" || echo 'V41_NODE_GATEWAY_URL=http://127.0.0.1:80' >> "$ENGINE/.env"
+  if grep -qE '^OKX_API_(KEY|SECRET|PASSPHRASE)=' "$ENGINE/.env"; then
+    echo "==> strip global OKX_API_* from engine .env"
+    sed -i -E 's/^OKX_API_KEY=.*/# OKX_API_KEY= (removed: Node uses per-user keys)/' "$ENGINE/.env"
+    sed -i -E 's/^OKX_API_SECRET=.*/# OKX_API_SECRET= (removed)/' "$ENGINE/.env"
+    sed -i -E 's/^OKX_API_PASSPHRASE=.*/# OKX_API_PASSPHRASE= (removed)/' "$ENGINE/.env"
+  fi
   echo "==> updated existing $ENGINE/.env"
 fi
 

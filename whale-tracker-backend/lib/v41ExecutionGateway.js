@@ -123,20 +123,10 @@ function upsertRecord(row) {
 }
 
 function resolveUserId(orderIntent) {
-  const fromBody = String(orderIntent.user_id || '').trim();
+  // 只用意图显式 user_id，或单租户 OWNER；禁止「第一个有 OKX 的用户」串仓
+  const fromBody = String(orderIntent?.user_id || '').trim();
   if (fromBody) return fromBody;
-  const owner = String(process.env.V41_ENGINE_OWNER_USER_ID || '').trim();
-  if (owner) return owner;
-  // fallback: first user who has OKX ready
-  try {
-    const users = getDb().prepare('SELECT id FROM users ORDER BY created_at ASC LIMIT 20').all();
-    for (const u of users) {
-      if (isOkxReadyForUser(u.id)) return u.id;
-    }
-  } catch {
-    // ignore
-  }
-  return '';
+  return String(process.env.V41_ENGINE_OWNER_USER_ID || '').trim();
 }
 
 function toOkxInstId(symbol) {

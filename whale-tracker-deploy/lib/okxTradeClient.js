@@ -1,8 +1,10 @@
 /**
  * OKX 私有交易 REST（HMAC 签名）
- * 默认读环境变量；也可通过 withTradeCredentials / options.credentials 传入用户密钥。
+ * 生产路径必须通过 withTradeCredentials / options.credentials 传入【当前用户】密钥。
+ * 默认不读进程环境变量中的 OKX_API_*，避免多用户串用同一账户仓位。
  *
- * OKX_API_KEY / OKX_API_SECRET / OKX_API_PASSPHRASE
+ * 仅本地脚本可设 OKX_ALLOW_ENV_CREDS=1 后使用：
+ *   OKX_API_KEY / OKX_API_SECRET / OKX_API_PASSPHRASE
  * OKX_TRADE_SIMULATED=1  → 模拟盘（默认，安全）
  * OKX_TRADE_BASE         → 默认 https://www.okx.com
  */
@@ -26,7 +28,23 @@ function tradeBase() {
   );
 }
 
+function emptyCredentials() {
+  return {
+    apiKey: '',
+    secret: '',
+    passphrase: '',
+    simulated: String(process.env.OKX_TRADE_SIMULATED || '1') !== '0',
+  };
+}
+
+function envCredentialsAllowed() {
+  return ['1', 'true', 'yes', 'on'].includes(
+    String(process.env.OKX_ALLOW_ENV_CREDS || '').trim().toLowerCase(),
+  );
+}
+
 function envCredentials() {
+  if (!envCredentialsAllowed()) return emptyCredentials();
   return {
     apiKey: String(process.env.OKX_API_KEY || '').trim(),
     secret: String(process.env.OKX_API_SECRET || '').trim(),
@@ -60,6 +78,12 @@ function getCredentials(override) {
   return envCredentials();
 }
 
+function credentialSource(override) {
+  if (normalizeCreds(override) || normalizeCreds(credAls.getStore())) return 'user';
+  if (envCredentialsAllowed() && envCredentials().apiKey) return 'env';
+  return 'none';
+}
+
 function isSimulated(override) {
   const c = getCredentials(override);
   if (c && (c.apiKey || credAls.getStore() || override)) {
@@ -82,7 +106,7 @@ function getTradeStatus(override) {
     base: tradeBase(),
     hasProxy: Boolean(OKX_PROXY),
     keyHint: c.apiKey ? `${c.apiKey.slice(0, 4)}…${c.apiKey.slice(-4)}` : '',
-    source: normalizeCreds(override) || normalizeCreds(credAls.getStore()) ? 'user' : 'env',
+    source: credentialSource(override),
   };
 }
 
@@ -136,8 +160,9 @@ function buildAxiosConfig(timeoutMs) {
 async function okxPrivate(method, pathWithQuery, bodyObj, options = {}) {
   const creds = getCredentials(options.credentials);
   if (!creds.apiKey || !creds.secret || !creds.passphrase) {
-    const err = new Error('未配置 OKX_API_KEY / OKX_API_SECRET / OKX_API_PASSPHRASE');
+    const err = new Error('请先在鲸鱼AI 绑定当前用户的 OKX 交易 API Key');
     err.status = 503;
+    err.code = 'OKX_NOT_BOUND';
     throw err;
   }
   const { apiKey, secret, passphrase } = creds;
