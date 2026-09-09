@@ -161,7 +161,42 @@ function migrate(database) {
       PRIMARY KEY (user_id, exchange)
     );
     CREATE INDEX IF NOT EXISTS idx_user_exchange_keys_user ON user_exchange_keys(user_id);
+
+    CREATE TABLE IF NOT EXISTS user_ai_keys (
+      user_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      api_key TEXT NOT NULL DEFAULT '',
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, provider)
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_ai_keys_user ON user_ai_keys(user_id);
+
+    CREATE TABLE IF NOT EXISTS v41_execution_records (
+      order_intent_id TEXT PRIMARY KEY,
+      user_id TEXT,
+      client_order_id TEXT,
+      exchange_order_id TEXT,
+      status TEXT NOT NULL,
+      request_json TEXT,
+      response_json TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
   `);
+
+  // soft migrations
+  try {
+    database.exec(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'`);
+  } catch {
+    // column exists
+  }
+  try {
+    database.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_v41_exec_clord ON v41_execution_records(client_order_id) WHERE client_order_id IS NOT NULL AND client_order_id != ''`,
+    );
+  } catch {
+    // ignore
+  }
 }
 
 function getDb() {

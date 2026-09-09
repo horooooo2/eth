@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { ref } from 'vue';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import { Close } from '@element-plus/icons-vue';
-import { deleteOkxExchangeKeys, lookupMarketCoin } from '@/api';
-import { isLoggedIn } from '@/stores/auth';
+import { lookupMarketCoin } from '@/api';
 import {
   MAX_PREFERRED_COINS,
   readWatchedCoins,
@@ -16,12 +15,10 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   change: [];
-  'reset-copy-api': [];
 }>();
 
 const prefsVisible = ref(false);
 const saving = ref(false);
-const resettingApi = ref(false);
 const prefAddSymbol = ref('');
 const prefAddLoading = ref(false);
 const draftCoins = ref<string[]>([]);
@@ -80,21 +77,18 @@ async function submitPrefAdd() {
 
 function removeDraftCoin(id: string) {
   if (draftCoins.value.length <= 1) {
-    ElMessage.warning('至少保留一个币种');
+    ElMessage.warning('至少保留 1 个币种');
     return;
   }
   draftCoins.value = draftCoins.value.filter((item) => item !== id);
 }
 
 async function confirmPrefs() {
-  const appliedCoins = readWatchedCoins();
-  const coinsChanged = JSON.stringify(draftCoins.value) !== JSON.stringify(appliedCoins);
-
-  if (!coinsChanged) {
-    closePrefs();
+  if (saving.value) return;
+  if (!draftCoins.value.length) {
+    ElMessage.warning('至少保留 1 个币种');
     return;
   }
-
   saving.value = true;
   try {
     writePreferredCoins(draftCoins.value);
@@ -102,38 +96,6 @@ async function confirmPrefs() {
     emit('change');
   } finally {
     saving.value = false;
-  }
-}
-
-async function resetCopyApi() {
-  if (!isLoggedIn.value) {
-    ElMessage.warning('请先登录后再重置跟单 API');
-    return;
-  }
-  try {
-    await ElMessageBox.confirm(
-      '将清除已保存的 OKX API Key / Secret / Passphrase。\n清除后需重新填写才能继续跟单。',
-      '重置跟单 API',
-      {
-        confirmButtonText: '确认重置',
-        cancelButtonText: '取消',
-        type: 'warning',
-      },
-    );
-  } catch {
-    return;
-  }
-  resettingApi.value = true;
-  try {
-    await deleteOkxExchangeKeys();
-    prefsVisible.value = false;
-    window.dispatchEvent(new CustomEvent('whale-copy-keys-reset'));
-    emit('reset-copy-api');
-    ElMessage.success('跟单 API 已清除，请重新配置');
-  } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '重置失败');
-  } finally {
-    resettingApi.value = false;
   }
 }
 </script>
@@ -205,22 +167,6 @@ async function resetCopyApi() {
             </button>
           </div>
         </section>
-
-        <section class="setting-block api-block">
-          <h4 class="block-title">跟单 API</h4>
-          <p class="intro">
-            清除已保存的 OKX 密钥后可重新绑定。日常切换模拟/实盘请到跟单页点「API」。
-          </p>
-          <button
-            type="button"
-            class="dlg-btn danger"
-            :disabled="!isLoggedIn || resettingApi"
-            @click="resetCopyApi"
-          >
-            {{ resettingApi ? '重置中…' : '重置跟单 API' }}
-          </button>
-          <p v-if="!isLoggedIn" class="hint-dim">登录后可重置</p>
-        </section>
       </div>
 
       <template #footer>
@@ -278,166 +224,106 @@ async function resetCopyApi() {
   gap: 2px;
   font-size: 10px;
   font-weight: 600;
-}
-.prefs-trigger.sidebar .prefs-icon {
-  width: 18px;
-  height: 18px;
+  letter-spacing: 0.02em;
 }
 .prefs-trigger.sidebar:hover {
   background: #1a222e;
   color: #e8edf5;
 }
+.prefs-icon {
+  width: 18px;
+  height: 18px;
+}
 
 .dialog-body {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  min-height: 220px;
-  padding: 0;
+  gap: 18px;
 }
-
 .setting-block {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
-
 .block-title {
   margin: 0;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 700;
   color: #e8edf5;
 }
-
-.api-block {
-  padding-top: 12px;
-  border-top: 1px solid #1f2937;
-}
-
 .intro {
   margin: 0;
-  color: #8b9bb5;
+  color: #8b9bb4;
   font-size: 13px;
   line-height: 1.5;
 }
-
-.hint-dim {
-  margin: 0;
-  font-size: 12px;
-  color: #6a7e9c;
-}
-
 .coin-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-  gap: 8px;
-  min-height: 140px;
-  padding: 10px;
-  border: 1px solid #1f2937;
-  border-radius: 4px;
-  background: #10171f;
-  align-content: start;
-}
-
-.coin-chip {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  min-height: 34px;
-  padding: 0 8px 0 10px;
-  border: 1px solid #1f2937;
-  border-radius: 4px;
-  background: #1a222e;
+  flex-wrap: wrap;
+  gap: 8px;
 }
-
+.coin-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 6px 12px;
+  border-radius: 999px;
+  background: #1a222e;
+  border: 1px solid #2a3548;
+}
 .coin-label {
   font-size: 13px;
   font-weight: 700;
-  letter-spacing: 0.03em;
   color: #e8edf5;
 }
-
-.coin-empty {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 100px;
-  color: #6a7e9c;
-  font-size: 13px;
-}
-
-.pref-add {
-  display: flex;
-  flex-direction: row;
-  flex-wrap: nowrap;
-  align-items: stretch;
-  gap: 8px;
-  width: 100%;
-}
-
-.pref-add :deep(.el-input) {
-  flex: 1 1 auto;
-  min-width: 0;
-  width: auto;
-}
-.pref-add :deep(.el-input__wrapper) {
-  min-height: 36px;
-  border-radius: 4px;
-  background: #10171f;
-  box-shadow: 0 0 0 1px #1f2937 inset;
-}
-.pref-add > .dlg-btn {
-  flex: 0 0 auto;
-  align-self: stretch;
-  white-space: nowrap;
-  min-width: 72px;
-  padding: 0 16px;
-}
-
 .chip-remove {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 22px;
   height: 22px;
-  padding: 0;
   border: 0;
-  border-radius: 2px;
+  border-radius: 50%;
   background: transparent;
-  color: #6a7e9c;
+  color: #8b9bb4;
   cursor: pointer;
-  flex-shrink: 0;
 }
-
+.chip-remove:hover:not(:disabled) {
+  color: #f56c6c;
+  background: rgba(245, 108, 108, 0.12);
+}
 .chip-remove:disabled {
   opacity: 0.35;
   cursor: not-allowed;
 }
-
-.chip-remove:hover:not(:disabled) {
-  color: #f0f4fa;
-  background: #2a3a52;
+.coin-empty {
+  color: #6a7e9c;
+  font-size: 13px;
 }
-
+.pref-add {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
 .dialog-footer {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  width: 100%;
 }
-
 .dlg-btn {
   border: 0;
-  border-radius: 4px;
+  border-radius: 10px;
   padding: 8px 16px;
   font: inherit;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 700;
   cursor: pointer;
 }
-.dlg-btn:disabled {
+.dlg-btn.primary {
+  background: #3d7eff;
+  color: #fff;
+}
+.dlg-btn.primary:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
@@ -445,51 +331,7 @@ async function resetCopyApi() {
   background: #1a222e;
   color: #b0c4de;
 }
-.dlg-btn.ghost:hover:not(:disabled) {
+.dlg-btn.ghost:hover {
   background: #2a3a52;
-  color: #f0f4fa;
-}
-.dlg-btn.primary {
-  background: #2a4a6a;
-  color: #f0f4fa;
-}
-.dlg-btn.primary:hover:not(:disabled) {
-  background: #345878;
-}
-.dlg-btn.danger {
-  align-self: flex-start;
-  background: #3a1f24;
-  color: #f0a0a8;
-  border: 1px solid #5a3038;
-}
-.dlg-btn.danger:hover:not(:disabled) {
-  background: #4a282e;
-  color: #ffc0c6;
-}
-</style>
-
-<style>
-.coin-prefs-dialog.el-dialog {
-  background: #141a24 !important;
-  border: 1px solid #1f2937;
-  border-radius: 6px;
-  overflow: hidden;
-  box-shadow: none;
-}
-.coin-prefs-dialog .el-dialog__header {
-  padding: 14px 16px 6px;
-  margin: 0;
-}
-.coin-prefs-dialog .el-dialog__title {
-  color: #e8edf5;
-  font-size: 15px;
-  font-weight: 600;
-}
-.coin-prefs-dialog .el-dialog__body {
-  padding: 8px 16px 4px;
-}
-.coin-prefs-dialog .el-dialog__footer {
-  padding: 8px 16px 14px;
-  border-top: 1px solid #1a1f2a;
 }
 </style>

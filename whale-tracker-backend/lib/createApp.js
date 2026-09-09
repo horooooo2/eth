@@ -4,7 +4,6 @@ const whalesRouter = require('../routes/whales');
 const newsRouter = require('../routes/news');
 const marketsRouter = require('../routes/markets');
 const authRouter = require('../routes/auth');
-const okxRouter = require('../routes/okx');
 const xRouter = require('../routes/x');
 const { fetchFedOdds } = require('./markets');
 const { getHlInfoConfig } = require('./hlInfoClient');
@@ -43,6 +42,15 @@ function mountRoutes(app, prefix) {
           return { connected: false };
         }
       })(),
+      v41Engine: (() => {
+        try {
+          const client = require('./v41EngineClient').bridgeStatus();
+          const ws = require('./v41RealtimeBridge').getV41RealtimeBridgeStatus();
+          return { ...client, ws };
+        } catch {
+          return { enabled: false };
+        }
+      })(),
       fillBackfill: (() => {
         try {
           return require('./fillBackfill').getBackfillStatus();
@@ -64,9 +72,8 @@ function mountRoutes(app, prefix) {
   app.use(`${base}/whales`, whalesRouter);
   app.use(`${base}/news`, newsRouter);
   app.use(`${base}/markets`, marketsRouter);
-  app.use(`${base}/okx`, okxRouter);
   app.use(`${base}/x`, xRouter);
-  app.use(`${base}/copy-trade`, require('../routes/copyTrade'));
+  app.use(`${base}/whale-ai`, require('../routes/whaleAi'));
   app.get(`${base}/data/browse`, (req, res) => {
     try {
       const { loadDbBrowse } = require('./sqliteStore');

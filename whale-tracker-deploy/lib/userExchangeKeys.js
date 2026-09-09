@@ -114,7 +114,7 @@ function upsertExchangeKeys(userId, exchange, input = {}) {
     throw err;
   }
   if (ex === 'binance') {
-    const err = new Error('币安跟单对接中，暂不可配置');
+    const err = new Error('币安交易暂不支持');
     err.status = 400;
     throw err;
   }

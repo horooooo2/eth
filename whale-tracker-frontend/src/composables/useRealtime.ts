@@ -7,29 +7,10 @@ export type RealtimeMessage =
   | { type: 'alert'; alert: Record<string, unknown>; at?: number }
   | { type: 'whalePatch'; whaleId: string; patch: Record<string, unknown>; at?: number }
   | {
-      type: 'okxUpdate';
-      at?: number;
-      updatedAt?: number;
-      traders?: unknown[];
-      opens?: unknown[];
-      positions?: unknown[];
-      positionsByTrader?: Record<string, unknown[]>;
-      meta?: Record<string, unknown>;
-    }
-  | { type: 'okxAlert'; alert: Record<string, unknown>; at?: number }
-  | {
       type: 'xTweet';
       at?: number;
       tweets?: Array<Record<string, unknown>>;
       accounts?: unknown[];
-    }
-  | {
-      type: 'copyUpdate';
-      at?: number;
-      updatedAt?: number;
-      tasks?: unknown[];
-      positions?: unknown[];
-      records?: unknown[];
     };
 
 type Handler = (msg: RealtimeMessage) => void;

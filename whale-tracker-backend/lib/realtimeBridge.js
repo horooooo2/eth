@@ -428,11 +428,6 @@ function emitAlerts(alerts) {
       broadcast({ type: 'alert', alert, at: Date.now() });
     }
   }
-  try {
-    require('./hlCopyEngine').onWhaleAlerts(alerts);
-  } catch (err) {
-    console.warn('[realtime] copy-engine:', err.message);
-  }
 }
 
 function handleFills({ user, fills, isSnapshot }) {
@@ -505,6 +500,15 @@ function handleWebData({ user, data }) {
 
   const alerts = alertsFromPositionDiff(whale, prev, positions);
   emitAlerts(alerts);
+  try {
+    const { ingestRealtimePositionDiff } = require('./v41WhaleDataBridge');
+    ingestRealtimePositionDiff(whale, prev, positions, alerts);
+  } catch (err) {
+    // bridge optional — never break HL realtime
+    if (String(process.env.V41_WHALE_BRIDGE_ENABLED || '').toLowerCase() === 'true') {
+      console.warn('[realtime] v41 whale bridge ingest failed:', err.message || err);
+    }
+  }
 }
 
 function startRealtimeBridge() {

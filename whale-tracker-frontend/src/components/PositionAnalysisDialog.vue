@@ -579,17 +579,4 @@ function fillSpot() {
 .short {
   color: var(--bear);
 }
-@media (max-width: 768px) {
-  .layout {
-    grid-template-columns: 1fr;
-  }
-  .metric-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .peer-head,
-  .peer-row {
-    grid-template-columns: 1fr 1fr;
-    gap: 4px;
-  }
-}
 </style>

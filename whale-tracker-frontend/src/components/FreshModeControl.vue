@@ -146,7 +146,7 @@ function onDisable() {
       class="fresh-dialog"
     >
       <p class="hint">
-        HL / OKX 共用：只看近 {{ draftPreset }} 小时内的新开仓及相关动态；更早开仓上的补仓会隐藏。
+        只看近 {{ draftPreset }} 小时内的新开仓及相关动态；更早开仓上的补仓会隐藏。
       </p>
       <div class="presets">
         <button

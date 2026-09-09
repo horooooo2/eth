@@ -10,7 +10,7 @@ import WhaleResonanceBanner from '@/components/WhaleResonanceBanner.vue';
 import WhaleAlertDock from '@/components/WhaleAlertDock.vue';
 import WhaleList from '@/components/WhaleList.vue';
 import DataModule from '@/components/DataModule.vue';
-import CopyTradeWorkspace from '@/components/CopyTradeWorkspace.vue';
+import WhaleAiWorkspace from '@/components/WhaleAiWorkspace.vue';
 import { useNewsStore } from '@/stores/news';
 import { useWhaleStore } from '@/stores/whale';
 import {
@@ -22,6 +22,7 @@ import {
   logout as authLogout,
   getAuthUiSettings,
 } from '@/stores/auth';
+import { refreshWhaleAiKeyStatus } from '@/stores/whaleAi';
 import { useRealtime } from '@/composables/useRealtime';
 import type { RecoQuotes } from '@/utils/recommend';
 import { readFocusCoin } from '@/utils/recoPrefs';
@@ -45,7 +46,6 @@ const newsStore = useNewsStore();
 
 const whaleListRef = ref<InstanceType<typeof WhaleList> | null>(null);
 const newsListRef = ref<InstanceType<typeof NewsList> | null>(null);
-const whalePanel = ref<'list' | 'data' | 'news'>('list');
 const quotes = ref<RecoQuotes>({});
 const fundingRates = ref<Record<string, number>>({});
 const focusCoin = ref<string>(readFocusCoin());
@@ -74,15 +74,13 @@ async function submitLogin() {
   }
 }
 
-function openCopyWorkspace() {
-  workspace.value = 'copy';
+function openWhaleAiWorkspace() {
+  workspace.value = 'whale-ai';
   if (!isLoggedIn.value) {
     loginOpen.value = true;
+  } else {
+    void refreshWhaleAiKeyStatus(true);
   }
-}
-
-function onOpenCopyWorkspace() {
-  workspace.value = 'copy';
 }
 
 function onLogout() {
@@ -102,7 +100,6 @@ function onFocusWhale(whale: { id: string; name: string }) {
 }
 
 function onFocusWhaleCard(payload: { id: string; name: string; coin?: string }) {
-  whalePanel.value = 'list';
   nextTick(() => {
     void whaleListRef.value?.focusWhale({ id: payload.id, coin: payload.coin });
   });
@@ -110,9 +107,6 @@ function onFocusWhaleCard(payload: { id: string; name: string; coin?: string }) 
 
 function onSelectWhale(whale: { id: string; name: string }) {
   whaleStore.loadWhaleTrades(whale);
-  if (window.matchMedia('(max-width: 768px)').matches) {
-    whalePanel.value = 'news';
-  }
 }
 
 function onSelectTransfers(whale: { id: string; name: string }) {
@@ -175,8 +169,8 @@ const secondaryReady = ref(false);
 const bootBusy = ref(true);
 const bootLabel = ref('巨鲸加载中…');
 const bootProgress = ref(0);
-/** 工作区：HL 监控 / 跟单 */
-const workspace = ref<'hyperliquid' | 'copy'>('hyperliquid');
+/** 工作区：HL 监控 / 鲸鱼AI */
+const workspace = ref<'hyperliquid' | 'whale-ai'>('hyperliquid');
 
 const {
   status: realtimeStatus,
@@ -203,8 +197,6 @@ const {
     window.setTimeout(() => newsListRef.value?.reloadAlerts?.(true), 600);
   } else if (msg.type === 'xTweet' && Array.isArray(msg.tweets)) {
     noteXTweets(msg.tweets as unknown as XFeedTweet[]);
-  } else if (msg.type === 'copyUpdate') {
-    window.dispatchEvent(new CustomEvent('whale-copy-update', { detail: msg }));
   }
 });
 
@@ -248,29 +240,15 @@ watch(
   { deep: true },
 );
 
-function syncMobilePanel() {
-  if (window.matchMedia('(max-width: 768px)').matches && whalePanel.value === 'data') {
-    whalePanel.value = 'list';
-  }
-}
-
-watch(whalePanel, (panel) => {
-  if (panel === 'data' && window.matchMedia('(max-width: 768px)').matches) {
-    whalePanel.value = 'list';
-  }
-});
-
 let timer: number | undefined;
 
 onMounted(async () => {
   document.documentElement.classList.add('dark');
   document.documentElement.classList.remove('light');
-  syncMobilePanel();
-  window.addEventListener('resize', syncMobilePanel);
-  window.addEventListener('whale-open-copy-workspace', onOpenCopyWorkspace);
   unlockAlertSound();
   await bootstrapAuth();
   void getAuthUiSettings();
+  if (isLoggedIn.value) void refreshWhaleAiKeyStatus(true);
   await loadAll(false);
   whaleStore.startActivityPolling();
   startRealtime();
@@ -283,15 +261,16 @@ onUnmounted(() => {
   if (timer) window.clearInterval(timer);
   whaleStore.stopActivityPolling();
   stopRealtime();
-  window.removeEventListener('resize', syncMobilePanel);
-  window.removeEventListener('whale-open-copy-workspace', onOpenCopyWorkspace);
 });
 </script>
 
 <template>
   <div
     class="app-shell"
-    :class="{ busy: pageBusy, 'theme-copy': workspace === 'copy' }"
+    :class="{
+      busy: pageBusy,
+      'theme-ai': workspace === 'whale-ai',
+    }"
     @pointerdown="unlockAlertSound"
   >
     <div v-if="pageBusy" class="page-mask">
@@ -346,29 +325,29 @@ onUnmounted(() => {
             formatWorkspaceBadge(hlWorkspaceBadge)
           }}</span>
         </span>
-        <span>Hyperliquid</span>
+        <span>巨鲸</span>
       </button>
       <button
         type="button"
         class="nav-item"
-        :class="{ active: workspace === 'copy' }"
-        @click="openCopyWorkspace"
+        :class="{ active: workspace === 'whale-ai' }"
+        @click="openWhaleAiWorkspace"
       >
         <span class="nav-mark brand" aria-hidden="true">
-          <svg class="brand-logo copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <svg class="brand-logo ai" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
             <path
               stroke-linecap="round"
               stroke-linejoin="round"
-              d="M7 7h10v10H7zM4.5 4.5H9M15 19.5h4.5M4.5 15V9M19.5 9v6"
+              d="M12 3l1.8 4.8L18.5 9.5l-4.7 1.7L12 16l-1.8-4.8L5.5 9.5l4.7-1.7L12 3zM5 18h14"
             />
           </svg>
         </span>
-        <span>跟单</span>
+        <span>鲸鱼AI</span>
       </button>
 
       <div class="bottom-nav">
         <FreshModeControl variant="sidebar" :reload-alerts="reloadNewsAlerts" />
-        <CoinPreferences variant="sidebar" @reset-copy-api="openCopyWorkspace" />
+        <CoinPreferences variant="sidebar" />
         <button
           v-if="isLoggedIn"
           type="button"
@@ -450,13 +429,7 @@ onUnmounted(() => {
       />
 
       <div v-show="workspace === 'hyperliquid'" class="whales-shell">
-        <div class="mobile-panel-tabs">
-          <el-radio-group v-model="whalePanel" size="small">
-            <el-radio-button label="list">巨鲸</el-radio-button>
-            <el-radio-button label="news">异动</el-radio-button>
-          </el-radio-group>
-        </div>
-        <div class="grid" :class="`panel-${whalePanel}`">
+        <div class="grid">
           <DataModule
             :whales="whaleStore.displayWhales"
             :loading="whaleStore.loading"
@@ -493,7 +466,7 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <CopyTradeWorkspace v-show="workspace === 'copy'" @request-login="loginOpen = true" />
+      <WhaleAiWorkspace v-show="workspace === 'whale-ai'" @request-login="loginOpen = true" />
     </div>
   </div>
 </template>
@@ -511,54 +484,55 @@ onUnmounted(() => {
   user-select: none;
 }
 
-/* ===== 跟单模块主题（含侧栏） ===== */
-.app-shell.theme-copy {
-  --copy-black: #000000;
-  --copy-accent: #f15a24;
-  --copy-bg: #0a0e14;
-  --copy-bg-3: #1a222c;
-  --copy-border: #1e2630;
-  --copy-text: #e0e3eb;
-  --copy-text-3: #6a7282;
-  background: var(--copy-bg);
-  color: var(--copy-text);
+/* ===== 鲸鱼AI 模块主题 ===== */
+.app-shell.theme-ai {
+  --ai-accent: #1f6feb;
+  --ai-bg: #0b0e14;
+  --ai-bg-3: #161f33;
+  --ai-border: #2d333b;
+  --ai-text: #e6edf3;
+  --ai-muted: #8b949e;
+  background: var(--ai-bg);
+  color: var(--ai-text);
 }
-.app-shell.theme-copy .sidebar {
-  background: var(--copy-black);
-  border-right-color: var(--copy-border);
+.app-shell.theme-ai .sidebar {
+  background: #0d1117;
+  border-right-color: var(--ai-border);
 }
-.app-shell.theme-copy .sidebar .nav-item {
-  color: var(--copy-text-3);
+.app-shell.theme-ai .sidebar .nav-item {
+  color: var(--ai-muted);
 }
-.app-shell.theme-copy .sidebar .nav-item.active {
-  background: var(--copy-bg-3);
-  color: var(--copy-accent);
+.app-shell.theme-ai .sidebar .nav-item.active {
+  background: var(--ai-bg-3);
+  color: var(--ai-accent);
 }
-.app-shell.theme-copy .sidebar .nav-item:hover {
-  background: var(--copy-bg-3);
-  color: var(--copy-text);
+.app-shell.theme-ai .sidebar .nav-item:hover {
+  background: var(--ai-bg-3);
+  color: var(--ai-text);
 }
-.app-shell.theme-copy .sidebar .nav-item.active .nav-mark .brand-logo.copy {
-  color: var(--copy-accent);
+.app-shell.theme-ai .sidebar .nav-item.active .nav-mark .brand-logo.ai {
+  color: var(--ai-accent);
 }
-.app-shell.theme-copy .sidebar .bottom-nav {
-  border-top-color: var(--copy-border);
+.app-shell.theme-ai .sidebar .bottom-nav {
+  border-top-color: var(--ai-border);
 }
-.app-shell.theme-copy .layout {
-  background: var(--copy-bg);
+.app-shell.theme-ai .layout {
+  background: var(--ai-bg);
+  padding: 0;
+  overflow: hidden;
 }
-.app-shell.theme-copy .sidebar :deep(.fresh-btn.sidebar),
-.app-shell.theme-copy .sidebar :deep(.prefs-trigger.sidebar) {
-  color: var(--copy-text-3);
+.app-shell.theme-ai .sidebar :deep(.fresh-btn.sidebar),
+.app-shell.theme-ai .sidebar :deep(.prefs-trigger.sidebar) {
+  color: var(--ai-muted);
 }
-.app-shell.theme-copy .sidebar :deep(.fresh-btn.sidebar:hover:not(:disabled)),
-.app-shell.theme-copy .sidebar :deep(.prefs-trigger.sidebar:hover) {
-  background: var(--copy-bg-3);
-  color: var(--copy-text);
+.app-shell.theme-ai .sidebar :deep(.fresh-btn.sidebar:hover:not(:disabled)),
+.app-shell.theme-ai .sidebar :deep(.prefs-trigger.sidebar:hover) {
+  background: var(--ai-bg-3);
+  color: var(--ai-text);
 }
-.app-shell.theme-copy .sidebar :deep(.fresh-btn.sidebar.on) {
-  background: var(--copy-bg-3);
-  color: var(--copy-accent);
+.app-shell.theme-ai .sidebar :deep(.fresh-btn.sidebar.on) {
+  background: var(--ai-bg-3);
+  color: var(--ai-accent);
 }
 
 .sidebar {
@@ -718,7 +692,7 @@ onUnmounted(() => {
 .sidebar .nav-item .nav-mark .brand-logo.hl {
   border-radius: 50%;
 }
-.sidebar .nav-item .nav-mark .brand-logo.copy {
+.sidebar .nav-item .nav-mark .brand-logo.ai {
   width: 20px;
   height: 20px;
   color: #e8edf5;
@@ -873,9 +847,6 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 8px;
 }
-.mobile-panel-tabs {
-  display: none;
-}
 .grid {
   flex: 1;
   display: grid;
@@ -915,64 +886,6 @@ onUnmounted(() => {
   .grid > * {
     height: auto;
     overflow: visible;
-  }
-}
-@media (max-width: 768px) {
-  .sidebar {
-    display: none;
-  }
-  .layout {
-    padding: 6px 6px calc(12px + env(safe-area-inset-bottom));
-    height: 100dvh;
-  }
-  .topbar {
-    display: none !important;
-  }
-  .mobile-panel-tabs {
-    display: block;
-    flex: 0 0 auto;
-  }
-  .mobile-panel-tabs :deep(.el-radio-group) {
-    display: flex;
-    width: 100%;
-  }
-  .mobile-panel-tabs :deep(.el-radio-button) {
-    flex: 1;
-  }
-  .mobile-panel-tabs :deep(.el-radio-button__inner) {
-    width: 100%;
-    padding: 6px 4px;
-    font-size: 12px;
-  }
-  .whales-shell {
-    flex: 1;
-    min-height: 0;
-  }
-  .grid {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .grid > * {
-    display: none;
-    flex: 1;
-    min-height: 0;
-    height: auto;
-    overflow: hidden;
-  }
-  .grid.panel-list > :nth-child(2),
-  .grid.panel-news > :nth-child(3) {
-    display: flex;
-    flex-direction: column;
-  }
-  .grid.panel-data > :nth-child(1) {
-    display: none !important;
-  }
-  .grid.panel-data > :nth-child(2) {
-    display: flex;
-    flex-direction: column;
   }
 }
 </style>

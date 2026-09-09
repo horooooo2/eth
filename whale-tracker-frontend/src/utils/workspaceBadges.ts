@@ -1,10 +1,8 @@
 import { computed, ref } from 'vue';
 
 /** 异工作区未读：按「开单人数」计（去重 id） */
-const okxPendingIds = ref<string[]>([]);
 const hlPendingIds = ref<string[]>([]);
 
-export const okxWorkspaceBadge = computed(() => okxPendingIds.value.length);
 export const hlWorkspaceBadge = computed(() => hlPendingIds.value.length);
 
 function pushUnique(list: string[], id: string) {
@@ -14,18 +12,9 @@ function pushUnique(list: string[], id: string) {
   return true;
 }
 
-export function noteOkxWorkspacePending(traderId: string) {
-  const next = [...okxPendingIds.value];
-  if (pushUnique(next, traderId)) okxPendingIds.value = next;
-}
-
 export function noteHlWorkspacePending(whaleId: string) {
   const next = [...hlPendingIds.value];
   if (pushUnique(next, whaleId)) hlPendingIds.value = next;
-}
-
-export function clearOkxWorkspaceBadge() {
-  okxPendingIds.value = [];
 }
 
 export function clearHlWorkspaceBadge() {

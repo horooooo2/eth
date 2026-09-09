@@ -4,6 +4,7 @@ import { fetchCalendar } from '@/api';
 import type { CalendarEvent, WhaleProfile } from '@/types';
 import type { RecoQuotes } from '@/utils/recommend';
 import XFeed from '@/components/XFeed.vue';
+import AiAnalyzeButton from '@/components/AiAnalyzeButton.vue';
 import { clearXUnread, xUnread } from '@/stores/xFeed';
 
 type DataTab = 'macro' | 'x';
@@ -91,7 +92,7 @@ watch(
         <el-radio-group v-model="tab" class="direction-filter" @change="onTabChange">
           <el-radio-button label="x">
             <span class="tab-label">
-              X
+              动态
               <i v-if="xUnread && tab !== 'x'" class="unread-dot" aria-hidden="true" />
             </span>
           </el-radio-button>
@@ -124,6 +125,20 @@ watch(
                   {{ starText(importanceStars(item.importance)) }}
                 </span>
                 <strong class="title">{{ item.title }}</strong>
+                <AiAnalyzeButton
+                  source="macro"
+                  :title="item.title"
+                  :content="item.note || item.title"
+                  :meta="{
+                    dateLabel: item.dateLabel,
+                    weekday: item.weekday,
+                    time: item.time || item.timeNote || '',
+                    importance: item.importance,
+                    previous: item.previous,
+                    forecast: item.forecast,
+                    actual: item.actual,
+                  }"
+                />
               </div>
               <p v-if="item.note" class="note">{{ item.note }}</p>
               <div class="meta">
@@ -284,9 +299,14 @@ watch(
   line-height: 1.4;
 }
 .title {
+  flex: 1;
+  min-width: 0;
   font-size: 15px;
   line-height: 1.45;
   font-weight: 600;
+}
+.title-line :deep(.ai-chip) {
+  margin-top: 2px;
 }
 .note {
   margin: 0 0 4px;

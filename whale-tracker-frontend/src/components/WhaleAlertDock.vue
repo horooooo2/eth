@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Close } from '@element-plus/icons-vue';
@@ -55,9 +55,6 @@ const PC_DOCK_MAX = 4;
 
 /** 桌面端右下角：按时间取最新 N 条 */
 const pcWhaleCards = computed(() => whaleMonitorCards.value.slice(0, PC_DOCK_MAX));
-
-/** 手机端顶部横幅：最多 2 条，保留最新 */
-const bannerAlerts = computed(() => whaleMonitorCards.value.slice(0, 2));
 
 function leadItem(alert: WhaleAlert) {
   return alert.items.find((item) => item.price || item.leverage) || alert.items[0];
@@ -159,33 +156,6 @@ onMounted(() => {
 
 <template>
   <div class="alert-dock-root" aria-live="polite">
-    <!-- 手机端：顶部横幅 -->
-    <div v-if="bannerAlerts.length" class="mobile-banner-stack">
-      <button
-        v-for="alert in bannerAlerts"
-        :key="`m-${alert.id}`"
-        type="button"
-        class="alert-banner whale"
-        :class="kindClass(alert)"
-        @click="openAlert(alert)"
-      >
-        <span class="banner-kind" :class="kindClass(alert)">{{ alert.kindLabel }}</span>
-        <span class="banner-name">{{ alertWhaleTitle(alert) }}</span>
-        <span v-if="alertCoin(alert)" class="banner-coin">{{ displayAsset(alertCoin(alert)!) }}</span>
-        <span class="banner-text">{{ alert.headline }}</span>
-        <span
-          class="banner-close"
-          title="关闭"
-          role="button"
-          tabindex="0"
-          @click.stop="dismiss(alert.id)"
-          @keyup.enter.stop="dismiss(alert.id)"
-        >
-          <el-icon><Close /></el-icon>
-        </span>
-      </button>
-    </div>
-
     <!-- 桌面端：右下角卡片（最多 4 张，取最新） -->
     <div class="dock-wrap">
     <section v-if="pcWhaleCards.length" class="dock-section whale">
@@ -305,9 +275,6 @@ onMounted(() => {
 <style scoped>
 .alert-dock-root {
   display: contents;
-}
-.mobile-banner-stack {
-  display: none;
 }
 .dock-wrap {
   position: fixed;
@@ -557,131 +524,5 @@ onMounted(() => {
 .toast-leave-to {
   opacity: 0;
   transform: translateX(24px);
-}
-@media (max-width: 768px) {
-  .alert-dock-root {
-    display: block;
-    flex: 0 0 auto;
-    width: 0;
-    height: 0;
-    overflow: visible;
-    margin: 0;
-    padding: 0;
-    border: 0;
-  }
-  .dock-wrap {
-    display: none !important;
-  }
-  .mobile-banner-stack {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    z-index: 3200;
-    width: auto;
-    margin: 0;
-    padding: calc(6px + env(safe-area-inset-top)) 6px 0;
-    max-height: min(40vh, 240px);
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
-    pointer-events: none;
-    box-sizing: border-box;
-  }
-  .alert-banner {
-    pointer-events: auto;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 100%;
-    min-height: 40px;
-    padding: 6px 8px 6px 10px;
-    box-sizing: border-box;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: color-mix(in srgb, var(--card) 94%, transparent);
-    backdrop-filter: blur(10px);
-    color: inherit;
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-    overflow: hidden;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
-  }
-  .alert-banner.whale {
-    border-color: color-mix(in srgb, #e6a23c 45%, var(--border));
-  }
-  .alert-banner.long {
-    background: color-mix(in srgb, var(--bull) 10%, var(--card));
-  }
-  .alert-banner.short {
-    background: color-mix(in srgb, var(--bear) 10%, var(--card));
-  }
-  .banner-kind {
-    flex: 0 0 auto;
-    font-size: 11px;
-    font-weight: 800;
-    color: var(--muted);
-  }
-  .banner-kind.long {
-    color: var(--bull);
-  }
-  .banner-kind.short {
-    color: var(--bear);
-  }
-  .banner-name {
-    flex: 0 1 auto;
-    max-width: 28%;
-    font-size: 12px;
-    font-weight: 800;
-    color: var(--accent);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .banner-coin {
-    flex: 0 0 auto;
-    font-size: 11px;
-    font-weight: 800;
-    color: var(--text);
-  }
-  .banner-text {
-    flex: 1 1 auto;
-    min-width: 0;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .banner-close {
-    flex: 0 0 auto;
-    width: 22px;
-    height: 22px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 50%;
-    color: var(--muted);
-  }
-  .banner-close:hover {
-    color: var(--text);
-  }
-}
-@media (min-width: 769px) {
-  .mobile-banner-stack {
-    display: none !important;
-  }
-}
-@media (max-width: 768px) {
-  .dock {
-    right: 10px;
-    left: 10px;
-    bottom: calc(10px + env(safe-area-inset-bottom));
-    width: auto;
-  }
 }
 </style>

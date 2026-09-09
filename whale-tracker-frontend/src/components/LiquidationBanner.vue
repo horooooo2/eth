@@ -349,40 +349,6 @@ onUnmounted(() => {
     display: none;
   }
 }
-
-@media (max-width: 768px) {
-  .liq-banner {
-    height: auto;
-    min-height: 44px;
-    flex-wrap: wrap;
-    padding: 6px 8px;
-  }
-
-  .body {
-    width: 100%;
-    height: auto;
-    min-height: 34px;
-    flex-wrap: wrap;
-    white-space: normal;
-    row-gap: 4px;
-  }
-
-  .period-grid {
-    gap: 8px;
-  }
-
-  .period-card {
-    padding: 12px 10px 10px;
-  }
-
-  .period-row.head {
-    font-size: 13px;
-  }
-
-  .period-row {
-    font-size: 12px;
-  }
-}
 </style>
 
 <style>

@@ -1,0 +1,1858 @@
+{
+  "meta": {
+    "name": "AI Personal Single-Active Strategy Trading System",
+    "version": "4.2",
+    "status": "research_paper_trading",
+    "market_focus": "crypto_perpetuals",
+    "timezone": "UTC+8",
+    "config_type": "deterministic_event_driven_execution_schema",
+    "live_trading_allowed": false,
+    "design_principles": [
+      "risk_first",
+      "deterministic_core_logic",
+      "no_llm_interpretation_in_core_execution_path",
+      "bounded_offline_parameter_adaptation_only",
+      "all_state_transitions_are_auditable",
+      "all_risk_allocations_are_hard_capped",
+      "signals_have_explicit_lifecycle_and_expiry",
+      "execution_must_revalidate_signal_before_order_creation",
+      "edge_estimation_must_have_defined_runtime_data_source",
+      "manual_resume_requires_authenticated_audited_control_path",
+      "single_active_alpha_strategy",
+      "risk_budget_contracts_only_never_renormalize_up",
+      "execution_engine_is_not_allocation_target"
+    ],
+    "runtime_model": "single_active_alpha_strategy",
+    "derived_from": "4.1"
+  },
+  "engine_contract": {
+    "expression_language": {
+      "supported_operators": [
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "eq",
+        "neq",
+        "and",
+        "or",
+        "not",
+        "add",
+        "sub",
+        "mul",
+        "div",
+        "abs",
+        "min",
+        "max",
+        "clip",
+        "in",
+        "not_in"
+      ],
+      "missing_value_policy": "fail_closed",
+      "boolean_rule_policy": "all_required_conditions_must_be_explicit"
+    },
+    "decision_order": [
+      "S6_safety_gate",
+      "data_quality_gate",
+      "position_order_reconciliation",
+      "global_portfolio_risk_gate",
+      "S7_strategy_health_gate",
+      "S3_market_regime",
+      "S5_risk_budget_allocation",
+      "S1_S2_signal_generation",
+      "S4_execution_timing",
+      "cost_slippage_gate",
+      "final_order_creation"
+    ],
+    "runtime_objects": {
+      "TradeIntent": {
+        "description": "Directional opportunity emitted by S1/S2 and consumed by S4/Router.",
+        "required_fields": [
+          "intent_id",
+          "strategy_id",
+          "symbol",
+          "direction",
+          "created_at",
+          "expires_at",
+          "reference_price",
+          "reference_atr",
+          "signal_snapshot",
+          "status"
+        ]
+      },
+      "OrderIntent": {
+        "description": "Executable order candidate created only after TradeIntent passes lifecycle, revalidation, safety, cost and risk gates.",
+        "required_fields": [
+          "order_intent_id",
+          "trade_intent_id",
+          "symbol",
+          "direction",
+          "quantity",
+          "order_type",
+          "created_at",
+          "risk_snapshot"
+        ]
+      }
+    }
+  },
+  "data_schema": {
+    "bar_fields": [
+      "timestamp",
+      "open",
+      "high",
+      "low",
+      "close",
+      "volume"
+    ],
+    "derivatives_fields": [
+      "funding_rate",
+      "open_interest",
+      "basis"
+    ],
+    "microstructure_fields": [
+      "best_bid",
+      "best_ask",
+      "bid_depth",
+      "ask_depth",
+      "aggressive_buy_volume",
+      "aggressive_sell_volume"
+    ],
+    "portfolio_fields": [
+      "equity",
+      "cash",
+      "position_qty",
+      "position_side",
+      "position_avg_price",
+      "open_order_qty",
+      "realized_pnl_day",
+      "equity_high_watermark"
+    ],
+    "quality_requirements": {
+      "bars_monotonic_timestamp": true,
+      "duplicate_bar_allowed": false,
+      "max_bar_gap_multiplier": 2,
+      "position_reconciliation_required": true,
+      "order_reconciliation_required": true
+    }
+  },
+  "feature_definitions": {
+    "atr14": {
+      "type": "indicator",
+      "formula": "ATR(high, low, close, 14)"
+    },
+    "ema20": {
+      "type": "indicator",
+      "formula": "EMA(close, 20)"
+    },
+    "ema50": {
+      "type": "indicator",
+      "formula": "EMA(close, 50)"
+    },
+    "ema200": {
+      "type": "indicator",
+      "formula": "EMA(close, 200)"
+    },
+    "adx14": {
+      "type": "indicator",
+      "formula": "ADX(high, low, close, 14)"
+    },
+    "rsi14": {
+      "type": "indicator",
+      "formula": "RSI(close, 14)"
+    },
+    "trend_separation": {
+      "type": "derived",
+      "formula": "(ema20 - ema50) / max(atr14, 1e-12)"
+    },
+    "trend_slope_6": {
+      "type": "derived",
+      "formula": "(ema20[t] - ema20[t-6]) / max(6 * atr14, 1e-12)"
+    },
+    "efficiency_ratio_20": {
+      "type": "derived",
+      "formula": "abs(close[t] - close[t-20]) / max(sum(abs(close[i]-close[i-1]), i=t-19..t), 1e-12)"
+    },
+    "atr_ratio_20": {
+      "type": "derived",
+      "formula": "atr14 / max(SMA(atr14,20), 1e-12)"
+    },
+    "volume_z20": {
+      "type": "derived",
+      "formula": "(volume - SMA(volume,20)) / max(STD(volume,20), 1e-12)"
+    },
+    "return_1m": {
+      "type": "derived",
+      "formula": "close_1m[t] / close_1m[t-1] - 1"
+    },
+    "return_24h": {
+      "type": "derived",
+      "formula": "close_1h[t] / close_1h[t-24] - 1"
+    },
+    "breadth_24h": {
+      "type": "cross_sectional",
+      "formula": "count(valid_universe_symbols where return_24h > 0) / max(valid_universe_count,1)"
+    },
+    "realized_vol_5m": {
+      "type": "derived",
+      "formula": "sqrt(sum(log_return_1m^2 over last 5 bars))"
+    },
+    "rv5m_ratio_30d": {
+      "type": "derived",
+      "formula": "realized_vol_5m / max(median(realized_vol_5m over rolling_30d), 1e-12)"
+    },
+    "spread_bps": {
+      "type": "microstructure",
+      "formula": "(best_ask - best_bid) / max((best_ask + best_bid)/2,1e-12) * 10000"
+    },
+    "depth_imbalance": {
+      "type": "microstructure",
+      "formula": "(bid_depth - ask_depth) / max(bid_depth + ask_depth,1e-12)"
+    },
+    "aggressive_buy_ratio": {
+      "type": "microstructure",
+      "formula": "aggressive_buy_volume_1m / max(median(aggressive_buy_volume_1m over rolling_5m),1e-12)"
+    },
+    "aggressive_sell_ratio": {
+      "type": "microstructure",
+      "formula": "aggressive_sell_volume_1m / max(median(aggressive_sell_volume_1m over rolling_5m),1e-12)"
+    },
+    "price_impact_buy": {
+      "type": "microstructure",
+      "formula": "positive_return_1m / max(aggressive_buy_volume_1m,1e-12)"
+    },
+    "price_impact_sell": {
+      "type": "microstructure",
+      "formula": "abs(negative_return_1m) / max(aggressive_sell_volume_1m,1e-12)"
+    }
+  },
+  "global_risk": {
+    "max_initial_risk_all_open_positions_pct_equity": 0.025,
+    "max_same_direction_risk_pct_equity": 0.0175,
+    "max_correlated_bucket_risk_pct_equity": 0.0125,
+    "single_symbol_initial_risk_cap_pct_equity": 0.0075,
+    "correlation_threshold": 0.75,
+    "correlation_lookback_days": 30,
+    "daily_loss_controls": [
+      {
+        "threshold_pct_equity": -0.01,
+        "new_risk_multiplier": 0.75
+      },
+      {
+        "threshold_pct_equity": -0.02,
+        "new_risk_multiplier": 0.5
+      },
+      {
+        "threshold_pct_equity": -0.03,
+        "new_entries_enabled": false
+      }
+    ],
+    "drawdown_controls": [
+      {
+        "threshold_from_high": -0.05,
+        "portfolio_risk_multiplier": 0.75
+      },
+      {
+        "threshold_from_high": -0.08,
+        "portfolio_risk_multiplier": 0.5
+      },
+      {
+        "threshold_from_high": -0.12,
+        "new_entries_enabled": false,
+        "manual_review_required": true
+      }
+    ]
+  },
+  "S1_trend": {
+    "enabled": true,
+    "timeframe": "1h",
+    "risk_per_trade_pct_equity": 0.004,
+    "risk_per_trade_allowed": [
+      0.0025,
+      0.004,
+      0.006
+    ],
+    "strategy_initial_risk_cap_pct_equity": 0.0125,
+    "leverage_cap": 6.0,
+    "trend_quality_score": {
+      "formula": "25*adx_component + 25*slope_component + 20*breakout_component + 15*volume_component + 15*volatility_component",
+      "components": {
+        "adx_component": "clip((adx14-18)/(35-18),0,1)",
+        "slope_component": "clip(abs(trend_slope_6)/0.12,0,1)",
+        "breakout_component": "1 if long:close>=HHV(high,20) or short:close<=LLV(low,20) else clip(abs(trend_separation)/1.0,0,1)",
+        "volume_component": "clip((volume_z20+0.5)/2.5,0,1)",
+        "volatility_component": "1 if 0.75<=atr_ratio_20<=1.50 else 0.5 if 0.60<=atr_ratio_20<=1.75 else 0"
+      },
+      "entry_threshold": 70.0
+    },
+    "long_entry": {
+      "logic": "and",
+      "conditions": [
+        {
+          "lhs": "close",
+          "op": "gt",
+          "rhs": "ema20"
+        },
+        {
+          "lhs": "ema20",
+          "op": "gt",
+          "rhs": "ema50"
+        },
+        {
+          "lhs": "trend_slope_6",
+          "op": "gt",
+          "rhs": 0.0
+        },
+        {
+          "lhs": "trend_quality_score",
+          "op": "gte",
+          "rhs": 70.0
+        },
+        {
+          "lhs": "S3.direction_bias",
+          "op": "gt",
+          "rhs": 0.0
+        },
+        {
+          "lhs": "S3.regime",
+          "op": "in",
+          "rhs": [
+            "strong_trend",
+            "weak_trend",
+            "recovery"
+          ]
+        },
+        {
+          "lhs": "atr_ratio_20",
+          "op": "lte",
+          "rhs": 1.5
+        },
+        {
+          "lhs": "expected_edge_after_cost_R",
+          "op": "gte",
+          "rhs": 0.15
+        }
+      ]
+    },
+    "short_entry": {
+      "logic": "and",
+      "conditions": [
+        {
+          "lhs": "close",
+          "op": "lt",
+          "rhs": "ema20"
+        },
+        {
+          "lhs": "ema20",
+          "op": "lt",
+          "rhs": "ema50"
+        },
+        {
+          "lhs": "trend_slope_6",
+          "op": "lt",
+          "rhs": 0.0
+        },
+        {
+          "lhs": "trend_quality_score",
+          "op": "gte",
+          "rhs": 70.0
+        },
+        {
+          "lhs": "S3.direction_bias",
+          "op": "lt",
+          "rhs": 0.0
+        },
+        {
+          "lhs": "S3.regime",
+          "op": "in",
+          "rhs": [
+            "strong_trend",
+            "weak_trend",
+            "recovery"
+          ]
+        },
+        {
+          "lhs": "atr_ratio_20",
+          "op": "lte",
+          "rhs": 1.5
+        },
+        {
+          "lhs": "expected_edge_after_cost_R",
+          "op": "gte",
+          "rhs": 0.15
+        }
+      ]
+    },
+    "hard_blocks": [
+      {
+        "lhs": "S3.regime",
+        "op": "eq",
+        "rhs": "range"
+      },
+      {
+        "lhs": "S3.regime",
+        "op": "eq",
+        "rhs": "panic"
+      },
+      {
+        "lhs": "S6.level",
+        "op": "gte",
+        "rhs": 2
+      }
+    ],
+    "stop": {
+      "initial_distance_formula": "min(1.5*atr14, structure_invalidation_distance)",
+      "minimum_stop_distance_bps": 10
+    },
+    "exit": {
+      "breakeven_trigger_R": 1.0,
+      "trailing_trigger_R": 2.0,
+      "trailing_distance_formula": "max(1.2*atr14, structure_trailing_distance)",
+      "time_stop_bars": 12,
+      "time_stop_min_unrealized_R": 0.5
+    },
+    "cooldown": {
+      "after_stop_bars": 3,
+      "after_two_losses_same_symbol_bars": 6
+    },
+    "trade_intent": {
+      "emit_when_entry_rule_passes": true,
+      "initial_status": "WAITING_EXECUTION_CONFIRMATION",
+      "lifecycle_policy_ref": "signal_lifecycle.strategy_policy.S1"
+    }
+  },
+  "S2_reversal": {
+    "enabled": true,
+    "timeframe": "15m",
+    "risk_per_trade_pct_equity": 0.003,
+    "countertrend_risk_cap_pct_equity": 0.002,
+    "strategy_initial_risk_cap_pct_equity": 0.0075,
+    "leverage_cap": 4.0,
+    "parameters": {
+      "rsi_long_threshold": 25,
+      "rsi_short_threshold": 75,
+      "funding_low_percentile": 10,
+      "funding_high_percentile": 90,
+      "oi_flush_threshold": -0.015
+    },
+    "reversal_confirmation_long": {
+      "logic": "and",
+      "conditions": [
+        {
+          "lhs": "new_low_count_last_2_bars",
+          "op": "eq",
+          "rhs": 0
+        },
+        {
+          "lhs": "close",
+          "op": "gt",
+          "rhs": "prior_micro_swing_low"
+        },
+        {
+          "lhs": "price_impact_sell",
+          "op": "lt",
+          "rhs": "rolling_price_impact_sell_p40"
+        }
+      ]
+    },
+    "reversal_confirmation_short": {
+      "logic": "and",
+      "conditions": [
+        {
+          "lhs": "new_high_count_last_2_bars",
+          "op": "eq",
+          "rhs": 0
+        },
+        {
+          "lhs": "close",
+          "op": "lt",
+          "rhs": "prior_micro_swing_high"
+        },
+        {
+          "lhs": "price_impact_buy",
+          "op": "lt",
+          "rhs": "rolling_price_impact_buy_p40"
+        }
+      ]
+    },
+    "trend_acceleration_block_long": {
+      "logic": "and",
+      "conditions": [
+        {
+          "lhs": "close",
+          "op": "lt",
+          "rhs": "ema200"
+        },
+        {
+          "lhs": "adx14",
+          "op": "gte",
+          "rhs": 35
+        },
+        {
+          "lhs": "volume_z20",
+          "op": "gte",
+          "rhs": 2.0
+        },
+        {
+          "lhs": "new_low_count_last_3_bars",
+          "op": "gte",
+          "rhs": 2
+        }
+      ]
+    },
+    "trend_acceleration_block_short": {
+      "logic": "and",
+      "conditions": [
+        {
+          "lhs": "close",
+          "op": "gt",
+          "rhs": "ema200"
+        },
+        {
+          "lhs": "adx14",
+          "op": "gte",
+          "rhs": 35
+        },
+        {
+          "lhs": "volume_z20",
+          "op": "gte",
+          "rhs": 2.0
+        },
+        {
+          "lhs": "new_high_count_last_3_bars",
+          "op": "gte",
+          "rhs": 2
+        }
+      ]
+    },
+    "long_entry": {
+      "logic": "and",
+      "conditions": [
+        {
+          "lhs": "rsi14",
+          "op": "lte",
+          "rhs": 25
+        },
+        {
+          "lhs": "funding_percentile_180d",
+          "op": "lte",
+          "rhs": 10
+        },
+        {
+          "lhs": "open_interest_change_1h",
+          "op": "lte",
+          "rhs": -0.015
+        },
+        {
+          "lhs": "reversal_confirmation_long",
+          "op": "eq",
+          "rhs": true
+        },
+        {
+          "lhs": "trend_acceleration_block_long",
+          "op": "eq",
+          "rhs": false
+        },
+        {
+          "lhs": "S6.level",
+          "op": "lte",
+          "rhs": 1
+        },
+        {
+          "lhs": "expected_edge_after_cost_R",
+          "op": "gte",
+          "rhs": 0.15
+        }
+      ]
+    },
+    "short_entry": {
+      "logic": "and",
+      "conditions": [
+        {
+          "lhs": "rsi14",
+          "op": "gte",
+          "rhs": 75
+        },
+        {
+          "lhs": "funding_percentile_180d",
+          "op": "gte",
+          "rhs": 90
+        },
+        {
+          "lhs": "open_interest_change_1h",
+          "op": "lte",
+          "rhs": -0.015
+        },
+        {
+          "lhs": "reversal_confirmation_short",
+          "op": "eq",
+          "rhs": true
+        },
+        {
+          "lhs": "trend_acceleration_block_short",
+          "op": "eq",
+          "rhs": false
+        },
+        {
+          "lhs": "S6.level",
+          "op": "lte",
+          "rhs": 1
+        },
+        {
+          "lhs": "expected_edge_after_cost_R",
+          "op": "gte",
+          "rhs": 0.15
+        }
+      ]
+    },
+    "exit": {
+      "initial_stop_formula": "1.0*atr14 beyond confirmed reversal swing",
+      "partial_tp": [
+        {
+          "at_R": 1.0,
+          "close_fraction": 0.4
+        },
+        {
+          "at_R": 2.0,
+          "close_fraction": 0.4
+        }
+      ],
+      "runner_fraction": 0.2,
+      "trailing_trigger_R": 1.5,
+      "trailing_distance_atr": 1.0,
+      "max_holding_bars": 24
+    },
+    "trade_intent": {
+      "emit_when_entry_rule_passes": true,
+      "initial_status": "WAITING_EXECUTION_CONFIRMATION",
+      "lifecycle_policy_ref": "signal_lifecycle.strategy_policy.S2"
+    }
+  },
+  "S3_regime": {
+    "enabled": true,
+    "primary_timeframe": "1d",
+    "intraday_override_timeframe": "5m",
+    "direction_bias_range": [
+      -1.0,
+      1.0
+    ],
+    "confidence_range": [
+      0.0,
+      1.0
+    ],
+    "subscores": {
+      "trend_strength": {
+        "formula": "clip(abs(trend_separation)/1.2,0,1)*0.45 + clip(adx14/40,0,1)*0.35 + clip(efficiency_ratio_20/0.6,0,1)*0.20"
+      },
+      "trend_direction": {
+        "formula": "clip(trend_separation/1.2,-1,1)*0.6 + clip(trend_slope_6/0.12,-1,1)*0.4"
+      },
+      "breadth_score": {
+        "formula": "clip((breadth_24h-0.5)/0.25,-1,1)"
+      },
+      "volatility_score": {
+        "formula": "clip(rv5m_ratio_30d/3.0,0,1)"
+      },
+      "structure_score": {
+        "formula": "clip((efficiency_ratio_20-0.2)/0.4,0,1)"
+      }
+    },
+    "regime_rules_priority": [
+      "panic",
+      "strong_trend",
+      "weak_trend",
+      "recovery",
+      "range"
+    ],
+    "regime_rules": {
+      "panic": {
+        "logic": "or",
+        "conditions": [
+          {
+            "lhs": "rv5m_ratio_30d",
+            "op": "gte",
+            "rhs": 3.0
+          },
+          {
+            "lhs": "abs(return_1m)",
+            "op": "gte",
+            "rhs": "rolling_180d_abs_return_1m_p999"
+          },
+          {
+            "lhs": "spread_bps",
+            "op": "gte",
+            "rhs": "rolling_30d_spread_bps_p99"
+          }
+        ]
+      },
+      "strong_trend": {
+        "logic": "and",
+        "conditions": [
+          {
+            "lhs": "trend_strength",
+            "op": "gte",
+            "rhs": 0.7
+          },
+          {
+            "lhs": "abs(trend_direction)",
+            "op": "gte",
+            "rhs": 0.6
+          },
+          {
+            "lhs": "structure_score",
+            "op": "gte",
+            "rhs": 0.45
+          },
+          {
+            "lhs": "rv5m_ratio_30d",
+            "op": "lt",
+            "rhs": 2.0
+          }
+        ]
+      },
+      "weak_trend": {
+        "logic": "and",
+        "conditions": [
+          {
+            "lhs": "trend_strength",
+            "op": "gte",
+            "rhs": 0.45
+          },
+          {
+            "lhs": "trend_strength",
+            "op": "lt",
+            "rhs": 0.7
+          },
+          {
+            "lhs": "abs(trend_direction)",
+            "op": "gte",
+            "rhs": 0.3
+          },
+          {
+            "lhs": "rv5m_ratio_30d",
+            "op": "lt",
+            "rhs": 2.5
+          }
+        ]
+      },
+      "recovery": {
+        "logic": "and",
+        "conditions": [
+          {
+            "lhs": "was_panic_within_last_24h",
+            "op": "eq",
+            "rhs": true
+          },
+          {
+            "lhs": "rv5m_ratio_30d",
+            "op": "lte",
+            "rhs": 1.5
+          },
+          {
+            "lhs": "breadth_24h",
+            "op": "gte",
+            "rhs": 0.55
+          },
+          {
+            "lhs": "structure_score",
+            "op": "gte",
+            "rhs": 0.35
+          }
+        ]
+      },
+      "range": {
+        "logic": "and",
+        "conditions": [
+          {
+            "lhs": "trend_strength",
+            "op": "lt",
+            "rhs": 0.45
+          },
+          {
+            "lhs": "efficiency_ratio_20",
+            "op": "lt",
+            "rhs": 0.3
+          },
+          {
+            "lhs": "rv5m_ratio_30d",
+            "op": "lt",
+            "rhs": 2.0
+          }
+        ]
+      }
+    },
+    "direction_bias": {
+      "formula": "clip(0.65*trend_direction + 0.20*breadth_score + 0.15*derivatives_direction_score,-1,1)"
+    },
+    "confidence": {
+      "formula": "clip(0.45*trend_strength + 0.25*structure_score + 0.15*abs(breadth_score) + 0.15*factor_agreement_score,0,1)"
+    },
+    "risk_multiplier_by_regime": {
+      "strong_trend": 1.0,
+      "weak_trend": 0.65,
+      "range": 0.4,
+      "panic": 0.2,
+      "recovery": 0.5
+    },
+    "fallback": {
+      "when_no_rule_matches": "range",
+      "on_core_data_failure": {
+        "regime": "panic",
+        "direction_bias": 0.0,
+        "confidence": 0.0,
+        "block_directional_entries": true
+      }
+    }
+  },
+  "S4_execution": {
+    "enabled": true,
+    "role": "execution_timing_only",
+    "can_create_directional_thesis": false,
+    "decision_window_seconds": 10,
+    "risk_multiplier_degraded": 0.5,
+    "data_modes": {
+      "FULL": {
+        "required": [
+          "trades",
+          "top_of_book",
+          "depth"
+        ],
+        "risk_multiplier": 1.0
+      },
+      "DEGRADED": {
+        "required": [
+          "trades",
+          "top_of_book"
+        ],
+        "risk_multiplier": 0.5
+      },
+      "OFF": {
+        "trigger_any": [
+          {
+            "lhs": "market_data_stale_ms",
+            "op": "gt",
+            "rhs": 2000
+          },
+          {
+            "lhs": "sequence_gap_ms",
+            "op": "gt",
+            "rhs": 2000
+          },
+          {
+            "lhs": "sequence_valid",
+            "op": "eq",
+            "rhs": false
+          }
+        ]
+      }
+    },
+    "long_confirm": {
+      "logic": "and",
+      "conditions": [
+        {
+          "lhs": "authorized_direction",
+          "op": "eq",
+          "rhs": "long"
+        },
+        {
+          "lhs": "aggressive_buy_ratio",
+          "op": "gte",
+          "rhs": 3.0
+        },
+        {
+          "lhs": "price_impact_buy",
+          "op": "lte",
+          "rhs": "rolling_price_impact_buy_p40"
+        },
+        {
+          "lhs": "depth_imbalance",
+          "op": "gte",
+          "rhs": 0.1
+        },
+        {
+          "lhs": "spread_bps",
+          "op": "lte",
+          "rhs": "rolling_30d_spread_bps_p80"
+        }
+      ]
+    },
+    "short_confirm": {
+      "logic": "and",
+      "conditions": [
+        {
+          "lhs": "authorized_direction",
+          "op": "eq",
+          "rhs": "short"
+        },
+        {
+          "lhs": "aggressive_sell_ratio",
+          "op": "gte",
+          "rhs": 3.0
+        },
+        {
+          "lhs": "price_impact_sell",
+          "op": "lte",
+          "rhs": "rolling_price_impact_sell_p40"
+        },
+        {
+          "lhs": "depth_imbalance",
+          "op": "lte",
+          "rhs": -0.1
+        },
+        {
+          "lhs": "spread_bps",
+          "op": "lte",
+          "rhs": "rolling_30d_spread_bps_p80"
+        }
+      ]
+    },
+    "max_expected_slippage_fraction_of_stop": 0.2,
+    "max_entries_per_hour": 12,
+    "max_entries_per_day": 30,
+    "input_contract": {
+      "required_object": "TradeIntent",
+      "required_status": "WAITING_EXECUTION_CONFIRMATION",
+      "reject_if_expired": true,
+      "reject_if_price_drift_invalid": true,
+      "revalidate_source_strategy_before_confirmation": true
+    },
+    "confirmation_must_occur_before_trade_intent_expiry": true
+  },
+  "S5_risk_budget": {
+    "enabled": true,
+    "reserve_fraction": 0.15,
+    "allocation_mode": "single_active_alpha",
+    "active_strategy_max_share": 0.85,
+    "execution_engine_is_allocation_target": false,
+    "regime_multipliers": {
+      "strong_trend": {
+        "S1": 1.2,
+        "S2": 0.6
+      },
+      "weak_trend": {
+        "S1": 0.9,
+        "S2": 0.9
+      },
+      "range": {
+        "S1": 0.3,
+        "S2": 1.2
+      },
+      "panic": {
+        "S1": 0.2,
+        "S2": 0.2
+      },
+      "recovery": {
+        "S1": 0.7,
+        "S2": 0.8
+      }
+    },
+    "health_multipliers": {
+      "80_100": 1.0,
+      "60_79": 0.75,
+      "40_59": 0.5,
+      "0_39": 0.0
+    },
+    "S4_execution_multiplier": {
+      "FULL": 1.0,
+      "DEGRADED": 0.5,
+      "OFF": 0.0
+    },
+    "allocation_formula": {
+      "base_active_share": "1 - reserve_fraction",
+      "capped_base": "min(base_active_share, active_strategy_max_share)",
+      "raw_active_share": "capped_base * active_strategy_regime_multiplier * active_strategy_health_multiplier",
+      "final_active_share": "min(capped_base, raw_active_share)",
+      "unused_share": "1 - final_active_share",
+      "invariant": "final_active_share <= capped_base; never renormalize unused risk back to active"
+    },
+    "risk_budget_formula": {
+      "portfolio_risk_budget_pct_equity": "global_risk.max_initial_risk_all_open_positions_pct_equity * global_drawdown_multiplier * daily_loss_multiplier * S3.risk_multiplier",
+      "note_S6": "S6 risk reduction is applied via new_entries_enabled / level gates, not double-multiplied here",
+      "active_strategy_risk_budget_pct_equity": "min(strategy_initial_risk_cap_if_any, portfolio_risk_budget_pct_equity * final_active_share)"
+    }
+  },
+  "S6_anomaly": {
+    "enabled": true,
+    "evaluation_interval_seconds": 5,
+    "level": 0,
+    "signals": {
+      "flash_move": {
+        "metric": "abs(return_1m)",
+        "levels": {
+          "1": {
+            "op": "gte",
+            "threshold": "rolling_180d_abs_return_1m_p99"
+          },
+          "2": {
+            "op": "gte",
+            "threshold": "rolling_180d_abs_return_1m_p999"
+          },
+          "3": {
+            "op": "gte",
+            "threshold": "rolling_180d_abs_return_1m_p9999"
+          }
+        }
+      },
+      "volatility_shock": {
+        "metric": "rv5m_ratio_30d",
+        "levels": {
+          "1": {
+            "op": "gte",
+            "threshold": 2.0
+          },
+          "2": {
+            "op": "gte",
+            "threshold": 3.0
+          },
+          "3": {
+            "op": "gte",
+            "threshold": 5.0
+          }
+        }
+      },
+      "spread_shock": {
+        "metric": "spread_bps",
+        "levels": {
+          "1": {
+            "op": "gte",
+            "threshold": "rolling_30d_spread_bps_p95"
+          },
+          "2": {
+            "op": "gte",
+            "threshold": "rolling_30d_spread_bps_p99"
+          },
+          "3": {
+            "op": "gte",
+            "threshold": "rolling_30d_spread_bps_p999"
+          }
+        }
+      },
+      "liquidity_vacuum": {
+        "metric": "top_book_depth",
+        "levels": {
+          "1": {
+            "op": "lte",
+            "threshold": "rolling_30d_depth_p10"
+          },
+          "2": {
+            "op": "lte",
+            "threshold": "rolling_30d_depth_p05"
+          },
+          "3": {
+            "op": "lte",
+            "threshold": "rolling_30d_depth_p01"
+          }
+        }
+      },
+      "market_data_stale": {
+        "metric": "market_data_stale_ms",
+        "levels": {
+          "1": {
+            "op": "gte",
+            "threshold": 500
+          },
+          "2": {
+            "op": "gte",
+            "threshold": 2000
+          },
+          "3": {
+            "op": "gte",
+            "threshold": 5000
+          }
+        }
+      }
+    },
+    "hard_level_3_system_events": [
+      "position_mismatch",
+      "unexpected_leverage",
+      "risk_engine_unavailable",
+      "order_reconciliation_failure",
+      "exchange_connectivity_lost"
+    ],
+    "aggregation_rule": {
+      "formula": "max(all_signal_levels, hard_system_event_level)",
+      "hard_system_event_level": 3
+    },
+    "actions_by_level": {
+      "0": {
+        "new_entries_enabled": true,
+        "risk_multiplier": 1.0
+      },
+      "1": {
+        "new_entries_enabled": true,
+        "risk_multiplier": 0.5
+      },
+      "2": {
+        "new_entries_enabled": false,
+        "risk_reducing_orders_only": true
+      },
+      "3": {
+        "new_entries_enabled": false,
+        "cancel_pending_entry_orders": true,
+        "reconcile_positions": true,
+        "emergency_exit_policy_allowed": true
+      }
+    },
+    "recovery": {
+      "hysteresis_enabled": true,
+      "market_anomaly_auto_resume": {
+        "eligible_events": [
+          "flash_move",
+          "volatility_shock",
+          "spread_shock",
+          "liquidity_vacuum"
+        ],
+        "required_consecutive_1m_bars": 20,
+        "conditions": [
+          {
+            "lhs": "rv5m_ratio_30d",
+            "op": "lte",
+            "rhs": 1.5
+          },
+          {
+            "lhs": "spread_bps",
+            "op": "lte",
+            "rhs": "rolling_30d_spread_bps_p80"
+          },
+          {
+            "lhs": "top_book_depth",
+            "op": "gte",
+            "rhs": "rolling_30d_depth_p20"
+          },
+          {
+            "lhs": "market_data_stale_ms",
+            "op": "lt",
+            "rhs": 250
+          },
+          {
+            "lhs": "sequence_valid",
+            "op": "eq",
+            "rhs": true
+          },
+          {
+            "lhs": "exchange_connected",
+            "op": "eq",
+            "rhs": true
+          }
+        ],
+        "step_down_state_machine": [
+          {
+            "from": 3,
+            "to": 2,
+            "after_conditions_pass_minutes": 20
+          },
+          {
+            "from": 2,
+            "to": 1,
+            "after_conditions_pass_minutes": 10
+          },
+          {
+            "from": 1,
+            "to": 0,
+            "after_conditions_pass_minutes": 10
+          }
+        ]
+      },
+      "system_anomaly_manual_resume": {
+        "events": [
+          "position_mismatch",
+          "unexpected_leverage",
+          "risk_engine_unavailable",
+          "order_reconciliation_failure",
+          "exchange_connectivity_lost"
+        ],
+        "auto_resume": false,
+        "requirements": [
+          "exchange_connected == true",
+          "market_data_stale_ms < 250",
+          "sequence_valid == true",
+          "positions_reconciled == true",
+          "orders_reconciled == true",
+          "risk_engine_healthy == true",
+          "manual_ack == true",
+          "manual_ack must originate from manual_resume_control endpoint"
+        ],
+        "manual_resume_control": {
+          "enabled": true,
+          "endpoint": "/api/v1/system/resume",
+          "method": "POST",
+          "transport": "HTTPS",
+          "authentication_required": true,
+          "authorization": {
+            "required_role": "risk_admin",
+            "multi_factor_auth_recommended": true
+          },
+          "idempotency": {
+            "required": true,
+            "header": "Idempotency-Key"
+          },
+          "request_schema": {
+            "required_fields": [
+              "incident_id",
+              "operator_id",
+              "reason"
+            ],
+            "optional_fields": [
+              "ticket_id",
+              "comment"
+            ]
+          },
+          "preconditions": [
+            {
+              "lhs": "exchange_connected",
+              "op": "eq",
+              "rhs": true
+            },
+            {
+              "lhs": "market_data_stale_ms",
+              "op": "lt",
+              "rhs": 250
+            },
+            {
+              "lhs": "sequence_valid",
+              "op": "eq",
+              "rhs": true
+            },
+            {
+              "lhs": "positions_reconciled",
+              "op": "eq",
+              "rhs": true
+            },
+            {
+              "lhs": "orders_reconciled",
+              "op": "eq",
+              "rhs": true
+            },
+            {
+              "lhs": "risk_engine_healthy",
+              "op": "eq",
+              "rhs": true
+            },
+            {
+              "lhs": "incident_open",
+              "op": "eq",
+              "rhs": true
+            }
+          ],
+          "actions_on_success": [
+            "record_manual_ack",
+            "append_operator_identity_to_audit_log",
+            "transition_S6_level_3_to_level_2",
+            "start_market_recovery_observation_window"
+          ],
+          "direct_level_3_to_level_0_allowed": false,
+          "response_schema": {
+            "success": [
+              "incident_id",
+              "previous_level",
+              "new_level",
+              "recovery_observation_started_at",
+              "audit_event_id"
+            ],
+            "failure": [
+              "incident_id",
+              "rejected_preconditions",
+              "error_code"
+            ]
+          },
+          "audit": {
+            "required": true,
+            "immutable_log": true,
+            "fields": [
+              "timestamp",
+              "incident_id",
+              "operator_id",
+              "source_ip",
+              "reason",
+              "precondition_snapshot",
+              "previous_level",
+              "new_level"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "S7_health": {
+    "enabled": true,
+    "windows": {
+      "fast_trades": 30,
+      "slow_trades": 100,
+      "calendar_days": 30
+    },
+    "metrics": [
+      "expectancy_R",
+      "profit_factor",
+      "win_rate",
+      "avg_win_R",
+      "avg_loss_R",
+      "max_drawdown_R",
+      "slippage_vs_model_ratio",
+      "latency_vs_baseline_ratio"
+    ],
+    "health_score": {
+      "formula": "100*(0.35*expectancy_component + 0.25*drawdown_component + 0.20*execution_component + 0.20*regime_stability_component)",
+      "components": {
+        "expectancy_component": "clip((expectancy_R + 0.10)/0.40,0,1)",
+        "drawdown_component": "clip(1 - max_drawdown_R/15,0,1)",
+        "execution_component": "clip(1 - max(slippage_vs_model_ratio-1,0)/2,0,1)",
+        "regime_stability_component": "clip(profitable_regime_count/max(valid_regime_count,1),0,1)"
+      }
+    },
+    "states": [
+      {
+        "state": "ON",
+        "min_score": 80,
+        "max_score": 100,
+        "risk_multiplier": 1.0
+      },
+      {
+        "state": "REDUCED",
+        "min_score": 60,
+        "max_score": 79.999,
+        "risk_multiplier": 0.75
+      },
+      {
+        "state": "PAUSED",
+        "min_score": 40,
+        "max_score": 59.999,
+        "risk_multiplier": 0.0
+      },
+      {
+        "state": "OFF",
+        "min_score": 0,
+        "max_score": 39.999,
+        "risk_multiplier": 0.0
+      }
+    ],
+    "loss_streak_controls": [
+      {
+        "losses": 5,
+        "extra_risk_multiplier": 0.75
+      },
+      {
+        "losses": 8,
+        "extra_risk_multiplier": 0.5,
+        "health_recheck_required": true
+      }
+    ],
+    "minimum_trades_before_statistical_pause": 30
+  },
+  "cost_model": {
+    "round_trip_cost": {
+      "formula": "entry_fee + exit_fee + expected_slippage_entry + expected_slippage_exit + expected_funding_cost"
+    },
+    "expected_edge_after_cost_R": {
+      "formula": "(prob_win_estimate * avg_win_R_estimate) - ((1 - prob_win_estimate) * avg_loss_R_estimate) - round_trip_cost_R",
+      "inputs": {
+        "prob_win_estimate": "cost_model.edge_estimator.prob_win",
+        "avg_win_R_estimate": "cost_model.edge_estimator.avg_win_R",
+        "avg_loss_R_estimate": "cost_model.edge_estimator.avg_loss_R",
+        "round_trip_cost_R": "round_trip_cost converted to R using current candidate stop distance"
+      },
+      "recalculate_at": [
+        "trade_intent_creation",
+        "S4_confirmation",
+        "immediately_before_final_order_gate"
+      ]
+    },
+    "minimum_required_R": 0.15,
+    "slippage_stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "edge_estimator": {
+      "estimation_scope_priority": [
+        "strategy_symbol_regime",
+        "strategy_symbol",
+        "strategy_regime",
+        "strategy_global",
+        "validated_oos_prior"
+      ],
+      "lookback_trades": 100,
+      "minimum_local_samples": 30,
+      "maximum_estimator_age_minutes": 60,
+      "prob_win": {
+        "method": "beta_binomial_smoothed",
+        "prior_source": "validated_oos_prior",
+        "fallback_prior_alpha": 10.0,
+        "fallback_prior_beta": 10.0,
+        "formula": "(wins + prior_alpha) / (wins + losses + prior_alpha + prior_beta)"
+      },
+      "avg_win_R": {
+        "method": "ewma",
+        "lookback_trades": 100,
+        "minimum_samples": 10,
+        "fallback_source": "validated_oos_prior.avg_win_R"
+      },
+      "avg_loss_R": {
+        "method": "ewma",
+        "lookback_trades": 100,
+        "minimum_samples": 10,
+        "fallback_source": "validated_oos_prior.avg_loss_R"
+      },
+      "regime_conditioning": {
+        "enabled": true,
+        "minimum_regime_samples": 30,
+        "fallback_if_insufficient": "next_scope_in_estimation_scope_priority"
+      },
+      "cold_start": {
+        "preferred_source": "validated_oos_prior",
+        "live_sample_minimum": 30,
+        "risk_multiplier_before_live_sample_minimum": 0.25,
+        "if_validated_prior_missing": {
+          "live_orders_allowed": false,
+          "paper_trading_only": true,
+          "reason": "NO_VALIDATED_EDGE_PRIOR"
+        }
+      },
+      "missing_or_stale_estimate_policy": {
+        "live_orders_allowed": false,
+        "paper_trading_allowed": true,
+        "reason": "EDGE_ESTIMATE_UNAVAILABLE_OR_STALE"
+      }
+    }
+  },
+  "router": {
+    "countertrend_exception": {
+      "enabled": true,
+      "requirements": [
+        {
+          "lhs": "S2.entry_signal",
+          "op": "eq",
+          "rhs": true
+        },
+        {
+          "lhs": "S2.reversal_confirmation",
+          "op": "eq",
+          "rhs": true
+        },
+        {
+          "lhs": "S6.level",
+          "op": "lte",
+          "rhs": 1
+        },
+        {
+          "lhs": "S7.S2_health_score",
+          "op": "gte",
+          "rhs": 60
+        },
+        {
+          "lhs": "effective_trade_risk_pct_equity",
+          "op": "lte",
+          "rhs": 0.002
+        }
+      ]
+    },
+    "final_order_gate": {
+      "logic": "and",
+      "conditions": [
+        {
+          "lhs": "S6.level",
+          "op": "lt",
+          "rhs": 2
+        },
+        {
+          "lhs": "data_quality_ok",
+          "op": "eq",
+          "rhs": true
+        },
+        {
+          "lhs": "positions_reconciled",
+          "op": "eq",
+          "rhs": true
+        },
+        {
+          "lhs": "orders_reconciled",
+          "op": "eq",
+          "rhs": true
+        },
+        {
+          "lhs": "portfolio_risk_after_order",
+          "op": "lte",
+          "rhs": "global_portfolio_risk_cap"
+        },
+        {
+          "lhs": "expected_edge_after_cost_R",
+          "op": "gte",
+          "rhs": 0.15
+        },
+        {
+          "lhs": "edge_estimate_available",
+          "op": "eq",
+          "rhs": true
+        },
+        {
+          "lhs": "edge_estimate_age_minutes",
+          "op": "lte",
+          "rhs": 60
+        },
+        {
+          "lhs": "signal_lifecycle_valid",
+          "op": "eq",
+          "rhs": true
+        },
+        {
+          "lhs": "source_strategy_revalidation_passed",
+          "op": "eq",
+          "rhs": true
+        }
+      ]
+    },
+    "trade_intent_gate": {
+      "logic": "and",
+      "conditions": [
+        {
+          "lhs": "trade_intent.status",
+          "op": "eq",
+          "rhs": "WAITING_EXECUTION_CONFIRMATION"
+        },
+        {
+          "lhs": "signal_lifecycle_valid",
+          "op": "eq",
+          "rhs": true
+        },
+        {
+          "lhs": "source_strategy_revalidation_passed",
+          "op": "eq",
+          "rhs": true
+        },
+        {
+          "lhs": "S6.level",
+          "op": "lt",
+          "rhs": 2
+        }
+      ]
+    },
+    "order_intent_creation": {
+      "allowed_only_after": [
+        "TradeIntent lifecycle valid",
+        "S4 confirmation or configured S4 bypass policy",
+        "source strategy revalidation",
+        "expected edge recalculated",
+        "S5 risk budget resolved",
+        "S6 safety gate passed",
+        "S7 health gate passed"
+      ],
+      "order_intent_must_reference_trade_intent_id": true
+    }
+  },
+  "state_machine": {
+    "strategy_states": [
+      "ON",
+      "REDUCED",
+      "PAUSED",
+      "OFF"
+    ],
+    "transitions": [
+      {
+        "from": "ON",
+        "to": "REDUCED",
+        "when": "S7.health_score < 80 or S6.level == 1"
+      },
+      {
+        "from": "REDUCED",
+        "to": "PAUSED",
+        "when": "S7.health_score < 60 or S6.level >= 2"
+      },
+      {
+        "from": "PAUSED",
+        "to": "ON",
+        "when": "S7.health_score >= 80 and S6.level == 0 and cooldown_complete == true"
+      },
+      {
+        "from": "*",
+        "to": "OFF",
+        "when": "S6.level == 3 and event_type in hard_level_3_system_events"
+      }
+    ]
+  },
+  "validation": {
+    "walk_forward": {
+      "train_days": 180,
+      "validate_days": 30,
+      "roll_days": 30,
+      "parameter_lock_days": 30
+    },
+    "anti_overfit": {
+      "discrete_parameter_grid_only": true,
+      "online_optimization_allowed": false,
+      "prefer_parameter_plateau_over_single_best_point": true,
+      "purged_split_when_label_overlap": true
+    },
+    "stress_tests": [
+      "slippage_1.5x",
+      "slippage_2x",
+      "latency_2x",
+      "missing_data",
+      "reconnect",
+      "trade_order_monte_carlo",
+      "signal_expiry_test",
+      "price_drift_invalidation_test",
+      "signal_revalidation_test",
+      "edge_estimator_cold_start_test",
+      "edge_estimator_staleness_test",
+      "manual_resume_auth_test",
+      "manual_resume_precondition_test",
+      "manual_resume_audit_test"
+    ],
+    "live_enable_requirements": [
+      "walk_forward_pass",
+      "out_of_sample_pass",
+      "cost_stress_pass",
+      "paper_trading_pass",
+      "reconciliation_test_pass",
+      "kill_switch_test_pass",
+      "signal_lifecycle_test_pass",
+      "edge_estimator_runtime_test_pass",
+      "manual_resume_governance_test_pass"
+    ]
+  },
+  "logging": {
+    "required_fields": [
+      "timestamp",
+      "symbol",
+      "strategy_id",
+      "raw_features",
+      "derived_features",
+      "S3_regime",
+      "S3_direction_bias",
+      "S3_confidence",
+      "S5_raw_shares",
+      "S5_scale",
+      "S5_final_shares",
+      "S6_level",
+      "S6_trigger_reason",
+      "S7_health_score",
+      "pre_trade_expected_edge_R",
+      "estimated_cost_R",
+      "effective_trade_risk_pct_equity",
+      "order_decision",
+      "rejection_reason",
+      "fill_price",
+      "slippage_bps",
+      "realized_R",
+      "trade_intent_id",
+      "trade_intent_status",
+      "signal_age_seconds",
+      "price_drift_bps",
+      "price_drift_atr_fraction",
+      "signal_terminal_reason",
+      "edge_estimator_scope_used",
+      "edge_estimator_sample_count",
+      "edge_estimator_age_minutes",
+      "manual_resume_incident_id",
+      "manual_resume_operator_id",
+      "manual_resume_audit_event_id"
+    ]
+  },
+  "invariants": [
+    "sum(S5.final_shares) <= 1 - S5.reserve_fraction",
+    "S4 cannot create a directional thesis",
+    "S6.level >= 2 => no new entries",
+    "hard system level 3 events cannot auto-resume",
+    "all core entry decisions must resolve to boolean without LLM interpretation",
+    "all missing critical data must fail closed",
+    "all live parameter changes require offline validation and lock-period rollover",
+    "expired TradeIntent cannot create OrderIntent",
+    "price-drift-invalid TradeIntent cannot create OrderIntent",
+    "all executable TradeIntents must be revalidated using current market data",
+    "live order requires a non-stale runtime edge estimate",
+    "missing validated edge prior during cold start => paper trading only",
+    "manual_ack for system level 3 must originate from authenticated audited manual resume control",
+    "manual resume cannot transition S6 directly from level 3 to level 0"
+  ],
+  "signal_lifecycle": {
+    "clock_source": "exchange_synchronized_utc_clock",
+    "timestamp_precision": "milliseconds",
+    "states": [
+      "CREATED",
+      "WAITING_EXECUTION_CONFIRMATION",
+      "CONFIRMED",
+      "EXECUTED",
+      "EXPIRED",
+      "PRICE_DRIFT_INVALID",
+      "CONDITION_INVALID",
+      "S4_REJECTED",
+      "RISK_REJECTED",
+      "COST_REJECTED",
+      "SAFETY_REJECTED",
+      "ACTIVE_STRATEGY_MISMATCH",
+      "STRATEGY_SWITCH_INVALIDATED"
+    ],
+    "strategy_policy": {
+      "S1": {
+        "expiry_seconds": 120,
+        "max_price_drift_bps": 30,
+        "max_price_drift_atr_fraction": 0.25,
+        "revalidate_before_execution": true
+      },
+      "S2": {
+        "expiry_seconds": 60,
+        "max_price_drift_bps": 20,
+        "max_price_drift_atr_fraction": 0.2,
+        "revalidate_before_execution": true
+      }
+    },
+    "derived_runtime_fields": {
+      "signal_age_seconds": "(now_utc - trade_intent.created_at).total_seconds()",
+      "price_drift_bps": "abs(current_mid_price - trade_intent.reference_price) / max(trade_intent.reference_price,1e-12) * 10000",
+      "price_drift_atr_fraction": "abs(current_mid_price - trade_intent.reference_price) / max(trade_intent.reference_atr,1e-12)"
+    },
+    "validity_rule": {
+      "logic": "and",
+      "conditions": [
+        {
+          "lhs": "signal_age_seconds",
+          "op": "lte",
+          "rhs": "strategy_policy.expiry_seconds"
+        },
+        {
+          "lhs": "price_drift_bps",
+          "op": "lte",
+          "rhs": "strategy_policy.max_price_drift_bps"
+        },
+        {
+          "lhs": "price_drift_atr_fraction",
+          "op": "lte",
+          "rhs": "strategy_policy.max_price_drift_atr_fraction"
+        },
+        {
+          "lhs": "original_signal_conditions_still_valid",
+          "op": "eq",
+          "rhs": true
+        }
+      ]
+    },
+    "terminal_reason_mapping": {
+      "signal_age_seconds_exceeded": "EXPIRED",
+      "price_drift_bps_exceeded": "PRICE_DRIFT_INVALID",
+      "price_drift_atr_fraction_exceeded": "PRICE_DRIFT_INVALID",
+      "signal_revalidation_failed": "CONDITION_INVALID",
+      "s4_confirmation_failed_before_expiry": "S4_REJECTED",
+      "risk_gate_failed": "RISK_REJECTED",
+      "cost_gate_failed": "COST_REJECTED",
+      "safety_gate_failed": "SAFETY_REJECTED",
+      "active_strategy_changed": "STRATEGY_SWITCH_INVALIDATED",
+      "active_strategy_mismatch": "ACTIVE_STRATEGY_MISMATCH"
+    },
+    "logging_required": true
+  },
+  "trade_intent_schema": {
+    "intent_id": "uuid_v4",
+    "strategy_id": "S1_or_S2",
+    "symbol": "string",
+    "direction": "long_or_short",
+    "created_at": "utc_iso8601",
+    "expires_at": "created_at + strategy_policy.expiry_seconds",
+    "reference_price": "signal_creation_mid_price",
+    "reference_atr": "signal_creation_ATR_for_strategy_timeframe",
+    "signal_snapshot": {
+      "required": [
+        "S3_regime",
+        "S3_direction_bias",
+        "S3_confidence",
+        "strategy_signal_features",
+        "estimated_edge_R_at_creation"
+      ]
+    },
+    "status": "CREATED",
+    "immutable_after_creation": [
+      "intent_id",
+      "strategy_id",
+      "symbol",
+      "direction",
+      "created_at",
+      "reference_price",
+      "reference_atr",
+      "signal_snapshot"
+    ]
+  },
+  "changelog_v4_1": {
+    "signal_lifecycle": "Added TradeIntent TTL, price-drift invalidation, revalidation and terminal states.",
+    "edge_estimator": "Added hierarchical runtime estimator, beta-binomial win probability smoothing, EWMA payoff estimates and cold-start policy.",
+    "manual_resume": "Added authenticated POST /api/v1/system/resume governance contract, preconditions, audit and staged L3->L2 recovery.",
+    "compatibility": "Preserves V4.0 strategy and risk architecture; adds runtime execution semantics."
+  },
+  "strategy_runtime": {
+    "selection_mode": "single_active",
+    "allowed_alpha_strategies": [
+      "S1",
+      "S2"
+    ],
+    "default_active_strategy_id": "S1",
+    "system_modules_always_enabled": [
+      "S3",
+      "S4",
+      "S5",
+      "S6",
+      "S7"
+    ],
+    "max_active_alpha_strategies": 1,
+    "switch_policy": {
+      "atomic": true,
+      "require_s6_level_below": 2,
+      "block_target_health_states": [
+        "PAUSED",
+        "OFF"
+      ],
+      "invalidate_pending_trade_intents": true,
+      "cancel_unsubmitted_opening_order_intents": true,
+      "cancel_submitted_opening_orders": true,
+      "preserve_reduce_only_orders": true,
+      "preserve_open_positions": true,
+      "preserve_origin_strategy_exit_policy": true,
+      "audit_required": true
+    }
+  },
+  "unit_contract": {
+    "pct_equity": "decimal_fraction",
+    "returns": "decimal_fraction",
+    "funding_rate": "decimal_fraction",
+    "bps": "basis_points",
+    "price": "quote_currency",
+    "quantity": "exchange_native_or_normalized_contract_quantity",
+    "R": "initial_risk_multiple",
+    "timestamps": "UTC_ISO8601"
+  },
+  "position_contract": {
+    "origin_strategy_id_required": true,
+    "origin_trade_intent_id_required": true,
+    "entry_risk_snapshot_required": true,
+    "exit_policy_snapshot_required": true,
+    "strategy_switch_does_not_transfer_position_ownership": true
+  },
+  "strategy_switch_audit": {
+    "required": true,
+    "fields": [
+      "timestamp",
+      "operator_id",
+      "previous_strategy_id",
+      "new_strategy_id",
+      "engine_mode",
+      "s6_level",
+      "target_s7_state",
+      "invalidated_trade_intent_ids",
+      "cancelled_order_intent_ids",
+      "preserved_position_ids",
+      "result",
+      "reason"
+    ]
+  },
+  "internal_control_endpoints": {
+    "base": "/internal/v1",
+    "resume": "/internal/v1/control/resume",
+    "strategy_switch": "/internal/v1/strategy/switch",
+    "note": "Browser-facing APIs are Node /api/whale-ai/engine/*; Python is internal only"
+  },
+  "changelog_v4_2": {
+    "generated_at": "2026-09-09T10:14:14.162985+00:00",
+    "changes": [
+      "runtime_model=single_active_alpha_strategy",
+      "S4 removed from portfolio allocation targets",
+      "S5 allocation contracts only (no renormalize-up)",
+      "STRATEGY_SWITCH_INVALIDATED lifecycle state",
+      "strategy_runtime.switch_policy and position_contract added"
+    ]
+  }
+}

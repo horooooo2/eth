@@ -276,13 +276,15 @@ async function resolvePosMode() {
     cachedPosMode = 'long_short_mode';
     return cachedPosMode;
   }
-  // 默认先按买卖模式（不传 posSide）。模拟盘/多数账户如此；
-  // 若实际是开平仓模式，placeOrder 遇 51000 会自动切到 long_short 重试。
+  // Prefer live account config — do NOT assume net (demo accounts are often long_short)
   cachedPosMode = 'net_mode';
   try {
     const cfg = await getAccountConfig();
     const mode = String(cfg?.posMode || '').toLowerCase();
-    console.log('[okx-trade] account posMode=', mode || '(empty)', '→ use net first');
+    if (mode === 'long_short_mode' || mode === 'net_mode') {
+      cachedPosMode = mode;
+    }
+    console.log('[okx-trade] account posMode=', mode || '(empty)', '→', cachedPosMode);
   } catch (err) {
     console.warn('[okx-trade] account/config:', err.message || err);
   }
@@ -296,12 +298,18 @@ function buildOrderBody(input, posMode) {
   const tdMode = String(input.tdMode || 'cross').toLowerCase();
   const sz = String(input.sz ?? '').trim();
   let posSide = String(input.posSide || '').toLowerCase();
+  const reduceOnly = input.reduceOnly === true || input.reduceOnly === 'true';
 
   if (posMode === 'net_mode') {
     // 买卖模式：禁止传 posSide（否则常见 51000）
     posSide = '';
   } else if (posSide !== 'long' && posSide !== 'short') {
-    posSide = side === 'sell' ? 'short' : 'long';
+    // Hedge: open buy→long / sell→short; reduce-only sell closes long, buy closes short
+    if (reduceOnly) {
+      posSide = side === 'sell' ? 'long' : 'short';
+    } else {
+      posSide = side === 'sell' ? 'short' : 'long';
+    }
   }
 
   const body = {
@@ -319,7 +327,7 @@ function buildOrderBody(input, posMode) {
     }
     body.px = px;
   }
-  if (input.reduceOnly === true || input.reduceOnly === 'true') body.reduceOnly = true;
+  if (reduceOnly) body.reduceOnly = true;
   if (input.clOrdId) body.clOrdId = String(input.clOrdId).slice(0, 32);
   if (input.tag) body.tag = String(input.tag).slice(0, 16);
   return { body, posSide, side, tdMode, ordType, instId };

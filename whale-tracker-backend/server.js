@@ -43,12 +43,13 @@ const { getMarkets } = require('./lib/markets');
 const { getHlInfoConfig } = require('./lib/hlInfoClient');
 const { attachRealtimeHub } = require('./lib/realtimeHub');
 const { startRealtimeBridge, syncFromCache, getRealtimeStatus } = require('./lib/realtimeBridge');
+const { startV41RealtimeBridge, getV41RealtimeBridgeStatus } = require('./lib/v41RealtimeBridge');
+const { ensureTable: ensureV41ExecTable } = require('./lib/v41ExecutionGateway');
 const { startFillBackfill, getBackfillStatus } = require('./lib/fillBackfill');
 const {
   startPositionBackfill,
   getPositionBackfillStatus,
 } = require('./lib/positionBackfill');
-const { startOkxPolling, getOkxStatus } = require('./lib/okxCopyTrading');
 const { startXFeedPolling, getStatus: getXFeedStatus } = require('./lib/xFeedPoller');
 
 const app = createApp({ prefixes: ['/api'] });
@@ -137,6 +138,30 @@ server.listen(PORT, '0.0.0.0', () => {
     console.warn('[realtime] bridge 启动失败:', err.message);
   }
   try {
+    ensureV41ExecTable();
+    startV41RealtimeBridge();
+    console.log('[v41-bridge]', JSON.stringify(getV41RealtimeBridgeStatus()));
+  } catch (err) {
+    console.warn('[v41-bridge] 启动失败:', err.message);
+  }
+  try {
+    const { startWhaleDataBridge } = require('./lib/v41WhaleDataBridge');
+    startWhaleDataBridge();
+  } catch (err) {
+    console.warn('[v41-whale-bridge] 启动失败:', err.message || err);
+  }
+  // Warm bridge freshness so /api/health isn't stuck on NEVER until first UI poll
+  try {
+    const v41 = require('./lib/v41EngineClient');
+    v41.health().then((h) => {
+      console.log('[v41-probe]', h?.state || 'ok', JSON.stringify(v41.bridgeStatus()));
+    }).catch((err) => {
+      console.warn('[v41-probe]', err.message || err);
+    });
+  } catch (err) {
+    console.warn('[v41-probe] skip:', err.message);
+  }
+  try {
     startFillBackfill();
     console.log('[fill-backfill]', JSON.stringify(getBackfillStatus()));
   } catch (err) {
@@ -147,18 +172,6 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log('[position-backfill]', JSON.stringify(getPositionBackfillStatus()));
   } catch (err) {
     console.warn('[position-backfill] 启动失败:', err.message);
-  }
-  try {
-    startOkxPolling();
-    console.log('[okx]', JSON.stringify(getOkxStatus()));
-  } catch (err) {
-    console.warn('[okx] 启动失败:', err.message);
-  }
-  try {
-    const { startCopyEngine } = require('./lib/hlCopyEngine');
-    startCopyEngine();
-  } catch (err) {
-    console.warn('[copy-engine] 启动失败:', err.message);
   }
   try {
     startXFeedPolling();

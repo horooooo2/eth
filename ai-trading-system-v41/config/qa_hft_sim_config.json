@@ -1,0 +1,57 @@
+{
+  "module": "QA-HFT-SIM",
+  "description": "Simulator-only high-frequency execution pressure test. Not an Alpha strategy.",
+  "enabled_env": "V41_HFT_SIM_ENABLED",
+  "execution_target": "simulator",
+  "test_mode": true,
+  "exclude_from_strategy_health": true,
+  "exclude_from_expected_edge": true,
+  "exclude_from_live_pnl_stats": true,
+  "max_position_notional_usdt": 50,
+  "notional_tolerance": {
+    "absolute_usdt": 1.0,
+    "relative": 0.02
+  },
+  "default_symbol": "BTC-USDT-SWAP",
+  "default_mark_price": 100000,
+  "lot_size": 0.0001,
+  "contract_value": 1,
+  "min_quantity": 0.0001,
+  "leverage_sequence": [2, 3, 5],
+  "action_interval_seconds": 0,
+  "cycles_smoke": 20,
+  "cycles_base": 200,
+  "cycles_stress": 1000,
+  "seed": 20260909,
+  "max_reconciliation_seconds": 3,
+  "states": [
+    "FLAT",
+    "OPENING_LONG",
+    "LONG",
+    "REDUCING_LONG",
+    "CLOSING_LONG",
+    "FLAT_CONFIRMED",
+    "OPENING_SHORT",
+    "SHORT",
+    "REDUCING_SHORT",
+    "CLOSING_SHORT"
+  ],
+  "acceptance": {
+    "duplicate_orders_executed": 0,
+    "orphan_order_count": 0,
+    "wrong_side_unresolved": 0,
+    "position_cap_unresolved": 0,
+    "opening_while_s6_ge_l2": 0,
+    "restart_duplicate_orders": 0
+  },
+  "fault_injection": {
+    "leverage_mismatch": true,
+    "position_notional_mismatch": true,
+    "wrong_side_position": true,
+    "partial_fill": true,
+    "delayed_ack": true,
+    "lost_ack": true,
+    "duplicate_request": true,
+    "cancel_timeout": true
+  }
+}

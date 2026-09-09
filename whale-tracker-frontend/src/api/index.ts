@@ -33,10 +33,15 @@ http.interceptors.request.use((config) => {
 
 http.interceptors.response.use(
   (response) => response,
-  (error: AxiosError<{ error?: string }>) => {
+  (error: AxiosError<{ error?: string; code?: string; message?: string; details?: unknown }>) => {
     const code = error.code || '';
     const status = error.response?.status;
-    const raw = error.response?.data?.error || error.message || '请求失败';
+    const data = error.response?.data;
+    const raw =
+      (typeof data?.error === 'string' ? data.error : undefined) ||
+      data?.message ||
+      error.message ||
+      '请求失败';
     if (
       code === 'ECONNABORTED' ||
       code === 'ETIMEDOUT' ||
@@ -49,7 +54,12 @@ http.interceptors.response.use(
     }
     const message =
       status === 429 || /429|过于频繁/.test(raw) ? '查询过于频繁，请稍后再试' : raw;
-    return Promise.reject(new Error(message));
+    const enriched = new Error(message) as Error & { code?: string; details?: unknown };
+    enriched.code = data?.code || (typeof data?.details === 'object' && data?.details
+      ? (data.details as { code?: string }).code
+      : undefined);
+    enriched.details = data;
+    return Promise.reject(enriched);
   },
 );
 
@@ -494,385 +504,6 @@ export async function listAuthUsers() {
   return data;
 }
 
-/* ===== OKX 跟单监控 ===== */
-
-export type OkxTrader = {
-  id: string;
-  uniqueCode: string;
-  name: string;
-  avatar?: string;
-  rank: number;
-  pnl: number;
-  pnlRatio: number;
-  winRatio: number;
-  aum: number;
-  copyTraderNum: number;
-  maxCopyTraderNum: number;
-  isFull?: boolean;
-  leadDays: number;
-  ccy: string;
-  instruments: string[];
-  pnlRatios?: Array<{ beginTs: number; pnlRatio: number }>;
-  maxDrawdown?: number;
-  copyPnl?: number;
-  openCount?: number;
-  openMargin?: number;
-  openUpl?: number;
-  lastOpenAt?: number;
-};
-
-export type OkxOpenEvent = {
-  id: string;
-  at: number;
-  traderId: string;
-  traderName: string;
-  kind: 'open' | 'close';
-  status: 'open' | 'closed';
-  coin: string;
-  instId: string;
-  side: 'long' | 'short';
-  lever: number;
-  margin: number;
-  size: number;
-  openAvgPx: number;
-  closeAvgPx: number;
-  markPx: number;
-  liqPx?: number;
-  mgnMode?: '' | 'cross' | 'isolated';
-  /** 维持保证金率（ecotrade 多为百分数如 52.2；偶发小数） */
-  mgnRatio?: number;
-  pnl: number;
-  pnlRatio: number;
-  openTime: number | null;
-  closeTime: number | null;
-  subPosId: string;
-};
-
-export type OkxLeadRow = {
-  key: string;
-  label: string;
-  value: string;
-  tone: 'up' | 'down' | 'neutral' | 'warn';
-};
-
-export type OkxDashboardResponse = {
-  traders: OkxTrader[];
-  opens: OkxOpenEvent[];
-  positions?: OkxOpenEvent[];
-  positionsByTrader?: Record<string, OkxOpenEvent[]>;
-  meta?: Record<string, unknown>;
-  updatedAt?: number;
-  stale?: boolean;
-  error?: string;
-};
-
-export async function fetchOkxDashboard(refresh = false) {
-  const { data } = await http.get<OkxDashboardResponse>('/okx', {
-    params: refresh ? { refresh: 1 } : undefined,
-    timeout: 120_000,
-  });
-  return data;
-}
-
-export async function fetchOkxOpens(traderId = '', limit = 120) {
-  const { data } = await http.get<{
-    opens: OkxOpenEvent[];
-    total: number;
-    traderId: string | null;
-    updatedAt?: number;
-    stale?: boolean;
-  }>('/okx/opens', {
-    params: {
-      ...(traderId ? { traderId } : {}),
-      limit,
-    },
-  });
-  return data;
-}
-
-export async function fetchOkxTraderDetail(traderId: string, lastDays = '3') {
-  const { data } = await http.get<{
-    trader: OkxTrader;
-    stats: Record<string, number | string> | null;
-    weekly: Array<{ beginTs: number; pnl: number; pnlRatio: number }>;
-    rows: OkxLeadRow[];
-    positions: OkxOpenEvent[];
-    opens: OkxOpenEvent[];
-    updatedAt: number;
-  }>(`/okx/traders/${encodeURIComponent(traderId)}/detail`, {
-    params: { lastDays },
-  });
-  return data;
-}
-
-/* ===== OKX 交易（服务端代理，需登录） ===== */
-
-export type OkxTradeStatus = {
-  configured: boolean;
-  simulated: boolean;
-  base: string;
-  hasProxy?: boolean;
-};
-
-export type OkxTradeBalanceDetail = {
-  ccy: string;
-  eq: number;
-  availBal: number;
-  frozenBal: number;
-};
-
-export type OkxPlaceOrderInput = {
-  instId: string;
-  side: 'buy' | 'sell';
-  posSide?: 'long' | 'short' | '';
-  tdMode?: 'cross' | 'isolated' | 'cash';
-  ordType?: 'market' | 'limit' | 'ioc' | 'fok' | 'post_only';
-  sz: string;
-  px?: string;
-  lever?: number | string;
-  reduceOnly?: boolean;
-  clOrdId?: string;
-};
-
-export async function fetchOkxTradeStatus() {
-  const { data } = await http.get<OkxTradeStatus>('/okx/trade/status');
-  return data;
-}
-
-export async function fetchOkxTradeBalance(ccy = '') {
-  const { data } = await http.get<
-    OkxTradeStatus & {
-      balance: { totalEq: number | null; details: OkxTradeBalanceDetail[] };
-    }
-  >('/okx/trade/balance', {
-    params: ccy ? { ccy } : undefined,
-  });
-  return data;
-}
-
-export async function fetchOkxTradePositions(instType = 'SWAP') {
-  const { data } = await http.get<OkxTradeStatus & { positions: Record<string, unknown>[] }>(
-    '/okx/trade/positions',
-    { params: { instType } },
-  );
-  return data;
-}
-
-export async function placeOkxOrder(body: OkxPlaceOrderInput) {
-  const { data } = await http.post<{
-    ok: boolean;
-    order: Record<string, unknown> | null;
-    simulated?: boolean;
-    error?: string;
-  }>('/okx/trade/order', body, { timeout: 90_000 });
-  return data;
-}
-
-export async function cancelOkxOrder(body: { instId: string; ordId?: string; clOrdId?: string }) {
-  const { data } = await http.post<{ ok: boolean; result: Record<string, unknown> | null }>(
-    '/okx/trade/cancel',
-    body,
-  );
-  return data;
-}
-
-/* ===== HL → 交易所跟单 ===== */
-
-export type CopyExchange = 'okx' | 'binance';
-
-export type CopyTaskDto = {
-  id: string;
-  userId?: string;
-  name: string;
-  exchange: CopyExchange;
-  enabled: boolean;
-  whaleAddress: string;
-  followCapitalUsd: number;
-  maxLeverage: number;
-  maxNotionalUsd: number;
-  note: string;
-  updatedAt: number;
-};
-
-export type CopyPositionDto = {
-  id: string;
-  taskId: string;
-  coin: string;
-  side: 'long' | 'short';
-  lever: number;
-  mgnMode?: string;
-  marginUsd: number;
-  size: number;
-  notionalUsd?: number;
-  entryPx: number;
-  markPx: number;
-  liqPx: number;
-  mgnRatio: number;
-  uPnl: number;
-  pnlRatio: number;
-  status: 'open' | 'closed';
-  instId?: string;
-};
-
-export type CopyRecordDto = {
-  id: string;
-  taskId: string;
-  at: number;
-  kind: 'open' | 'add' | 'close' | 'margin';
-  coin: string;
-  side: 'long' | 'short';
-  lever?: number;
-  marginUsd?: number;
-  px?: number;
-  note?: string;
-  status?: 'ok' | 'fail';
-};
-
-export type ExchangeKeysDto = {
-  okx: {
-    exchange: 'okx';
-    configured: boolean;
-    enabled: boolean;
-    simulated: boolean;
-    apiKeyHint: string;
-    hasSecret: boolean;
-    hasPassphrase: boolean;
-    updatedAt: number;
-    ready: boolean;
-    status: string;
-  };
-  binance: {
-    exchange: 'binance';
-    configured: boolean;
-    enabled: boolean;
-    simulated: boolean;
-    apiKeyHint: string;
-    hasSecret: boolean;
-    hasPassphrase: boolean;
-    updatedAt: number;
-    ready: boolean;
-    status: string;
-  };
-};
-
-export async function fetchCopyTradeSnapshot() {
-  const { data } = await http.get<{
-    tasks: CopyTaskDto[];
-    positions: CopyPositionDto[];
-    records: CopyRecordDto[];
-    updatedAt: number;
-    trade?: { configured?: boolean; simulated?: boolean; keyHint?: string; source?: string };
-    exchangeKeys?: ExchangeKeysDto;
-    exchangeKeysReady?: boolean;
-  }>('/copy-trade');
-  return data;
-}
-
-export async function fetchExchangeKeys() {
-  const { data } = await http.get<ExchangeKeysDto>('/copy-trade/exchange-keys');
-  return data;
-}
-
-export async function saveOkxExchangeKeys(body: {
-  apiKey: string;
-  apiSecret: string;
-  apiPassphrase: string;
-  simulated?: boolean;
-  enabled?: boolean;
-}) {
-  const { data } = await http.put<
-    { ok: boolean; verified?: boolean; warn?: string } & ExchangeKeysDto
-  >('/copy-trade/exchange-keys/okx', body, { timeout: 90_000 });
-  return data;
-}
-
-export async function deleteOkxExchangeKeys() {
-  const { data } = await http.delete<{ ok: boolean } & ExchangeKeysDto>(
-    '/copy-trade/exchange-keys/okx',
-  );
-  return data;
-}
-
-export async function saveCopyTask(task: Partial<CopyTaskDto> & { whaleAddress?: string }) {
-  const { data } = await http.post<{ ok: boolean; task: CopyTaskDto }>('/copy-trade/tasks', task);
-  return data;
-}
-
-export async function deleteCopyTask(id: string) {
-  const { data } = await http.delete<{ ok: boolean }>(`/copy-trade/tasks/${encodeURIComponent(id)}`);
-  return data;
-}
-
-export async function closeCopyPosition(id: string) {
-  const { data } = await http.post<{
-    ok: boolean;
-    order?: { instId: string; sz: number; ordId: string | null; side: string };
-    snapshot?: {
-      tasks: CopyTaskDto[];
-      positions: CopyPositionDto[];
-      records: CopyRecordDto[];
-      updatedAt: number;
-    };
-    error?: string;
-  }>(`/copy-trade/positions/${encodeURIComponent(id)}/close`, {}, { timeout: 90_000 });
-  return data;
-}
-
-export async function syncCopyTasks(tasks: CopyTaskDto[]) {
-  const { data } = await http.put<{ ok: boolean; tasks: CopyTaskDto[] }>('/copy-trade/tasks', {
-    tasks,
-  });
-  return data;
-}
-
-export async function followCopyFromPosition(body: {
-  target: 'all' | 'okx' | 'binance';
-  whaleAddress: string;
-  whaleName?: string;
-  whaleAccountValue?: number;
-  whaleTotalPositionUsd?: number;
-  /** 跟单本金（USDT），等同跟单任务里的 followCapitalUsd */
-  followCapitalUsd?: number;
-  position: {
-    coin: string;
-    coinLabel?: string;
-    side: 'long' | 'short';
-    size?: number;
-    entryPx?: number | null;
-    markPx?: number | null;
-    positionValue?: number | null;
-    unrealizedPnl?: number | null;
-    leverage?: number | null;
-    marginUsed?: number | null;
-    liquidationPx?: number | string | null;
-  };
-}) {
-  const { data } = await http.post<{
-    ok: boolean;
-    created: CopyTaskDto[];
-    reused: CopyTaskDto[];
-    positions: CopyPositionDto[];
-    orders?: Array<{
-      exchange: string;
-      instId: string;
-      sz: number;
-      ordId: string | null;
-      side: string;
-      lever: number;
-      notional: number;
-    }>;
-    failures?: string[];
-    error?: string;
-    snapshot?: {
-      tasks: CopyTaskDto[];
-      positions: CopyPositionDto[];
-      records: CopyRecordDto[];
-      updatedAt: number;
-    };
-  }>('/copy-trade/follow', body, { timeout: 90_000 });
-  return data;
-}
-
 export type XTweetUser = {
   id?: string;
   username: string;
@@ -968,6 +599,557 @@ export async function fetchXFeed(opts?: {
     },
     timeout: 30_000,
   });
+  return data;
+}
+
+export type WhaleAiKeyStatus = {
+  provider: string;
+  configured: boolean;
+  apiKeyHint: string;
+  updatedAt: number;
+  ready: boolean;
+};
+
+export async function fetchWhaleAiKeyStatus() {
+  const { data } = await http.get<WhaleAiKeyStatus>('/whale-ai/key');
+  return data;
+}
+
+export async function saveWhaleAiKey(apiKey: string) {
+  const { data } = await http.put<
+    { ok: boolean; verified?: boolean; warn?: string } & WhaleAiKeyStatus
+  >('/whale-ai/key', { apiKey }, { timeout: 30_000 });
+  return data;
+}
+
+export async function deleteWhaleAiKey() {
+  const { data } = await http.delete<{ ok: boolean } & WhaleAiKeyStatus>('/whale-ai/key');
+  return data;
+}
+
+export async function analyzeWithWhaleAi(body: {
+  source: 'x' | 'macro';
+  title?: string;
+  content?: string;
+  meta?: Record<string, unknown> | string;
+}) {
+  const { data } = await http.post<{
+    ok: boolean;
+    source: string;
+    analysis: string;
+    model?: string;
+    usage?: unknown;
+  }>('/whale-ai/analyze', body, { timeout: 100_000 });
+  return data;
+}
+
+/* ===== 鲸鱼AI · OKX 交易 ===== */
+
+export type WhaleAiTradeStatus = {
+  ready: boolean;
+  exchange: string;
+  configured: boolean;
+  simulated: boolean;
+  apiKeyHint: string;
+  updatedAt: number;
+  status: string;
+  trade?: {
+    configured?: boolean;
+    simulated?: boolean;
+    keyHint?: string;
+    source?: string;
+    base?: string;
+  } | null;
+};
+
+export type WhaleAiExchangeKeys = {
+  okx: {
+    exchange: 'okx';
+    configured: boolean;
+    enabled: boolean;
+    simulated: boolean;
+    apiKeyHint: string;
+    hasSecret: boolean;
+    hasPassphrase: boolean;
+    updatedAt: number;
+    ready: boolean;
+    status: string;
+  };
+  binance: {
+    exchange: 'binance';
+    configured: boolean;
+    enabled: boolean;
+    simulated: boolean;
+    apiKeyHint: string;
+    hasSecret: boolean;
+    hasPassphrase: boolean;
+    updatedAt: number;
+    ready: boolean;
+    status: string;
+  };
+};
+
+export async function fetchWhaleAiTradeStatus() {
+  const { data } = await http.get<WhaleAiTradeStatus>('/whale-ai/trade/status');
+  return data;
+}
+
+export async function saveWhaleAiTradeKeys(body: {
+  apiKey: string;
+  apiSecret: string;
+  apiPassphrase: string;
+  simulated?: boolean;
+  enabled?: boolean;
+}) {
+  const { data } = await http.put<
+    { ok: boolean; verified?: boolean; warn?: string; trade?: WhaleAiTradeStatus } & WhaleAiExchangeKeys
+  >('/whale-ai/trade/keys', { exchange: 'okx', ...body }, { timeout: 90_000 });
+  return data;
+}
+
+export async function deleteWhaleAiTradeKeys() {
+  const { data } = await http.delete<
+    { ok: boolean; trade?: WhaleAiTradeStatus } & WhaleAiExchangeKeys
+  >('/whale-ai/trade/keys', { params: { exchange: 'okx' } });
+  return data;
+}
+
+export async function fetchWhaleAiTradeBalance(ccy = '') {
+  const { data } = await http.get<
+    WhaleAiTradeStatus & {
+      balance: {
+        totalEq: number | null;
+        details: Array<{ ccy: string; eq: number; availBal: number; frozenBal: number }>;
+      };
+    }
+  >('/whale-ai/trade/balance', {
+    params: ccy ? { ccy } : undefined,
+    timeout: 60_000,
+  });
+  return data;
+}
+
+export async function fetchWhaleAiTradePositions(instType = 'SWAP') {
+  const { data } = await http.get<WhaleAiTradeStatus & { positions: Record<string, unknown>[] }>(
+    '/whale-ai/trade/positions',
+    { params: { instType }, timeout: 60_000 },
+  );
+  return data;
+}
+
+export async function fetchWhaleAiTradeOrdersPending(instType = 'SWAP') {
+  const { data } = await http.get<WhaleAiTradeStatus & { orders: Record<string, unknown>[] }>(
+    '/whale-ai/trade/orders-pending',
+    { params: { instType }, timeout: 60_000 },
+  );
+  return data;
+}
+
+export async function placeWhaleAiTradeOrder(body: {
+  instId: string;
+  side: 'buy' | 'sell';
+  sz: string | number;
+  ordType?: string;
+  tdMode?: string;
+  posSide?: 'long' | 'short' | '';
+  px?: string | number;
+  lever?: number;
+  setLeverage?: boolean | string | number;
+  reduceOnly?: boolean;
+  clOrdId?: string;
+  tag?: string;
+}) {
+  const { data } = await http.post<{
+    ok: boolean;
+    order: Record<string, unknown> | null;
+    error?: string;
+  } & WhaleAiTradeStatus>('/whale-ai/trade/order', body, { timeout: 90_000 });
+  return data;
+}
+
+export async function closeWhaleAiTradePosition(body: {
+  instId: string;
+  side?: 'buy' | 'sell';
+  posSide?: 'long' | 'short' | '';
+  sz?: string | number;
+  tdMode?: string;
+}) {
+  const { data } = await http.post<{
+    ok: boolean;
+    order: Record<string, unknown> | null;
+    error?: string;
+  } & WhaleAiTradeStatus>('/whale-ai/trade/close', body, { timeout: 90_000 });
+  return data;
+}
+
+export async function cancelWhaleAiTradeOrder(body: {
+  instId: string;
+  ordId?: string;
+  clOrdId?: string;
+}) {
+  const { data } = await http.post<{ ok: boolean; result: Record<string, unknown> | null } & WhaleAiTradeStatus>(
+    '/whale-ai/trade/cancel',
+    body,
+    { timeout: 60_000 },
+  );
+  return data;
+}
+
+/* ===== 鲸鱼AI · V4.1 Engine ===== */
+
+export type V41Regime = {
+  regime: 'strong_trend' | 'weak_trend' | 'range' | 'panic' | 'recovery' | string;
+  direction_bias: number;
+  confidence: number;
+  risk_multiplier: number;
+  trend_strength: number;
+  breadth_24h: number;
+  rv5m_ratio_30d: number;
+  updated_at: string;
+};
+
+export type V41RiskBudget = {
+  portfolio: {
+    global_risk_limit: number;
+    effective_risk_budget: number;
+    risk_used: number;
+    reserve_fraction: number;
+    raw_sum: number;
+    scale: number;
+  };
+  strategies: Record<
+    string,
+    {
+      raw_share: number;
+      final_share: number;
+      risk_budget: number;
+      risk_used: number;
+    }
+  >;
+  updated_at: string;
+};
+
+export type V41Safety = {
+  level: number;
+  status: string;
+  reason: string | null;
+  exchange_connected: boolean;
+  market_data_latency_ms: number | null;
+  sequence_valid: boolean;
+  positions_reconciled: boolean;
+  orders_reconciled: boolean;
+  risk_engine_healthy: boolean;
+  new_entries_enabled: boolean;
+  active_incident_id: string | null;
+  recovery: Record<string, unknown> | null;
+  updated_at: string;
+};
+
+export type V41StrategyHealth = {
+  strategy_id: string;
+  name: string;
+  health_score: number | null;
+  state: string;
+  sample_count: number;
+  expectancy_R: number | null;
+  updated_at: string;
+};
+
+export type V41TradeIntent = {
+  intent_id: string;
+  strategy_id: string;
+  symbol: string;
+  direction: string;
+  status: string;
+  created_at: string;
+  expires_at: string;
+  signal_age_seconds: number;
+  ttl_seconds: number;
+  reference_price: number;
+  current_price: number;
+  price_drift_bps: number;
+  max_price_drift_bps: number;
+  expected_edge_R: number | null;
+  s3_regime: string;
+  s3_direction_bias: number;
+  s4_status: string;
+};
+
+export type V41Incident = {
+  incident_id: string;
+  type: string;
+  severity: string;
+  triggered_at: string;
+  resolved_at: string | null;
+  reason: string;
+  recovery_state: string;
+  manual_ack_required: boolean;
+};
+
+export type V41PersonalView = {
+  engine: {
+    available: boolean;
+    state: string;
+    mode: string;
+    version: string;
+    updated_at: string;
+  };
+  active_strategy: {
+    id: string;
+    name: string;
+    description?: string;
+    runtime_state: string;
+    health_score: number | null;
+    health_state: string;
+    risk_budget_pct_equity: number;
+    expectancy_R?: number | null;
+  };
+  market_risk: {
+    regime: string;
+    direction_bias: number;
+    market_data_latency_ms?: number | null;
+    exchange_connected: boolean;
+    positions_reconciled: boolean;
+    orders_reconciled: boolean;
+    risk_engine_healthy: boolean;
+    safety_level: number;
+    safety_status: string;
+    new_entries_enabled: boolean;
+    portfolio_risk_used_pct_equity: number;
+    portfolio_risk_limit_pct_equity: number;
+  } | null;
+  signals: V41TradeIntent[];
+  recent_order_intents: unknown[];
+  last_update: string;
+};
+
+export type V41EngineSnapshot = {
+  engine: {
+    version: string;
+    mode: string;
+    state: string;
+    updated_at: string;
+    started_at?: string | null;
+    last_tick_at?: string | null;
+    active_strategy?: string;
+    engine_available?: boolean;
+  };
+  s3: V41Regime | null;
+  s5: V41RiskBudget | null;
+  s6: V41Safety | null;
+  s7: V41StrategyHealth[];
+  trade_intents: V41TradeIntent[];
+  order_intents: unknown[];
+  execution: Record<string, unknown>;
+  incidents: V41Incident[];
+  edge?: unknown;
+  view?: V41PersonalView;
+};
+
+export type V41BridgeStatus = {
+  enabled: boolean;
+  connected: boolean;
+  engineUrl: string;
+  lastSnapshotAt: number;
+  lastError: string;
+  latencyMs: number;
+  freshness: string;
+};
+
+export async function fetchWhaleAiEngineHealth() {
+  const { data } = await http.get<{
+    ok: boolean;
+    health: Record<string, unknown>;
+    engineAvailable?: boolean;
+    bridge?: V41BridgeStatus;
+    code?: string;
+    message?: string;
+  }>('/whale-ai/engine/health', { timeout: 5000 });
+  return data;
+}
+
+export async function fetchWhaleAiEngineDashboard() {
+  const { data } = await http.get<{
+    snapshot: V41EngineSnapshot | null;
+    view?: V41PersonalView | null;
+    engine?: V41PersonalView['engine'];
+    active_strategy?: V41PersonalView['active_strategy'];
+    market_risk?: V41PersonalView['market_risk'];
+    signals?: V41TradeIntent[];
+    recent_order_intents?: unknown[];
+    last_update?: string;
+    engineAvailable?: boolean;
+    bridge?: V41BridgeStatus;
+    ok?: boolean;
+    code?: string;
+    message?: string;
+  }>('/whale-ai/engine/dashboard', { timeout: 8000 });
+  return data;
+}
+
+export async function startWhaleAiEngine() {
+  const { data } = await http.post('/whale-ai/engine/start', {}, { timeout: 20_000 });
+  return data;
+}
+
+export async function pauseWhaleAiEngine() {
+  const { data } = await http.post('/whale-ai/engine/pause', {}, { timeout: 20_000 });
+  return data;
+}
+
+export async function killWhaleAiEngine(body?: { reason?: string }) {
+  const { data } = await http.post<{
+    ok: boolean;
+    engine?: Record<string, unknown>;
+    closed?: number;
+    closeErrors?: string[];
+  }>('/whale-ai/engine/kill', body || {}, { timeout: 120_000 });
+  return data;
+}
+
+export async function resumeWhaleAiEngine(body: { reason: string; incident_id?: string }) {
+  const { data } = await http.post('/whale-ai/engine/system/resume', body, { timeout: 8000 });
+  return data;
+}
+
+export async function setWhaleAiActiveStrategy(strategyId: string) {
+  const { data } = await http.post(
+    '/whale-ai/engine/strategy/switch',
+    { strategy_id: strategyId },
+    { timeout: 8000 },
+  );
+  return data;
+}
+
+export async function fetchWhaleAiStrategies() {
+  const { data } = await http.get<{
+    active_strategy_id: string;
+    strategies: Array<{
+      id: string;
+      name: string;
+      description: string;
+      available: boolean;
+      health_score: number;
+      health_state: string;
+    }>;
+  }>('/whale-ai/engine/strategies', { timeout: 8000 });
+  return data;
+}
+
+export async function fetchWhaleAiActiveStrategy() {
+  const { data } = await http.get<{
+    strategy_id: string;
+    name: string;
+    runtime_state: string;
+    health_state: string;
+    health_score: number;
+    risk_budget_pct_equity: number;
+    changed_at?: string;
+  }>('/whale-ai/engine/strategy/active', { timeout: 8000 });
+  return data;
+}
+
+/** QA-HFT-SIM — only when V41_HFT_SIM_ENABLED on server */
+export async function startV41HftSim(body: {
+  cycles?: number;
+  seed?: number;
+  inject_failures?: boolean;
+  symbol?: string;
+  max_position_notional_usdt?: number;
+  execution_mode?: 'simulator' | 'exchange';
+  exchange_environment?: 'demo' | 'live' | null;
+}) {
+  const { data } = await http.post('/whale-ai/engine/test/hft-sim/start', body, { timeout: 600_000 });
+  return data;
+}
+
+export async function fetchV41HftSimCapability() {
+  const { data } = await http.get('/whale-ai/engine/test/hft-sim/capability', { timeout: 8000 });
+  return data as {
+    enabled?: boolean;
+    hft_sim_enabled?: boolean;
+    qa_exchange_enabled?: boolean;
+    qa_live_enabled?: boolean;
+    okx_ready?: boolean;
+    account_mode?: 'OKX_DEMO' | 'OKX_LIVE' | null;
+    exchange_environment?: 'demo' | 'live' | null;
+    live_money?: boolean;
+    simulator_available?: boolean;
+    exchange_available?: boolean;
+    max_position_notional_usdt?: number;
+  };
+}
+
+export async function stopV41HftSim() {
+  const { data } = await http.post('/whale-ai/engine/test/hft-sim/stop', {}, { timeout: 8000 });
+  return data;
+}
+
+export async function fetchV41HftSimStatus() {
+  const { data } = await http.get('/whale-ai/engine/test/hft-sim/status', { timeout: 8000 });
+  return data as {
+    enabled?: boolean;
+    running?: boolean;
+    cycle_id?: number;
+    target_cycles?: number;
+    state?: string;
+    position_notional_usdt?: number;
+    max_position_notional_usdt?: number;
+    actual_leverage?: number;
+    target_leverage?: number;
+    passed?: boolean | null;
+    metrics?: Record<string, number>;
+    is_alpha?: boolean;
+    execution_target?: string;
+    real_exchange_allowed?: boolean;
+    console_mode?: string;
+    alpha_opening_enabled?: boolean;
+    active_strategy_id?: string;
+    env_resolved?: string | null;
+  };
+}
+
+export async function fetchV41HftSimReport() {
+  const { data } = await http.get('/whale-ai/engine/test/hft-sim/report', { timeout: 15000 });
+  return data;
+}
+
+export async function fetchV41WhaleBridgeTelemetry() {
+  const { data } = await http.get('/whale-ai/engine/whale-bridge/telemetry', { timeout: 8000 });
+  return data;
+}
+
+export type ExecutionSelectionKind = 'alpha' | 'qa_test';
+
+export type ExecutionSelection = {
+  id: string;
+  kind: ExecutionSelectionKind;
+  name: string;
+  available: boolean;
+  disabled_reason?: string | null;
+  description?: string;
+  paper_only?: boolean;
+  execution_target?: string;
+  max_position_notional_usdt?: number;
+};
+
+export async function fetchExecutionSelections() {
+  const { data } = await http.get<{
+    active_strategy_id?: string;
+    console_mode?: string;
+    selected_execution_id?: string;
+    alpha_opening_enabled?: boolean;
+    items: ExecutionSelection[];
+  }>('/whale-ai/engine/execution/selections', { timeout: 8000 });
+  return data;
+}
+
+export async function selectExecution(body: {
+  id: string;
+  reason?: string;
+  operator_id?: string;
+}) {
+  const { data } = await http.post('/whale-ai/engine/execution/select', body, { timeout: 15000 });
   return data;
 }
 

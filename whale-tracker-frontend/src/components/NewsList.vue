@@ -1511,12 +1511,4 @@ function alertFundingWarn(row: {
   font-size: 16px;
   line-height: 1.7;
 }
-@media (max-width: 768px) {
-  .panel :deep(.el-card__header) {
-    padding: 10px 12px;
-  }
-  .news-item {
-    padding: 10px;
-  }
-}
 </style>

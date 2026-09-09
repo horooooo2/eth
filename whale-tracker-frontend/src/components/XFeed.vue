@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { ArrowDown, ArrowUp } from '@element-plus/icons-vue';
 import { fetchXFeed, type XFeedAccount, type XFeedTweet } from '@/api';
 import { clearXUnread, consumeXSocketTweets, xSocketTweets } from '@/stores/xFeed';
+import AiAnalyzeButton from '@/components/AiAnalyzeButton.vue';
 
 const COLLAPSE_MAX = 200;
 
@@ -147,6 +148,30 @@ function refLabel(item: XFeedTweet) {
   return '相关';
 }
 
+function aiTitle(item: XFeedTweet) {
+  const name = item.label || item.user?.name || item.username || 'X';
+  return `${name} · @${item.username || item.user?.username || ''}`;
+}
+
+function aiContent(item: XFeedTweet) {
+  const main = displayText(item, false);
+  const ref = item.refTweet
+    ? `\n\n[${refLabel(item)}] @${item.refTweet.user?.username || ''}: ${displayText(item.refTweet, false)}`
+    : '';
+  return `${main}${ref}`.trim();
+}
+
+function aiMeta(item: XFeedTweet) {
+  return {
+    id: item.id,
+    url: item.url || '',
+    createdAt: item.createdAt || '',
+    likes: item.likes,
+    retweets: item.retweets,
+    views: item.views,
+  };
+}
+
 function mergeTweets(incoming: XFeedTweet[]) {
   if (!incoming?.length) return;
   const map = new Map(tweets.value.map((t) => [t.id, t]));
@@ -175,7 +200,7 @@ async function load() {
     mergeTweets(consumeXSocketTweets());
     scheduleMeasure();
   } catch (err) {
-    error.value = err instanceof Error ? err.message : 'X 推文加载失败';
+    error.value = err instanceof Error ? err.message : '动态加载失败';
   } finally {
     loading.value = false;
   }
@@ -263,6 +288,12 @@ onMounted(() => {
             <span class="handle">@{{ item.username || item.user?.username }}</span>
           </div>
           <div class="who-actions">
+            <AiAnalyzeButton
+              source="x"
+              :title="aiTitle(item)"
+              :content="aiContent(item)"
+              :meta="aiMeta(item)"
+            />
             <button
               v-if="canShowOriginal(item) || (item.refTweet && canShowOriginal(item.refTweet))"
               type="button"
