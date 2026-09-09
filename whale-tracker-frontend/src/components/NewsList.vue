@@ -150,29 +150,29 @@ async function loadAlertPage(silent = false) {
       sinceMs: freshModeEnabled.value ? Date.now() - freshWindowMs() : undefined,
     };
 
+    // 「全部」= 全币种（仅排除美股等 exotic）；点具体币种才按单币拉
     const coinTargets =
-      alertCoinFilter.value === 'all'
-        ? preferredCoins.value.length
-          ? [...preferredCoins.value]
-          : []
-        : [alertCoinFilter.value];
+      alertCoinFilter.value === 'all' ? [] : [alertCoinFilter.value];
 
     const map = new Map<string, WhaleAlert>();
     const byCoinRaw: Record<string, number> = {};
     let serverLong = 0;
     let serverShort = 0;
+    let serverAll = 0;
 
     if (!coinTargets.length) {
       const data = await fetchPagedAlertHistory({
         ...baseQuery,
         page: 1,
-        limit: Math.min(100, alertPage.value * ALERT_PAGE_SIZE),
+        // 闪电模式下多拉一些，避免全币分页被已平仓挤掉后列表过空
+        limit: Math.min(100, Math.max(ALERT_PAGE_SIZE * alertPage.value, ALERT_PAGE_SIZE)),
       });
       if (seq !== alertReqSeq) return;
       for (const raw of data.alerts || []) {
         const item = normalizeStoredAlert(raw as WhaleAlert);
         if (item?.id) map.set(item.id, item);
       }
+      serverAll = Number(data.total) || 0;
       serverLong = Number(data.facets?.long) || 0;
       serverShort = Number(data.facets?.short) || 0;
       Object.assign(byCoinRaw, data.facets?.byCoin || {});
@@ -193,17 +193,14 @@ async function loadAlertPage(silent = false) {
         const coin = coinTargets[i];
         const data = pages[i];
         byCoinRaw[coin] = Number(data.total) || 0;
+        serverAll += Number(data.total) || 0;
         for (const raw of data.alerts || []) {
           const item = normalizeStoredAlert(raw as WhaleAlert);
           if (item?.id) map.set(item.id, item);
         }
-        // 单币请求时 facets 已按该币收窄
-        if (coinTargets.length === 1 && data.facets) {
+        if (data.facets) {
           serverLong = Number(data.facets.long) || 0;
           serverShort = Number(data.facets.short) || 0;
-          Object.assign(byCoinRaw, data.facets.byCoin || {});
-        } else if (data.facets) {
-          // 多币合并时用各币 total 近似；多空改由客户端闸门后重算
           Object.assign(byCoinRaw, data.facets.byCoin || {});
         }
       }
@@ -213,8 +210,8 @@ async function loadAlertPage(silent = false) {
       .filter((alert) => {
         const coin = alert.items?.[0]?.coin;
         if (isExoticAsset(String(coin || ''))) return false;
-        if (alertCoinFilter.value === 'all' && preferredCoins.value.length) {
-          if (!coinMatchesWatch(coin, preferredCoins.value)) return false;
+        if (alertCoinFilter.value !== 'all') {
+          if (!coinMatchesWatch(coin, [alertCoinFilter.value])) return false;
         }
         return alertPassesFreshListGate(alert, whaleOf(alert));
       })
@@ -234,11 +231,9 @@ async function loadAlertPage(silent = false) {
       if (coin) byCoin[coin] = (byCoin[coin] || 0) + 1;
     }
 
-    // 非闪电模式且样本可能被 limit 截断时，优先用服务端按币种 facet
+    // 非闪电且样本可能被 limit 截断时，优先用服务端 facet
     const truncated =
-      !freshModeEnabled.value &&
-      coinTargets.length === 1 &&
-      (byCoinRaw[coinTargets[0]] || 0) > pool.length;
+      !freshModeEnabled.value && serverAll > pool.length;
     if (truncated) {
       long = serverLong;
       short = serverShort;
@@ -253,10 +248,16 @@ async function loadAlertPage(silent = false) {
     const list = sided.slice(start, start + ALERT_PAGE_SIZE);
 
     pageAlerts.value = list;
-    alertTotal.value = sided.length;
+    if (truncated) {
+      if (side === 'long') alertTotal.value = long;
+      else if (side === 'short') alertTotal.value = short;
+      else alertTotal.value = serverAll;
+    } else {
+      alertTotal.value = sided.length;
+    }
     whaleStore.absorbAlertPage(list);
     facets.value = {
-      all: pool.length,
+      all: truncated ? serverAll : pool.length,
       byCoin: truncated ? { ...byCoinRaw, ...byCoin } : byCoin,
       long,
       short,
@@ -317,11 +318,15 @@ function isOpenPositionClosed(alert: WhaleAlert): boolean {
 }
 
 const alertCoinCounts = computed(() => {
-  const counts: Record<string, number> = { all: 0 };
+  const counts: Record<string, number> = {
+    all: Number(facets.value.all) || 0,
+  };
   for (const coin of preferredCoins.value) {
-    const n = facets.value.byCoin[coin] || 0;
-    counts[coin] = n;
-    counts.all += n;
+    counts[coin] = facets.value.byCoin[coin] || 0;
+  }
+  // 若服务端 all 未带回，用偏好币种合计兜底
+  if (!counts.all) {
+    counts.all = preferredCoins.value.reduce((sum, coin) => sum + (counts[coin] || 0), 0);
   }
   return counts;
 });
@@ -453,10 +458,8 @@ function alertMatchesListFilters(alert: WhaleAlert) {
   if (props.filterWhaleId && alert.whaleId !== props.filterWhaleId) return false;
   const coin = alert.items?.[0]?.coin;
   if (isExoticAsset(String(coin || ''))) return false;
-  if (alertCoinFilter.value === 'all') {
-    if (preferredCoins.value.length && !coinMatchesWatch(coin, preferredCoins.value)) return false;
-  } else if (!coinMatchesWatch(coin, [alertCoinFilter.value])) {
-    return false;
+  if (alertCoinFilter.value !== 'all') {
+    if (!coinMatchesWatch(coin, [alertCoinFilter.value])) return false;
   }
   if (openOnly.value) {
     const kind = alert.items?.[0]?.kind || alert.kind;

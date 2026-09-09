@@ -464,6 +464,14 @@ function positionIsStaleHold(pos: WhalePosition) {
 
 const expandedIds = ref<Record<string, boolean>>({});
 
+function isCardExpanded(id: string) {
+  return Boolean(expandedIds.value[id]);
+}
+
+function toggleCardExpand(id: string) {
+  expandedIds.value = { ...expandedIds.value, [id]: !expandedIds.value[id] };
+}
+
 function sortedPositions(positions: WhalePosition[]) {
   return [...positions].sort((a, b) => (b.positionValue || 0) - (a.positionValue || 0));
 }
@@ -508,9 +516,10 @@ function cardExposure(whale: WhaleProfile) {
   return { positionUsd, marginUsd: null as number | null };
 }
 
-/** 刷新单个巨鲸并提示 */
-function useDetailedPositions(_whale?: WhaleProfile) {
-  return isFollowTab.value;
+/** 关注页：展开后才显示详细仓位；默认收起为简洁条 */
+function useDetailedPositions(whale?: WhaleProfile) {
+  if (!isFollowTab.value || !whale) return false;
+  return isCardExpanded(whale.id);
 }
 
 function onToggleMonitor(whale: WhaleProfile) {
@@ -934,12 +943,21 @@ defineExpose({ focusWhale });
           >
             <el-icon :size="14"><CopyDocument /></el-icon>
           </button>
+          <button
+            v-if="isFollowTab && cardPositions(whale).length"
+            type="button"
+            class="pos-expand-btn"
+            :title="isCardExpanded(whale.id) ? '收起仓位' : '展开仓位'"
+            @click.stop="toggleCardExpand(whale.id)"
+          >
+            {{ isCardExpanded(whale.id) ? '收起' : '展开' }}
+          </button>
         </div>
         <div
           v-if="cardPositions(whale).length"
           class="pnl-strip"
         >
-          <PnlProgressBar compact :pct="positionsAggregatePnlPct(cardPositions(whale))" />
+          <PnlProgressBar :pct="positionsAggregatePnlPct(cardPositions(whale))" />
         </div>
         <div
           v-if="cardPositions(whale).length && useDetailedPositions(whale)"
@@ -1011,7 +1029,7 @@ defineExpose({ focusWhale });
           </div>
         </div>
         <div
-          v-else-if="cardPositions(whale).length"
+          v-else-if="cardPositions(whale).length && !isFollowTab"
           class="positions"
           @click.stop
         >
@@ -1777,6 +1795,27 @@ defineExpose({ focusWhale });
 }
 .pnl-strip {
   margin-top: 8px;
+  width: 100%;
+}
+.pnl-strip :deep(.pnl-progress) {
+  width: 100%;
+}
+.pos-expand-btn {
+  flex-shrink: 0;
+  margin-left: auto;
+  border: 1px solid color-mix(in srgb, var(--border, #2a3344) 80%, transparent);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted, #8b93a7);
+  background: transparent;
+  cursor: pointer;
+}
+.pos-expand-btn:hover {
+  color: var(--text, #e8edf5);
+  border-color: color-mix(in srgb, var(--accent, #f15a24) 50%, transparent);
 }
 .positions {
   margin-top: 8px;
