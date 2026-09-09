@@ -1091,8 +1091,11 @@ export async function startV41HftSim(body: {
   max_position_notional_usdt?: number;
   execution_mode?: 'simulator' | 'exchange';
   exchange_environment?: 'demo' | 'live' | null;
+  continuous?: boolean;
 }) {
-  const { data } = await http.post('/whale-ai/engine/test/hft-sim/start', body, { timeout: 600_000 });
+  const { data } = await http.post('/whale-ai/engine/test/hft-sim/start', body, {
+    timeout: body.continuous === false ? 600_000 : 60_000,
+  });
   return data;
 }
 

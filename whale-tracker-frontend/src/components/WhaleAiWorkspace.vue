@@ -168,27 +168,23 @@ async function onQaStart() {
     ElMessage.error(qaRunDisabledReason.value || '交易所仓不可用');
     return;
   }
-  const cycles = 20;
   qaBusy.value = true;
   try {
-    // Only exchange; demo/live resolved server-side — never send from browser
     const res = (await startV41HftSim({
-      cycles,
+      continuous: true,
       seed: 20260909,
       inject_failures: false,
       max_position_notional_usdt: 50,
       execution_mode: 'exchange',
-    })) as { passed?: boolean; status?: typeof qaStatus.value; ok?: boolean };
+    })) as { status?: typeof qaStatus.value; ok?: boolean; running?: boolean };
     qaStatus.value = res?.status || (await fetchV41HftSimStatus());
     selectedExecutionId.value = 'QA-HFT-SIM';
     pendingExecutionId.value = 'QA-HFT-SIM';
     consoleMode.value = 'QA_HFT_SIM';
     alphaOpeningEnabled.value = false;
-    const passed = res.passed;
     const where = qaExchangeEnvLabel.value;
-    if (passed) ElMessage.success(`${where} ${cycles} cycles PASS`);
-    else ElMessage.warning(`${where} ${cycles} cycles FAIL`);
-    pushLog(passed ? 'success' : 'warn', `${where} 开平仓测试 ${cycles} cycles ${passed ? 'PASS' : 'FAIL'}`);
+    ElMessage.success(`${where} 高频开平仓已启动`);
+    pushLog('success', `${where} 模拟仓高频已启动（持续开平仓，不计赚损）`);
   } catch (err: unknown) {
     const anyErr = err as {
       code?: string;
@@ -249,8 +245,8 @@ async function onQaStop() {
     await stopV41HftSim();
     await refreshQaStatus();
     await refreshExecutionSelections();
-    ElMessage.success('已停止模拟仓测试（Alpha 开仓需确认模拟仓已平）');
-    pushLog('warn', 'QA-HFT-SIM 已停止；Alpha 开仓未自动恢复');
+    ElMessage.success('已停止模拟仓高频');
+    pushLog('warn', '模拟仓高频已停止（不计赚损；Alpha 开仓未自动恢复）');
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '停止失败');
   } finally {
@@ -356,7 +352,7 @@ const strategyCatalog: Record<string, { name: string; desc: string }> = {
   },
   'QA-HFT-SIM': {
     name: '模拟仓高频测试',
-    desc: '仅 Simulator，名义仓位≤50U，验证开平仓/杠杆/幂等，不进 S7/Edge。',
+    desc: '与其他策略相同启停逻辑；高频开平仓（≤50U），不计入策略赚损 / S7 / Edge。',
   },
 };
 
@@ -435,6 +431,10 @@ const emergencyLocked = computed(() => {
 });
 
 const strategyStatusLabel = computed(() => {
+  if (isQaConsole.value) {
+    if (qaStatus.value?.running) return '已运行';
+    return '已暂停';
+  }
   if (!engineOnline.value) return '引擎离线';
   if (emergencyLocked.value) return '已锁定';
   const state = String(whaleAiEngineState.value || '').toUpperCase();
@@ -445,11 +445,18 @@ const strategyStatusLabel = computed(() => {
 });
 
 const strategyStatusClass = computed(() => {
+  if (isQaConsole.value) return qaStatus.value?.running ? 'tag-on' : 'tag-warn';
   if (!engineOnline.value || emergencyLocked.value) return 'tag-off';
   const state = String(whaleAiEngineState.value || '').toUpperCase();
   if (state === 'PAUSED' || state === 'RECOVERY') return 'tag-warn';
   if (state === 'RUNNING') return 'tag-on';
   return 'tag-neutral';
+});
+
+/** 当前策略是否在跑：Alpha 看引擎；模拟仓高频看 QA runner */
+const strategyIsRunning = computed(() => {
+  if (isQaConsole.value) return Boolean(qaStatus.value?.running);
+  return String(whaleAiEngineState.value || '').toUpperCase() === 'RUNNING';
 });
 
 const healthScoreText = computed(() => {
@@ -631,6 +638,8 @@ const bridgeHint = computed(() => {
 
 let enginePollTimer: number | undefined;
 let okxPollTimer: number | undefined;
+let statusLogTimer: number | undefined;
+let qaPollTimer: number | undefined;
 const privateWsConnected = ref(false);
 
 function onPrivateRealtime(msg: PrivateRealtimeMessage) {
@@ -1122,8 +1131,8 @@ async function confirmSwitch() {
     showSwitchModal.value = false;
     if (item.kind === 'qa_test') {
       await refreshQaStatus();
-      pushLog('success', '已进入模拟仓高频测试模式（Alpha 开仓已暂停，active_strategy 未改）');
-      ElMessage.success('已进入模拟仓测试模式');
+      pushLog('success', '已切换到模拟仓高频：应用后点「启动」开始开平仓（不计赚损）');
+      ElMessage.success('已切换到模拟仓高频');
     } else {
       await fetchEngineDashboard();
       pushLog('success', `交易策略已切换为「${item.name}」`);
@@ -1151,7 +1160,11 @@ async function onStart() {
     showResumeModal.value = true;
     return;
   }
-  if (controlBusy.value) return;
+  if (controlBusy.value || qaBusy.value) return;
+  if (isQaConsole.value) {
+    await onQaStart();
+    return;
+  }
   controlBusy.value = true;
   try {
     await startEngine();
@@ -1171,7 +1184,11 @@ async function onStop() {
     showResumeModal.value = true;
     return;
   }
-  if (controlBusy.value) return;
+  if (controlBusy.value || qaBusy.value) return;
+  if (isQaConsole.value) {
+    await onQaStop();
+    return;
+  }
   controlBusy.value = true;
   try {
     await pauseEngine();
@@ -1221,10 +1238,31 @@ function syncPendingStrategy() {
   }
 }
 
+function logStrategyHeartbeat() {
+  if (!mainConsoleVisible.value || !isLoggedIn.value) return;
+  if (isQaConsole.value) {
+    const st = qaStatus.value;
+    const running = Boolean(st?.running);
+    const cycle = Number(st?.cycle_id || 0);
+    const pos = Number(st?.position_notional_usdt || 0).toFixed(2);
+    const side = String(st?.position_side || st?.state || 'FLAT');
+    pushLog(
+      'info',
+      `策略状态：模拟仓高频 · ${running ? '运行中' : '已停止'} · ${qaExchangeEnvLabel.value} · cycle ${cycle} · ${side} ${pos}U`,
+    );
+    return;
+  }
+  pushLog(
+    'info',
+    `策略状态：${currentStrategy.value.name}（${activeStrategy.value}）· ${strategyStatusLabel.value} · 健康度 ${healthScoreText.value} · 风险 ${riskUsedText.value}/${riskLimitText.value}`,
+  );
+}
+
 function startPolling() {
   stopPolling();
   void pollEngineDashboard();
   void loadAccountSnapshot();
+  if (isQaConsole.value) void refreshQaStatus();
   const engineMs = privateWsConnected.value ? 15000 : 3000;
   enginePollTimer = window.setInterval(() => {
     if (mainConsoleVisible.value) void pollEngineDashboard();
@@ -1232,6 +1270,12 @@ function startPolling() {
   okxPollTimer = window.setInterval(() => {
     if (mainConsoleVisible.value && whaleAiTradeReady.value) void loadAccountSnapshot();
   }, 8000);
+  qaPollTimer = window.setInterval(() => {
+    if (mainConsoleVisible.value && isQaConsole.value) void refreshQaStatus();
+  }, 3000);
+  statusLogTimer = window.setInterval(() => {
+    logStrategyHeartbeat();
+  }, 60_000);
 }
 
 function stopPolling() {
@@ -1242,6 +1286,14 @@ function stopPolling() {
   if (okxPollTimer) {
     window.clearInterval(okxPollTimer);
     okxPollTimer = undefined;
+  }
+  if (qaPollTimer) {
+    window.clearInterval(qaPollTimer);
+    qaPollTimer = undefined;
+  }
+  if (statusLogTimer) {
+    window.clearInterval(statusLogTimer);
+    statusLogTimer = undefined;
   }
 }
 
@@ -1445,7 +1497,7 @@ onUnmounted(() => {
         <div class="card strategy-box">
           <div class="section-title">
             <span>当前执行策略</span>
-            <span class="section-sub">{{ isQaConsole ? 'QA 测试模式 · 非 Alpha' : '每次只运行一个 Alpha' }}</span>
+            <span class="section-sub">{{ isQaConsole ? '高频开平仓 · 不计赚损' : '每次只运行一个 Alpha' }}</span>
           </div>
 
           <div class="strategy-current">
@@ -1454,9 +1506,7 @@ onUnmounted(() => {
                 <div class="strategy-name">{{ currentStrategy.name }}</div>
                 <div class="strategy-desc">{{ currentStrategy.desc }}</div>
               </div>
-              <span class="status-tag" :class="isQaConsole ? 'yellow' : strategyStatusClass">{{
-                isQaConsole ? '仅模拟' : strategyStatusLabel
-              }}</span>
+              <span class="status-tag" :class="strategyStatusClass">{{ strategyStatusLabel }}</span>
             </div>
             <div v-if="!isQaConsole" class="strategy-details">
               <div class="mini">
@@ -1478,20 +1528,20 @@ onUnmounted(() => {
             </div>
             <div v-else class="strategy-details">
               <div class="mini">
-                <div class="k">注册 Alpha</div>
-                <div class="v">{{ activeStrategy }}（开仓{{ alphaOpeningEnabled ? '开' : '暂停' }}）</div>
+                <div class="k">执行环境</div>
+                <div class="v">{{ qaExchangeEnvLabel }}</div>
               </div>
               <div class="mini">
                 <div class="k">最大名义仓位</div>
                 <div class="v">50 USDT</div>
               </div>
               <div class="mini">
-                <div class="k">执行目标</div>
-                <div class="v">Simulator</div>
+                <div class="k">开平周期</div>
+                <div class="v">{{ qaStatus?.cycle_id || 0 }}</div>
               </div>
               <div class="mini">
                 <div class="k">策略统计</div>
-                <div class="v">不进 S7 / Edge</div>
+                <div class="v">不计赚损</div>
               </div>
             </div>
           </div>
@@ -1517,62 +1567,45 @@ onUnmounted(() => {
                     :value="item.id"
                     :disabled="!item.available"
                   >
-                    🧪 {{ item.name }}（仅模拟）{{ item.available ? '' : ' · 未启用' }}
+                    {{ item.name }}{{ item.available ? '' : ' · 未启用' }}
                   </option>
                 </optgroup>
               </select>
             </div>
             <div class="buttons strategy-actions">
-              <button type="button" class="btn btn-primary" :disabled="controlBusy" @click="onApplyStrategy">
+              <button type="button" class="btn btn-primary" :disabled="controlBusy || qaBusy" @click="onApplyStrategy">
                 应用
               </button>
-              <button type="button" class="btn btn-success" :disabled="controlBusy" @click="onStart">启动</button>
-              <button type="button" class="btn btn-danger" :disabled="controlBusy" @click="onStop">停止</button>
+              <button
+                v-if="!strategyIsRunning"
+                type="button"
+                class="btn btn-success"
+                :disabled="controlBusy || qaBusy || (isQaConsole && (!qaEnabled || !qaCanRunExchange))"
+                @click="onStart"
+              >
+                启动
+              </button>
+              <button
+                v-else
+                type="button"
+                class="btn btn-danger"
+                :disabled="controlBusy || qaBusy"
+                @click="onStop"
+              >
+                停止
+              </button>
             </div>
           </div>
           <div class="section-sub tip">
             <template v-if="isQaConsole">
-              QA 不改变 active_strategy_id；真实仓位风控继续，新 Alpha 开仓暂停。
+              应用后点启动：持续高频开平仓；点停止结束。不改变 active_strategy，不计策略赚损。
+              <span v-if="!qaEnabled || !qaCanRunExchange" style="color: var(--yellow)">
+                · {{ qaRunDisabledReason }}
+              </span>
             </template>
             <template v-else>
               切换后，旧策略停止产生新信号；现有持仓仍按原风险规则管理。
             </template>
-          </div>
-
-          <div v-if="isQaConsole" class="qa-inline" style="margin-top: 14px">
-            <div class="section-sub" style="margin-bottom: 8px">
-              执行环境：{{ qaExchangeEnvLabel }}
-              <span v-if="qaIsLive" style="color: var(--yellow)"> ⚠ 当前为 OKX 实盘</span>
-            </div>
-            <div class="section-sub" style="margin-bottom: 8px">
-              状态 {{ qaStatus?.state || 'FLAT' }} · cycle {{ qaStatus?.cycle_id || 0 }}/{{
-                qaStatus?.target_cycles || 20
-              }}
-              · 仓位 {{ Number(qaStatus?.position_notional_usdt || 0).toFixed(2) }} / 50U · 目标杠杆
-              {{ qaStatus?.target_leverage || '—' }}x · 实际杠杆 {{ qaStatus?.actual_leverage || '—' }}x
-              · {{ qaStatus?.passed === true ? 'PASS' : qaStatus?.passed === false ? 'FAIL' : '—' }}
-            </div>
-            <p
-              v-if="!qaEnabled || !qaCanRunExchange"
-              class="section-sub"
-              style="color: var(--yellow); margin-bottom: 8px"
-            >
-              {{ qaRunDisabledReason }}
-            </p>
-            <div class="buttons">
-              <button
-                type="button"
-                class="btn btn-primary"
-                :disabled="qaBusy || !qaEnabled || !qaCanRunExchange"
-                @click="onQaStart"
-              >
-                运行开平仓测试
-              </button>
-              <button type="button" class="btn" :disabled="qaBusy" @click="onQaStop">停止</button>
-            </div>
-            <div class="section-sub tip" style="margin-top: 8px">
-              默认 20 cycles · 交易所路径（Node → OKX）。点测试即运行，无需再点「启动」。
-            </div>
           </div>
         </div>
 

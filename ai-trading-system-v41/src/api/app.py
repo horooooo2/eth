@@ -56,6 +56,7 @@ class HftSimStartBody(BaseModel):
     execution_mode: str = "simulator"  # simulator | exchange
     exchange_environment: Optional[str] = None  # demo | live (from Node, not browser trust)
     user_id: Optional[str] = None  # logged-in user; required for exchange QA OKX keys
+    continuous: bool = False  # strategy-like: keep HF open/close until stop
 
 
 def _hft_sim_enabled() -> bool:
@@ -290,6 +291,7 @@ def create_app() -> FastAPI:
             execution_mode=mode,
             exchange_environment=body.exchange_environment,
             user_id=body.user_id,
+            continuous=bool(body.continuous) or mode == "exchange",
         )
         if not result.get("ok"):
             raise HTTPException(status_code=409, detail=result.get("error") or {"code": "QA_START_FAILED"})

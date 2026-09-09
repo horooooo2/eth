@@ -439,6 +439,7 @@ router.post('/test/hft-sim/start', async (req, res) => {
       body.execution_mode = 'exchange';
       body.exchange_environment = cap.exchange_environment; // demo | live from DB
       body.user_id = userId; // per-user OKX keys for QA position / orders
+      body.continuous = true; // strategy-like: run until stop, ignore P&L scoring
       body.symbol = 'BTC-USDT-SWAP';
       body.max_position_notional_usdt = Math.min(Number(body.max_position_notional_usdt || 50), 50);
       body.inject_failures = false;

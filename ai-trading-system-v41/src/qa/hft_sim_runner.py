@@ -7,6 +7,7 @@ leverage/position reconciliation, duplicates, and optional fault injection.
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
 from copy import deepcopy
@@ -79,6 +80,10 @@ class HftSimRunner:
             "leverage_set_failures": 0,
             "position_reconciliation_count": 0,
         }
+        self._continuous = False
+        self._ignore_acceptance = False
+        self._worker: Optional[threading.Thread] = None
+        self._worker_lock = threading.Lock()
 
     @staticmethod
     def _empty_metrics() -> Dict[str, int]:
@@ -130,8 +135,9 @@ class HftSimRunner:
                 "test_run_id": self.test_run_id,
                 "cycle_id": self.cycle_id,
                 "cycles_completed": self.metrics.get("cycles_completed", 0),
-                "cycles_total": self.target_cycles,
-                "target_cycles": self.target_cycles,
+                "cycles_total": None if self._continuous else self.target_cycles,
+                "target_cycles": None if self._continuous else self.target_cycles,
+                "continuous": self._continuous,
                 "state": self.state,
                 "execution_mode": self.execution_mode,
                 "exchange_environment": self.exchange_environment,
@@ -146,9 +152,9 @@ class HftSimRunner:
                 "actual_leverage": actual_lev,
                 "last_exchange_order_id": self._last_exchange_order_id,
                 "metrics": {**self.metrics, **self._exchange_metrics},
-                "passed": self.passed,
+                "passed": None if self._ignore_acceptance else self.passed,
                 "last_error": self.last_error,
-                "acceptance": self._acceptance_check(),
+                "acceptance": None if self._ignore_acceptance else self._acceptance_check(),
             }
         snap = self.sim.snapshot()
         return {
@@ -158,8 +164,9 @@ class HftSimRunner:
             "test_run_id": self.test_run_id,
             "cycle_id": self.cycle_id,
             "cycles_completed": self.metrics.get("cycles_completed", 0),
-            "cycles_total": self.target_cycles,
-            "target_cycles": self.target_cycles,
+            "cycles_total": None if self._continuous else self.target_cycles,
+            "target_cycles": None if self._continuous else self.target_cycles,
+            "continuous": self._continuous,
             "state": self.state,
             "cycle_phase": self._cycle_phase,
             "execution_mode": "simulator",
@@ -177,9 +184,9 @@ class HftSimRunner:
             "current_qa_notional_usdt": snap["position_notional_usdt"],
             "position_side": snap["position_side"],
             "metrics": dict(self.metrics),
-            "passed": self.passed,
+            "passed": None if self._ignore_acceptance else self.passed,
             "last_error": self.last_error,
-            "acceptance": self._acceptance_check(),
+            "acceptance": None if self._ignore_acceptance else self._acceptance_check(),
         }
 
     def report(self) -> Dict[str, Any]:
@@ -201,107 +208,144 @@ class HftSimRunner:
         execution_mode: str = "simulator",
         exchange_environment: Optional[str] = None,
         user_id: Optional[str] = None,
+        continuous: bool = False,
     ) -> Dict[str, Any]:
-        if self.running:
-            return {
-                "ok": False,
-                "error": {"code": "QA_RUN_ALREADY_ACTIVE", "message": "QA-HFT-SIM already running"},
-            }
-        mode = str(execution_mode or "simulator").lower().strip()
-        if mode not in ("simulator", "exchange"):
-            return {
-                "ok": False,
-                "error": {"code": "HFT_SIM_CONFIG_INVALID", "message": f"bad execution_mode={execution_mode}"},
-            }
-        # Bind Node gateway to the logged-in user's OKX keys (required for exchange QA)
-        uid = str(user_id or "").strip()
-        if mode == "exchange" and not uid:
-            return {
-                "ok": False,
-                "error": {
-                    "code": "USER_ID_REQUIRED",
-                    "message": "exchange QA requires user_id (per-user OKX keys)",
-                },
-            }
-        if uid:
-            self.node = NodeGatewayClient(user_id=uid)
-        sym = (symbol or self.symbol or "BTC-USDT-SWAP").upper()
-        if sym not in QA_ALLOWED_SYMBOLS:
-            return {
-                "ok": False,
-                "error": {"code": "QA_SYMBOL_NOT_ALLOWED", "message": f"symbol {sym} not allowed"},
-            }
-        self.execution_mode = mode
-        self.exchange_environment = exchange_environment
-        self.live_money = str(exchange_environment or "").lower() == "live"
-        # Exchange mode: no fault injection (cannot safely mutate OKX account state)
-        if mode == "exchange":
-            inject_failures = False
-            if action_interval_seconds <= 0:
-                action_interval_seconds = 2.0
-
-        # Capture OKX baseline BEFORE marking running (avoid stuck QA_RUN_ALREADY_ACTIVE)
-        baseline_qty = 0.0
-        if mode == "exchange":
-            try:
-                base = self.node.get_position(sym)
-                baseline_qty = float(base.get("qty") or 0)
-            except Exception as exc:  # noqa: BLE001
-                code = getattr(exc, "code", None) or "POSITION_QUERY_FAILED"
+        with self._worker_lock:
+            if self.running:
+                return {
+                    "ok": False,
+                    "error": {"code": "QA_RUN_ALREADY_ACTIVE", "message": "QA-HFT-SIM already running"},
+                }
+            mode = str(execution_mode or "simulator").lower().strip()
+            if mode not in ("simulator", "exchange"):
+                return {
+                    "ok": False,
+                    "error": {"code": "HFT_SIM_CONFIG_INVALID", "message": f"bad execution_mode={execution_mode}"},
+                }
+            # Bind Node gateway to the logged-in user's OKX keys (required for exchange QA)
+            uid = str(user_id or "").strip()
+            if mode == "exchange" and not uid:
                 return {
                     "ok": False,
                     "error": {
-                        "code": str(code),
-                        "message": f"cannot read OKX baseline position: {exc}",
+                        "code": "USER_ID_REQUIRED",
+                        "message": "exchange QA requires user_id (per-user OKX keys)",
                     },
                 }
+            if uid:
+                self.node = NodeGatewayClient(user_id=uid)
+            sym = (symbol or self.symbol or "BTC-USDT-SWAP").upper()
+            if sym not in QA_ALLOWED_SYMBOLS:
+                return {
+                    "ok": False,
+                    "error": {"code": "QA_SYMBOL_NOT_ALLOWED", "message": f"symbol {sym} not allowed"},
+                }
+            self.execution_mode = mode
+            self.exchange_environment = exchange_environment
+            self.live_money = str(exchange_environment or "").lower() == "live"
+            # Exchange mode: no fault injection (cannot safely mutate OKX account state)
+            if mode == "exchange":
+                inject_failures = False
+                if action_interval_seconds <= 0:
+                    action_interval_seconds = 2.0
 
-        self.sim.reset()
-        self.state = "FLAT"
-        self.running = True
-        self.test_run_id = f"HFTSIM-{uuid.uuid4().hex[:10]}"
-        self.cycle_id = 0
-        self.target_cycles = int(cycles)
-        self.seed = int(seed if seed is not None else self.config.get("seed") or 20260909)
-        self.inject_failures = bool(inject_failures)
-        self.symbol = sym
-        if max_position_notional_usdt is not None:
-            self.max_notional = min(float(max_position_notional_usdt), 50.0)
-        if leverage_sequence:
-            self.leverage_sequence = list(leverage_sequence)
-        self._lev_idx = 0
-        self._cycle_phase = "idle"
-        self._awaiting_flat_confirm = False
-        self.metrics = self._empty_metrics()
-        self._exchange_metrics = {k: 0 for k in self._exchange_metrics}
-        self.events = []
-        self.last_error = ""
-        self.passed = None
-        self.s6_level = 0
-        self._last_exchange_order_id = None
-        self._fault_plan = self._build_fault_plan(self.target_cycles)
-        self._baseline_qty = baseline_qty
-        self._log(
-            "start",
-            {
-                "cycles": self.target_cycles,
-                "seed": self.seed,
-                "inject": self.inject_failures,
-                "execution_mode": self.execution_mode,
-                "exchange_environment": self.exchange_environment,
-                "baseline_qty": self._baseline_qty,
-            },
-        )
-        self._action_interval = float(action_interval_seconds)
+            # Capture OKX baseline BEFORE marking running (avoid stuck QA_RUN_ALREADY_ACTIVE)
+            baseline_qty = 0.0
+            if mode == "exchange":
+                try:
+                    base = self.node.get_position(sym)
+                    baseline_qty = float(base.get("qty") or 0)
+                except Exception as exc:  # noqa: BLE001
+                    code = getattr(exc, "code", None) or "POSITION_QUERY_FAILED"
+                    return {
+                        "ok": False,
+                        "error": {
+                            "code": str(code),
+                            "message": f"cannot read OKX baseline position: {exc}",
+                        },
+                    }
+
+            continuous = bool(continuous) or int(cycles or 0) <= 0
+            self._continuous = continuous
+            # Continuous HF open/close: no PASS/FAIL / P&L acceptance scoring
+            self._ignore_acceptance = continuous
+
+            self.sim.reset()
+            self.state = "FLAT"
+            self.running = True
+            self.test_run_id = f"HFTSIM-{uuid.uuid4().hex[:10]}"
+            self.cycle_id = 0
+            self.target_cycles = 10**9 if continuous else max(1, int(cycles))
+            self.seed = int(seed if seed is not None else self.config.get("seed") or 20260909)
+            self.inject_failures = bool(inject_failures) and not continuous
+            self.symbol = sym
+            if max_position_notional_usdt is not None:
+                self.max_notional = min(float(max_position_notional_usdt), 50.0)
+            if leverage_sequence:
+                self.leverage_sequence = list(leverage_sequence)
+            self._lev_idx = 0
+            self._cycle_phase = "idle"
+            self._awaiting_flat_confirm = False
+            self.metrics = self._empty_metrics()
+            self._exchange_metrics = {k: 0 for k in self._exchange_metrics}
+            self.events = []
+            self.last_error = ""
+            self.passed = None
+            self.s6_level = 0
+            self._last_exchange_order_id = None
+            plan_n = 0 if continuous else self.target_cycles
+            self._fault_plan = self._build_fault_plan(plan_n)
+            self._baseline_qty = baseline_qty
+            self._action_interval = float(action_interval_seconds)
+            self._log(
+                "start",
+                {
+                    "cycles": None if continuous else self.target_cycles,
+                    "continuous": continuous,
+                    "seed": self.seed,
+                    "inject": self.inject_failures,
+                    "execution_mode": self.execution_mode,
+                    "exchange_environment": self.exchange_environment,
+                    "baseline_qty": self._baseline_qty,
+                },
+            )
+
+            if continuous:
+                self._worker = threading.Thread(
+                    target=self._run_worker,
+                    name="qa-hft-continuous",
+                    daemon=True,
+                )
+                self._worker.start()
+                return {
+                    "ok": True,
+                    "running": True,
+                    "continuous": True,
+                    "test_run_id": self.test_run_id,
+                    "status": self.status(),
+                }
+
+            try:
+                result = self.run_until_done()
+                return {"ok": True, "test_run_id": self.test_run_id, **result}
+            finally:
+                self.running = False
+
+    def _run_worker(self) -> None:
         try:
-            result = self.run_until_done()
-            return {"ok": True, "test_run_id": self.test_run_id, **result}
+            self.run_until_done()
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = str(exc)
+            self._log("worker_error", {"error": self.last_error})
         finally:
             self.running = False
 
     def stop(self) -> Dict[str, Any]:
         self.running = False
-        self._log("stop", {})
+        worker = self._worker
+        if worker and worker.is_alive() and worker is not threading.current_thread():
+            worker.join(timeout=30)
+        self._log("stop", {"cycle_id": self.cycle_id, "continuous": self._continuous})
         return {"ok": True, "status": self.status()}
 
     def set_s6_level(self, level: int) -> None:
@@ -312,6 +356,12 @@ class HftSimRunner:
             ok = self._run_one_cycle()
             if not ok:
                 self.metrics["cycles_failed"] += 1
+                # Continuous mode: log and keep going unless stop requested
+                if self._continuous:
+                    self._log("cycle_failed_continue", {"cycle_id": self.cycle_id, "error": self.last_error})
+                    if self._action_interval > 0:
+                        time.sleep(self._action_interval)
+                    continue
                 self.running = False
                 self.passed = False
                 break
@@ -319,9 +369,9 @@ class HftSimRunner:
             if self._action_interval > 0:
                 time.sleep(self._action_interval)
         else:
-            if self.running:
+            if self.running and not self._ignore_acceptance:
                 self.passed = self._acceptance_check()["ok"]
-                self.running = False
+            self.running = False
         return {"passed": self.passed, "status": self.status()}
 
     def _current_target_leverage(self) -> float:
