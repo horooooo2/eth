@@ -56,6 +56,35 @@
       ]
     },
     {
+      "id": "S9",
+      "type": "ALPHA_STRATEGY",
+      "name": "高频动量突破",
+      "config": "strategies/s9_high_frequency_momentum.json",
+      "implementation": "src.strategies.s9_momentum",
+      "release_stage": "DEMO_VALIDATION",
+      "implemented": true,
+      "demo_allowed": true,
+      "live_allowed": false,
+      "strategy_key": "S9_high_frequency_momentum",
+      "display": {
+        "summary_zh": "S9 是分钟级高频动量突破策略。它使用5分钟行情判断短期方向，在1分钟周期等待价格突破、成交量增强和盘口条件合格后入场。每笔初始风险为账户权益的0.10%，策略风险上限为0.30%，最多持有一个仓位。交易所侧始终保留保护止损，1.5R止盈、30分钟时间退出和方向翻转退出由交易引擎主动执行。第一阶段仅用于 BTC-USDT-SWAP 的 OKX 模拟盘验证。"
+      },
+      "dependencies": [
+        "S3",
+        "S4",
+        "S5",
+        "S6",
+        "S7"
+      ],
+      "preferred_sections": [
+        "market",
+        "signal",
+        "risk",
+        "stop",
+        "dependencies"
+      ]
+    },
+    {
       "id": "S8",
       "type": "ALPHA_STRATEGY",
       "name": "巨鲸行为共振",

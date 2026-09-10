@@ -979,6 +979,7 @@ export type V41PersonalView = {
     alpha_execution?: 'SHADOW' | 'EXECUTE' | string;
     version: string;
     updated_at: string;
+    user_id_ready?: boolean;
   };
   active_strategy: {
     id: string;
@@ -1009,6 +1010,9 @@ export type V41PersonalView = {
   signals: V41TradeIntent[];
   recent_order_intents: unknown[];
   last_update: string;
+  user_id_ready?: boolean;
+  account_environment?: string | null;
+  live_permission?: boolean;
 };
 
 export type V41StrategyDiagnostics = {

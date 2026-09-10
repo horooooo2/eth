@@ -40,11 +40,17 @@ WRAPPER_KEYS = {
     "deprecation_status",
     "canonical_source",
     "replacement",
+    "display",
+    "summary_zh",
+    "entry_summary_zh",
+    "risk_summary_zh",
+    "exit_summary_zh",
 }
 
 SECTION_KEYS = {
     "S1": "S1_trend",
     "S2": "S2_reversal",
+    "S9": "S9_high_frequency_momentum",
     "S3": "S3_regime",
     "S4": "S4_execution",
     "S5": "S5_risk_budget",
@@ -52,9 +58,9 @@ SECTION_KEYS = {
     "S7": "S7_health",
 }
 
-REQUIRED_ALPHA_IDS = ("S1", "S2", "S8")
+REQUIRED_ALPHA_IDS = ("S1", "S2", "S9", "S8")
 REQUIRED_MODULE_IDS = ("S3", "S4", "S5", "S6", "S7")
-IMPLEMENTED_ALPHA_IDS = ("S1", "S2")
+IMPLEMENTED_ALPHA_IDS = ("S1", "S2", "S9")
 
 RISK_PCT_UPPER = 0.25
 LEVERAGE_UPPER = 25.0
@@ -291,6 +297,7 @@ def trading_view(config: Mapping[str, Any]) -> Dict[str, Any]:
         "system": system,
         "S1": deepcopy(config.get("S1_trend") or {}),
         "S2": deepcopy(config.get("S2_reversal") or {}),
+        "S9": deepcopy(config.get("S9_high_frequency_momentum") or {}),
         "S3": deepcopy(config.get("S3_regime") or {}),
         "S4": deepcopy(config.get("S4_execution") or {}),
         "S5": deepcopy(config.get("S5_risk_budget") or {}),

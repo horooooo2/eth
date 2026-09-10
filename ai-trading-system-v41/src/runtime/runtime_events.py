@@ -52,6 +52,11 @@ TRADE_EVENT_TYPES = {
     "PROTECTIVE_STOP_AMENDED",
     "PROTECTIVE_STOP_CANCELLED",
     "PROTECTIVE_STOP_FAILED",
+    "S9_DIRECTION",
+    "S9_NO_TRADE",
+    "S9_CANDIDATE",
+    "S9_TRADE_INTENT_CREATED",
+    "S9_ORDER_INTENT_CREATED",
     "POSITION_OPENED",
     "POSITION_REDUCED",
     "POSITION_CLOSED",
@@ -64,7 +69,7 @@ TRADE_EVENT_TYPES = {
     "STARTUP_RECOVERY_FAILED",
 }
 
-DEDUPE_EVENT_TYPES = {"STRATEGY_NO_TRADE"}
+DEDUPE_EVENT_TYPES = {"STRATEGY_NO_TRADE", "S9_NO_TRADE"}
 
 
 def _now_iso() -> str:
@@ -177,18 +182,19 @@ def _severity(event_type: str, decision: str = "") -> str:
 
 
 def _message(event_type: str, row: Dict[str, Any]) -> str:
+    from src.runtime.strategy_display_zh import event_zh, reason_zh, status_zh
+
     sid = row.get("strategy_id") or "—"
     sym = row.get("symbol") or "—"
-    decision = row.get("decision") or ""
+    decision = status_zh(row.get("decision") or "") or (row.get("decision") or "")
     codes = normalize_reason_codes(row.get("reason_codes"))
-    extra = "；".join(codes) if codes else ""
-    if event_type == "STRATEGY_NO_TRADE":
-        return f"{sid} · {sym} · {decision or 'NO_TRADE'}" + (f" · {extra}" if extra else "")
-    if event_type == "STRATEGY_CANDIDATE":
-        return f"{sid} · {sym} · CANDIDATE"
+    extra = "；".join(reason_zh(c) for c in codes) if codes else ""
+    title = event_zh(event_type)
     if extra:
-        return f"{event_type} · {sid} · {sym} · {extra}"
-    return f"{event_type} · {sid} · {sym}"
+        return f"{title} · {sid} · {sym} · {extra}"
+    if decision:
+        return f"{title} · {sid} · {sym} · {decision}"
+    return f"{title} · {sid} · {sym}"
 
 
 def map_bus_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -219,14 +225,24 @@ def map_bus_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         event_type = "STRATEGY_SELECTED"
     elif bus_type == "strategy.decision":
         decision = decision or "NO_TRADE"
-        if decision == "ALLOW":
+        sid = _norm(payload.get("strategy_id") or payload.get("origin_strategy_id")).upper()
+        if sid == "S9":
+            if decision == "ALLOW" or decision == "CANDIDATE":
+                event_type = "S9_CANDIDATE"
+            elif str(payload.get("event_subtype") or "") == "DIRECTION":
+                event_type = "S9_DIRECTION"
+            else:
+                event_type = "S9_NO_TRADE"
+        elif decision == "ALLOW":
             event_type = "STRATEGY_CANDIDATE"
         else:
             event_type = "STRATEGY_NO_TRADE"
     elif bus_type == "trade_intent.created":
-        event_type = "TRADE_INTENT_CREATED"
+        sid = _norm(payload.get("strategy_id") or payload.get("origin_strategy_id")).upper()
+        event_type = "S9_TRADE_INTENT_CREATED" if sid == "S9" else "TRADE_INTENT_CREATED"
     elif bus_type == "order_intent.created":
-        event_type = "ORDER_INTENT_CREATED"
+        sid = _norm(payload.get("strategy_id") or payload.get("origin_strategy_id")).upper()
+        event_type = "S9_ORDER_INTENT_CREATED" if sid == "S9" else "ORDER_INTENT_CREATED"
     elif bus_type == "order_intent.updated":
         event_type = {
             "SUBMITTED": "ORDER_SUBMITTED",

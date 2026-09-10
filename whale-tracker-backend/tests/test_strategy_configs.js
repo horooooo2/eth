@@ -26,8 +26,8 @@ async function request(server, method, url, body) {
 test('1 list Alpha configs', async () => {
   const out = await configs.listConfigs({ runtime: { online: false, state: 'OFFLINE' } });
   const ids = out.alpha.map((x) => x.id);
-  assert.deepEqual(ids, ['S1', 'S2', 'S8']);
-  assert.equal(out.overview.alpha_count, 3);
+  assert.deepEqual(ids, ['S1', 'S2', 'S9', 'S8']);
+  assert.equal(out.overview.alpha_count, 4);
   assert.equal(out.overview.source_kind, 'MODULAR_JSON');
   assert.equal(out.source.kind, 'MODULAR_JSON');
   assert.equal(out.overview.live_allowed_count, 2);
@@ -82,6 +82,22 @@ test('5 GET S8 research / not implemented', async () => {
   assert.equal(s8.raw_config.demo_allowed, false);
   assert.equal(s8.raw_config.live_allowed, false);
   assert.equal(s8.status, 'NOT_IMPLEMENTED');
+});
+
+test('5b GET S9 demo validation and display excluded from trading hash', async () => {
+  const s9 = await configs.getConfig('S9', { runtime: { online: false, state: 'OFFLINE' } });
+  assert.equal(s9.id, 'S9');
+  assert.equal(s9.release.stage, 'DEMO_VALIDATION');
+  assert.equal(s9.release.implemented, true);
+  assert.equal(s9.release.demo_allowed, true);
+  assert.equal(s9.release.live_allowed, false);
+  assert.equal(s9.raw_config.risk_per_trade_pct_equity, 0.001);
+  assert.equal(s9.raw_config.strategy_initial_risk_cap_pct_equity, 0.003);
+  assert.match(String(s9.summary_zh || s9.display?.summary_zh || ''), /高频/);
+  const trading = configs.stripWrapper(s9.raw_config);
+  assert.equal(trading.display, undefined);
+  const copy = { ...s9.raw_config, display: { summary_zh: '改介绍' } };
+  assert.equal(configs.configHash(configs.stripWrapper(s9.raw_config)), configs.configHash(configs.stripWrapper(copy)));
 });
 
 test('6 GET S5 system module', async () => {
@@ -236,7 +252,7 @@ test('17 runtime/disk hash mismatch', async () => {
 test('18 Alpha/System classification', async () => {
   const out = await configs.listConfigs({ runtime: { online: false, state: 'OFFLINE' } });
   const cls = view.classify(out.items);
-  assert.deepEqual(cls.alpha.map((x) => x.id), ['S1', 'S2', 'S8']);
+  assert.deepEqual(cls.alpha.map((x) => x.id), ['S1', 'S2', 'S9', 'S8']);
   assert.deepEqual(cls.system.map((x) => x.id), ['S3', 'S4', 'S5', 'S6', 'S7']);
 });
 
@@ -252,7 +268,7 @@ test('19 S1 details render from JSON', async () => {
 test('20 S8 RESEARCH render', async () => {
   const s8 = await configs.getConfig('S8', { runtime: { online: false, state: 'OFFLINE' } });
   const html = view.renderStructured(s8);
-  assert.match(html, /RESEARCH \/ NOT IMPLEMENTED/);
+  assert.match(html, /研究中 \/ 尚未实现/);
 });
 
 test('21-22 Raw JSON read-only and no edit actions', () => {
@@ -319,4 +335,10 @@ test('26 wrong strategy id fail closed', async () => {
     else process.env.V41_ENGINE_ROOT = prev;
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('27 chinese reason mapping', () => {
+  const { reasonZh } = require('../lib/strategyDisplayZh');
+  assert.equal(reasonZh('S9_SPREAD_TOO_WIDE'), '当前买卖价差过大');
+  assert.match(reasonZh('UNKNOWN_CODE_X'), /未识别的策略状态/);
 });

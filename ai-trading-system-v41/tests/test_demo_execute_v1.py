@@ -28,10 +28,11 @@ def test_base_qty_10k_equity_40bp():
     assert out["stop_distance"] == 2000
 
 
-def test_s2_s8_not_allowed():
+def test_s2_s8_s9_not_in_demo_execute_v1():
     assert demo_execute_v1_allowed("S1") is True
     assert demo_execute_v1_allowed("S2") is False
     assert demo_execute_v1_allowed("S8") is False
+    assert demo_execute_v1_allowed("S9") is False
 
 
 def test_stop_incomplete_without_structure():

@@ -5,6 +5,7 @@
  */
 const express = require('express');
 const { requireUser } = require('../lib/authStore');
+const userBinding = require('../lib/v41UserBinding');
 const {
   listExchangeKeys,
   upsertExchangeKeys,
@@ -35,6 +36,19 @@ function sendErr(res, err) {
   });
 }
 
+function attachOptionalUser(req) {
+  try {
+    req.user = requireUser(req);
+  } catch {
+    req.user = null;
+  }
+}
+
+function trustedUserId(req) {
+  attachOptionalUser(req);
+  return userBinding.resolveTrustedUserId({ sessionUserId: req.user?.user?.id });
+}
+
 function assertLogin(req, res) {
   try {
     req.user = requireUser(req);
@@ -43,6 +57,19 @@ function assertLogin(req, res) {
     sendErr(res, err);
     return false;
   }
+}
+
+function assertTrustedOwner(req, res) {
+  const uid = trustedUserId(req);
+  if (!uid) {
+    const err = new Error('尚未绑定交易操作用户');
+    err.status = 403;
+    err.code = 'ENGINE_OWNER_NOT_BOUND';
+    sendErr(res, err);
+    return false;
+  }
+  req.trustedUserId = uid;
+  return true;
 }
 
 function requireUserOkx(userId) {
@@ -86,8 +113,8 @@ function publicTradeStatus(userId) {
 
 /** GET /api/whale-ai/trade/status */
 router.get('/status', (req, res) => {
-  if (!assertLogin(req, res)) return;
-  res.json(publicTradeStatus(req.user.user.id));
+  if (!assertTrustedOwner(req, res)) return;
+  res.json(publicTradeStatus(req.trustedUserId));
 });
 
 /** GET /api/whale-ai/trade/keys */
@@ -177,9 +204,9 @@ router.delete('/keys', (req, res) => {
 
 /** GET /api/whale-ai/trade/balance */
 router.get('/balance', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!assertTrustedOwner(req, res)) return;
   try {
-    const userId = req.user.user.id;
+    const userId = req.trustedUserId;
     const ccy = String(req.query.ccy || '').trim();
     const rows = await runAsUser(userId, () => getBalance(ccy || undefined));
     res.json({
@@ -195,9 +222,9 @@ router.get('/balance', async (req, res) => {
 
 /** GET /api/whale-ai/trade/positions */
 router.get('/positions', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!assertTrustedOwner(req, res)) return;
   try {
-    const userId = req.user.user.id;
+    const userId = req.trustedUserId;
     const instType = String(req.query.instType || 'SWAP');
     const instId = String(req.query.instId || '').trim() || undefined;
     const positions = await runAsUser(userId, () => getAccountPositions(instType, instId));
@@ -210,9 +237,9 @@ router.get('/positions', async (req, res) => {
 
 /** GET /api/whale-ai/trade/orders-pending */
 router.get('/orders-pending', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!assertTrustedOwner(req, res)) return;
   try {
-    const userId = req.user.user.id;
+    const userId = req.trustedUserId;
     const instType = String(req.query.instType || 'SWAP');
     const instId = String(req.query.instId || '').trim() || undefined;
     const orders = await runAsUser(userId, () => getPendingOrders(instType, instId));

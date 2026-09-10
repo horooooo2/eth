@@ -36,6 +36,7 @@ import {
   whaleAiTradeReady,
   whaleAiTradeSimulated,
   whaleAiPortfolioRiskUsed,
+  whaleAiUserIdReady,
 } from '@/stores/whaleAi';
 import {
   fetchWhaleAiTradeBalance,
@@ -53,6 +54,7 @@ import {
 } from '@/api';
 import { useRealtimePrivate, type PrivateRealtimeMessage } from '@/composables/useRealtimePrivate';
 import { isPositionEvent, mapBusToEngineEvent, severityToLvl } from '@/utils/runtimeEvents';
+import { reasonZh } from '@/utils/strategyDisplayZh';
 
 const emit = defineEmits<{
   requestLogin: [];
@@ -236,8 +238,9 @@ async function refreshExecutionSelections() {
     }
   } catch {
     executionItems.value = [
-      { id: 'S1', kind: 'alpha', name: '趋势跟踪 S1', available: true },
-      { id: 'S2', kind: 'alpha', name: '极端情绪反转 S2', available: true },
+      { id: 'S1', kind: 'alpha', name: '趋势跟踪', available: true },
+      { id: 'S2', kind: 'alpha', name: '极端情绪反转', available: true },
+      { id: 'S9', kind: 'alpha', name: '高频动量突破', available: true },
       {
         id: 'S8',
         kind: 'alpha',
@@ -293,9 +296,9 @@ const showKeySetup = computed(() => !whaleAiKeyReady.value || reconfigKeys.value
 const showTradeSetup = computed(
   () => whaleAiKeyReady.value && (!whaleAiTradeReady.value || reconfigTrade.value),
 );
-const mainConsoleVisible = computed(
-  () => isLoggedIn.value && !showKeySetup.value && !showTradeSetup.value,
-);
+const mainConsoleVisible = computed(() => true);
+const ownerReady = computed(() => Boolean(whaleAiUserIdReady.value));
+const controlsDisabled = computed(() => controlBusy.value || qaBusy.value || !ownerReady.value);
 
 /* ===== 账户 / 持仓（真实 OKX） ===== */
 type PositionRow = {
@@ -376,12 +379,16 @@ const resumeReason = ref('');
 
 const strategyCatalog: Record<string, { name: string; desc: string }> = {
   S1: {
-    name: '趋势跟踪 S1',
-    desc: '适合趋势行情，结合均线、趋势强度和波动率过滤寻找顺势机会。',
+    name: '趋势跟踪',
+    desc: '适合趋势行情，结合趋势强度和波动率过滤寻找顺势机会。',
   },
   S2: {
-    name: '极端情绪反转 S2',
-    desc: '适合极端超买或超卖行情，在情绪、资金费率和持仓变化同时满足时寻找反转机会。',
+    name: '极端情绪反转',
+    desc: '适合极端超买或超卖行情。当前实现尚未接入真实资金费率和持仓量。',
+  },
+  S9: {
+    name: '高频动量突破',
+    desc: '分钟级短周期动量突破，仅用于 OKX 模拟盘验证，不允许实盘。',
   },
   S8: {
     name: '巨鲸行为共振',
@@ -395,9 +402,10 @@ const strategyCatalog: Record<string, { name: string; desc: string }> = {
 
 const engineOnline = computed(() => whaleAiEngineAvailable.value && whaleAiEngineState.value !== 'OFFLINE');
 
-const activeStrategy = computed<'S1' | 'S2'>(() => {
+const activeStrategy = computed(() => {
   const id = String(whaleAiActiveStrategy.value || 'S1').toUpperCase();
-  return id === 'S2' ? 'S2' : 'S1';
+  if (id === 'S2' || id === 'S9' || id === 'S1') return id;
+  return 'S1';
 });
 
 const currentStrategy = computed(() => {
@@ -527,7 +535,7 @@ function reasonLabelZh(code: string) {
     DUPLICATE_CLOSED_CANDLE: '同一根已收盘K线已发过信号',
     S5_BUDGET_BLOCK: 'S5风险预算拦截',
   };
-  return map[code] || code;
+  return map[code] || reasonZh(code);
 }
 
 function qaSideLabelZh(side: string) {
@@ -1014,7 +1022,6 @@ function pushLog(
 }
 
 async function loadEngineEvents() {
-  if (!isLoggedIn.value) return;
   try {
     const data = await fetchWhaleAiEngineEvents({
       limit: logLimit.value,
@@ -1468,6 +1475,10 @@ async function confirmSwitch() {
 }
 
 async function onStart() {
+  if (!ownerReady.value) {
+    ElMessage.warning('尚未绑定交易操作用户');
+    return;
+  }
   if (emergencyLocked.value) {
     showResumeModal.value = true;
     return;
@@ -1551,7 +1562,7 @@ function syncPendingStrategy() {
 }
 
 function logStrategyHeartbeat() {
-  if (!mainConsoleVisible.value || !isLoggedIn.value) return;
+  if (!mainConsoleVisible.value) return;
   if (isQaConsole.value) {
     const st = qaStatus.value;
     const running = Boolean(st?.running);
@@ -1643,7 +1654,6 @@ function stopPolling() {
 }
 
 function startPrivateWs() {
-  if (!isLoggedIn.value) return;
   privateRealtime.start();
 }
 
@@ -1656,23 +1666,16 @@ watch(isLoggedIn, (logged) => {
   if (logged) {
     void refreshWhaleAiKeyStatus(true);
     void refreshWhaleAiTradeStatus(true).then(() => loadAccountSnapshot());
-    if (mainConsoleVisible.value) startPrivateWs();
-  } else {
-    stopPolling();
-    stopPrivateWs();
+    startPrivateWs();
   }
 });
 
 watch(isLoggedIn, (ok) => {
   if (ok) void loadEngineEvents();
-  else {
-    systemLogs.value = [];
-    positionLogs.value = [];
-  }
 });
 
 watch([logLimit, logTypeFilter], () => {
-  if (isLoggedIn.value) void loadEngineEvents();
+  void loadEngineEvents();
 });
 
 watch(whaleAiStrategyDiagnostics, (diag) => {
@@ -1716,23 +1719,18 @@ watch(activeStrategy, syncPendingStrategy, { immediate: true });
 onMounted(() => {
   if (isLoggedIn.value) {
     void refreshWhaleAiKeyStatus(true);
-    void refreshWhaleAiTradeStatus(true).then(() => loadAccountSnapshot());
-    void loadEngineEvents().then(() => {
-      if (!systemLogs.value.length) {
-        pushLog('info', '个人交易舱已加载：账户/持仓接 OKX，运行日志来自服务器', {
-          persist: false,
-          channel: 'SYSTEM',
-        });
-      }
-      scrollLogToLatest('SYSTEM');
-      scrollLogToLatest('POSITION');
-    });
-  } else {
-    pushLog('info', '个人交易舱已加载：登录后可持久化策略运行日志', {
-      persist: false,
-      channel: 'SYSTEM',
-    });
   }
+  void refreshWhaleAiTradeStatus(true).then(() => loadAccountSnapshot());
+  void loadEngineEvents().then(() => {
+    if (!systemLogs.value.length) {
+      pushLog('info', '管理系统已加载。打开页面不会自动启动引擎或下单。', {
+        persist: false,
+        channel: 'SYSTEM',
+      });
+    }
+    scrollLogToLatest('SYSTEM');
+    scrollLogToLatest('POSITION');
+  });
   if (mainConsoleVisible.value) {
     startPolling();
     startPrivateWs();
@@ -1748,13 +1746,12 @@ onUnmounted(() => {
 
 <template>
   <div class="v41-shell">
-    <div v-if="!isLoggedIn" class="gate">
-      <h3>鲸鱼AI 需要登录</h3>
-      <p>登录后绑定 DeepSeek 与 OKX，即可查看账户与持仓。</p>
-      <button type="button" class="btn btn-primary" @click="emit('requestLogin')">去登录</button>
+    <div v-if="!ownerReady" class="gate owner-gate">
+      <h3>尚未绑定交易操作用户</h3>
+      <p>管理页面可以查看。启动、暂停、紧急停止和策略切换已禁用。交易用户只能由服务器可信绑定，前端不会发送 user_id。</p>
     </div>
 
-    <div v-else-if="showKeySetup" class="gate">
+    <div v-if="showKeySetup && isLoggedIn" class="gate">
       <h3>{{ whaleAiKeyReady ? '更换 DeepSeek 接口' : '配置鲸鱼AI' }}</h3>
       <p>先填写 DeepSeek 密钥，再绑定 OKX 交易密钥。</p>
       <div class="key-form">
@@ -1824,7 +1821,7 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div v-else class="app">
+    <div class="app">
       <header class="header">
         <div class="brand">
           鲸鱼AI · 个人交易舱
@@ -1963,14 +1960,14 @@ onUnmounted(() => {
               </select>
             </div>
             <div class="buttons strategy-actions">
-              <button type="button" class="btn btn-primary" :disabled="controlBusy || qaBusy" @click="onApplyStrategy">
+              <button type="button" class="btn btn-primary" :disabled="controlsDisabled" @click="onApplyStrategy">
                 应用
               </button>
               <button
                 v-if="!strategyIsRunning"
                 type="button"
                 class="btn btn-success"
-                :disabled="controlBusy || qaBusy || (isQaConsole && (!qaEnabled || !qaCanRunExchange))"
+                :disabled="controlsDisabled || (isQaConsole && (!qaEnabled || !qaCanRunExchange))"
                 @click="onStart"
               >
                 {{ isQaConsole ? '启动' : '启动交易系统' }}
@@ -1979,7 +1976,7 @@ onUnmounted(() => {
                 v-else
                 type="button"
                 class="btn btn-danger"
-                :disabled="controlBusy || qaBusy"
+                :disabled="controlsDisabled"
                 @click="onStop"
               >
                 停止

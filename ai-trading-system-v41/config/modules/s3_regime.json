@@ -3,6 +3,9 @@
   "config_type": "SYSTEM_MODULE",
   "module_id": "S3",
   "name": "Market Regime",
+  "display": {
+    "summary_zh": "负责判断当前市场状态和方向偏向，为 Alpha 策略提供是否允许开仓及风险调整依据。"
+  },
   "release_stage": "PRODUCTION",
   "implemented": true,
   "enabled": true,

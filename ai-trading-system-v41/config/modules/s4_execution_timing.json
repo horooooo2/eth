@@ -3,6 +3,9 @@
   "config_type": "SYSTEM_MODULE",
   "module_id": "S4",
   "name": "Execution Timing",
+  "display": {
+    "summary_zh": "负责在信号形成后检查执行窗口、盘口和时机是否仍然适合提交订单，本身不产生交易方向。"
+  },
   "release_stage": "PRODUCTION",
   "implemented": true,
   "enabled": true,
