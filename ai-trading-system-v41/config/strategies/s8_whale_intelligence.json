@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "config_type": "ALPHA_STRATEGY",
+  "strategy_id": "S8",
+  "name": "巨鲸行为共振",
+  "release_stage": "RESEARCH",
+  "implemented": false,
+  "demo_allowed": false,
+  "live_allowed": false
+}

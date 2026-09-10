@@ -21,8 +21,7 @@ from src.core.orchestrator import Orchestrator
 
 async def main() -> None:
     load_dotenv(ROOT / ".env")
-    cfg_path = ROOT / "config" / "system_config.json"
-    orch = Orchestrator.from_config_path(cfg_path, mode="live", symbol=os.getenv("TRADE_SYMBOL", "BTC/USDT:USDT"))
+    orch = Orchestrator.from_runtime(mode="live", symbol=os.getenv("TRADE_SYMBOL", "BTC/USDT:USDT"))
 
     if not orch.config.get("meta", {}).get("live_trading_allowed", False):
         warnings.warn(

@@ -39,6 +39,9 @@
       backdrop-filter: blur(10px);
     }
     .top h1 { margin: 0; font-size: 1.15rem; font-weight: 650; }
+    .top-left { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+    .nav a { color: var(--muted); text-decoration: none; font-size: .9rem; margin-right: 14px; }
+    .nav a.on { color: var(--accent); font-weight: 700; }
     a.btn, button {
       appearance: none; border: 0; border-radius: 8px;
       padding: 8px 14px; background: var(--accent); color: #fff;
@@ -235,7 +238,13 @@
 </head>
 <body>
   <div class="top">
-    <h1>数据库看板</h1>
+    <div class="top-left">
+      <h1>数据库看板</h1>
+      <nav class="nav">
+        <a class="on" href="/data.html">数据库看板</a>
+        <a href="/strategy-config.html">策略配置</a>
+      </nav>
+    </div>
     <a class="btn ghost" href="/">返回主站</a>
   </div>
   <main>

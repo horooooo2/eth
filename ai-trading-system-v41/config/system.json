@@ -1,0 +1,785 @@
+{
+  "schema_version": "1.0",
+  "config_type": "SYSTEM",
+  "meta": {
+    "name": "AI Personal Single-Active Strategy Trading System",
+    "version": "4.2",
+    "status": "research_paper_trading",
+    "market_focus": "crypto_perpetuals",
+    "timezone": "UTC+8",
+    "config_type": "deterministic_event_driven_execution_schema",
+    "live_trading_allowed": false,
+    "design_principles": [
+      "risk_first",
+      "deterministic_core_logic",
+      "no_llm_interpretation_in_core_execution_path",
+      "bounded_offline_parameter_adaptation_only",
+      "all_state_transitions_are_auditable",
+      "all_risk_allocations_are_hard_capped",
+      "signals_have_explicit_lifecycle_and_expiry",
+      "execution_must_revalidate_signal_before_order_creation",
+      "edge_estimation_must_have_defined_runtime_data_source",
+      "manual_resume_requires_authenticated_audited_control_path",
+      "single_active_alpha_strategy",
+      "risk_budget_contracts_only_never_renormalize_up",
+      "execution_engine_is_not_allocation_target"
+    ],
+    "runtime_model": "single_active_alpha_strategy",
+    "derived_from": "4.1"
+  },
+  "engine_contract": {
+    "expression_language": {
+      "supported_operators": [
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "eq",
+        "neq",
+        "and",
+        "or",
+        "not",
+        "add",
+        "sub",
+        "mul",
+        "div",
+        "abs",
+        "min",
+        "max",
+        "clip",
+        "in",
+        "not_in"
+      ],
+      "missing_value_policy": "fail_closed",
+      "boolean_rule_policy": "all_required_conditions_must_be_explicit"
+    },
+    "decision_order": [
+      "S6_safety_gate",
+      "data_quality_gate",
+      "position_order_reconciliation",
+      "global_portfolio_risk_gate",
+      "S7_strategy_health_gate",
+      "S3_market_regime",
+      "S5_risk_budget_allocation",
+      "S1_S2_signal_generation",
+      "S4_execution_timing",
+      "cost_slippage_gate",
+      "final_order_creation"
+    ],
+    "runtime_objects": {
+      "TradeIntent": {
+        "description": "Directional opportunity emitted by S1/S2 and consumed by S4/Router.",
+        "required_fields": [
+          "intent_id",
+          "strategy_id",
+          "symbol",
+          "direction",
+          "created_at",
+          "expires_at",
+          "reference_price",
+          "reference_atr",
+          "signal_snapshot",
+          "status"
+        ]
+      },
+      "OrderIntent": {
+        "description": "Executable order candidate created only after TradeIntent passes lifecycle, revalidation, safety, cost and risk gates.",
+        "required_fields": [
+          "order_intent_id",
+          "trade_intent_id",
+          "symbol",
+          "direction",
+          "quantity",
+          "order_type",
+          "created_at",
+          "risk_snapshot"
+        ]
+      }
+    }
+  },
+  "data_schema": {
+    "bar_fields": [
+      "timestamp",
+      "open",
+      "high",
+      "low",
+      "close",
+      "volume"
+    ],
+    "derivatives_fields": [
+      "funding_rate",
+      "open_interest",
+      "basis"
+    ],
+    "microstructure_fields": [
+      "best_bid",
+      "best_ask",
+      "bid_depth",
+      "ask_depth",
+      "aggressive_buy_volume",
+      "aggressive_sell_volume"
+    ],
+    "portfolio_fields": [
+      "equity",
+      "cash",
+      "position_qty",
+      "position_side",
+      "position_avg_price",
+      "open_order_qty",
+      "realized_pnl_day",
+      "equity_high_watermark"
+    ],
+    "quality_requirements": {
+      "bars_monotonic_timestamp": true,
+      "duplicate_bar_allowed": false,
+      "max_bar_gap_multiplier": 2,
+      "position_reconciliation_required": true,
+      "order_reconciliation_required": true
+    }
+  },
+  "feature_definitions": {
+    "atr14": {
+      "type": "indicator",
+      "formula": "ATR(high, low, close, 14)"
+    },
+    "ema20": {
+      "type": "indicator",
+      "formula": "EMA(close, 20)"
+    },
+    "ema50": {
+      "type": "indicator",
+      "formula": "EMA(close, 50)"
+    },
+    "ema200": {
+      "type": "indicator",
+      "formula": "EMA(close, 200)"
+    },
+    "adx14": {
+      "type": "indicator",
+      "formula": "ADX(high, low, close, 14)"
+    },
+    "rsi14": {
+      "type": "indicator",
+      "formula": "RSI(close, 14)"
+    },
+    "trend_separation": {
+      "type": "derived",
+      "formula": "(ema20 - ema50) / max(atr14, 1e-12)"
+    },
+    "trend_slope_6": {
+      "type": "derived",
+      "formula": "(ema20[t] - ema20[t-6]) / max(6 * atr14, 1e-12)"
+    },
+    "efficiency_ratio_20": {
+      "type": "derived",
+      "formula": "abs(close[t] - close[t-20]) / max(sum(abs(close[i]-close[i-1]), i=t-19..t), 1e-12)"
+    },
+    "atr_ratio_20": {
+      "type": "derived",
+      "formula": "atr14 / max(SMA(atr14,20), 1e-12)"
+    },
+    "volume_z20": {
+      "type": "derived",
+      "formula": "(volume - SMA(volume,20)) / max(STD(volume,20), 1e-12)"
+    },
+    "return_1m": {
+      "type": "derived",
+      "formula": "close_1m[t] / close_1m[t-1] - 1"
+    },
+    "return_24h": {
+      "type": "derived",
+      "formula": "close_1h[t] / close_1h[t-24] - 1"
+    },
+    "breadth_24h": {
+      "type": "cross_sectional",
+      "formula": "count(valid_universe_symbols where return_24h > 0) / max(valid_universe_count,1)"
+    },
+    "realized_vol_5m": {
+      "type": "derived",
+      "formula": "sqrt(sum(log_return_1m^2 over last 5 bars))"
+    },
+    "rv5m_ratio_30d": {
+      "type": "derived",
+      "formula": "realized_vol_5m / max(median(realized_vol_5m over rolling_30d), 1e-12)"
+    },
+    "spread_bps": {
+      "type": "microstructure",
+      "formula": "(best_ask - best_bid) / max((best_ask + best_bid)/2,1e-12) * 10000"
+    },
+    "depth_imbalance": {
+      "type": "microstructure",
+      "formula": "(bid_depth - ask_depth) / max(bid_depth + ask_depth,1e-12)"
+    },
+    "aggressive_buy_ratio": {
+      "type": "microstructure",
+      "formula": "aggressive_buy_volume_1m / max(median(aggressive_buy_volume_1m over rolling_5m),1e-12)"
+    },
+    "aggressive_sell_ratio": {
+      "type": "microstructure",
+      "formula": "aggressive_sell_volume_1m / max(median(aggressive_sell_volume_1m over rolling_5m),1e-12)"
+    },
+    "price_impact_buy": {
+      "type": "microstructure",
+      "formula": "positive_return_1m / max(aggressive_buy_volume_1m,1e-12)"
+    },
+    "price_impact_sell": {
+      "type": "microstructure",
+      "formula": "abs(negative_return_1m) / max(aggressive_sell_volume_1m,1e-12)"
+    }
+  },
+  "global_risk": {
+    "max_initial_risk_all_open_positions_pct_equity": 0.025,
+    "max_same_direction_risk_pct_equity": 0.0175,
+    "max_correlated_bucket_risk_pct_equity": 0.0125,
+    "single_symbol_initial_risk_cap_pct_equity": 0.0075,
+    "correlation_threshold": 0.75,
+    "correlation_lookback_days": 30,
+    "daily_loss_controls": [
+      {
+        "threshold_pct_equity": -0.01,
+        "new_risk_multiplier": 0.75
+      },
+      {
+        "threshold_pct_equity": -0.02,
+        "new_risk_multiplier": 0.5
+      },
+      {
+        "threshold_pct_equity": -0.03,
+        "new_entries_enabled": false
+      }
+    ],
+    "drawdown_controls": [
+      {
+        "threshold_from_high": -0.05,
+        "portfolio_risk_multiplier": 0.75
+      },
+      {
+        "threshold_from_high": -0.08,
+        "portfolio_risk_multiplier": 0.5
+      },
+      {
+        "threshold_from_high": -0.12,
+        "new_entries_enabled": false,
+        "manual_review_required": true
+      }
+    ]
+  },
+  "cost_model": {
+    "round_trip_cost": {
+      "formula": "entry_fee + exit_fee + expected_slippage_entry + expected_slippage_exit + expected_funding_cost"
+    },
+    "expected_edge_after_cost_R": {
+      "formula": "(prob_win_estimate * avg_win_R_estimate) - ((1 - prob_win_estimate) * avg_loss_R_estimate) - round_trip_cost_R",
+      "inputs": {
+        "prob_win_estimate": "cost_model.edge_estimator.prob_win",
+        "avg_win_R_estimate": "cost_model.edge_estimator.avg_win_R",
+        "avg_loss_R_estimate": "cost_model.edge_estimator.avg_loss_R",
+        "round_trip_cost_R": "round_trip_cost converted to R using current candidate stop distance"
+      },
+      "recalculate_at": [
+        "trade_intent_creation",
+        "S4_confirmation",
+        "immediately_before_final_order_gate"
+      ]
+    },
+    "minimum_required_R": 0.15,
+    "slippage_stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "edge_estimator": {
+      "estimation_scope_priority": [
+        "strategy_symbol_regime",
+        "strategy_symbol",
+        "strategy_regime",
+        "strategy_global",
+        "validated_oos_prior"
+      ],
+      "lookback_trades": 100,
+      "minimum_local_samples": 30,
+      "maximum_estimator_age_minutes": 60,
+      "prob_win": {
+        "method": "beta_binomial_smoothed",
+        "prior_source": "validated_oos_prior",
+        "fallback_prior_alpha": 10.0,
+        "fallback_prior_beta": 10.0,
+        "formula": "(wins + prior_alpha) / (wins + losses + prior_alpha + prior_beta)"
+      },
+      "avg_win_R": {
+        "method": "ewma",
+        "lookback_trades": 100,
+        "minimum_samples": 10,
+        "fallback_source": "validated_oos_prior.avg_win_R"
+      },
+      "avg_loss_R": {
+        "method": "ewma",
+        "lookback_trades": 100,
+        "minimum_samples": 10,
+        "fallback_source": "validated_oos_prior.avg_loss_R"
+      },
+      "regime_conditioning": {
+        "enabled": true,
+        "minimum_regime_samples": 30,
+        "fallback_if_insufficient": "next_scope_in_estimation_scope_priority"
+      },
+      "cold_start": {
+        "preferred_source": "validated_oos_prior",
+        "live_sample_minimum": 30,
+        "risk_multiplier_before_live_sample_minimum": 0.25,
+        "if_validated_prior_missing": {
+          "live_orders_allowed": false,
+          "paper_trading_only": true,
+          "reason": "NO_VALIDATED_EDGE_PRIOR"
+        }
+      },
+      "missing_or_stale_estimate_policy": {
+        "live_orders_allowed": false,
+        "paper_trading_allowed": true,
+        "reason": "EDGE_ESTIMATE_UNAVAILABLE_OR_STALE"
+      }
+    }
+  },
+  "router": {
+    "countertrend_exception": {
+      "enabled": true,
+      "requirements": [
+        {
+          "lhs": "S2.entry_signal",
+          "op": "eq",
+          "rhs": true
+        },
+        {
+          "lhs": "S2.reversal_confirmation",
+          "op": "eq",
+          "rhs": true
+        },
+        {
+          "lhs": "S6.level",
+          "op": "lte",
+          "rhs": 1
+        },
+        {
+          "lhs": "S7.S2_health_score",
+          "op": "gte",
+          "rhs": 60
+        },
+        {
+          "lhs": "effective_trade_risk_pct_equity",
+          "op": "lte",
+          "rhs": 0.002
+        }
+      ]
+    },
+    "final_order_gate": {
+      "logic": "and",
+      "conditions": [
+        {
+          "lhs": "S6.level",
+          "op": "lt",
+          "rhs": 2
+        },
+        {
+          "lhs": "data_quality_ok",
+          "op": "eq",
+          "rhs": true
+        },
+        {
+          "lhs": "positions_reconciled",
+          "op": "eq",
+          "rhs": true
+        },
+        {
+          "lhs": "orders_reconciled",
+          "op": "eq",
+          "rhs": true
+        },
+        {
+          "lhs": "portfolio_risk_after_order",
+          "op": "lte",
+          "rhs": "global_portfolio_risk_cap"
+        },
+        {
+          "lhs": "expected_edge_after_cost_R",
+          "op": "gte",
+          "rhs": 0.15
+        },
+        {
+          "lhs": "edge_estimate_available",
+          "op": "eq",
+          "rhs": true
+        },
+        {
+          "lhs": "edge_estimate_age_minutes",
+          "op": "lte",
+          "rhs": 60
+        },
+        {
+          "lhs": "signal_lifecycle_valid",
+          "op": "eq",
+          "rhs": true
+        },
+        {
+          "lhs": "source_strategy_revalidation_passed",
+          "op": "eq",
+          "rhs": true
+        }
+      ]
+    },
+    "trade_intent_gate": {
+      "logic": "and",
+      "conditions": [
+        {
+          "lhs": "trade_intent.status",
+          "op": "eq",
+          "rhs": "WAITING_EXECUTION_CONFIRMATION"
+        },
+        {
+          "lhs": "signal_lifecycle_valid",
+          "op": "eq",
+          "rhs": true
+        },
+        {
+          "lhs": "source_strategy_revalidation_passed",
+          "op": "eq",
+          "rhs": true
+        },
+        {
+          "lhs": "S6.level",
+          "op": "lt",
+          "rhs": 2
+        }
+      ]
+    },
+    "order_intent_creation": {
+      "allowed_only_after": [
+        "TradeIntent lifecycle valid",
+        "S4 confirmation or configured S4 bypass policy",
+        "source strategy revalidation",
+        "expected edge recalculated",
+        "S5 risk budget resolved",
+        "S6 safety gate passed",
+        "S7 health gate passed"
+      ],
+      "order_intent_must_reference_trade_intent_id": true
+    }
+  },
+  "state_machine": {
+    "strategy_states": [
+      "ON",
+      "REDUCED",
+      "PAUSED",
+      "OFF"
+    ],
+    "transitions": [
+      {
+        "from": "ON",
+        "to": "REDUCED",
+        "when": "S7.health_score < 80 or S6.level == 1"
+      },
+      {
+        "from": "REDUCED",
+        "to": "PAUSED",
+        "when": "S7.health_score < 60 or S6.level >= 2"
+      },
+      {
+        "from": "PAUSED",
+        "to": "ON",
+        "when": "S7.health_score >= 80 and S6.level == 0 and cooldown_complete == true"
+      },
+      {
+        "from": "*",
+        "to": "OFF",
+        "when": "S6.level == 3 and event_type in hard_level_3_system_events"
+      }
+    ]
+  },
+  "validation": {
+    "walk_forward": {
+      "train_days": 180,
+      "validate_days": 30,
+      "roll_days": 30,
+      "parameter_lock_days": 30
+    },
+    "anti_overfit": {
+      "discrete_parameter_grid_only": true,
+      "online_optimization_allowed": false,
+      "prefer_parameter_plateau_over_single_best_point": true,
+      "purged_split_when_label_overlap": true
+    },
+    "stress_tests": [
+      "slippage_1.5x",
+      "slippage_2x",
+      "latency_2x",
+      "missing_data",
+      "reconnect",
+      "trade_order_monte_carlo",
+      "signal_expiry_test",
+      "price_drift_invalidation_test",
+      "signal_revalidation_test",
+      "edge_estimator_cold_start_test",
+      "edge_estimator_staleness_test",
+      "manual_resume_auth_test",
+      "manual_resume_precondition_test",
+      "manual_resume_audit_test"
+    ],
+    "live_enable_requirements": [
+      "walk_forward_pass",
+      "out_of_sample_pass",
+      "cost_stress_pass",
+      "paper_trading_pass",
+      "reconciliation_test_pass",
+      "kill_switch_test_pass",
+      "signal_lifecycle_test_pass",
+      "edge_estimator_runtime_test_pass",
+      "manual_resume_governance_test_pass"
+    ]
+  },
+  "logging": {
+    "required_fields": [
+      "timestamp",
+      "symbol",
+      "strategy_id",
+      "raw_features",
+      "derived_features",
+      "S3_regime",
+      "S3_direction_bias",
+      "S3_confidence",
+      "S5_raw_shares",
+      "S5_scale",
+      "S5_final_shares",
+      "S6_level",
+      "S6_trigger_reason",
+      "S7_health_score",
+      "pre_trade_expected_edge_R",
+      "estimated_cost_R",
+      "effective_trade_risk_pct_equity",
+      "order_decision",
+      "rejection_reason",
+      "fill_price",
+      "slippage_bps",
+      "realized_R",
+      "trade_intent_id",
+      "trade_intent_status",
+      "signal_age_seconds",
+      "price_drift_bps",
+      "price_drift_atr_fraction",
+      "signal_terminal_reason",
+      "edge_estimator_scope_used",
+      "edge_estimator_sample_count",
+      "edge_estimator_age_minutes",
+      "manual_resume_incident_id",
+      "manual_resume_operator_id",
+      "manual_resume_audit_event_id"
+    ]
+  },
+  "invariants": [
+    "sum(S5.final_shares) <= 1 - S5.reserve_fraction",
+    "S4 cannot create a directional thesis",
+    "S6.level >= 2 => no new entries",
+    "hard system level 3 events cannot auto-resume",
+    "all core entry decisions must resolve to boolean without LLM interpretation",
+    "all missing critical data must fail closed",
+    "all live parameter changes require offline validation and lock-period rollover",
+    "expired TradeIntent cannot create OrderIntent",
+    "price-drift-invalid TradeIntent cannot create OrderIntent",
+    "all executable TradeIntents must be revalidated using current market data",
+    "live order requires a non-stale runtime edge estimate",
+    "missing validated edge prior during cold start => paper trading only",
+    "manual_ack for system level 3 must originate from authenticated audited manual resume control",
+    "manual resume cannot transition S6 directly from level 3 to level 0"
+  ],
+  "signal_lifecycle": {
+    "clock_source": "exchange_synchronized_utc_clock",
+    "timestamp_precision": "milliseconds",
+    "states": [
+      "CREATED",
+      "WAITING_EXECUTION_CONFIRMATION",
+      "CONFIRMED",
+      "EXECUTED",
+      "EXPIRED",
+      "PRICE_DRIFT_INVALID",
+      "CONDITION_INVALID",
+      "S4_REJECTED",
+      "RISK_REJECTED",
+      "COST_REJECTED",
+      "SAFETY_REJECTED",
+      "ACTIVE_STRATEGY_MISMATCH",
+      "STRATEGY_SWITCH_INVALIDATED"
+    ],
+    "strategy_policy": {
+      "S1": {
+        "expiry_seconds": 120,
+        "max_price_drift_bps": 30,
+        "max_price_drift_atr_fraction": 0.25,
+        "revalidate_before_execution": true
+      },
+      "S2": {
+        "expiry_seconds": 60,
+        "max_price_drift_bps": 20,
+        "max_price_drift_atr_fraction": 0.2,
+        "revalidate_before_execution": true
+      }
+    },
+    "derived_runtime_fields": {
+      "signal_age_seconds": "(now_utc - trade_intent.created_at).total_seconds()",
+      "price_drift_bps": "abs(current_mid_price - trade_intent.reference_price) / max(trade_intent.reference_price,1e-12) * 10000",
+      "price_drift_atr_fraction": "abs(current_mid_price - trade_intent.reference_price) / max(trade_intent.reference_atr,1e-12)"
+    },
+    "validity_rule": {
+      "logic": "and",
+      "conditions": [
+        {
+          "lhs": "signal_age_seconds",
+          "op": "lte",
+          "rhs": "strategy_policy.expiry_seconds"
+        },
+        {
+          "lhs": "price_drift_bps",
+          "op": "lte",
+          "rhs": "strategy_policy.max_price_drift_bps"
+        },
+        {
+          "lhs": "price_drift_atr_fraction",
+          "op": "lte",
+          "rhs": "strategy_policy.max_price_drift_atr_fraction"
+        },
+        {
+          "lhs": "original_signal_conditions_still_valid",
+          "op": "eq",
+          "rhs": true
+        }
+      ]
+    },
+    "terminal_reason_mapping": {
+      "signal_age_seconds_exceeded": "EXPIRED",
+      "price_drift_bps_exceeded": "PRICE_DRIFT_INVALID",
+      "price_drift_atr_fraction_exceeded": "PRICE_DRIFT_INVALID",
+      "signal_revalidation_failed": "CONDITION_INVALID",
+      "s4_confirmation_failed_before_expiry": "S4_REJECTED",
+      "risk_gate_failed": "RISK_REJECTED",
+      "cost_gate_failed": "COST_REJECTED",
+      "safety_gate_failed": "SAFETY_REJECTED",
+      "active_strategy_changed": "STRATEGY_SWITCH_INVALIDATED",
+      "active_strategy_mismatch": "ACTIVE_STRATEGY_MISMATCH"
+    },
+    "logging_required": true
+  },
+  "trade_intent_schema": {
+    "intent_id": "uuid_v4",
+    "strategy_id": "S1_or_S2",
+    "symbol": "string",
+    "direction": "long_or_short",
+    "created_at": "utc_iso8601",
+    "expires_at": "created_at + strategy_policy.expiry_seconds",
+    "reference_price": "signal_creation_mid_price",
+    "reference_atr": "signal_creation_ATR_for_strategy_timeframe",
+    "signal_snapshot": {
+      "required": [
+        "S3_regime",
+        "S3_direction_bias",
+        "S3_confidence",
+        "strategy_signal_features",
+        "estimated_edge_R_at_creation"
+      ]
+    },
+    "status": "CREATED",
+    "immutable_after_creation": [
+      "intent_id",
+      "strategy_id",
+      "symbol",
+      "direction",
+      "created_at",
+      "reference_price",
+      "reference_atr",
+      "signal_snapshot"
+    ]
+  },
+  "changelog_v4_1": {
+    "signal_lifecycle": "Added TradeIntent TTL, price-drift invalidation, revalidation and terminal states.",
+    "edge_estimator": "Added hierarchical runtime estimator, beta-binomial win probability smoothing, EWMA payoff estimates and cold-start policy.",
+    "manual_resume": "Added authenticated POST /api/v1/system/resume governance contract, preconditions, audit and staged L3->L2 recovery.",
+    "compatibility": "Preserves V4.0 strategy and risk architecture; adds runtime execution semantics."
+  },
+  "strategy_runtime": {
+    "selection_mode": "single_active",
+    "allowed_alpha_strategies": [
+      "S1",
+      "S2"
+    ],
+    "default_active_strategy_id": "S1",
+    "system_modules_always_enabled": [
+      "S3",
+      "S4",
+      "S5",
+      "S6",
+      "S7"
+    ],
+    "max_active_alpha_strategies": 1,
+    "switch_policy": {
+      "atomic": true,
+      "require_s6_level_below": 2,
+      "block_target_health_states": [
+        "PAUSED",
+        "OFF"
+      ],
+      "invalidate_pending_trade_intents": true,
+      "cancel_unsubmitted_opening_order_intents": true,
+      "cancel_submitted_opening_orders": true,
+      "preserve_reduce_only_orders": true,
+      "preserve_open_positions": true,
+      "preserve_origin_strategy_exit_policy": true,
+      "audit_required": true
+    }
+  },
+  "unit_contract": {
+    "pct_equity": "decimal_fraction",
+    "returns": "decimal_fraction",
+    "funding_rate": "decimal_fraction",
+    "bps": "basis_points",
+    "price": "quote_currency",
+    "quantity": "exchange_native_or_normalized_contract_quantity",
+    "R": "initial_risk_multiple",
+    "timestamps": "UTC_ISO8601"
+  },
+  "position_contract": {
+    "origin_strategy_id_required": true,
+    "origin_trade_intent_id_required": true,
+    "entry_risk_snapshot_required": true,
+    "exit_policy_snapshot_required": true,
+    "strategy_switch_does_not_transfer_position_ownership": true
+  },
+  "strategy_switch_audit": {
+    "required": true,
+    "fields": [
+      "timestamp",
+      "operator_id",
+      "previous_strategy_id",
+      "new_strategy_id",
+      "engine_mode",
+      "s6_level",
+      "target_s7_state",
+      "invalidated_trade_intent_ids",
+      "cancelled_order_intent_ids",
+      "preserved_position_ids",
+      "result",
+      "reason"
+    ]
+  },
+  "internal_control_endpoints": {
+    "base": "/internal/v1",
+    "resume": "/internal/v1/control/resume",
+    "strategy_switch": "/internal/v1/strategy/switch",
+    "note": "Browser-facing APIs are Node /api/whale-ai/engine/*; Python is internal only"
+  },
+  "changelog_v4_2": {
+    "generated_at": "2026-09-09T10:14:14.162985+00:00",
+    "changes": [
+      "runtime_model=single_active_alpha_strategy",
+      "S4 removed from portfolio allocation targets",
+      "S5 allocation contracts only (no renormalize-up)",
+      "STRATEGY_SWITCH_INVALIDATED lifecycle state",
+      "strategy_runtime.switch_policy and position_contract added"
+    ]
+  }
+}

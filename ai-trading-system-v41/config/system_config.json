@@ -1,4 +1,9 @@
 {
+  "deprecated": {
+    "status": "MIGRATION_ONLY",
+    "replacement": "MODULAR_JSON",
+    "note": "Production runtime loads config/system.json + strategies/ + modules/. This file is compatibility and migration tests only."
+  },
   "meta": {
     "name": "AI Personal Single-Active Strategy Trading System",
     "version": "4.2",

@@ -71,9 +71,13 @@ class EngineRuntime:
         active_strategy: str = "S1",
         store_path: Optional[Path] = None,
     ) -> None:
-        self.config_path = Path(config_path or (ROOT / "config" / "ai_trading_system_v4_2_personal_single_strategy.json"))
-        if not self.config_path.exists():
-            self.config_path = ROOT / "config" / "system_config.json"
+        from src.runtime.config_loader import (
+            ConfigError,
+            SOURCE_MODULAR,
+            load_legacy_runtime_config,
+            load_runtime_config,
+        )
+
         self.mode = mode
         self.symbol = symbol
         self.tick_interval_sec = float(tick_interval_sec)
@@ -81,25 +85,32 @@ class EngineRuntime:
         self.alpha_execution = exec_norm["alpha_execution"]
         self.execution_mode = exec_norm["gateway_mode"]
         self.alpha_execution_meta = exec_norm
-        default_active = "S1"
+        self.config_status = "OK"
+        self.config_error = None
         try:
-            import json as _json
-
-            preview = _json.loads(self.config_path.read_text(encoding="utf-8"))
-            default_active = (
-                preview.get("strategy_runtime", {}) or {}
-            ).get("default_active_strategy_id") or active_strategy
-        except Exception:
-            default_active = active_strategy
+            if config_path is not None:
+                loaded = load_legacy_runtime_config(config_path)
+            else:
+                loaded = load_runtime_config()
+        except ConfigError as exc:
+            self.config_status = "CONFIG_INVALID"
+            self.config_error = exc.to_dict()
+            self.config_source_kind = SOURCE_MODULAR if config_path is None else "LEGACY_CONFIG"
+            # Fail closed: never silently load the deprecated monolith.
+            raise
+        self.config_bundle = loaded
+        self.config_source_kind = loaded.source_kind
+        self.config_path = Path(loaded.system_path or (ROOT / "config" / "system.json"))
+        default_active = (
+            (loaded.effective.get("strategy_runtime") or {}).get("default_active_strategy_id") or active_strategy
+        )
         self.active_strategy = default_active if default_active in ("S1", "S2") else "S1"
         self.user_id = os.getenv("V41_ENGINE_USER_ID") or None
         self.account_scope = os.getenv("V41_ENGINE_ACCOUNT_SCOPE", "default")
         self.node_gateway_url = os.getenv("V41_NODE_GATEWAY_URL", "http://127.0.0.1:80").rstrip("/")
         self.node_token = os.getenv("V41_ENGINE_INTERNAL_TOKEN", "dev-internal-token")
 
-        self.orchestrator = Orchestrator.from_config_path(
-            self.config_path, mode=mode, symbol=symbol
-        )
+        self.orchestrator = Orchestrator(loaded.effective, mode=mode, symbol=symbol)
         self.orchestrator.execution_mode = self.execution_mode
         self.orchestrator.alpha_execution = self.alpha_execution
         self.orchestrator.user_id = self.user_id
@@ -113,7 +124,8 @@ class EngineRuntime:
         )
         print(
             f"CONFIG_LOADED version={self.config_version} "
-            f"runtime_model={self.runtime_model} path={self.config_path}"
+            f"runtime_model={self.runtime_model} source={self.config_source_kind} "
+            f"path={self.config_path}"
         )
         print(
             f"AlphaExecution = {self.alpha_execution} "
@@ -320,6 +332,12 @@ class EngineRuntime:
         return snap
 
     async def start(self) -> Dict[str, Any]:
+        if getattr(self, "config_status", "OK") != "OK":
+            self.alpha_opening_enabled = False
+            return {
+                "ok": False,
+                "error": self.config_error or {"code": "CONFIG_INVALID", "message": "engine config invalid"},
+            }
         if self.state == "LOCKED":
             return {"ok": False, "error": {"code": "S6_BLOCKED", "message": "engine locked; resume first"}}
         if self._task and not self._task.done():

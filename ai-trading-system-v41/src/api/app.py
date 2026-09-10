@@ -137,6 +137,24 @@ def create_app() -> FastAPI:
     async def snapshot(_: None = Depends(require_engine_token)) -> Dict[str, Any]:
         return runtime.snapshot()
 
+    @app.get("/internal/v1/strategy-configs")
+    async def strategy_configs(_: None = Depends(require_engine_token)) -> Dict[str, Any]:
+        from src.runtime.strategy_config_view import list_strategy_configs
+
+        return list_strategy_configs(runtime)
+
+    @app.get("/internal/v1/strategy-configs/{config_id}")
+    async def strategy_config_one(config_id: str, _: None = Depends(require_engine_token)) -> Dict[str, Any]:
+        from src.runtime.strategy_config_view import get_strategy_config
+
+        out = get_strategy_config(runtime, config_id)
+        if out is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "STRATEGY_CONFIG_NOT_FOUND", "message": "unknown strategy config id"},
+            )
+        return out
+
     @app.get("/internal/v1/strategy/{strategy_id}/diagnostics")
     async def strategy_diagnostics(strategy_id: str, _: None = Depends(require_engine_token)) -> Dict[str, Any]:
         return runtime.strategy_diagnostics(strategy_id)

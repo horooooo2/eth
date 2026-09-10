@@ -74,6 +74,7 @@ function mountRoutes(app, prefix) {
   app.use(`${base}/markets`, marketsRouter);
   app.use(`${base}/x`, xRouter);
   app.use(`${base}/whale-ai`, require('../routes/whaleAi'));
+  app.use(`${base}/admin/strategy-configs`, require('../routes/adminStrategyConfigs'));
   app.get(`${base}/data/browse`, (req, res) => {
     try {
       const { loadDbBrowse } = require('./sqliteStore');

@@ -16,8 +16,7 @@ from src.core.orchestrator import Orchestrator
 
 
 async def main() -> None:
-    cfg_path = ROOT / "config" / "system_config.json"
-    orch = Orchestrator.from_config_path(cfg_path, mode="paper", symbol="BTC/USDT:USDT")
+    orch = Orchestrator.from_runtime(mode="paper", symbol="BTC/USDT:USDT")
     # Force friendly microstructure for demo cycle
     micro = {
         "spread_bps": 2.0,

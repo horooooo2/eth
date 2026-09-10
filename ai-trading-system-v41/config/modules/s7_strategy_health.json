@@ -1,0 +1,71 @@
+{
+  "schema_version": "1.0",
+  "config_type": "SYSTEM_MODULE",
+  "module_id": "S7",
+  "name": "Strategy Health",
+  "release_stage": "PRODUCTION",
+  "implemented": true,
+  "enabled": true,
+  "windows": {
+    "fast_trades": 30,
+    "slow_trades": 100,
+    "calendar_days": 30
+  },
+  "metrics": [
+    "expectancy_R",
+    "profit_factor",
+    "win_rate",
+    "avg_win_R",
+    "avg_loss_R",
+    "max_drawdown_R",
+    "slippage_vs_model_ratio",
+    "latency_vs_baseline_ratio"
+  ],
+  "health_score": {
+    "formula": "100*(0.35*expectancy_component + 0.25*drawdown_component + 0.20*execution_component + 0.20*regime_stability_component)",
+    "components": {
+      "expectancy_component": "clip((expectancy_R + 0.10)/0.40,0,1)",
+      "drawdown_component": "clip(1 - max_drawdown_R/15,0,1)",
+      "execution_component": "clip(1 - max(slippage_vs_model_ratio-1,0)/2,0,1)",
+      "regime_stability_component": "clip(profitable_regime_count/max(valid_regime_count,1),0,1)"
+    }
+  },
+  "states": [
+    {
+      "state": "ON",
+      "min_score": 80,
+      "max_score": 100,
+      "risk_multiplier": 1.0
+    },
+    {
+      "state": "REDUCED",
+      "min_score": 60,
+      "max_score": 79.999,
+      "risk_multiplier": 0.75
+    },
+    {
+      "state": "PAUSED",
+      "min_score": 40,
+      "max_score": 59.999,
+      "risk_multiplier": 0.0
+    },
+    {
+      "state": "OFF",
+      "min_score": 0,
+      "max_score": 39.999,
+      "risk_multiplier": 0.0
+    }
+  ],
+  "loss_streak_controls": [
+    {
+      "losses": 5,
+      "extra_risk_multiplier": 0.75
+    },
+    {
+      "losses": 8,
+      "extra_risk_multiplier": 0.5,
+      "health_recheck_required": true
+    }
+  ],
+  "minimum_trades_before_statistical_pause": 30
+}

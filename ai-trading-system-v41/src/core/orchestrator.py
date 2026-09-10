@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -86,10 +85,20 @@ class Orchestrator:
         path: str | Path,
         **kwargs: Any,
     ) -> "Orchestrator":
-        with open(path, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
+        """Explicit file path — legacy compatibility / tests. Production uses from_runtime()."""
+        from src.runtime.config_loader import load_legacy_config
         from src.runtime.config_validator import validate_or_raise
 
+        cfg = load_legacy_config(path)
+        validate_or_raise(cfg)
+        return cls(cfg, **kwargs)
+
+    @classmethod
+    def from_runtime(cls, **kwargs: Any) -> "Orchestrator":
+        from src.runtime.config_loader import load_effective_config
+        from src.runtime.config_validator import validate_or_raise
+
+        cfg = load_effective_config()
         validate_or_raise(cfg)
         return cls(cfg, **kwargs)
 

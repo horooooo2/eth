@@ -277,6 +277,15 @@ async function getActiveStrategy() {
   return request('GET', '/internal/v1/strategy/active');
 }
 
+async function getStrategyConfigList() {
+  return request('GET', '/internal/v1/strategy-configs');
+}
+
+async function getStrategyConfig(configId) {
+  const id = encodeURIComponent(String(configId || '').trim() || 'S1');
+  return request('GET', `/internal/v1/strategy-configs/${id}`);
+}
+
 async function listStrategies() {
   return request('GET', '/internal/v1/strategy/list');
 }
@@ -352,6 +361,8 @@ module.exports = {
   resume,
   setActiveStrategy,
   getActiveStrategy,
+  getStrategyConfigList,
+  getStrategyConfig,
   getStrategyDiagnostics,
   listStrategies,
   switchStrategy,

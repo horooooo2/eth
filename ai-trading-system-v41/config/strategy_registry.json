@@ -1,0 +1,159 @@
+{
+  "schema_version": "1.0",
+  "config_type": "STRATEGY_REGISTRY",
+  "alpha_strategies": [
+    {
+      "id": "S1",
+      "type": "ALPHA_STRATEGY",
+      "name": "趋势跟踪",
+      "config": "strategies/s1_trend.json",
+      "implementation": "src.strategies.s1_trend",
+      "release_stage": "PRODUCTION",
+      "implemented": true,
+      "demo_allowed": true,
+      "live_allowed": true,
+      "strategy_key": "S1_trend",
+      "dependencies": [
+        "S3",
+        "S4",
+        "S5",
+        "S6",
+        "S7"
+      ],
+      "preferred_sections": [
+        "market",
+        "signal",
+        "risk",
+        "stop",
+        "dependencies"
+      ]
+    },
+    {
+      "id": "S2",
+      "type": "ALPHA_STRATEGY",
+      "name": "极端情绪反转",
+      "config": "strategies/s2_reversal.json",
+      "implementation": "src.strategies.s2_reversal",
+      "release_stage": "PRODUCTION",
+      "implemented": true,
+      "demo_allowed": false,
+      "live_allowed": true,
+      "strategy_key": "S2_reversal",
+      "dependencies": [
+        "S3",
+        "S4",
+        "S5",
+        "S6",
+        "S7"
+      ],
+      "preferred_sections": [
+        "market",
+        "sentiment",
+        "reversal",
+        "risk",
+        "stop",
+        "dependencies"
+      ]
+    },
+    {
+      "id": "S8",
+      "type": "ALPHA_STRATEGY",
+      "name": "巨鲸行为共振",
+      "config": "strategies/s8_whale_intelligence.json",
+      "implementation": null,
+      "release_stage": "RESEARCH",
+      "implemented": false,
+      "demo_allowed": false,
+      "live_allowed": false,
+      "strategy_key": "S8_whale_intelligence",
+      "dependencies": [
+        "S3",
+        "S4",
+        "S5",
+        "S6",
+        "S7"
+      ],
+      "preferred_sections": [
+        "basic"
+      ]
+    }
+  ],
+  "system_modules": [
+    {
+      "id": "S3",
+      "type": "SYSTEM_MODULE",
+      "name": "Market Regime",
+      "config": "modules/s3_regime.json",
+      "implementation": "src.strategies.s3_regime",
+      "release_stage": "PRODUCTION",
+      "implemented": true,
+      "demo_allowed": false,
+      "live_allowed": false,
+      "strategy_key": "S3_regime",
+      "preferred_sections": [
+        "regime"
+      ]
+    },
+    {
+      "id": "S4",
+      "type": "SYSTEM_MODULE",
+      "name": "Execution Timing",
+      "config": "modules/s4_execution_timing.json",
+      "implementation": "src.strategies.s4_execution",
+      "release_stage": "PRODUCTION",
+      "implemented": true,
+      "demo_allowed": false,
+      "live_allowed": false,
+      "strategy_key": "S4_execution",
+      "preferred_sections": [
+        "timing"
+      ]
+    },
+    {
+      "id": "S5",
+      "type": "SYSTEM_MODULE",
+      "name": "Risk Budget",
+      "config": "modules/s5_risk_budget.json",
+      "implementation": "src.strategies.s5_risk_budget",
+      "release_stage": "PRODUCTION",
+      "implemented": true,
+      "demo_allowed": false,
+      "live_allowed": false,
+      "strategy_key": "S5_risk_budget",
+      "preferred_sections": [
+        "portfolio",
+        "allocation"
+      ]
+    },
+    {
+      "id": "S6",
+      "type": "SYSTEM_MODULE",
+      "name": "Safety",
+      "config": "modules/s6_safety.json",
+      "implementation": "src.strategies.s6_anomaly",
+      "release_stage": "PRODUCTION",
+      "implemented": true,
+      "demo_allowed": false,
+      "live_allowed": false,
+      "strategy_key": "S6_anomaly",
+      "preferred_sections": [
+        "safety"
+      ]
+    },
+    {
+      "id": "S7",
+      "type": "SYSTEM_MODULE",
+      "name": "Strategy Health",
+      "config": "modules/s7_strategy_health.json",
+      "implementation": "src.strategies.s7_health",
+      "release_stage": "PRODUCTION",
+      "implemented": true,
+      "demo_allowed": false,
+      "live_allowed": false,
+      "strategy_key": "S7_health",
+      "preferred_sections": [
+        "health"
+      ]
+    }
+  ]
+}

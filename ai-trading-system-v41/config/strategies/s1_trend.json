@@ -1,0 +1,166 @@
+{
+  "schema_version": "1.0",
+  "config_type": "ALPHA_STRATEGY",
+  "strategy_id": "S1",
+  "name": "趋势跟踪",
+  "release_stage": "PRODUCTION",
+  "implemented": true,
+  "demo_allowed": true,
+  "live_allowed": true,
+  "enabled": true,
+  "timeframe": "1h",
+  "risk_per_trade_pct_equity": 0.004,
+  "risk_per_trade_allowed": [
+    0.0025,
+    0.004,
+    0.006
+  ],
+  "strategy_initial_risk_cap_pct_equity": 0.0125,
+  "leverage_cap": 6.0,
+  "trend_quality_score": {
+    "formula": "25*adx_component + 25*slope_component + 20*breakout_component + 15*volume_component + 15*volatility_component",
+    "components": {
+      "adx_component": "clip((adx14-18)/(35-18),0,1)",
+      "slope_component": "clip(abs(trend_slope_6)/0.12,0,1)",
+      "breakout_component": "1 if long:close>=HHV(high,20) or short:close<=LLV(low,20) else clip(abs(trend_separation)/1.0,0,1)",
+      "volume_component": "clip((volume_z20+0.5)/2.5,0,1)",
+      "volatility_component": "1 if 0.75<=atr_ratio_20<=1.50 else 0.5 if 0.60<=atr_ratio_20<=1.75 else 0"
+    },
+    "entry_threshold": 70.0
+  },
+  "long_entry": {
+    "logic": "and",
+    "conditions": [
+      {
+        "lhs": "close",
+        "op": "gt",
+        "rhs": "ema20"
+      },
+      {
+        "lhs": "ema20",
+        "op": "gt",
+        "rhs": "ema50"
+      },
+      {
+        "lhs": "trend_slope_6",
+        "op": "gt",
+        "rhs": 0.0
+      },
+      {
+        "lhs": "trend_quality_score",
+        "op": "gte",
+        "rhs": 70.0
+      },
+      {
+        "lhs": "S3.direction_bias",
+        "op": "gt",
+        "rhs": 0.0
+      },
+      {
+        "lhs": "S3.regime",
+        "op": "in",
+        "rhs": [
+          "strong_trend",
+          "weak_trend",
+          "recovery"
+        ]
+      },
+      {
+        "lhs": "atr_ratio_20",
+        "op": "lte",
+        "rhs": 1.5
+      },
+      {
+        "lhs": "expected_edge_after_cost_R",
+        "op": "gte",
+        "rhs": 0.15
+      }
+    ]
+  },
+  "short_entry": {
+    "logic": "and",
+    "conditions": [
+      {
+        "lhs": "close",
+        "op": "lt",
+        "rhs": "ema20"
+      },
+      {
+        "lhs": "ema20",
+        "op": "lt",
+        "rhs": "ema50"
+      },
+      {
+        "lhs": "trend_slope_6",
+        "op": "lt",
+        "rhs": 0.0
+      },
+      {
+        "lhs": "trend_quality_score",
+        "op": "gte",
+        "rhs": 70.0
+      },
+      {
+        "lhs": "S3.direction_bias",
+        "op": "lt",
+        "rhs": 0.0
+      },
+      {
+        "lhs": "S3.regime",
+        "op": "in",
+        "rhs": [
+          "strong_trend",
+          "weak_trend",
+          "recovery"
+        ]
+      },
+      {
+        "lhs": "atr_ratio_20",
+        "op": "lte",
+        "rhs": 1.5
+      },
+      {
+        "lhs": "expected_edge_after_cost_R",
+        "op": "gte",
+        "rhs": 0.15
+      }
+    ]
+  },
+  "hard_blocks": [
+    {
+      "lhs": "S3.regime",
+      "op": "eq",
+      "rhs": "range"
+    },
+    {
+      "lhs": "S3.regime",
+      "op": "eq",
+      "rhs": "panic"
+    },
+    {
+      "lhs": "S6.level",
+      "op": "gte",
+      "rhs": 2
+    }
+  ],
+  "stop": {
+    "initial_distance_formula": "min(1.5*atr14, structure_invalidation_distance)",
+    "minimum_stop_distance_bps": 10
+  },
+  "exit": {
+    "breakeven_trigger_R": 1.0,
+    "trailing_trigger_R": 2.0,
+    "trailing_distance_formula": "max(1.2*atr14, structure_trailing_distance)",
+    "time_stop_bars": 12,
+    "time_stop_min_unrealized_R": 0.5
+  },
+  "cooldown": {
+    "after_stop_bars": 3,
+    "after_two_losses_same_symbol_bars": 6
+  },
+  "trade_intent": {
+    "emit_when_entry_rule_passes": true,
+    "initial_status": "WAITING_EXECUTION_CONFIRMATION",
+    "lifecycle_policy_ref": "signal_lifecycle.strategy_policy.S1"
+  }
+}

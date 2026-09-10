@@ -1,0 +1,215 @@
+{
+  "schema_version": "1.0",
+  "config_type": "ALPHA_STRATEGY",
+  "strategy_id": "S2",
+  "name": "极端情绪反转",
+  "release_stage": "PRODUCTION",
+  "implemented": true,
+  "demo_allowed": false,
+  "live_allowed": true,
+  "enabled": true,
+  "timeframe": "15m",
+  "risk_per_trade_pct_equity": 0.003,
+  "countertrend_risk_cap_pct_equity": 0.002,
+  "strategy_initial_risk_cap_pct_equity": 0.0075,
+  "leverage_cap": 4.0,
+  "parameters": {
+    "rsi_long_threshold": 25,
+    "rsi_short_threshold": 75,
+    "funding_low_percentile": 10,
+    "funding_high_percentile": 90,
+    "oi_flush_threshold": -0.015
+  },
+  "reversal_confirmation_long": {
+    "logic": "and",
+    "conditions": [
+      {
+        "lhs": "new_low_count_last_2_bars",
+        "op": "eq",
+        "rhs": 0
+      },
+      {
+        "lhs": "close",
+        "op": "gt",
+        "rhs": "prior_micro_swing_low"
+      },
+      {
+        "lhs": "price_impact_sell",
+        "op": "lt",
+        "rhs": "rolling_price_impact_sell_p40"
+      }
+    ]
+  },
+  "reversal_confirmation_short": {
+    "logic": "and",
+    "conditions": [
+      {
+        "lhs": "new_high_count_last_2_bars",
+        "op": "eq",
+        "rhs": 0
+      },
+      {
+        "lhs": "close",
+        "op": "lt",
+        "rhs": "prior_micro_swing_high"
+      },
+      {
+        "lhs": "price_impact_buy",
+        "op": "lt",
+        "rhs": "rolling_price_impact_buy_p40"
+      }
+    ]
+  },
+  "trend_acceleration_block_long": {
+    "logic": "and",
+    "conditions": [
+      {
+        "lhs": "close",
+        "op": "lt",
+        "rhs": "ema200"
+      },
+      {
+        "lhs": "adx14",
+        "op": "gte",
+        "rhs": 35
+      },
+      {
+        "lhs": "volume_z20",
+        "op": "gte",
+        "rhs": 2.0
+      },
+      {
+        "lhs": "new_low_count_last_3_bars",
+        "op": "gte",
+        "rhs": 2
+      }
+    ]
+  },
+  "trend_acceleration_block_short": {
+    "logic": "and",
+    "conditions": [
+      {
+        "lhs": "close",
+        "op": "gt",
+        "rhs": "ema200"
+      },
+      {
+        "lhs": "adx14",
+        "op": "gte",
+        "rhs": 35
+      },
+      {
+        "lhs": "volume_z20",
+        "op": "gte",
+        "rhs": 2.0
+      },
+      {
+        "lhs": "new_high_count_last_3_bars",
+        "op": "gte",
+        "rhs": 2
+      }
+    ]
+  },
+  "long_entry": {
+    "logic": "and",
+    "conditions": [
+      {
+        "lhs": "rsi14",
+        "op": "lte",
+        "rhs": 25
+      },
+      {
+        "lhs": "funding_percentile_180d",
+        "op": "lte",
+        "rhs": 10
+      },
+      {
+        "lhs": "open_interest_change_1h",
+        "op": "lte",
+        "rhs": -0.015
+      },
+      {
+        "lhs": "reversal_confirmation_long",
+        "op": "eq",
+        "rhs": true
+      },
+      {
+        "lhs": "trend_acceleration_block_long",
+        "op": "eq",
+        "rhs": false
+      },
+      {
+        "lhs": "S6.level",
+        "op": "lte",
+        "rhs": 1
+      },
+      {
+        "lhs": "expected_edge_after_cost_R",
+        "op": "gte",
+        "rhs": 0.15
+      }
+    ]
+  },
+  "short_entry": {
+    "logic": "and",
+    "conditions": [
+      {
+        "lhs": "rsi14",
+        "op": "gte",
+        "rhs": 75
+      },
+      {
+        "lhs": "funding_percentile_180d",
+        "op": "gte",
+        "rhs": 90
+      },
+      {
+        "lhs": "open_interest_change_1h",
+        "op": "lte",
+        "rhs": -0.015
+      },
+      {
+        "lhs": "reversal_confirmation_short",
+        "op": "eq",
+        "rhs": true
+      },
+      {
+        "lhs": "trend_acceleration_block_short",
+        "op": "eq",
+        "rhs": false
+      },
+      {
+        "lhs": "S6.level",
+        "op": "lte",
+        "rhs": 1
+      },
+      {
+        "lhs": "expected_edge_after_cost_R",
+        "op": "gte",
+        "rhs": 0.15
+      }
+    ]
+  },
+  "exit": {
+    "initial_stop_formula": "1.0*atr14 beyond confirmed reversal swing",
+    "partial_tp": [
+      {
+        "at_R": 1.0,
+        "close_fraction": 0.4
+      },
+      {
+        "at_R": 2.0,
+        "close_fraction": 0.4
+      }
+    ],
+    "runner_fraction": 0.2,
+    "trailing_trigger_R": 1.5,
+    "trailing_distance_atr": 1.0,
+    "max_holding_bars": 24
+  },
+  "trade_intent": {
+    "emit_when_entry_rule_passes": true,
+    "initial_status": "WAITING_EXECUTION_CONFIRMATION",
+    "lifecycle_policy_ref": "signal_lifecycle.strategy_policy.S2"
+  }
+}
