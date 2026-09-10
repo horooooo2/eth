@@ -30,6 +30,7 @@ const SYSTEM_EVENT_TYPES = new Set([
   'RECONCILIATION_MATCHED',
   'S9_MARKET_DATA_CONNECTED',
   'S9_MARKET_DATA_DISCONNECTED',
+  'S9_MARKET_DATA_CONNECTING',
   'S9_MARKET_DATA_DEGRADED',
   'S9_MARKET_DATA_READY',
   'S9_FEE_READY',
@@ -235,11 +236,53 @@ function qtyLine(filled, target) {
   return '';
 }
 
+const SYSTEM_HARD_BLOCKERS = new Set([
+  'ACCOUNT_CONTEXT_NOT_READY',
+  'OWNER_NOT_READY',
+  'CREDENTIAL_NOT_FOUND',
+  'ACCOUNT_ENV_NOT_READY',
+  'FEE_API_TIMEOUT',
+  'FEE_API_ERROR',
+  'FEE_RESPONSE_INVALID',
+  'S9_COST_DATA_UNAVAILABLE',
+  'S9_FEE_UNAVAILABLE',
+  'S9_DATA_1M_STALE',
+  'S9_DATA_5M_STALE',
+  'S9_MARKET_DATA_DISCONNECTED',
+  'S9_MARKET_DATA_CONNECTING',
+  'S9_MARKET_DATA_DEGRADED',
+  'MARKET_DATA_STALE',
+  'MARKET_DATA_WARMING_UP',
+  'S9_ORDERBOOK_STALE',
+  'S9_TRADES_STALE',
+  'S9_DATA_DEGRADED',
+  'STARTUP_RECOVERY_FAILED',
+  'EXECUTION_RECOVERY_FAILED',
+  'EXECUTION_RECOVERY_PENDING',
+  'RECONCILIATION_NOT_MATCHED',
+  'RECONCILIATION_MISMATCH',
+  'S9_IMPLEMENTATION_NOT_READY',
+  'S9_DEMO_PREFLIGHT_NOT_READY',
+  'ENGINE_OWNER_NOT_BOUND',
+  'ALPHA_EXECUTION_USER_NOT_READY',
+]);
+
+function formatNoTradeMessage(name, sym, codes) {
+  const reasons = codes.map((c) => reasonZh(c));
+  const reasonBlock = reasons.length ? `原因：\n${reasons.join('；\n')}` : '';
+  if (codes.some((c) => SYSTEM_HARD_BLOCKERS.has(c))) {
+    return reasonBlock ? `系统尚未具备交易条件\n${reasonBlock}` : '系统尚未具备交易条件';
+  }
+  const head = [name || '策略', sym, '本轮不交易'].filter(Boolean).join(' · ');
+  return reasonBlock ? `${head}\n${reasonBlock}` : head;
+}
+
 function formatUserMessage(event) {
   const et = norm(event.event_type).toUpperCase();
   const name = strategyNameZh(event.strategy_id);
   const sym = displaySymbol(event.symbol);
-  const reasons = reasonCodes(event).map((c) => reasonZh(c));
+  const codes = reasonCodes(event);
+  const reasons = codes.map((c) => reasonZh(c));
   const reasonBlock = reasons.length ? `原因：\n${reasons.join('；\n')}` : '';
   const fill = filledQty(event);
   const target = pickQty(event, TARGET_KEYS);
@@ -248,8 +291,7 @@ function formatUserMessage(event) {
   const covered = pickQty(event, ['covered_contracts', 'sz', 'owned_contracts']);
 
   if (et === 'STRATEGY_NO_TRADE' || et === 'S9_NO_TRADE') {
-    const head = [name || '策略', sym, '本轮不交易'].filter(Boolean).join(' · ');
-    return reasonBlock ? `${head}\n${reasonBlock}` : head;
+    return formatNoTradeMessage(name, sym, codes);
   }
   if (et === 'ORDER_SUBMITTED') {
     return reduce ? '平仓订单已提交，等待成交' : '开仓订单已提交，等待成交';

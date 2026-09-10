@@ -19,6 +19,12 @@ test('node capabilities are registered without deploy paths', () => {
   assert.doesNotMatch(readinessSrc, /_backend_file/);
 });
 
+test('sync-deploy pack list includes S9 capability modules', () => {
+  const src = fs.readFileSync(path.join(__dirname, '../scripts/sync-deploy.js'), 'utf8');
+  assert.match(src, /lib\/s9Capabilities\.js/);
+  assert.match(src, /lib\/s9ReadinessOverlay\.js/);
+});
+
 test('recovery overlay flips preflight without touching implementation', () => {
   const bundle = overlayS9RuntimeReadiness(
     {

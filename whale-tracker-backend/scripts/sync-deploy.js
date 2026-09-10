@@ -55,6 +55,8 @@ const FILES = [
   'lib/v41DemoExecuteV1.js',
   'lib/v41S9Demo.js',
   'lib/v41S9Fee.js',
+  'lib/s9Capabilities.js',
+  'lib/s9ReadinessOverlay.js',
   'lib/v41ProtectiveStop.js',
   'lib/v41StartupRecovery.js',
   'lib/v41AlphaLiveGate.js',
@@ -105,6 +107,38 @@ for (const name of ['whales.json', 'whales-stable.json', 'whales-hf.json']) {
     copyFile(src, path.join(deployRoot, 'config', name));
     n += 1;
   }
+}
+
+function collectLocalRequires(abs) {
+  const text = fs.readFileSync(abs, 'utf8');
+  const re = /require\(['"](\.\.?\/[^'"]+)['"]\)/g;
+  const out = [];
+  let match;
+  while ((match = re.exec(text))) out.push(match[1]);
+  return out;
+}
+
+function resolveLocal(fromAbs, spec) {
+  const base = path.resolve(path.dirname(fromAbs), spec);
+  return [base, `${base}.js`, `${base}.json`, path.join(base, 'index.js')].find((candidate) =>
+    fs.existsSync(candidate),
+  );
+}
+
+const unresolved = [];
+for (const rel of FILES) {
+  if (!rel.endsWith('.js')) continue;
+  const dest = path.join(deployRoot, rel);
+  if (!fs.existsSync(dest)) continue;
+  for (const spec of collectLocalRequires(dest)) {
+    if (resolveLocal(dest, spec)) continue;
+    unresolved.push(`${rel} -> ${spec}`);
+  }
+}
+if (unresolved.length) {
+  console.error('[sync-deploy] packed JS requires missing local modules:');
+  for (const row of unresolved) console.error(`  ${row}`);
+  process.exit(2);
 }
 
 console.log(`[sync-deploy] copied ${n} files → ${deployRoot} (missing ${missing})`);

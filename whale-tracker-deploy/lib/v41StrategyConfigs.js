@@ -677,11 +677,13 @@ async function getConfig(rawId, options = {}) {
       : null,
     s9_readiness:
       id === 'S9'
-        ? runtime.s9_readiness || {
-            S9_IMPLEMENTATION_READINESS: runtime.S9_IMPLEMENTATION_READINESS,
-            S9_DEMO_PREFLIGHT_READINESS: runtime.S9_DEMO_PREFLIGHT_READINESS,
-            S9_DEMO_VALIDATION_STATUS: 'UNVERIFIED',
-          }
+        ? require('./s9ReadinessOverlay').overlayS9RuntimeReadiness(
+            runtime.s9_readiness || {
+              S9_IMPLEMENTATION_READINESS: runtime.S9_IMPLEMENTATION_READINESS,
+              S9_DEMO_PREFLIGHT_READINESS: runtime.S9_DEMO_PREFLIGHT_READINESS,
+              S9_DEMO_VALIDATION_STATUS: 'UNVERIFIED',
+            },
+          )
         : undefined,
   };
 }
