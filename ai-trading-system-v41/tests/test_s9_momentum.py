@@ -266,6 +266,13 @@ def test_s9_readiness_live_stays_false():
     demo = s9_demo_readiness()
     cfg = _cfg()
     assert cfg["live_allowed"] is False
+    from src.runtime.s9_readiness import s9_demo_validation_status, CORE_EXECUTE_READINESS, DEMO_EXECUTE_V1_READINESS
+    from src.runtime.demo_execute_v1 import DEMO_EXECUTE_V1_ALLOWED
+
+    assert CORE_EXECUTE_READINESS == "READY"
+    assert DEMO_EXECUTE_V1_READINESS == "READY"
+    assert DEMO_EXECUTE_V1_ALLOWED["S9"] is False
+    assert s9_demo_validation_status()["status"] == "UNVERIFIED"
     if not impl["ready"]:
         assert demo["status"] == "NOT_READY"
 

@@ -1,29 +1,5 @@
 import type { WhaleAiEngineEvent } from '@/api';
 
-const POSITION_TYPES = new Set([
-  'STRATEGY_SELECTED',
-  'STRATEGY_DECISION',
-  'STRATEGY_NO_TRADE',
-  'STRATEGY_CANDIDATE',
-  'TRADE_INTENT_CREATED',
-  'ORDER_INTENT_CREATED',
-  'ORDER_SUBMITTED',
-  'ORDER_PARTIALLY_FILLED',
-  'ORDER_FILLED',
-  'ORDER_CANCEL_REQUESTED',
-  'ORDER_CANCELLED',
-  'ORDER_CANCEL_FAILED',
-  'ORDER_REJECTED',
-  'PROTECTIVE_STOP_SUBMITTED',
-  'PROTECTIVE_STOP_ACTIVE',
-  'PROTECTIVE_STOP_AMENDED',
-  'PROTECTIVE_STOP_CANCELLED',
-  'PROTECTIVE_STOP_FAILED',
-  'POSITION_OPENED',
-  'POSITION_REDUCED',
-  'POSITION_CLOSED',
-]);
-
 const BUS_TO_TYPE: Record<string, string> = {
   'engine.status:RUNNING': 'ENGINE_START',
   'engine.status:PAUSED': 'ENGINE_PAUSE',
@@ -62,9 +38,7 @@ const ORDER_STATUS: Record<string, string> = {
   GATEWAY_ERROR: 'ORDER_REJECTED',
 };
 
-export function isPositionEvent(eventType: string) {
-  return POSITION_TYPES.has(eventType);
-}
+export { isPositionEvent } from '@/utils/eventLogDisplay';
 
 export function severityToLvl(severity?: string): 'info' | 'success' | 'warn' | 'error' {
   const s = String(severity || 'info').toLowerCase();

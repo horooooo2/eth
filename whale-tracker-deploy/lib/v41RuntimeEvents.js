@@ -4,6 +4,7 @@
  */
 const crypto = require('crypto');
 const { getDb } = require('./db');
+const eventLogDisplay = require('./eventLogDisplay');
 
 const SECRET_KEYS = new Set([
   'api_secret',
@@ -27,7 +28,7 @@ const SECRET_KEYS = new Set([
   'private_key',
 ]);
 
-const DEDUPE_TYPES = new Set(['STRATEGY_NO_TRADE']);
+const DEDUPE_TYPES = new Set(['STRATEGY_NO_TRADE', 'S9_NO_TRADE']);
 
 const ORDER_STATUS_TYPE = {
   SUBMITTED: 'ORDER_SUBMITTED',
@@ -156,7 +157,7 @@ function reasonSignature(codes) {
 function noTradeKey(row) {
   return [
     norm(row.strategy_id).toUpperCase(),
-    norm(row.symbol).toUpperCase(),
+    (eventLogDisplay.canonicalInstrumentId(row.symbol) || norm(row.symbol)).toUpperCase(),
     norm(row.source_closed_candle_timestamp),
     norm(row.decision || 'NO_TRADE').toUpperCase(),
     reasonSignature(row.reason_codes),
@@ -269,7 +270,7 @@ function normalizeRow(input, options = {}) {
     event_type: eventType,
     severity: norm(input.severity) || 'info',
     strategy_id: norm(input.strategy_id),
-    symbol: norm(input.symbol),
+    symbol: eventLogDisplay.canonicalInstrumentId(input.symbol) || norm(input.symbol),
     direction: norm(input.direction),
     decision: norm(input.decision),
     reason_code: codes[0] || norm(input.reason_code),
@@ -279,11 +280,12 @@ function normalizeRow(input, options = {}) {
     order_intent_id: norm(input.order_intent_id),
     position_id: norm(input.position_id),
     signal_key: norm(input.signal_key),
-    message: norm(input.message) || `${eventType} · ${norm(input.strategy_id) || '—'} · ${norm(input.symbol) || '—'}`,
+    message: '',
     details: redactSecrets(input.details && typeof input.details === 'object' ? input.details : {}),
     reason_signature: reasonSignature(codes),
     no_trade_key: '',
   };
+  row.message = norm(input.message) || eventLogDisplay.formatUserMessage(row);
   if (DEDUPE_TYPES.has(eventType)) {
     row.no_trade_key = noTradeKey(row);
   }
@@ -386,6 +388,12 @@ function list(filters = {}, database) {
 
 function logicalKey(event) {
   const type = norm(event && event.event_type);
+  if (DEDUPE_TYPES.has(type)) {
+    if (!norm(event && event.strategy_id) || !norm(event && event.source_closed_candle_timestamp)) {
+      return '';
+    }
+    return noTradeKey(event);
+  }
   const oid = norm(event && event.order_intent_id);
   // Semantic fingerprint for Python/Node dual-write of the SAME fill fact.
   // Never collapse PARTIAL 4 vs PARTIAL 7, or type+oid alone.
@@ -478,7 +486,6 @@ function recordGatewayReport(report, database) {
       order_intent_id: report.order_intent_id,
       position_id: report.position_id,
       signal_key: report.signal_key,
-      message: `${eventType} · ${report.order_intent_id || ''} · ${status}`,
       details: {
         status,
         execution_state: status,
@@ -507,7 +514,6 @@ function recordGatewayReport(report, database) {
         symbol: report.symbol || report.instId,
         order_intent_id: report.order_intent_id,
         position_id: stop.position_id || report.position_id,
-        message: `${stopType} · ${stop.code || stopStatus || ''}`,
         details: {
           status: stopStatus,
           code: stop.code,
@@ -538,7 +544,6 @@ function recordRecovery(status, extra = {}, database) {
     severity: eventType === 'STARTUP_RECOVERY_FAILED' ? 'error' : 'info',
     reason_code: extra.reason || extra.code,
     reason_codes: extra.reason ? [extra.reason] : [],
-    message: `${eventType}${extra.reason ? ` · ${extra.reason}` : ''}`,
     details: redactSecrets(extra),
   }, database);
 }
@@ -551,7 +556,9 @@ function recordReconciliation(matched, extra = {}, database) {
     event_type: eventType,
     severity: matched ? 'info' : 'warn',
     reason_code: extra.reason_code || extra.reason,
-    message: `${eventType}${extra.reason_code ? ` · ${extra.reason_code}` : ''}`,
+    position_id: extra.position_id,
+    strategy_id: extra.strategy_id,
+    symbol: extra.symbol,
     details: redactSecrets(extra),
   }, database);
 }

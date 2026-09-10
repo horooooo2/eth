@@ -579,6 +579,7 @@ async function readRuntimeView(deps, id) {
       effective_config_hash: data.effective_config_hash || (effective != null ? configHash(effective) : null),
       config_path: data.config_path || null,
       source_kind: data.source_kind || null,
+      s9_readiness: data.s9_readiness || null,
     };
   } catch {
     return { online: false, state: 'OFFLINE', active_strategy: null, effective_config: null, effective_config_hash: null };
@@ -674,6 +675,14 @@ async function getConfig(rawId, options = {}) {
     error: invalid
       ? pack.error || { code: 'CONFIG_INVALID', message: `missing ${entry.config_rel}` }
       : null,
+    s9_readiness:
+      id === 'S9'
+        ? runtime.s9_readiness || {
+            S9_IMPLEMENTATION_READINESS: runtime.S9_IMPLEMENTATION_READINESS,
+            S9_DEMO_PREFLIGHT_READINESS: runtime.S9_DEMO_PREFLIGHT_READINESS,
+            S9_DEMO_VALIDATION_STATUS: 'UNVERIFIED',
+          }
+        : undefined,
   };
 }
 

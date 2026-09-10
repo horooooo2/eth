@@ -1,8 +1,16 @@
 <script setup lang="ts">
 import { ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { Close } from '@element-plus/icons-vue';
 import { lookupMarketCoin } from '@/api';
+import { isLoggedIn } from '@/stores/auth';
+import {
+  bindWhaleAiKey,
+  refreshWhaleAiKeyStatus,
+  unbindWhaleAiKey,
+  whaleAiKeyHint,
+  whaleAiKeyReady,
+} from '@/stores/whaleAi';
 import {
   MAX_PREFERRED_COINS,
   readWatchedCoins,
@@ -22,6 +30,9 @@ const saving = ref(false);
 const prefAddSymbol = ref('');
 const prefAddLoading = ref(false);
 const draftCoins = ref<string[]>([]);
+const apiKeyInput = ref('');
+const savingKeys = ref(false);
+const clearingKeys = ref(false);
 
 function normalizeInput(raw: string) {
   return raw
@@ -36,11 +47,13 @@ function normalizeInput(raw: string) {
 function resetDraft() {
   draftCoins.value = [...readWatchedCoins()];
   prefAddSymbol.value = '';
+  apiKeyInput.value = '';
 }
 
 function openPrefs() {
   resetDraft();
   prefsVisible.value = true;
+  if (isLoggedIn.value) void refreshWhaleAiKeyStatus(true);
 }
 
 function closePrefs() {
@@ -83,6 +96,50 @@ function removeDraftCoin(id: string) {
   draftCoins.value = draftCoins.value.filter((item) => item !== id);
 }
 
+async function submitDeepseekKey() {
+  const apiKey = apiKeyInput.value.trim();
+  if (!apiKey) {
+    ElMessage.warning('请填写 DeepSeek 密钥');
+    return false;
+  }
+  if (savingKeys.value) return false;
+  savingKeys.value = true;
+  try {
+    const data = await bindWhaleAiKey(apiKey);
+    apiKeyInput.value = '';
+    if (data.warn) ElMessage.warning(data.warn);
+    else ElMessage.success('DeepSeek 密钥已保存');
+    return true;
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '保存失败');
+    return false;
+  } finally {
+    savingKeys.value = false;
+  }
+}
+
+async function clearDeepseekKey() {
+  try {
+    await ElMessageBox.confirm('将清除 DeepSeek 密钥。', '清除密钥', {
+      type: 'warning',
+      confirmButtonText: '确认清除',
+      cancelButtonText: '取消',
+    });
+  } catch {
+    return;
+  }
+  clearingKeys.value = true;
+  try {
+    await unbindWhaleAiKey();
+    apiKeyInput.value = '';
+    ElMessage.success('已清除 DeepSeek 密钥');
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '清除失败');
+  } finally {
+    clearingKeys.value = false;
+  }
+}
+
 async function confirmPrefs() {
   if (saving.value) return;
   if (!draftCoins.value.length) {
@@ -91,6 +148,10 @@ async function confirmPrefs() {
   }
   saving.value = true;
   try {
+    if (apiKeyInput.value.trim()) {
+      const ok = await submitDeepseekKey();
+      if (!ok) return;
+    }
     writePreferredCoins(draftCoins.value);
     prefsVisible.value = false;
     emit('change');
@@ -166,6 +227,44 @@ async function confirmPrefs() {
               {{ prefAddLoading ? '…' : '添加' }}
             </button>
           </div>
+        </section>
+
+        <section class="setting-block">
+          <h4 class="block-title">DeepSeek API</h4>
+          <p class="intro">用于新闻与推文智能分析。不配置也可以进入鲸鱼 AI 交易舱。</p>
+          <template v-if="isLoggedIn">
+            <el-input
+              v-model="apiKeyInput"
+              type="password"
+              show-password
+              size="large"
+              autocomplete="new-password"
+              placeholder="sk-…"
+            />
+            <p class="intro">
+              {{ whaleAiKeyHint ? `当前密钥：${whaleAiKeyHint}` : '尚未配置' }}
+            </p>
+            <div class="pref-add key-actions">
+              <button
+                v-if="whaleAiKeyReady"
+                type="button"
+                class="dlg-btn ghost"
+                :disabled="savingKeys || clearingKeys"
+                @click="clearDeepseekKey"
+              >
+                {{ clearingKeys ? '…' : '清除' }}
+              </button>
+              <button
+                type="button"
+                class="dlg-btn primary"
+                :disabled="savingKeys || clearingKeys"
+                @click="submitDeepseekKey"
+              >
+                {{ savingKeys ? '保存中…' : '保存' }}
+              </button>
+            </div>
+          </template>
+          <p v-else class="intro">登录后可在此配置 DeepSeek 密钥。</p>
         </section>
       </div>
 
@@ -304,6 +403,9 @@ async function confirmPrefs() {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+.key-actions {
+  justify-content: flex-end;
 }
 .dialog-footer {
   display: flex;

@@ -166,7 +166,7 @@ def get_strategy_config(runtime: Any, config_id: str) -> Optional[Dict[str, Any]
         hashed = config_hash(redact_secrets(strip_wrapper(redacted) if isinstance(redacted, Mapping) else redacted))
         if sid == "S8":
             hashed = config_hash(redacted)
-    return {
+    out = {
         "id": sid,
         "online": state not in ("", "OFFLINE"),
         "state": state,
@@ -179,6 +179,15 @@ def get_strategy_config(runtime: Any, config_id: str) -> Optional[Dict[str, Any]
         "live_allowed": bool(strategy_live_allowed(sid)),
         "live_permission": live_trading_enabled(),
     }
+    if sid == "S9":
+        try:
+            from src.runtime.s9_readiness import s9_status_bundle
+
+            rt_status = getattr(runtime, "s9_status", None)
+            out["s9_readiness"] = rt_status() if callable(rt_status) else s9_status_bundle()
+        except Exception:
+            out["s9_readiness"] = None
+    return out
 
 
 # Re-export for tests that imported canonicalize from this module historically.

@@ -398,6 +398,12 @@ class S9MomentumStrategy:
             return []
         stamp = str(closed_1m.index[-1])
         if self._last_eval_1m == stamp:
+            context["s9"] = {
+                "decision": "NO_TRADE",
+                "reason_codes": ["S9_SIGNAL_ALREADY_USED"],
+                "signal_key": self._last_signal_key,
+                "diagnostics": {"source_1m_candle_timestamp": stamp, "repeat_evaluation": False},
+            }
             return []
         self._last_eval_1m = stamp
         result = evaluate_entry(

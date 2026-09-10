@@ -279,3 +279,79 @@ test('protective stop and recovery events persist', () => {
   assert.ok(types.includes('RECONCILIATION_MISMATCH'));
   assert.ok(types.includes('PROTECTIVE_STOP_ACTIVE'));
 });
+
+test('NO_TRADE BTC aliases persist and merge as one event', () => {
+  const db = memoryDb();
+  const candle = '2026-09-10T04:00:00Z';
+  const reasons = ['CLOSE_VS_EMA20', 'S3_DIRECTION_BLOCK'];
+  const first = put({
+    event_id: 'alias-a',
+    event_type: 'STRATEGY_NO_TRADE',
+    strategy_id: 'S1',
+    symbol: 'BTC/USDT:USDT',
+    decision: 'NO_TRADE',
+    reason_codes: reasons,
+    source_closed_candle_timestamp: candle,
+  }, db);
+  const second = put({
+    event_id: 'alias-b',
+    event_type: 'STRATEGY_NO_TRADE',
+    strategy_id: 'S1',
+    symbol: 'BTC-USDT-SWAP',
+    decision: 'NO_TRADE',
+    reason_codes: reasons,
+    source_closed_candle_timestamp: candle,
+  }, db);
+  assert.ok(first);
+  assert.equal(second, null);
+  const rows = ev.list({ event_type: 'STRATEGY_NO_TRADE' }, db);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].symbol, 'BTC-USDT-SWAP');
+
+  const otherCandle = put({
+    event_id: 'alias-c',
+    event_type: 'STRATEGY_NO_TRADE',
+    strategy_id: 'S1',
+    symbol: 'BTC/USDT:USDT',
+    decision: 'NO_TRADE',
+    reason_codes: reasons,
+    source_closed_candle_timestamp: '2026-09-10T05:00:00Z',
+  }, db);
+  const otherReason = put({
+    event_id: 'alias-d',
+    event_type: 'STRATEGY_NO_TRADE',
+    strategy_id: 'S1',
+    symbol: 'BTC-USDT-SWAP',
+    decision: 'NO_TRADE',
+    reason_codes: ['TREND_SLOPE'],
+    source_closed_candle_timestamp: candle,
+  }, db);
+  assert.ok(otherCandle);
+  assert.ok(otherReason);
+  assert.equal(ev.list({ event_type: 'STRATEGY_NO_TRADE' }, db).length, 3);
+
+  const merged = ev.mergeEvents(
+    [{
+      event_id: 'py_alias',
+      occurred_at: '2026-09-10T04:00:01Z',
+      event_type: 'STRATEGY_NO_TRADE',
+      strategy_id: 'S1',
+      symbol: 'BTC/USDT:USDT',
+      decision: 'NO_TRADE',
+      reason_codes: reasons,
+      source_closed_candle_timestamp: candle,
+    }],
+    [{
+      event_id: 'node_alias',
+      occurred_at: '2026-09-10T04:00:06Z',
+      event_type: 'STRATEGY_NO_TRADE',
+      strategy_id: 'S1',
+      symbol: 'BTC-USDT-SWAP',
+      decision: 'NO_TRADE',
+      reason_codes: reasons,
+      source_closed_candle_timestamp: candle,
+    }],
+    { limit: 200 },
+  );
+  assert.equal(merged.length, 1);
+});

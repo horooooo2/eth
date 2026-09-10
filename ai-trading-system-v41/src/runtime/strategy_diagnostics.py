@@ -119,9 +119,12 @@ class StrategyDiagnostics:
         return ev
 
     def _maybe_queue_log_event(self) -> None:
+        from src.runtime.event_log_display import canonical_instrument_id
+
         reason = ",".join(sorted({str(c).strip() for c in self.last_reason_codes if str(c).strip()}))
+        symbol = canonical_instrument_id(self.last_symbol) or str(self.last_symbol or "")
         key = (
-            f"{self.strategy_id}|{self.last_symbol}|{self.last_closed_candle}|"
+            f"{self.strategy_id}|{symbol}|{self.last_closed_candle}|"
             f"{self.last_decision}|{reason}"
         )
         now = datetime.now(timezone.utc)

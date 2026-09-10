@@ -80,6 +80,12 @@ export type StrategyConfigDetail = {
   entry_summary_zh?: string;
   risk_summary_zh?: string;
   exit_summary_zh?: string;
+  s9_readiness?: {
+    S9_IMPLEMENTATION_READINESS?: string;
+    S9_DEMO_PREFLIGHT_READINESS?: string;
+    S9_DEMO_VALIDATION_STATUS?: string;
+    [key: string]: unknown;
+  };
   [key: string]: unknown;
 };
 
@@ -271,6 +277,12 @@ export function renderSummary(detail: StrategyConfigDetail | null) {
   if (entryZh) parts.push(renderTree('入场', entryZh));
   if (riskZh) parts.push(renderTree('风险', riskZh));
   if (exitZh) parts.push(renderTree('退出', exitZh));
+  const s9r = detail.s9_readiness || {};
+  if (detail.id === 'S9') {
+    parts.push(renderTree('S9_IMPLEMENTATION_READINESS', s9r.S9_IMPLEMENTATION_READINESS || '—'));
+    parts.push(renderTree('S9_DEMO_PREFLIGHT_READINESS', s9r.S9_DEMO_PREFLIGHT_READINESS || '—'));
+    parts.push(renderTree('S9_DEMO_VALIDATION_STATUS', s9r.S9_DEMO_VALIDATION_STATUS || 'UNVERIFIED'));
+  }
   if (detail.id === 'S8' || rel.implemented === false) {
     parts.unshift(`<div class="err-panel warn-panel">
         <div class="err-code">研究中 / 尚未实现</div>

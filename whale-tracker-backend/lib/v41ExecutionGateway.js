@@ -26,6 +26,7 @@ const executeDeps = {
   readiness: executeReady,
   getOrder: (...a) => okxTrade.getOrder(...a),
   getPublicInstrument: (...a) => okxTrade.getPublicInstrument(...a),
+  getPublicBooks5: (...a) => okxTrade.getPublicBooks5(...a),
   getLeverageInfo: (...a) => okxTrade.getLeverageInfo(...a),
   getAccountPositions: (...a) => okxTrade.getAccountPositions(...a),
   getAlgoOrder: (...a) => okxTrade.getAlgoOrder(...a),
@@ -77,6 +78,25 @@ function persistRuntimeEventSafe(report) {
     runtimeEvents.recordGatewayReport(report);
   } catch (err) {
     console.warn('[V41_RUNTIME_EVENT_PERSIST_FAILED]', err && err.message ? err.message : err);
+  }
+}
+
+function persistS9PreSubmit(eventType, orderIntent, extra = {}) {
+  try {
+    runtimeEvents.append({
+      event_type: eventType,
+      strategy_id: 'S9',
+      symbol: orderIntent.symbol || extra.instId,
+      order_intent_id: orderIntent.order_intent_id,
+      trade_intent_id: orderIntent.trade_intent_id,
+      reason_code: extra.reason_code,
+      reason_codes: extra.reason_code ? [extra.reason_code] : [],
+      decision: eventType === 'S9_PRESUBMIT_PASSED' ? 'ALLOW' : 'BLOCK',
+      message: extra.message,
+      details: extra.details || {},
+    });
+  } catch (err) {
+    console.warn('[V41_S9_PRESUBMIT_EVENT_FAILED]', err && err.message ? err.message : err);
   }
 }
 const axios = require('axios');
@@ -745,13 +765,93 @@ async function executeOrderIntent(orderIntent, auth = {}) {
           actualLeverage,
           leverageCap: executeDeps.leverageCap || s9Demo.S9_LEVERAGE_CAP,
         });
-        s9Demo.assertS9PreSubmit(orderIntent, {
-          bid: executeDeps.bid,
-          ask: executeDeps.ask,
-          bids: executeDeps.bids,
-          asks: executeDeps.asks,
-          final_okx_sz: executeDeps.finalOkxSz,
-        });
+        let impl = executeDeps.s9ImplementationReadiness;
+        let pre = executeDeps.s9DemoPreflightReadiness;
+        if (!impl || !pre) {
+          try {
+            const h = await v41.health();
+            const bundle = h.s9_readiness && typeof h.s9_readiness === 'object' ? h.s9_readiness : h;
+            impl = impl || bundle.S9_IMPLEMENTATION_READINESS;
+            pre = pre || bundle.S9_DEMO_PREFLIGHT_READINESS;
+          } catch (healthErr) {
+            const err = new Error(healthErr.message || 'engine health unavailable for S9 gate');
+            err.code = healthErr.code || 'S9_DEMO_PREFLIGHT_NOT_READY';
+            err.status = 403;
+            persistS9PreSubmit('S9_PRESUBMIT_REJECTED', orderIntent, {
+              reason_code: err.code,
+              instId,
+            });
+            throw err;
+          }
+        }
+        try {
+          s9Demo.assertS9ExecutionGate({
+            implementationReadiness: impl || 'NOT_READY',
+            preflightReadiness: pre || 'NOT_READY',
+          });
+        } catch (gateErr) {
+          persistS9PreSubmit('S9_PRESUBMIT_REJECTED', orderIntent, {
+            reason_code: gateErr.code || 'S9_PRESUBMIT_REJECTED',
+            instId,
+          });
+          throw gateErr;
+        }
+        const convertedEarly = executeDeps.readiness.convertBaseToOkxSz(
+          { ...orderIntent, symbol: instId },
+          spec,
+        );
+        const fetchBook =
+          typeof executeDeps.getPublicBooks5 === 'function'
+            ? executeDeps.getPublicBooks5
+            : (...a) => okxTrade.getPublicBooks5(...a);
+        let book;
+        try {
+          book = await fetchBook(instId);
+        } catch (bookErr) {
+          const err = new Error(bookErr.message || 'S9 orderbook unavailable');
+          err.code = 'S9_ORDERBOOK_STALE';
+          err.status = 403;
+          persistS9PreSubmit('S9_PRESUBMIT_REJECTED', orderIntent, {
+            reason_code: 'S9_ORDERBOOK_STALE',
+            instId,
+            details: { error: bookErr.message },
+          });
+          throw err;
+        }
+        if (!book || !(Number(book.best_bid) > 0) || !(Number(book.best_ask) > 0)) {
+          const err = new Error('S9 orderbook unavailable');
+          err.code = 'S9_ORDERBOOK_STALE';
+          err.status = 403;
+          persistS9PreSubmit('S9_PRESUBMIT_REJECTED', orderIntent, {
+            reason_code: 'S9_ORDERBOOK_STALE',
+            instId,
+          });
+          throw err;
+        }
+        try {
+          s9Demo.assertS9PreSubmit(orderIntent, {
+            bid: book.best_bid,
+            ask: book.best_ask,
+            bids: book.bids,
+            asks: book.asks,
+            final_okx_sz: Number(convertedEarly.final_okx_sz || convertedEarly.contracts),
+            book_ts: book.timestamp,
+            ctVal: convertedEarly.ctVal,
+            planned_risk: orderIntent.risk_amount_quote || orderIntent.risk_snapshot?.risk_amount_quote,
+            stop_price: orderIntent.stop_price,
+          });
+          persistS9PreSubmit('S9_PRESUBMIT_PASSED', orderIntent, {
+            instId,
+            details: { final_okx_sz: convertedEarly.final_okx_sz },
+          });
+        } catch (preErr) {
+          persistS9PreSubmit('S9_PRESUBMIT_REJECTED', orderIntent, {
+            reason_code: preErr.code || 'S9_PRESUBMIT_REJECTED',
+            instId,
+            details: preErr.details || {},
+          });
+          throw preErr;
+        }
       } else {
         await demoV1.assertDemoV1Opening(orderIntent, {
           instId,

@@ -10,6 +10,7 @@ const { getOkxCredentialsForUser } = require('../lib/userExchangeKeys');
 const alphaGate = require('../lib/v41AlphaLiveGate');
 const userBinding = require('../lib/v41UserBinding');
 const runtimeEvents = require('../lib/v41RuntimeEvents');
+const eventLogDisplay = require('../lib/eventLogDisplay');
 
 async function bindSessionUser(req) {
   const userId = String(req.user?.user?.id || '').trim();
@@ -315,6 +316,33 @@ router.post('/system/resume', async (req, res) => {
     res.json(result);
   } catch (err) {
     sendErr(res, err);
+  }
+});
+
+/** Python → Node read-only OKX taker fee for trusted engine owner. Never trusts query/body user_id. */
+router.get('/internal/okx-trade-fee', async (req, res) => {
+  const token = String(req.headers['x-engine-token'] || '');
+  const expected = String(process.env.V41_ENGINE_INTERNAL_TOKEN || 'dev-internal-token');
+  if (!token || token !== expected) {
+    return res.status(401).json({ code: 'UNAUTHORIZED', error: 'invalid engine token' });
+  }
+  const queryUser = String(req.query?.user_id || '').trim();
+  try {
+    const { fetchTrustedOwnerTradeFee } = require('../lib/v41S9Fee');
+    const fee = await fetchTrustedOwnerTradeFee({
+      instId: req.query?.instId,
+      queryUserId: queryUser,
+    });
+    return res.json(fee);
+  } catch (err) {
+    const status = Number(err.status) || 503;
+    return res.status(status).json({
+      ok: false,
+      code: err.code || 'S9_COST_DATA_UNAVAILABLE',
+      reason: 'S9_COST_DATA_UNAVAILABLE',
+      error: err.message || 'fee api failed',
+      details: err.details,
+    });
   }
 });
 
@@ -627,7 +655,9 @@ router.get('/events', async (req, res) => {
     pythonError = err.message || 'python events unavailable';
   }
   const node = runtimeEvents.list(filters);
-  const events = runtimeEvents.mergeEvents(python, node, filters);
+  const events = runtimeEvents.mergeEvents(python, node, filters).map((ev) =>
+    eventLogDisplay.annotateEvent(ev),
+  );
   res.json({
     ok: true,
     source: 'SERVER',

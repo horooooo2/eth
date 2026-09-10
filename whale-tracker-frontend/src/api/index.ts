@@ -668,6 +668,9 @@ export type WhaleAiEngineEvent = {
   position_id?: string;
   signal_key?: string;
   message?: string;
+  display_category?: 'POSITION' | 'SYSTEM';
+  display_message?: string;
+  symbol_display?: string;
   details?: Record<string, unknown>;
   source?: string;
 };

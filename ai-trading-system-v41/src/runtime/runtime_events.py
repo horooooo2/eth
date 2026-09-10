@@ -57,6 +57,14 @@ TRADE_EVENT_TYPES = {
     "S9_CANDIDATE",
     "S9_TRADE_INTENT_CREATED",
     "S9_ORDER_INTENT_CREATED",
+    "S9_MARKET_DATA_CONNECTED",
+    "S9_MARKET_DATA_DISCONNECTED",
+    "S9_MARKET_DATA_DEGRADED",
+    "S9_MARKET_DATA_READY",
+    "S9_FEE_READY",
+    "S9_FEE_UNAVAILABLE",
+    "S9_PRESUBMIT_REJECTED",
+    "S9_PRESUBMIT_PASSED",
     "POSITION_OPENED",
     "POSITION_REDUCED",
     "POSITION_CLOSED",
@@ -132,6 +140,12 @@ def reason_signature(codes: Any) -> str:
     return "|".join(normalize_reason_codes(codes))
 
 
+def canonical_instrument_id(symbol: Any) -> str:
+    from src.runtime.event_log_display import canonical_instrument_id as _canonical
+
+    return _canonical(symbol)
+
+
 def no_trade_key(
     *,
     strategy_id: str,
@@ -143,7 +157,7 @@ def no_trade_key(
     return "|".join(
         [
             _norm(strategy_id).upper(),
-            _norm(symbol).upper(),
+            canonical_instrument_id(symbol).upper() or _norm(symbol).upper(),
             _norm(source_closed_candle_timestamp),
             _norm(decision).upper(),
             reason_signature(reason_codes),
@@ -182,19 +196,11 @@ def _severity(event_type: str, decision: str = "") -> str:
 
 
 def _message(event_type: str, row: Dict[str, Any]) -> str:
-    from src.runtime.strategy_display_zh import event_zh, reason_zh, status_zh
+    from src.runtime.event_log_display import format_user_message
 
-    sid = row.get("strategy_id") or "—"
-    sym = row.get("symbol") or "—"
-    decision = status_zh(row.get("decision") or "") or (row.get("decision") or "")
-    codes = normalize_reason_codes(row.get("reason_codes"))
-    extra = "；".join(reason_zh(c) for c in codes) if codes else ""
-    title = event_zh(event_type)
-    if extra:
-        return f"{title} · {sid} · {sym} · {extra}"
-    if decision:
-        return f"{title} · {sid} · {sym} · {decision}"
-    return f"{title} · {sid} · {sym}"
+    payload = dict(row)
+    payload["event_type"] = event_type or payload.get("event_type")
+    return format_user_message(payload)
 
 
 def map_bus_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -294,6 +300,19 @@ def map_bus_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "startup_recovery.ready": "STARTUP_RECOVERY_READY",
             "startup_recovery.failed": "STARTUP_RECOVERY_FAILED",
         }.get(bus_type, "")
+    elif bus_type in {"s9.market", "s9.fee", "s9.presubmit"}:
+        event_type = _norm(payload.get("event_type") or payload.get("code"))
+        if event_type not in {
+            "S9_MARKET_DATA_CONNECTED",
+            "S9_MARKET_DATA_DISCONNECTED",
+            "S9_MARKET_DATA_DEGRADED",
+            "S9_MARKET_DATA_READY",
+            "S9_FEE_READY",
+            "S9_FEE_UNAVAILABLE",
+            "S9_PRESUBMIT_REJECTED",
+            "S9_PRESUBMIT_PASSED",
+        }:
+            return None
     else:
         return None
 
@@ -322,7 +341,8 @@ def map_bus_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             or payload.get("active_strategy_id")
             or payload.get("new_strategy_id")
         ),
-        "symbol": _norm(payload.get("symbol") or payload.get("instId")),
+        "symbol": canonical_instrument_id(payload.get("symbol") or payload.get("instId"))
+        or _norm(payload.get("symbol") or payload.get("instId")),
         "direction": _norm(payload.get("direction") or payload.get("direction_candidate") or payload.get("side") or payload.get("position_side")),
         "decision": decision,
         "reason_code": codes[0] if codes else _norm(payload.get("reason_code")),
@@ -379,11 +399,12 @@ class RuntimeEventRecorder:
         data["reason_codes"] = normalize_reason_codes(data.get("reason_codes") or data.get("reason_codes_json"))
         data["reason_signature"] = reason_signature(data["reason_codes"])
         data["details"] = redact_secrets(data.get("details") or {})
+        data["symbol"] = canonical_instrument_id(data.get("symbol")) or _norm(data.get("symbol"))
         et = _norm(data.get("event_type"))
-        if et in DEDUPE_EVENT_TYPES and not data.get("no_trade_key"):
+        if et in DEDUPE_EVENT_TYPES:
             data["no_trade_key"] = no_trade_key(
                 strategy_id=_norm(data.get("strategy_id")),
-                symbol=_norm(data.get("symbol")),
+                symbol=data["symbol"],
                 source_closed_candle_timestamp=_norm(data.get("source_closed_candle_timestamp")),
                 decision=_norm(data.get("decision")) or "NO_TRADE",
                 reason_codes=data["reason_codes"],

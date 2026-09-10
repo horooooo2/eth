@@ -179,6 +179,8 @@ class EngineRuntime:
         self.previous_active_strategy_id = self.active_strategy
         self.orchestrator.context["alpha_opening_enabled"] = True
         self.orchestrator.context["console_mode"] = self.console_mode
+        self._s9_ws_started = False
+        self._wire_s9_market()
 
         self._default_micro = {
             "spread_bps": 2.0,
@@ -216,6 +218,7 @@ class EngineRuntime:
                 "tick_interval_sec": self.tick_interval_sec,
                 "alpha_execution": getattr(self, "alpha_execution", ALPHA_SHADOW),
                 "version": getattr(self, "config_version", "4.1"),
+                **self.s9_status(),
             }
         return {
             "ok": True,
@@ -240,7 +243,77 @@ class EngineRuntime:
             "event_sequence": self.bus.sequence,
             "last_evaluated_at": self._active_diag().last_evaluated_at if self._active_diag() else None,
             "evaluation_count": self._active_diag().evaluation_count if self._active_diag() else 0,
+            **self.s9_status(),
         }
+
+    def _wire_s9_market(self) -> None:
+        hub = getattr(self.orchestrator, "s9_hub", None)
+        fee = getattr(self.orchestrator, "s9_fee", None)
+        if fee is not None:
+            fee.node_url = self.node_gateway_url
+            fee.token = self.node_token
+
+        def on_event(event_type: str, details: Dict[str, Any]) -> None:
+            bus_type = "s9.market"
+            if str(event_type).startswith("S9_FEE"):
+                bus_type = "s9.fee"
+            elif str(event_type).startswith("S9_PRESUBMIT"):
+                bus_type = "s9.presubmit"
+            self.bus.emit(bus_type, {"event_type": event_type, **(details or {})})
+
+        if hub is not None:
+            hub.on_event = on_event
+
+    def s9_status(self) -> Dict[str, Any]:
+        from src.runtime.s9_readiness import s9_status_bundle
+
+        orch = self.orchestrator
+        hub = getattr(orch, "s9_hub", None)
+        fee = getattr(orch, "s9_fee", None)
+        fee_ready = bool(fee and fee.snapshot().get("ready"))
+        snap = hub.snapshot(fee_ready=fee_ready) if hub is not None else {}
+        owned = list(getattr(orch, "owned_open_positions", None) or [])
+        ownership_clear = True
+        for pos in owned:
+            if isinstance(pos, dict):
+                qty = float(pos.get("quantity") or pos.get("owned_remaining_base_qty") or 0)
+            else:
+                qty = float(getattr(pos, "quantity", 0) or 0)
+            if abs(qty) > 0:
+                ownership_clear = False
+                break
+        return s9_status_bundle(
+            runtime={
+                "account_environment": "OKX_DEMO",
+                "live_allowed": False,
+                "live_permission": live_trading_enabled(),
+                "trusted_owner_ready": user_id_ready(self.user_id),
+                "user_id_ready": user_id_ready(self.user_id),
+                "s6_level": int((orch.context or {}).get("S6.level") or 0),
+                "reconciliation_status": (orch.context or {}).get("reconciliation_status") or "MATCHED",
+                "ownership_clear": ownership_clear,
+                "data_state": snap.get("data_state"),
+                "fee_ready": fee_ready,
+                "demo_allowed": True,
+            }
+        )
+
+    def _start_s9_public_ws(self) -> None:
+        if self._s9_ws_started:
+            return
+        if os.getenv("PYTEST_CURRENT_TEST"):
+            return
+        if str(os.getenv("V41_S9_PUBLIC_WS", "1")).strip().lower() in {"0", "false", "off"}:
+            return
+        from src.adapters.okx_public_ws import OkxPublicWsClient
+
+        hub = getattr(self.orchestrator, "s9_hub", None)
+        if hub is None:
+            return
+        client = OkxPublicWsClient()
+        hub.attach_client(client)
+        client.start()
+        self._s9_ws_started = True
 
     def _s1_diag(self):
         return (getattr(self.orchestrator, "diagnostics", {}) or {}).get("S1")
@@ -363,6 +436,10 @@ class EngineRuntime:
             self._set_alpha_opening(True)
         self._task = asyncio.create_task(self._loop(), name="v41-engine-loop")
         self.bus.emit("engine.status", {"state": self.state})
+        try:
+            self._start_s9_public_ws()
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = f"s9 public ws: {exc}"
         return {"ok": True, "state": self.state, "alpha_opening_enabled": self.alpha_opening_enabled}
 
     def _interrupt_qa(self) -> None:
@@ -611,6 +688,10 @@ class EngineRuntime:
         exec_block = dict(snap.get("execution") or {})
         exec_block.update(self._execution_snapshot(exec_block.get("last_orders")))
         snap["execution"] = exec_block
+        try:
+            snap["s9_readiness"] = self.s9_status()
+        except Exception:
+            snap["s9_readiness"] = None
         return snap
 
     def list_execution_selections(self) -> Dict[str, Any]:
@@ -1403,27 +1484,13 @@ class EngineRuntime:
                 )
                 for sid, diag in (getattr(self.orchestrator, "diagnostics", {}) or {}).items():
                     ev = diag.consume_log_event()
-                    if ev:
-                        ev["symbol"] = ev.get("symbol") or symbol
-                        ev["source_closed_candle_timestamp"] = (
-                            ev.get("source_closed_candle_timestamp") or candle
-                        )
-                        self.bus.emit("strategy.decision", ev)
-                    elif getattr(diag, "last_evaluated_at", None):
-                        self.event_recorder.persist_bus_event(
-                            {
-                                "type": "strategy.decision",
-                                "timestamp": diag.last_evaluated_at,
-                                "payload": {
-                                    "strategy_id": sid,
-                                    "symbol": symbol,
-                                    "direction": getattr(diag, "last_direction", ""),
-                                    "decision": getattr(diag, "last_decision", "NO_TRADE"),
-                                    "reason_codes": list(getattr(diag, "last_reason_codes", []) or []),
-                                    "source_closed_candle_timestamp": candle,
-                                },
-                            }
-                        )
+                    if not ev:
+                        continue
+                    ev["symbol"] = ev.get("symbol") or symbol
+                    ev["source_closed_candle_timestamp"] = (
+                        ev.get("source_closed_candle_timestamp") or candle
+                    )
+                    self.bus.emit("strategy.decision", ev)
                 snap = self.snapshot()
                 self._persist_and_emit(snap)
             except Exception as err:  # noqa: BLE001
@@ -1443,6 +1510,13 @@ class EngineRuntime:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        hub = getattr(self.orchestrator, "s9_hub", None)
+        if hub is not None and getattr(hub, "client", None) is not None:
+            try:
+                await hub.client.stop()
+            except Exception:
+                pass
+        self._s9_ws_started = False
         try:
             self.store.close()
         except Exception:

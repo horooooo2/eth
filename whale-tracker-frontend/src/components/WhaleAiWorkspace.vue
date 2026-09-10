@@ -3,7 +3,6 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { isLoggedIn } from '@/stores/auth';
 import {
-  bindWhaleAiKey,
   bindWhaleAiTradeKeys,
   fetchEngineDashboard,
   pauseEngine,
@@ -11,7 +10,6 @@ import {
   refreshWhaleAiTradeStatus,
   resumeEngine,
   startEngine,
-  unbindWhaleAiKey,
   unbindWhaleAiTradeKeys,
   whaleAiActiveStrategy,
   whaleAiAlphaExecution,
@@ -22,8 +20,6 @@ import {
   whaleAiEngineState,
   whaleAiStrategyDiagnostics,
   whaleAiIncidents,
-  whaleAiKeyHint,
-  whaleAiKeyReady,
   whaleAiLastEngineUpdate,
   whaleAiMarketRisk,
   whaleAiRiskBudget,
@@ -52,8 +48,8 @@ import {
   type ExecutionSelection,
 } from '@/api';
 import { useRealtimePrivate, type PrivateRealtimeMessage } from '@/composables/useRealtimePrivate';
-import { isPositionEvent, mapBusToEngineEvent, severityToLvl } from '@/utils/runtimeEvents';
-import { eventZh, reasonZh } from '@/utils/strategyDisplayZh';
+import { mapBusToEngineEvent, severityToLvl } from '@/utils/runtimeEvents';
+import { annotateEvent } from '@/utils/eventLogDisplay';
 
 const emit = defineEmits<{
   requestLogin: [];
@@ -275,12 +271,7 @@ async function onQaStop() {
   }
 }
 
-/* ===== 登录 / Key 门禁 ===== */
-const reconfigKeys = ref(false);
-const savingKeys = ref(false);
-const clearingKeys = ref(false);
-const apiKeyInput = ref('');
-
+/* ===== 登录 / OKX 门禁 ===== */
 const reconfigTrade = ref(false);
 const savingTrade = ref(false);
 const clearingTrade = ref(false);
@@ -291,12 +282,11 @@ const tradeForm = ref({
   simulated: true,
 });
 
-const showKeySetup = computed(() => !whaleAiKeyReady.value || reconfigKeys.value);
 const showTradeSetup = computed(
-  () => whaleAiKeyReady.value && (!whaleAiTradeReady.value || reconfigTrade.value),
+  () => !whaleAiTradeReady.value || reconfigTrade.value,
 );
 const mainConsoleVisible = computed(
-  () => isLoggedIn.value && !showKeySetup.value && !showTradeSetup.value,
+  () => isLoggedIn.value && !showTradeSetup.value,
 );
 
 /* ===== 账户 / 持仓（真实 OKX） ===== */
@@ -490,51 +480,6 @@ function engineStateLabelZh(state: string) {
     UNKNOWN: '未知',
   };
   return map[String(state || '').toUpperCase()] || state;
-}
-
-function decisionLabelZh(decision: string) {
-  const map: Record<string, string> = {
-    ALLOW: '允许开仓',
-    NO_TRADE: '不开仓',
-    BLOCK: '拦截',
-    NONE: '无',
-  };
-  return map[String(decision || '').toUpperCase()] || decision;
-}
-
-function directionLabelZh(direction: string) {
-  const map: Record<string, string> = {
-    LONG: '做多',
-    SHORT: '做空',
-    NONE: '无方向',
-  };
-  return map[String(direction || '').toUpperCase()] || direction || '无方向';
-}
-
-function reasonLabelZh(code: string) {
-  const map: Record<string, string> = {
-    CLOSE_VS_EMA20: '收盘价未站上EMA20',
-    EMA20_VS_EMA50: 'EMA20未上穿EMA50',
-    TREND_SLOPE: '趋势斜率不足',
-    TREND_QUALITY_BELOW_THRESHOLD: '趋势质量低于阈值',
-    S3_DIRECTION_BLOCK: 'S3方向不允许',
-    S3_REGIME_BLOCK: 'S3行情状态不允许',
-    VOLATILITY_CONDITION: '波动率条件不满足',
-    EXPECTED_EDGE_TOO_LOW: '预期优势不足',
-    EDGE_UNAVAILABLE: '优势估计不可用',
-    MARKET_DATA_WARMING_UP: '行情预热中',
-    MARKET_DATA_STALE: '行情过期',
-    ALPHA_OPENINGS_PAUSED: 'Alpha开仓已暂停',
-    S6_ENTRIES_BLOCKED: 'S6安全门拦截开仓',
-    MISSING_PRICE_OR_ATR: '缺少价格或ATR',
-    S1_DISABLED: 'S1已关闭',
-    S1_NO_DIRECTION: '无多空方向',
-    S1_LONG_OK: '多头条件满足',
-    S1_SHORT_OK: '空头条件满足',
-    DUPLICATE_CLOSED_CANDLE: '同一根已收盘K线已发过信号',
-    S5_BUDGET_BLOCK: 'S5风险预算拦截',
-  };
-  return map[code] || reasonZh(code);
 }
 
 function qaSideLabelZh(side: string) {
@@ -942,30 +887,18 @@ function scrollLogToLatest(channel: LogChannel) {
 function eventToLogItem(ev: WhaleAiEngineEvent): LogItem {
   const occurred = Date.parse(ev.occurred_at);
   const ts = Number.isFinite(occurred) ? occurred : Date.now();
-  const codes = ev.reason_codes?.length ? ev.reason_codes : ev.reason_code ? [ev.reason_code] : [];
-  const reasonsZh = codes.length ? codes.map(reasonLabelZh).join('；') : '';
-  const msg =
-      ev.message ||
-    [
-      eventZh(ev.event_type),
-      ev.strategy_id || '—',
-      ev.symbol || '—',
-      ev.direction ? directionLabelZh(ev.direction) : '',
-      ev.decision ? decisionLabelZh(ev.decision) : '',
-      reasonsZh,
-    ]
-      .filter(Boolean)
-      .join(' · ');
+  const annotated = annotateEvent(ev);
+  const channel = annotated.display_category === 'POSITION' ? 'POSITION' : 'SYSTEM';
   return {
     eventId: ev.event_id,
     ts,
     t: formatLogTime(ts),
     lvl: severityToLvl(ev.severity),
-    msg,
-    channel: isPositionEvent(ev.event_type) ? 'POSITION' : 'SYSTEM',
+    msg: annotated.display_message,
+    channel,
     event_type: ev.event_type,
     strategy_id: ev.strategy_id,
-    symbol: ev.symbol,
+    symbol: annotated.symbol_display || ev.symbol,
     reason_code: ev.reason_code,
     source: 'SERVER',
   };
@@ -1278,57 +1211,6 @@ async function pollEngineDashboard() {
     if (systemLogs.value[systemLogs.value.length - 1]?.msg !== `引擎拉取失败：${msg}`) {
       pushLog('warn', `引擎拉取失败：${msg}`, { channel: 'SYSTEM' });
     }
-  }
-}
-
-/* ===== Key 操作 ===== */
-async function submitKey() {
-  const apiKey = apiKeyInput.value.trim();
-  if (!apiKey) {
-    ElMessage.warning('请填写 DeepSeek 密钥');
-    return;
-  }
-  if (savingKeys.value) return;
-  savingKeys.value = true;
-  try {
-    const data = await bindWhaleAiKey(apiKey);
-    apiKeyInput.value = '';
-    reconfigKeys.value = false;
-    if (data.warn) ElMessage.warning(data.warn);
-    else ElMessage.success('DeepSeek 密钥已保存');
-    void refreshWhaleAiTradeStatus(true);
-  } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '保存失败');
-  } finally {
-    savingKeys.value = false;
-  }
-}
-
-function cancelReconfig() {
-  if (!whaleAiKeyReady.value) return;
-  reconfigKeys.value = false;
-  apiKeyInput.value = '';
-}
-
-async function clearKey() {
-  try {
-    await ElMessageBox.confirm('将清除 DeepSeek 密钥。', '清除密钥', {
-      type: 'warning',
-      confirmButtonText: '确认清除',
-      cancelButtonText: '取消',
-    });
-  } catch {
-    return;
-  }
-  clearingKeys.value = true;
-  try {
-    await unbindWhaleAiKey();
-    reconfigKeys.value = false;
-    ElMessage.success('已清除 DeepSeek 密钥');
-  } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '清除失败');
-  } finally {
-    clearingKeys.value = false;
   }
 }
 
@@ -1757,37 +1639,8 @@ onUnmounted(() => {
   <div class="v41-shell">
     <div v-if="!isLoggedIn" class="gate">
       <h3>鲸鱼AI 需要登录</h3>
-      <p>登录后绑定 DeepSeek 与 OKX，即可查看账户与持仓。</p>
+      <p>登录后绑定 OKX，即可查看账户与持仓。DeepSeek 可在左下角设置中配置。</p>
       <button type="button" class="btn btn-primary" @click="emit('requestLogin')">去登录</button>
-    </div>
-
-    <div v-else-if="showKeySetup" class="gate">
-      <h3>{{ whaleAiKeyReady ? '更换 DeepSeek 接口' : '配置鲸鱼AI' }}</h3>
-      <p>先填写 DeepSeek 密钥，再绑定 OKX 交易密钥。</p>
-      <div class="key-form">
-        <label>
-          <span>DeepSeek 密钥</span>
-          <input v-model="apiKeyInput" type="password" autocomplete="new-password" placeholder="sk-…" />
-        </label>
-        <p v-if="whaleAiKeyHint" class="hint">当前密钥：{{ whaleAiKeyHint }}</p>
-        <div class="buttons">
-          <button v-if="whaleAiKeyReady" type="button" class="btn" :disabled="savingKeys" @click="cancelReconfig">
-            取消
-          </button>
-          <button
-            v-if="whaleAiKeyReady"
-            type="button"
-            class="btn btn-danger"
-            :disabled="savingKeys || clearingKeys"
-            @click="clearKey"
-          >
-            清除
-          </button>
-          <button type="button" class="btn btn-primary" :disabled="savingKeys" @click="submitKey">
-            {{ savingKeys ? '校验中…' : '校验并保存' }}
-          </button>
-        </div>
-      </div>
     </div>
 
     <div v-else-if="showTradeSetup" class="gate">
@@ -1836,7 +1689,6 @@ onUnmounted(() => {
         <div class="brand">
           鲸鱼AI · 个人交易舱
           <span class="badge">V4.1</span>
-          <button type="button" class="link" @click="reconfigKeys = true">DeepSeek</button>
           <button type="button" class="link" @click="reconfigTrade = true">
             OKX {{ whaleAiTradeSimulated ? '模拟' : '实盘' }}
           </button>
@@ -2138,15 +1990,15 @@ onUnmounted(() => {
             类型
             <select v-model="logTypeFilter">
               <option value="">全部</option>
-              <option value="STRATEGY_NO_TRADE">STRATEGY_NO_TRADE</option>
-              <option value="STRATEGY_CANDIDATE">STRATEGY_CANDIDATE</option>
-              <option value="ORDER_SUBMITTED">ORDER_SUBMITTED</option>
-              <option value="ORDER_FILLED">ORDER_FILLED</option>
-              <option value="POSITION_OPENED">POSITION_OPENED</option>
-              <option value="S5_RISK_CHANGED">S5_RISK_CHANGED</option>
-              <option value="S6_BLOCK">S6_BLOCK</option>
-              <option value="S6_LOCK">S6_LOCK</option>
-              <option value="ENGINE_START">ENGINE_START</option>
+              <option value="STRATEGY_NO_TRADE">本轮不交易</option>
+              <option value="STRATEGY_CANDIDATE">信号候选</option>
+              <option value="ORDER_SUBMITTED">订单已提交</option>
+              <option value="ORDER_FILLED">已成交</option>
+              <option value="POSITION_OPENED">仓位已建立</option>
+              <option value="S5_RISK_CHANGED">风险占用变化</option>
+              <option value="S6_BLOCK">安全检查阻止</option>
+              <option value="S6_LOCK">安全锁定</option>
+              <option value="ENGINE_START">引擎已启动</option>
             </select>
           </label>
           <span class="section-sub">关闭网页后服务器继续记录，重新打开会加载历史</span>

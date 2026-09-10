@@ -267,6 +267,42 @@ async function getPublicInstrument(instId) {
   return (data.data && data.data[0]) || null;
 }
 
+function mapBookLevels(levels) {
+  const out = [];
+  for (const level of (levels || []).slice(0, 5)) {
+    const px = Number(level && level[0]);
+    const sz = Number(level && level[1]);
+    if (!(px > 0) || !(sz >= 0)) continue;
+    out.push([px, sz]);
+  }
+  return out;
+}
+
+/**
+ * OKX V5 public Top5 book. SWAP sz is contracts.
+ * GET /api/v5/market/books?instId=&sz=5
+ */
+async function getPublicBooks5(instId = 'BTC-USDT-SWAP') {
+  const id = String(instId || 'BTC-USDT-SWAP').trim();
+  const data = await okxPublic(`/api/v5/market/books${qs({ instId: id, sz: 5 })}`);
+  const row = (data.data && data.data[0]) || null;
+  if (!row) return null;
+  const bids = mapBookLevels(row.bids);
+  const asks = mapBookLevels(row.asks);
+  if (!bids.length || !asks.length) return null;
+  const ts = Number(row.ts);
+  return {
+    instId: id,
+    timestamp: Number.isFinite(ts) ? ts : Date.now(),
+    bids,
+    asks,
+    best_bid: bids[0][0],
+    best_ask: asks[0][0],
+    seqId: row.seqId,
+    source: 'okx_public_books5',
+  };
+}
+
 async function getLeverageInfo({ instId, mgnMode = 'cross' }) {
   const data = await okxPrivate(
     'GET',
@@ -601,6 +637,7 @@ module.exports = {
   getAccountConfig,
   getTradeFee,
   getPublicInstrument,
+  getPublicBooks5,
   getLeverageInfo,
   getOrder,
   getBalance,

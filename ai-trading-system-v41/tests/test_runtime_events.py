@@ -63,6 +63,49 @@ def test_no_trade_reason_change_or_new_candle_creates_new_event(tmp_path: Path) 
     store.close()
 
 
+def test_no_trade_symbol_aliases_persist_once(tmp_path: Path) -> None:
+    store = EngineStore(tmp_path / "events.db")
+    rec = RuntimeEventRecorder(store)
+    candle = "2026-09-10T04:00:00+00:00"
+    reasons = ["CLOSE_VS_EMA20", "S3_DIRECTION_BLOCK"]
+    first = rec.persist_bus_event(
+        {
+            "type": "strategy.decision",
+            "timestamp": "2026-09-10T04:00:01+00:00",
+            "payload": _no_trade_payload(candle=candle, reasons=reasons, symbol="BTC/USDT:USDT"),
+        }
+    )
+    second = rec.persist_bus_event(
+        {
+            "type": "strategy.decision",
+            "timestamp": "2026-09-10T04:00:06+00:00",
+            "payload": _no_trade_payload(candle=candle, reasons=reasons, symbol="BTC-USDT-SWAP"),
+        }
+    )
+    assert first is not None
+    assert second is None
+    rows = store.list_runtime_events(event_type="STRATEGY_NO_TRADE")
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "BTC-USDT-SWAP"
+
+    rec.persist_bus_event(
+        {
+            "type": "strategy.decision",
+            "timestamp": "t-candle",
+            "payload": _no_trade_payload(candle="2026-09-10T05:00:00+00:00", reasons=reasons, symbol="BTC/USDT:USDT"),
+        }
+    )
+    rec.persist_bus_event(
+        {
+            "type": "strategy.decision",
+            "timestamp": "t-reason",
+            "payload": _no_trade_payload(candle=candle, reasons=["TREND_SLOPE"], symbol="BTC-USDT-SWAP"),
+        }
+    )
+    assert len(store.list_runtime_events(event_type="STRATEGY_NO_TRADE")) == 3
+    store.close()
+
+
 def test_evaluation_count_not_affected_by_persist_dedupe() -> None:
     diag = StrategyDiagnostics("S1")
     for _ in range(1000):

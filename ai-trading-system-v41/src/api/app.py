@@ -216,6 +216,9 @@ def create_app() -> FastAPI:
             event_type=event_type,
             severity=severity,
         )
+        from src.runtime.event_log_display import annotate_events
+
+        events = annotate_events(events)
         return {"ok": True, "count": len(events), "limit": limit, "events": events}
 
     @app.post("/internal/v1/runtime-events")

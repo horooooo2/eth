@@ -344,5 +344,5 @@ test('26 wrong strategy id fail closed', async () => {
 test('27 chinese reason mapping', () => {
   const { reasonZh } = require('../lib/strategyDisplayZh');
   assert.equal(reasonZh('S9_SPREAD_TOO_WIDE'), '当前买卖价差过大');
-  assert.match(reasonZh('UNKNOWN_CODE_X'), /未识别的策略状态/);
+  assert.match(reasonZh('UNKNOWN_CODE_X'), /未识别的交易提示/);
 });

@@ -110,6 +110,7 @@ afterEach(() => {
     readiness: ready,
     getOrder: (...a) => okx.getOrder(...a),
     getPublicInstrument: (...a) => okx.getPublicInstrument(...a),
+    getPublicBooks5: (...a) => okx.getPublicBooks5(...a),
     getLeverageInfo: (...a) => okx.getLeverageInfo(...a),
     getAccountPositions: (...a) => okx.getAccountPositions(...a),
     actualLeverage: undefined,

@@ -13,6 +13,8 @@ from src.core.rule_evaluator import RuleEvaluator
 from src.core.signal_lifecycle import SignalLifecycleManager, TradeIntent
 from src.runtime.alpha_ids import coerce_selectable
 from src.runtime.s9_microstructure import SpreadWindow
+from src.runtime.s9_market_hub import S9MarketHub
+from src.runtime.s9_fee import S9FeeClient
 from src.strategies.s1_trend import S1TrendStrategy
 from src.strategies.s2_reversal import S2ReversalStrategy
 from src.strategies.s3_regime import S3RegimeStrategy
@@ -66,6 +68,8 @@ class Orchestrator:
         self.s6 = S6AnomalyDetector(config, self.evaluator)
         self.s7 = S7HealthMonitor(config)
         self.s9_spread = SpreadWindow()
+        self.s9_hub = S9MarketHub()
+        self.s9_fee = S9FeeClient()
         self.s9_runtime: Dict[str, Any] = {
             "last_direction": None,
             "cooldown_bars": 0,
@@ -146,10 +150,13 @@ class Orchestrator:
         if bars is None:
             try:
                 if active == "S9":
-                    bars_1m = self.adapter.get_klines(self.symbol, timeframe="1m", limit=250)
-                    bars_5m = self.adapter.get_klines(self.symbol, timeframe="5m", limit=150)
-                    self._apply_s9_market(bars_1m, bars_5m)
-                    bars = bars_1m
+                    if self.s9_hub.closed_1m_df().empty:
+                        bars_1m = self.adapter.get_klines(self.symbol, timeframe="1m", limit=250)
+                        bars_5m = self.adapter.get_klines(self.symbol, timeframe="5m", limit=150)
+                        self._apply_s9_market(bars_1m, bars_5m)
+                    else:
+                        self._apply_s9_market()
+                    bars = self.s9_closed_1m
                 else:
                     bars = self.adapter.get_klines(
                         self.symbol,
@@ -180,11 +187,22 @@ class Orchestrator:
             self.data_pool.set_context({"market_data_state": self.market_state})
         account = self.adapter.get_account_info()
         self.context["equity"] = account.get("equity")
-        if hasattr(self.adapter, "get_trade_fee_bps") and self.context.get("okx_fee_bps") is None:
+        if hasattr(self, "s9_fee") and coerce_selectable(self.active_strategy_id) == "S9":
+            prev_fee_evt = getattr(self.s9_fee, "last_event", None)
+            fee = self.s9_fee.get_taker_bps()
+            self.context["okx_fee_bps"] = fee
+            if self.s9_fee.last_event and self.s9_fee.last_event != prev_fee_evt:
+                self.context["s9_fee_event"] = self.s9_fee.last_event
+                on_evt = getattr(self.s9_hub, "on_event", None)
+                if callable(on_evt):
+                    on_evt(self.s9_fee.last_event, {"source": "okx_account_trade_fee"})
+        elif hasattr(self.adapter, "get_trade_fee_bps") and self.context.get("okx_fee_bps") is None:
             try:
                 self.context["okx_fee_bps"] = self.adapter.get_trade_fee_bps(self.symbol)
             except Exception:
                 self.context["okx_fee_bps"] = None
+        if coerce_selectable(self.active_strategy_id) == "S9":
+            self._apply_s9_market()
         from src.runtime.risk_usage import compute_risk_usage
 
         self.context["risk_usage"] = compute_risk_usage(
@@ -267,29 +285,37 @@ class Orchestrator:
         self.context["market_data"] = dict(self.market_meta)
         self.data_pool.set_context({"market_data_state": self.market_state})
 
-    def _apply_s9_market(self, bars_1m, bars_5m) -> None:
+    def _apply_s9_market(self, bars_1m=None, bars_5m=None) -> None:
         from src.adapters.okx_market_data import split_closed_bars, to_okx_inst_id, use_real_okx_market
         from src.strategies.s9_momentum import closed_only
 
-        c1, _, _ = split_closed_bars(bars_1m, timeframe="1m")
-        c5, _, _ = split_closed_bars(bars_5m, timeframe="5m")
-        if c1 is None or getattr(c1, "empty", True):
-            c1 = closed_only(bars_1m, timeframe="1m")
-        if c5 is None or getattr(c5, "empty", True):
-            c5 = closed_only(bars_5m, timeframe="5m")
+        hub = self.s9_hub
+        if bars_1m is not None:
+            c1, _, _ = split_closed_bars(bars_1m, timeframe="1m")
+            c5, _, _ = split_closed_bars(bars_5m, timeframe="5m") if bars_5m is not None else (None, None, None)
+            if c1 is None or getattr(c1, "empty", True):
+                c1 = closed_only(bars_1m, timeframe="1m")
+            if bars_5m is not None and (c5 is None or getattr(c5, "empty", True)):
+                c5 = closed_only(bars_5m, timeframe="5m")
+            if c1 is not None and not getattr(c1, "empty", True):
+                hub.seed_closed_bars("1m", c1)
+            if c5 is not None and not getattr(c5, "empty", True):
+                hub.seed_closed_bars("5m", c5)
+        fee_ready = self.context.get("okx_fee_bps") is not None
+        if hasattr(self, "s9_fee"):
+            fee_ready = self.s9_fee.snapshot().get("ready") is True
+        snap = hub.refresh_state(fee_ready=bool(fee_ready))
+        c1 = hub.closed_1m_df()
+        c5 = hub.closed_5m_df()
         self.s9_closed_1m = c1
         self.s9_closed_5m = c5
+        self.s9_spread = hub.spread
         n1 = int(len(c1)) if c1 is not None else 0
         n5 = int(len(c5)) if c5 is not None else 0
-        warmup = (self.config.get("S9_high_frequency_momentum") or {}).get("warmup") or {}
-        need1 = int(warmup.get("closed_1m_bars") or 200)
-        need5 = int(warmup.get("closed_5m_bars") or 100)
-        if n1 <= 0 or n5 <= 0:
-            self.market_state = "OFF"
-        elif n1 < need1 or n5 < need5:
-            self.market_state = "WARMING_UP"
+        if snap["warmup_state"] != "READY":
+            self.market_state = "OFF" if snap["data_state"] == "OFF" else "WARMING_UP"
         else:
-            self.market_state = "READY"
+            self.market_state = snap["data_state"]
         latest_1m = str(c1.index[-1]) if n1 else None
         latest_5m = str(c5.index[-1]) if n5 else None
         prev_1m = (self.market_meta or {}).get("latest_closed_candle_at")
@@ -304,8 +330,14 @@ class Orchestrator:
             "closed_1m_bars": n1,
             "closed_5m_bars": n5,
             "state": self.market_state,
+            "data_state": snap["data_state"],
+            "connection_state": snap["connection_state"],
+            "forming_1m": snap.get("forming_1m"),
+            "forming_5m": snap.get("forming_5m"),
+            "s9_market": snap,
         }
         self.context["market_data"] = dict(self.market_meta)
+        self.context["s9_data_state"] = snap["data_state"]
         self.data_pool.set_context({"market_data_state": self.market_state})
         if n1 and c1 is not None:
             last = c1.iloc[-1]
@@ -428,6 +460,8 @@ class Orchestrator:
         )
 
         market_ready = str(self.market_state) == "READY"
+        if active == "S9":
+            market_ready = str(self.context.get("s9_data_state") or self.market_state) == "READY"
         emit_intents = bool(self.context.get("alpha_opening_enabled", True)) and market_ready
         extra_block: List[str] = []
         if not market_ready:
@@ -744,35 +778,44 @@ class Orchestrator:
             return {"confirmed": []}
         side = str(cand.get("direction") or "LONG")
         qty = float(cand.get("authorized_base_quantity") or 0)
+        hub = getattr(self, "s9_hub", None)
         book = {}
         trades: List[Dict[str, Any]] = []
-        try:
-            book = self.adapter.get_order_book(self.symbol, depth=5) or {}
-        except Exception:
-            book = {}
-        try:
-            trades = list(self.adapter.get_recent_trades(self.symbol, limit=40) or [])
-        except Exception:
-            trades = []
+        now_ts = __import__("time").time()
+        if hub and hub.book:
+            book = dict(hub.book)
+            trades = hub.recent_trades(now_ts)
+            book_age = hub.book_age_sec(now_ts) or 99.0
+            trades_age = hub.trades_age_sec(now_ts) or 99.0
+        else:
+            try:
+                book = self.adapter.get_order_book(self.symbol, depth=5) or {}
+            except Exception:
+                book = {}
+            try:
+                trades = list(self.adapter.get_recent_trades(self.symbol, limit=40) or [])
+            except Exception:
+                trades = []
+            book_age = 99.0
+            trades_age = 99.0
+            ts_book = book.get("timestamp")
+            if ts_book:
+                try:
+                    book_age = max(0.0, now_ts - float(ts_book) / (1000.0 if float(ts_book) > 1e12 else 1.0))
+                except (TypeError, ValueError):
+                    book_age = 99.0
+            if trades:
+                t0 = trades[-1].get("timestamp") or 0
+                try:
+                    trades_age = max(0.0, now_ts - float(t0) / (1000.0 if float(t0) > 1e12 else 1.0))
+                except (TypeError, ValueError):
+                    trades_age = 99.0
         bids = list(book.get("bids") or [])
         asks = list(book.get("asks") or [])
-        bid = float(bids[0][0]) if bids else 0.0
-        ask = float(asks[0][0]) if asks else 0.0
-        now_ts = __import__("time").time()
-        book_age = 0.0
-        trades_age = 0.0
-        ts_book = book.get("timestamp")
-        if ts_book:
-            try:
-                book_age = max(0.0, now_ts - float(ts_book) / (1000.0 if float(ts_book) > 1e12 else 1.0))
-            except (TypeError, ValueError):
-                book_age = 99.0
-        if trades:
-            t0 = trades[-1].get("timestamp") or 0
-            try:
-                trades_age = max(0.0, now_ts - float(t0) / (1000.0 if float(t0) > 1e12 else 1.0))
-            except (TypeError, ValueError):
-                trades_age = 99.0
+        bid = float(book.get("best_bid") or (bids[0][0] if bids else 0.0) or 0.0)
+        ask = float(book.get("best_ask") or (asks[0][0] if asks else 0.0) or 0.0)
+        ct_val = 0.01
+        qty_contracts = qty / ct_val if qty else 0.0
         micro_cfg = (self.config.get("S9_high_frequency_momentum") or {}).get("microstructure") or {}
         micro = evaluate_microstructure(
             side=side,
@@ -786,7 +829,7 @@ class Orchestrator:
             book_age_sec=book_age,
             trades_age_sec=trades_age,
             cfg={"microstructure": micro_cfg},
-            authorized_base_qty=qty,
+            authorized_base_qty=qty_contracts,
         )
         cand["pre_submit_orderbook_snapshot"] = {"bids": bids[:5], "asks": asks[:5]}
         cand["diagnostics"] = {**(cand.get("diagnostics") or {}), **{k: micro.get(k) for k in micro if k.startswith("s9_")}}

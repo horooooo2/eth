@@ -44,6 +44,7 @@ test('S9 pre-submit TTL / spread / drift / depth without placing orders', () => 
     bids: [[100, 2], [99.9, 2], [99.8, 2], [99.7, 2], [99.6, 2]],
     asks: [[100.01, 2], [100.02, 2], [100.03, 2], [100.04, 2], [100.05, 2]],
     final_okx_sz: 1,
+    book_age_sec: 0.2,
   };
   const ok = s9.assertS9PreSubmit(intent(), book);
   assert.ok(ok.spread_bps <= 2);

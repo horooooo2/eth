@@ -25,16 +25,26 @@ REASON_ZH: Dict[str, str] = {
     "S9_NO_BREAKOUT": "尚未出现有效突破",
     "S9_SIGNAL_ALREADY_USED": "同一根已收盘1分钟K线已使用过信号",
     "S9_ORDERBOOK_STALE": "盘口数据已过期",
-    "S9_TRADES_STALE": "成交数据已过期",
+    "S9_TRADES_STALE": "主动成交数据已过期",
     "S9_DATA_DEGRADED": "微观结构数据不完整",
     "S9_DIRECTION_FLIP_EXIT": "短周期方向已翻转，执行主动退出",
     "S9_TIME_EXIT": "持仓时间达到上限，执行主动退出",
-    "S9_EXPECTED_SLIPPAGE_TOO_HIGH": "预期滑点超过允许范围",
+    "S9_EXPECTED_SLIPPAGE_TOO_HIGH": "预计成交滑点过高",
+    "S9_MARKET_DATA_DEGRADED": "高频策略行情数据不完整",
+    "S9_FEE_READY": "交易手续费数据已就绪",
+    "S9_FEE_UNAVAILABLE": "无法获取当前交易手续费",
+    "S9_PRESUBMIT_REJECTED": "下单前执行检查未通过",
+    "S9_PRESUBMIT_PASSED": "下单前执行检查已通过",
+    "S9_IMPLEMENTATION_NOT_READY": "S9 代码能力尚未全部接通",
+    "S9_DEMO_PREFLIGHT_NOT_READY": "S9 尚未具备安全开始模拟盘验证的条件",
+    "S9_MARKET_DATA_CONNECTED": "高频策略行情已连接",
+    "S9_MARKET_DATA_DISCONNECTED": "高频策略行情已断开",
+    "S9_MARKET_DATA_READY": "高频策略行情数据已就绪",
     "S9_TRADE_FREQUENCY_HOUR": "滚动一小时开仓次数已达上限",
     "S9_TRADE_FREQUENCY_DAY": "当日开仓次数已达上限",
     "S9_COOLDOWN": "策略冷却中，暂不开仓",
     "SPREAD_WINDOW_WARMING_UP": "价差样本仍在预热，暂不开仓",
-    "SYMBOL_OWNERSHIP_CONFLICT": "当前交易对仍由其他策略持有",
+    "SYMBOL_OWNERSHIP_CONFLICT": "当前交易对仍由其他策略持有，已阻止新的开仓",
     "DUST_RESIDUAL_POSITION": "交易所仍存在残余仓位",
     "UNRESOLVED_DUST_POSITION": "残余仓位暂时无法自动清理",
     "ORPHAN_PROTECTIVE_STOP": "仍存在遗留保护止损",
@@ -47,17 +57,47 @@ REASON_ZH: Dict[str, str] = {
     "ALPHA_OPENINGS_PAUSED": "新开仓已暂停",
     "S6_ENTRIES_BLOCKED": "安全模块已阻止新开仓",
     "TAKE_PROFIT": "已达到1.5R止盈",
+    "CLOSE_VS_EMA20": "收盘价与 EMA20 的位置不符合趋势要求",
+    "EMA20_VS_EMA50": "EMA20 与 EMA50 未形成有效趋势排列",
+    "S3_DIRECTION_BLOCK": "市场方向不支持当前交易方向",
+    "S3_REGIME_BLOCK": "当前市场状态不适合该策略交易",
+    "TREND_SLOPE": "趋势斜率不足",
+    "TREND_QUALITY": "趋势质量不足",
+    "TREND_QUALITY_BELOW_THRESHOLD": "趋势质量不足",
+    "ADX": "ADX 趋势强度不足",
+    "ADX14": "ADX 趋势强度不足",
+    "COND_ADX14": "ADX 趋势强度不足",
+    "EXPECTED_EDGE": "预期交易空间不足",
+    "EXPECTED_EDGE_TOO_LOW": "预期交易空间不足",
+    "EDGE_UNAVAILABLE": "预期优势估计不可用",
+    "VOLATILITY_CONDITION": "波动率条件不满足",
+    "S1_STRUCTURE_STOP_NOT_FOUND": "未找到有效的结构止损位置",
+    "INVALID_STOP_PRICE": "止损价格无效",
+    "S5_BUDGET_BLOCK": "风险预算不足，已阻止开仓",
+    "DUPLICATE_CLOSED_CANDLE": "同一根已收盘K线已使用过信号",
+    "S1_DISABLED": "S1 当前未启用",
+    "S1_NO_DIRECTION": "当前没有有效交易方向",
+    "S1_LONG_OK": "多头条件满足",
+    "S1_SHORT_OK": "空头条件满足",
+    "MISSING_PRICE_OR_ATR": "缺少价格或 ATR 数据",
+    "POSITION_QTY_MISMATCH": "仓位数量与交易所不一致",
+    "POSITION_SIDE_MISMATCH": "仓位方向与交易所不一致",
+    "RECONCILIATION_NOT_MATCHED": "当前交易状态对账未一致",
+    "CONFIG_INVALID": "策略配置无效",
+    "S6_BLOCKED": "安全检查已阻止新的交易",
 }
 
 STATUS_ZH: Dict[str, str] = {
     "READY": "就绪",
     "NOT_READY": "未就绪",
+    "UNVERIFIED": "未验证",
+    "VERIFIED": "已验证",
     "BLOCKED": "已阻止",
     "RESEARCH": "研究中",
     "PRODUCTION": "生产",
     "DEMO_VALIDATION": "模拟盘验证",
     "WARMING_UP": "预热中",
-    "STALE": "数据过期",
+    "STALE": "数据已过期",
     "OFFLINE": "离线",
     "ONLINE": "在线",
     "PAUSED": "已暂停",
@@ -77,32 +117,101 @@ STATUS_ZH: Dict[str, str] = {
     "BEARISH": "看空",
     "NEUTRAL": "中性",
     "ALLOW": "允许",
-    "NO_TRADE": "无交易",
+    "NO_TRADE": "本轮不交易",
     "CANDIDATE": "候选",
     "ACTIVE": "活跃",
+    "PARTIALLY_FILLED": "部分成交",
+    "PARTIAL": "部分成交",
+    "FILLED": "已成交",
+    "SUBMITTED": "已提交",
+    "REJECTED": "已拒绝",
+    "CANCELLED": "已取消",
+    "CANCELED": "已取消",
+    "EXPIRED": "已过期",
+    "CREATED": "已创建",
+    "CONNECTED": "已连接",
+    "DISCONNECTED": "已断开",
+    "RECONNECTING": "重连中",
+    "POSITION": "仓位日志",
+    "SYSTEM": "系统运行日志",
 }
 
 EVENT_ZH: Dict[str, str] = {
-    "STRATEGY_NO_TRADE": "策略未开仓",
-    "STRATEGY_CANDIDATE": "策略信号候选",
+    "STRATEGY_NO_TRADE": "本轮不交易",
+    "STRATEGY_CANDIDATE": "出现可交易信号候选",
     "STRATEGY_SELECTED": "已选择策略",
     "S9_DIRECTION": "S9 方向判定",
-    "S9_NO_TRADE": "S9 未开仓",
+    "S9_NO_TRADE": "本轮不交易",
     "S9_CANDIDATE": "S9 信号候选",
-    "S9_TRADE_INTENT_CREATED": "S9 交易意图已创建",
-    "S9_ORDER_INTENT_CREATED": "S9 订单意图已创建",
-    "ORDER_SUBMITTED": "订单已提交",
-    "ORDER_PARTIALLY_FILLED": "订单部分成交",
-    "ORDER_FILLED": "订单已成交",
-    "PROTECTIVE_STOP_PLACED": "保护止损已挂出",
-    "PROTECTIVE_STOP_AMENDED": "保护止损已调整",
+    "S9_TRADE_INTENT_CREATED": "交易意图已创建",
+    "S9_ORDER_INTENT_CREATED": "订单意图已创建",
+    "TRADE_INTENT_CREATED": "交易意图已创建",
+    "ORDER_INTENT_CREATED": "订单意图已创建",
+    "S9_MARKET_DATA_CONNECTED": "行情数据连接正常",
+    "S9_MARKET_DATA_DISCONNECTED": "行情数据连接已断开",
+    "S9_MARKET_DATA_DEGRADED": "高频策略行情数据不完整",
+    "S9_MARKET_DATA_READY": "高频策略行情数据已就绪",
+    "S9_FEE_READY": "交易手续费数据已就绪",
+    "S9_FEE_UNAVAILABLE": "无法获取当前交易手续费",
+    "S9_PRESUBMIT_REJECTED": "下单前执行检查未通过",
+    "S9_PRESUBMIT_PASSED": "下单前执行检查已通过",
+    "ORDER_SUBMITTED": "开仓订单已提交，等待成交",
+    "ORDER_PARTIALLY_FILLED": "开仓部分成交",
+    "ORDER_FILLED": "仓位建立完成",
+    "ORDER_REJECTED": "开仓订单已拒绝",
+    "ORDER_CANCEL_REQUESTED": "正在取消订单",
+    "ORDER_CANCELLED": "订单已取消",
+    "ORDER_CANCEL_FAILED": "订单取消失败",
+    "PROTECTIVE_STOP_CREATED": "保护止损已建立",
+    "PROTECTIVE_STOP_SUBMITTED": "保护止损已提交",
+    "PROTECTIVE_STOP_PLACED": "保护止损已建立",
+    "PROTECTIVE_STOP_ACTIVE": "保护止损已生效",
+    "PROTECTIVE_STOP_AMENDED": "保护止损覆盖数量已调整",
+    "PROTECTIVE_STOP_TRIGGERED": "保护止损已触发",
+    "PROTECTIVE_STOP_CANCEL_REQUESTED": "正在清理保护止损",
     "PROTECTIVE_STOP_CANCELLED": "保护止损已取消",
-    "POSITION_OPENED": "仓位已开立",
+    "PROTECTIVE_STOP_FAILED": "保护止损处理失败",
+    "PROTECTIVE_STOP_CLEANUP_FAILED": "遗留保护止损自动清理失败",
+    "TAKE_PROFIT_TRIGGERED": "达到 1.5R 止盈条件，正在执行平仓",
+    "TIME_EXIT_TRIGGERED": "持仓已达到最长持有时间，正在执行平仓",
+    "DIRECTION_FLIP_EXIT_TRIGGERED": "5分钟方向发生反转，正在执行平仓",
+    "EXIT_SUBMITTED": "平仓订单已提交",
+    "EXIT_PARTIALLY_FILLED": "平仓部分成交",
+    "EXIT_FILLED": "平仓已成交",
+    "POSITION_OPENED": "仓位已建立",
+    "POSITION_UPDATED": "仓位已更新",
     "POSITION_REDUCED": "仓位已减少",
-    "POSITION_CLOSED": "仓位已平仓",
-    "S5_RISK_CHANGED": "S5 风险占用变化",
-    "RECONCILIATION_MISMATCH": "对账不一致",
-    "RECONCILIATION_MATCHED": "对账一致",
+    "POSITION_CLOSED": "仓位已全部平仓",
+    "OWNERSHIP_CREATED": "仓位所有权已建立",
+    "OWNERSHIP_UPDATED": "仓位所有权已更新",
+    "OWNERSHIP_RELEASED": "仓位及关联订单已清理完成，交易对已释放",
+    "DUST_RESIDUAL_POSITION": "交易所仍存在残余仓位",
+    "UNRESOLVED_DUST_POSITION": "残余仓位暂时无法自动清理",
+    "POSITION_QTY_MISMATCH": "仓位数量与交易所不一致",
+    "POSITION_SIDE_MISMATCH": "仓位方向与交易所不一致",
+    "S5_RISK_CHANGED": "风险占用已变化",
+    "RECONCILIATION_MISMATCH": "仓位与交易所对账不一致",
+    "RECONCILIATION_MATCHED": "交易状态对账一致",
+    "ENGINE_START": "交易引擎已启动",
+    "ENGINE_STARTED": "交易引擎已启动",
+    "ENGINE_PAUSE": "交易引擎已暂停",
+    "ENGINE_PAUSED": "交易引擎已暂停",
+    "ENGINE_LOCK": "交易引擎已紧急停止",
+    "S6_BLOCK": "安全检查已阻止新的交易",
+    "S6_LOCK": "安全检查已锁定交易引擎",
+    "STARTUP_RECOVERY_STARTED": "启动恢复检查进行中",
+    "STARTUP_RECOVERY_READY": "启动恢复检查已完成",
+    "STARTUP_RECOVERY_FAILED": "启动恢复检查失败",
+    "CONFIG_INVALID": "策略配置无效",
+    "CONFIG_LOADED": "策略配置已加载",
+    "MARKET_DATA_CONNECTED": "行情数据连接正常",
+    "MARKET_DATA_DISCONNECTED": "行情数据连接已断开",
+    "S9_ORDERBOOK_STALE": "盘口数据已过期",
+    "S9_TRADES_STALE": "主动成交数据已过期",
+    "SYMBOL_OWNERSHIP_CONFLICT": "当前交易对仍由其他策略持有，已阻止新的开仓",
+    "RECONCILIATION_NOT_MATCHED": "当前交易状态对账未一致",
+    "ORDER_EXPIRED": "订单已过期",
+    "TRADE_INTENT_EXPIRED": "交易意图已过期",
 }
 
 STRATEGY_NAME_ZH: Dict[str, str] = {
@@ -124,21 +233,34 @@ def reason_zh(code: Any) -> str:
         return ""
     if key in REASON_ZH:
         return REASON_ZH[key]
-    return f"未识别的策略状态（{key}）"
+    return f"未识别的交易提示（{key}）"
 
 
 def status_zh(value: Any) -> str:
     key = str(value or "").strip()
     if not key:
         return ""
-    return STATUS_ZH.get(key.upper(), STATUS_ZH.get(key, key))
+    found = STATUS_ZH.get(key.upper(), STATUS_ZH.get(key))
+    if found:
+        return found
+    return f"未识别的系统状态（{key}）"
 
 
 def event_zh(event_type: Any) -> str:
     key = str(event_type or "").strip()
     if key in EVENT_ZH:
         return EVENT_ZH[key]
-    return f"未识别的策略状态（{key}）"
+    return f"未识别的系统状态（{key}）"
+
+
+def strategy_name_zh(strategy_id: Any) -> str:
+    key = str(strategy_id or "").strip().upper()
+    if not key:
+        return ""
+    name = STRATEGY_NAME_ZH.get(key)
+    if name:
+        return f"{key} {name}"
+    return key
 
 
 def user_message(*, reason_code: Optional[str] = None, event_type: Optional[str] = None, status: Optional[str] = None) -> str:
