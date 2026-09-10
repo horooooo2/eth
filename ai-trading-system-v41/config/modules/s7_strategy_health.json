@@ -3,6 +3,9 @@
   "config_type": "SYSTEM_MODULE",
   "module_id": "S7",
   "name": "Strategy Health",
+  "display": {
+    "summary_zh": "负责跟踪各策略健康状态。健康过低时降低或暂停该策略的新开仓，但不改写已有仓位归属。"
+  },
   "release_stage": "PRODUCTION",
   "implemented": true,
   "enabled": true,

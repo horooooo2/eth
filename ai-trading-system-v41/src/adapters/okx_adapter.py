@@ -63,7 +63,14 @@ class OkxAdapter:
         open_ = np.roll(close, 1)
         open_[0] = close[0]
         volume = rng.uniform(10, 100, size=n)
-        freq = "1h" if str(timeframe).lower() in {"1h", "1H", "60m"} else "5min"
+        freq = "1h"
+        tf = str(timeframe).lower()
+        if tf in {"1m", "1min"}:
+            freq = "1min"
+        elif tf in {"5m", "5min"}:
+            freq = "5min"
+        elif tf in {"15m", "15min"}:
+            freq = "15min"
         idx = pd.date_range(end=pd.Timestamp.now(tz="UTC"), periods=n, freq=freq)
         return pd.DataFrame(
             {"open": open_, "high": high, "low": low, "close": close, "volume": volume},
@@ -101,12 +108,46 @@ class OkxAdapter:
             return 0.0
 
     def get_order_book(self, symbol: str, depth: int = 20) -> Dict[str, Any]:
+        from src.adapters.okx_market_data import get_okx_public_market, use_real_okx_market
+
+        if use_real_okx_market():
+            book = get_okx_public_market().fetch_order_book(symbol, depth=depth)
+            book["age_ms"] = 0
+            return book
         if self.mock or self._exchange is None:
             mid = float(self.get_klines(symbol, limit=5)["close"].iloc[-1])
             bids = [[mid * (1 - 0.0001 * i), 1.0] for i in range(1, depth + 1)]
             asks = [[mid * (1 + 0.0001 * i), 1.0] for i in range(1, depth + 1)]
-            return {"bids": bids, "asks": asks, "symbol": symbol}
+            return {
+                "bids": bids,
+                "asks": asks,
+                "symbol": symbol,
+                "timestamp": int(pd.Timestamp.now(tz="UTC").timestamp() * 1000),
+            }
         return self._exchange.fetch_order_book(symbol, limit=depth)
+
+    def get_trade_fee_bps(self, symbol: str) -> Optional[float]:
+        """Never invent a default fee. Missing data fail-closes S9 openings."""
+        injected = getattr(self, "_trade_fee_bps", None)
+        if injected is None:
+            return None
+        try:
+            fee = float(injected)
+        except (TypeError, ValueError):
+            return None
+        return fee if fee >= 0 else None
+
+    def get_recent_trades(self, symbol: str, limit: int = 50) -> List[Dict[str, Any]]:
+        from src.adapters.okx_market_data import get_okx_public_market, use_real_okx_market
+
+        if use_real_okx_market():
+            return get_okx_public_market().fetch_trades(symbol, limit=limit)
+        now_ms = int(pd.Timestamp.now(tz="UTC").timestamp() * 1000)
+        mid = float(self.get_klines(symbol, limit=5)["close"].iloc[-1])
+        return [
+            {"side": "buy", "qty": 1.0, "price": mid, "timestamp": now_ms - i * 200, "amount": 1.0}
+            for i in range(limit)
+        ]
 
     def get_account_info(self) -> Dict[str, Any]:
         if self.mock or self._exchange is None:

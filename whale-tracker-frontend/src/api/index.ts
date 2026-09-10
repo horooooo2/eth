@@ -979,6 +979,7 @@ export type V41PersonalView = {
     alpha_execution?: 'SHADOW' | 'EXECUTE' | string;
     version: string;
     updated_at: string;
+    user_id_ready?: boolean;
   };
   active_strategy: {
     id: string;
@@ -1009,6 +1010,9 @@ export type V41PersonalView = {
   signals: V41TradeIntent[];
   recent_order_intents: unknown[];
   last_update: string;
+  user_id_ready?: boolean;
+  account_environment?: string | null;
+  live_permission?: boolean;
 };
 
 export type V41StrategyDiagnostics = {
@@ -1336,6 +1340,152 @@ export async function selectExecution(body: {
   operator_id?: string;
 }) {
   const { data } = await http.post('/whale-ai/engine/execution/select', body, { timeout: 15000 });
+  return data;
+}
+
+export async function deleteAuthUser(id: string) {
+  const { data } = await http.delete<{
+    ok?: boolean;
+    user?: { id: string; username: string };
+    error?: string;
+  }>(`/auth/users/${encodeURIComponent(id)}`);
+  return data;
+}
+
+export async function updateAuthUserPassword(id: string, password: string) {
+  const { data } = await http.put<{
+    ok?: boolean;
+    user?: { id: string; username: string };
+    error?: string;
+  }>(`/auth/users/${encodeURIComponent(id)}/password`, { password });
+  return data;
+}
+
+export async function fetchDataBrowse(limit = 500) {
+  const { data } = await http.get<Record<string, unknown>>('/data/browse', {
+    params: { limit },
+  });
+  return data;
+}
+
+export async function fetchDataMonitor() {
+  const { data } = await http.get<{
+    socket?: Array<Record<string, unknown>>;
+    requests?: Array<Record<string, unknown>>;
+    errors?: Array<Record<string, unknown>>;
+    limits?: Record<string, number>;
+  }>('/data/monitor');
+  return data;
+}
+
+export async function resetSiteData(rounds = 3) {
+  const { data } = await http.post<Record<string, unknown>>(
+    '/data/reset',
+    {},
+    { params: { rounds }, timeout: 120_000 },
+  );
+  return data;
+}
+
+export async function addManualWhale(address: string, name: string) {
+  const { data } = await http.post<{
+    ok?: boolean;
+    whale?: { name?: string };
+    error?: string;
+  }>('/whales/manual', { address, name });
+  return data;
+}
+
+export async function renameWhale(id: string, name: string) {
+  const { data } = await http.patch<{
+    ok?: boolean;
+    whale?: { name?: string };
+    error?: string;
+  }>(`/whales/${encodeURIComponent(id)}/name`, { name });
+  return data;
+}
+
+export type ConsoleXAccount = {
+  username: string;
+  label?: string;
+  name?: string;
+  enabled?: boolean;
+};
+
+export async function fetchXAccounts() {
+  const { data } = await http.get<{
+    accounts?: ConsoleXAccount[];
+    poll?: Record<string, unknown>;
+    updatedAt?: number;
+  }>('/x/accounts');
+  return data;
+}
+
+export async function fetchXStatus() {
+  const { data } = await http.get<Record<string, unknown>>('/x/status');
+  return data;
+}
+
+export async function addXWatchAccount(username: string, label: string) {
+  const { data } = await http.post<{
+    accounts?: ConsoleXAccount[];
+    poll?: Record<string, unknown>;
+    updatedAt?: number;
+    error?: string;
+  }>('/x/accounts', { username, label });
+  return data;
+}
+
+export async function toggleXWatchAccount(username: string, enabled: boolean) {
+  const { data } = await http.post<{
+    accounts?: ConsoleXAccount[];
+    poll?: Record<string, unknown>;
+    error?: string;
+  }>(`/x/accounts/${encodeURIComponent(username)}/toggle`, { enabled });
+  return data;
+}
+
+export async function updateXWatchAccount(username: string, label: string) {
+  const { data } = await http.put<{
+    accounts?: ConsoleXAccount[];
+    poll?: Record<string, unknown>;
+    error?: string;
+  }>(`/x/accounts/${encodeURIComponent(username)}`, { label });
+  return data;
+}
+
+export async function deleteXWatchAccount(username: string) {
+  const { data } = await http.delete<{
+    accounts?: ConsoleXAccount[];
+    poll?: Record<string, unknown>;
+    error?: string;
+  }>(`/x/accounts/${encodeURIComponent(username)}`);
+  return data;
+}
+
+export async function refreshXWatchNow() {
+  const { data } = await http.post<Record<string, unknown>>(
+    '/x/refresh',
+    {},
+    { params: { force: 1 }, timeout: 90_000 },
+  );
+  return data;
+}
+
+export async function fetchApiHealth() {
+  const { data } = await http.get<Record<string, unknown>>('/health');
+  return data;
+}
+
+export async function fetchAdminStrategyConfigs() {
+  const { data } = await http.get<Record<string, unknown>>('/admin/strategy-configs');
+  return data;
+}
+
+export async function fetchAdminStrategyConfig(id: string) {
+  const { data } = await http.get<Record<string, unknown>>(
+    `/admin/strategy-configs/${encodeURIComponent(id)}`,
+  );
   return data;
 }
 

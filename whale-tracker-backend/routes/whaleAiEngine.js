@@ -57,14 +57,41 @@ function sendErr(res, err) {
   });
 }
 
-function assertLogin(req, res) {
+function attachOptionalUser(req) {
   try {
     req.user = requireUser(req);
-    return true;
-  } catch (err) {
+  } catch {
+    req.user = null;
+  }
+}
+
+function trustedUserId(req) {
+  attachOptionalUser(req);
+  return userBinding.resolveTrustedUserId({ sessionUserId: req.user?.user?.id });
+}
+
+function assertTrustedOwner(req, res) {
+  const uid = trustedUserId(req);
+  if (!uid) {
+    const err = new Error('尚未绑定交易操作用户');
+    err.status = 403;
+    err.code = 'ENGINE_OWNER_NOT_BOUND';
     sendErr(res, err);
     return false;
   }
+  req.trustedUserId = uid;
+  if (!req.user || !req.user.user) {
+    req.user = { user: { id: uid, username: 'bound-owner' } };
+  }
+  return true;
+}
+
+function gateEngine(req, res) {
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    attachOptionalUser(req);
+    return true;
+  }
+  return assertTrustedOwner(req, res);
 }
 
 function withFreshness(payload) {
@@ -83,8 +110,19 @@ function withFreshness(payload) {
   };
 }
 
+router.get('/owner-status', (req, res) => {
+  attachOptionalUser(req);
+  const uid = trustedUserId(req);
+  res.json({
+    ok: true,
+    user_id_ready: Boolean(uid),
+    owner_bound: Boolean(uid),
+    message: uid ? '' : '尚未绑定交易操作用户',
+  });
+});
+
 router.get('/health', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     const data = await v41.health();
     res.json(withFreshness({ ok: Boolean(data?.ok), health: data }));
@@ -108,13 +146,14 @@ router.get('/health', async (req, res) => {
 });
 
 router.get('/dashboard', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
-    const sessionId = String(req.user.user.id);
-    if (userBinding.getBoundEngineOwner() !== sessionId) {
+    const sessionId = String(req.user?.user?.id || '');
+    const uid = trustedUserId(req);
+    if (sessionId && userBinding.getBoundEngineOwner() !== sessionId) {
       await bindSessionUser(req);
     }
-    const snapshot = attachAccountEnvironment(await v41.getSnapshot(), sessionId);
+    const snapshot = attachAccountEnvironment(await v41.getSnapshot(), uid);
     const view = snapshot?.view || null;
     res.json(
       withFreshness({
@@ -154,7 +193,7 @@ router.get('/dashboard', async (req, res) => {
 });
 
 router.get('/regime', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     res.json(await v41.getRegime());
   } catch (err) {
@@ -163,7 +202,7 @@ router.get('/regime', async (req, res) => {
 });
 
 router.get('/risk-budget', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     res.json(await v41.getRiskBudget());
   } catch (err) {
@@ -172,7 +211,7 @@ router.get('/risk-budget', async (req, res) => {
 });
 
 router.get('/strategy-health', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     res.json(await v41.getStrategyHealth());
   } catch (err) {
@@ -181,7 +220,7 @@ router.get('/strategy-health', async (req, res) => {
 });
 
 router.get('/trade-intents', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     res.json(await v41.getTradeIntents());
   } catch (err) {
@@ -190,7 +229,7 @@ router.get('/trade-intents', async (req, res) => {
 });
 
 router.get('/order-intents', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     res.json(await v41.getOrderIntents());
   } catch (err) {
@@ -199,7 +238,7 @@ router.get('/order-intents', async (req, res) => {
 });
 
 router.get('/positions', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     res.json(await v41.getPositions());
   } catch (err) {
@@ -208,7 +247,7 @@ router.get('/positions', async (req, res) => {
 });
 
 router.get('/incidents', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     res.json(await v41.getIncidents());
   } catch (err) {
@@ -217,7 +256,7 @@ router.get('/incidents', async (req, res) => {
 });
 
 router.post('/start', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     await bindSessionUser(req);
     res.json(await v41.start());
@@ -227,7 +266,7 @@ router.post('/start', async (req, res) => {
 });
 
 router.post('/pause', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     res.json(await v41.pause());
   } catch (err) {
@@ -236,7 +275,7 @@ router.post('/pause', async (req, res) => {
 });
 
 router.post('/kill', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     const operatorId = String(req.user.user.username || req.user.user.id);
     // Engine lock only — do NOT synchronously flatten all OKX positions (timeout + wrong-account risk).
@@ -252,7 +291,7 @@ router.post('/kill', async (req, res) => {
 });
 
 router.post('/system/resume', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     if (!canResumeEngine(req.user)) {
       const err = new Error('无权限执行人工恢复（需要 risk_admin / owner）');
@@ -313,11 +352,13 @@ router.post('/internal/cancel-order', async (req, res) => {
 
 /** QA capability + account mode (demo/live from user.simulated) */
 router.get('/test/hft-sim/capability', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     const qaEx = require('../lib/v41QaExchange');
-    const userId = String(req.user.user.id);
-    const cap = qaEx.resolveQaCapability(userId);
+    const userId = String(trustedUserId(req) || '');
+    const cap = userId
+      ? qaEx.resolveQaCapability(userId)
+      : { exchange_available: false, account_mode: null, qa_exchange_enabled: false };
     // Also merge Python enabled flag
     let py = {};
     try {
@@ -390,7 +431,7 @@ router.get('/internal/qa/position', async (req, res) => {
 });
 
 router.post('/active-strategy', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     const strategyId = String(req.body?.strategy_id || req.body?.strategyId || '').trim();
     const operatorId = String(req.user.user.username || req.user.user.id);
@@ -406,7 +447,7 @@ router.post('/active-strategy', async (req, res) => {
 });
 
 router.get('/strategy/active', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     res.json(await v41.getActiveStrategy());
   } catch (err) {
@@ -415,7 +456,7 @@ router.get('/strategy/active', async (req, res) => {
 });
 
 router.get('/strategy/:id/diagnostics', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     const data = await v41.getStrategyDiagnostics(req.params.id);
     res.json(withFreshness(data));
@@ -425,7 +466,7 @@ router.get('/strategy/:id/diagnostics', async (req, res) => {
 });
 
 router.get('/strategies', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     res.json(await v41.listStrategies());
   } catch (err) {
@@ -434,7 +475,7 @@ router.get('/strategies', async (req, res) => {
 });
 
 router.post('/strategy/switch', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     const strategyId = String(req.body?.strategy_id || req.body?.strategyId || '').trim();
     if (!strategyId) {
@@ -456,7 +497,7 @@ router.post('/strategy/switch', async (req, res) => {
 });
 
 router.get('/bridge-status', (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   res.json(v41.bridgeStatus());
 });
 
@@ -464,7 +505,7 @@ router.get('/bridge-status', (req, res) => {
  *  demo/live must come from server-side OKX keys (user.simulated), never browser forge.
  */
 router.post('/test/hft-sim/start', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     const body = { ...(req.body || {}) };
     const mode = String(body.execution_mode || 'simulator').toLowerCase();
@@ -472,11 +513,11 @@ router.post('/test/hft-sim/start', async (req, res) => {
     delete body.account_mode;
     delete body.live_money;
     delete body.exchange_environment;
-    delete body.user_id; // always from session — never trust browser
+    delete body.user_id; // never trust browser
 
     if (mode === 'exchange') {
       const qaEx = require('../lib/v41QaExchange');
-      const userId = String(req.user.user.id);
+      const userId = String(req.trustedUserId || trustedUserId(req));
       const cap = qaEx.resolveQaCapability(userId);
       if (!cap.exchange_available) {
         const err = new Error(
@@ -515,7 +556,7 @@ router.post('/test/hft-sim/start', async (req, res) => {
 });
 
 router.post('/test/hft-sim/stop', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     res.json(await v41.hftSimStop());
   } catch (err) {
@@ -524,7 +565,7 @@ router.post('/test/hft-sim/stop', async (req, res) => {
 });
 
 router.get('/test/hft-sim/status', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     res.json(await v41.hftSimStatus());
   } catch (err) {
@@ -533,7 +574,7 @@ router.get('/test/hft-sim/status', async (req, res) => {
 });
 
 router.get('/test/hft-sim/report', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     res.json(await v41.hftSimReport());
   } catch (err) {
@@ -542,7 +583,7 @@ router.get('/test/hft-sim/report', async (req, res) => {
 });
 
 router.get('/execution/selections', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     res.json(await v41.executionSelections());
   } catch (err) {
@@ -551,7 +592,7 @@ router.get('/execution/selections', async (req, res) => {
 });
 
 router.post('/execution/select', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     await bindSessionUser(req);
     const body = {
@@ -565,7 +606,7 @@ router.post('/execution/select', async (req, res) => {
 });
 
 router.get('/events', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   const filters = {
     limit: req.query.limit,
     before: req.query.before,
@@ -600,7 +641,7 @@ router.get('/events', async (req, res) => {
 });
 
 router.get('/whale-bridge/status', (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     const { whaleBridgeStatus } = require('../lib/v41WhaleDataBridge');
     res.json(whaleBridgeStatus());
@@ -610,7 +651,7 @@ router.get('/whale-bridge/status', (req, res) => {
 });
 
 router.get('/whale-bridge/telemetry', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     res.json(await v41.whaleTelemetry());
   } catch (err) {
@@ -619,7 +660,7 @@ router.get('/whale-bridge/telemetry', async (req, res) => {
 });
 
 router.post('/whale-bridge/forward-once', async (req, res) => {
-  if (!assertLogin(req, res)) return;
+  if (!gateEngine(req, res)) return;
   try {
     const { forwardOnce } = require('../lib/v41WhaleDataBridge');
     res.json(await forwardOnce());

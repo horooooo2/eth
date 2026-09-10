@@ -1,0 +1,115 @@
+{
+  "schema_version": "1.0",
+  "config_type": "ALPHA_STRATEGY",
+  "strategy_id": "S9",
+  "name": "高频动量突破",
+  "release_stage": "DEMO_VALIDATION",
+  "implemented": true,
+  "demo_allowed": true,
+  "live_allowed": false,
+  "display": {
+    "summary_zh": "S9 是分钟级高频动量突破策略。它使用5分钟行情判断短期方向，在1分钟周期等待价格突破、成交量增强和盘口条件合格后入场。每笔初始风险为账户权益的0.10%，策略风险上限为0.30%，最多持有一个仓位。交易所侧始终保留保护止损，1.5R止盈、30分钟时间退出和方向翻转退出由交易引擎主动执行。第一阶段仅用于 BTC-USDT-SWAP 的 OKX 模拟盘验证。",
+    "entry_summary_zh": "仅在最新已收盘的 5 分钟方向有效、S3 方向足够强、且最新已收盘 1 分钟突破前 20 根高低点（含 1bps 缓冲）时考虑开仓。",
+    "risk_summary_zh": "单笔初始风险为账户权益的 0.10%，策略风险上限 0.30%，杠杆上限 3 倍，同一策略最多 1 个仓位。",
+    "exit_summary_zh": "交易所侧保护止损始终存在。引擎按 1.5R 主动止盈、持仓满 30 分钟或 5 分钟方向有效翻转时减仓退出。"
+  },
+  "enabled": true,
+  "symbol": "BTC-USDT-SWAP",
+  "direction_timeframe": "5m",
+  "entry_timeframe": "1m",
+  "first_environment": "OKX_DEMO",
+  "risk_per_trade_pct_equity": 0.001,
+  "strategy_initial_risk_cap_pct_equity": 0.003,
+  "leverage_cap": 3.0,
+  "max_open_positions_per_strategy": 1,
+  "same_instrument_alpha_exclusive": true,
+  "direction": {
+    "source": "LATEST_CLOSED_5M",
+    "max_age_seconds": 360,
+    "ema_fast": 9,
+    "ema_slow": 21,
+    "adx_period": 14,
+    "adx_min": 18,
+    "slope_bars": 3
+  },
+  "s3": {
+    "long_bias_min": 0.2,
+    "short_bias_max": -0.2,
+    "block_regimes": ["panic", "range"]
+  },
+  "breakout": {
+    "lookback_bars": 20,
+    "buffer_bps": 1
+  },
+  "volume": {
+    "ema_period": 20,
+    "min_ratio": 1.3
+  },
+  "candle": {
+    "min_body_ratio": 0.55,
+    "min_close_location": 0.65
+  },
+  "atr": {
+    "period": 14,
+    "min_bps": 5,
+    "max_bps": 50
+  },
+  "stop": {
+    "method": "MICRO_SWING_1X1",
+    "lookback_bars": 10,
+    "min_distance_bps": 6,
+    "max_atr_mult": 1.2
+  },
+  "microstructure": {
+    "orderbook_levels": 5,
+    "orderbook_max_age_seconds": 2,
+    "trades_window_seconds": 15,
+    "trades_max_age_seconds": 3,
+    "long_depth_imbalance_min": -0.1,
+    "short_depth_imbalance_max": 0.1,
+    "long_flow_imbalance_min": 0.05,
+    "short_flow_imbalance_max": -0.05,
+    "spread_abs_max_bps": 2.0,
+    "spread_p80_mult": 1.25,
+    "spread_sample_interval_seconds": 5,
+    "spread_window_seconds": 300,
+    "spread_required_samples": 60,
+    "max_expected_slippage_bps": 2.0
+  },
+  "cost": {
+    "target_r": 1.5,
+    "min_target_multiple_of_round_trip": 3
+  },
+  "ttl_seconds": 20,
+  "max_entry_drift_bps": 6,
+  "exits": {
+    "take_profit_r": 1.5,
+    "max_holding_minutes": 30,
+    "cooldown_closed_1m_after_normal_exit": 2,
+    "cooldown_closed_1m_after_stop": 5,
+    "consecutive_stop_pause_count": 3,
+    "consecutive_stop_pause_minutes": 30,
+    "neutral_holds": true
+  },
+  "frequency": {
+    "max_completed_or_filled_openings_per_rolling_hour": 6,
+    "max_openings_per_utc_calendar_day": 30
+  },
+  "freshness": {
+    "closed_1m_max_age_seconds": 90,
+    "closed_5m_max_age_seconds": 360
+  },
+  "warmup": {
+    "closed_1m_bars": 200,
+    "closed_5m_bars": 100
+  },
+  "cleanup": {
+    "backoff_seconds": [2, 5, 10, 30, 60],
+    "max_attempts": 5
+  },
+  "trade_intent": {
+    "emit_when_entry_rule_passes": true,
+    "initial_status": "WAITING_EXECUTION_CONFIRMATION",
+    "lifecycle_policy_ref": "signal_lifecycle.strategy_policy.S9"
+  }
+}

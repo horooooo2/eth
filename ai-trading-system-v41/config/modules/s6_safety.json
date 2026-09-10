@@ -3,6 +3,9 @@
   "config_type": "SYSTEM_MODULE",
   "module_id": "S6",
   "name": "Safety",
+  "display": {
+    "summary_zh": "负责监控异常与安全等级，在风险扩大时阻止新开仓，并在必要时升级保护措施。"
+  },
   "release_stage": "PRODUCTION",
   "implemented": true,
   "enabled": true,

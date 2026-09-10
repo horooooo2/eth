@@ -53,6 +53,7 @@ import {
 } from '@/api';
 import { useRealtimePrivate, type PrivateRealtimeMessage } from '@/composables/useRealtimePrivate';
 import { isPositionEvent, mapBusToEngineEvent, severityToLvl } from '@/utils/runtimeEvents';
+import { eventZh, reasonZh } from '@/utils/strategyDisplayZh';
 
 const emit = defineEmits<{
   requestLogin: [];
@@ -236,8 +237,9 @@ async function refreshExecutionSelections() {
     }
   } catch {
     executionItems.value = [
-      { id: 'S1', kind: 'alpha', name: '趋势跟踪 S1', available: true },
-      { id: 'S2', kind: 'alpha', name: '极端情绪反转 S2', available: true },
+      { id: 'S1', kind: 'alpha', name: '趋势跟踪', available: true },
+      { id: 'S2', kind: 'alpha', name: '极端情绪反转', available: true },
+      { id: 'S9', kind: 'alpha', name: '高频动量突破', available: true },
       {
         id: 'S8',
         kind: 'alpha',
@@ -376,12 +378,16 @@ const resumeReason = ref('');
 
 const strategyCatalog: Record<string, { name: string; desc: string }> = {
   S1: {
-    name: '趋势跟踪 S1',
-    desc: '适合趋势行情，结合均线、趋势强度和波动率过滤寻找顺势机会。',
+    name: '趋势跟踪',
+    desc: '适合趋势行情，结合趋势强度和波动率过滤寻找顺势机会。',
   },
   S2: {
-    name: '极端情绪反转 S2',
-    desc: '适合极端超买或超卖行情，在情绪、资金费率和持仓变化同时满足时寻找反转机会。',
+    name: '极端情绪反转',
+    desc: '适合极端超买或超卖行情。当前实现尚未接入真实资金费率和持仓量。',
+  },
+  S9: {
+    name: '高频动量突破',
+    desc: '分钟级短周期动量突破，仅用于 OKX 模拟盘验证，不允许实盘。',
   },
   S8: {
     name: '巨鲸行为共振',
@@ -395,9 +401,10 @@ const strategyCatalog: Record<string, { name: string; desc: string }> = {
 
 const engineOnline = computed(() => whaleAiEngineAvailable.value && whaleAiEngineState.value !== 'OFFLINE');
 
-const activeStrategy = computed<'S1' | 'S2'>(() => {
+const activeStrategy = computed(() => {
   const id = String(whaleAiActiveStrategy.value || 'S1').toUpperCase();
-  return id === 'S2' ? 'S2' : 'S1';
+  if (id === 'S2' || id === 'S9' || id === 'S1') return id;
+  return 'S1';
 });
 
 const currentStrategy = computed(() => {
@@ -527,7 +534,7 @@ function reasonLabelZh(code: string) {
     DUPLICATE_CLOSED_CANDLE: '同一根已收盘K线已发过信号',
     S5_BUDGET_BLOCK: 'S5风险预算拦截',
   };
-  return map[code] || code;
+  return map[code] || reasonZh(code);
 }
 
 function qaSideLabelZh(side: string) {
@@ -938,9 +945,9 @@ function eventToLogItem(ev: WhaleAiEngineEvent): LogItem {
   const codes = ev.reason_codes?.length ? ev.reason_codes : ev.reason_code ? [ev.reason_code] : [];
   const reasonsZh = codes.length ? codes.map(reasonLabelZh).join('；') : '';
   const msg =
-    ev.message ||
+      ev.message ||
     [
-      ev.event_type,
+      eventZh(ev.event_type),
       ev.strategy_id || '—',
       ev.symbol || '—',
       ev.direction ? directionLabelZh(ev.direction) : '',

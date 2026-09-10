@@ -7,6 +7,12 @@
   "implemented": true,
   "demo_allowed": false,
   "live_allowed": true,
+  "display": {
+    "summary_zh": "S2 是极端情绪反转策略，使用 15 分钟周期，在超买超卖与反转确认条件同时满足时寻找反向机会。当前实现仍使用内部情绪与反转规则，尚未接入真实资金费率和持仓量实时数据，不能把它理解成已经在实盘跟踪 funding 或 OI。",
+    "entry_summary_zh": "当 RSI 等极端条件与反转确认同时成立时考虑入场。",
+    "risk_summary_zh": "单笔初始风险为账户权益的 0.30%，策略风险上限 0.75%，杠杆上限 4 倍。",
+    "exit_summary_zh": "沿用现有反转策略的止损与退出规则，不额外声称已使用真实 funding / OI。"
+  },
   "enabled": true,
   "timeframe": "15m",
   "risk_per_trade_pct_equity": 0.003,

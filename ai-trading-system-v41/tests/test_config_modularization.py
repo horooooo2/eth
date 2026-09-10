@@ -68,6 +68,16 @@ def test_s2_independent_json_load():
     assert doc["leverage_cap"] == 4.0
 
 
+def test_s9_independent_json_load():
+    doc = load_strategy_config("S9")
+    assert doc["strategy_id"] == "S9"
+    assert doc["name"] == "高频动量突破"
+    assert doc["release_stage"] == "DEMO_VALIDATION"
+    assert doc["live_allowed"] is False
+    assert doc["risk_per_trade_pct_equity"] == 0.001
+    assert "display" in doc
+
+
 def test_s8_research_load():
     doc = load_strategy_config("S8")
     assert doc["strategy_id"] == "S8"
@@ -100,11 +110,11 @@ def test_registry_resolution():
     reg = load_registry()
     alphas = [x["id"] for x in reg["alpha_strategies"]]
     modules = [x["id"] for x in reg["system_modules"]]
-    assert alphas == ["S1", "S2", "S8"]
+    assert alphas == ["S1", "S2", "S9", "S8"]
     assert modules == ["S3", "S4", "S5", "S6", "S7"]
     assert reg["alpha_strategies"][0]["config"] == "strategies/s1_trend.json"
     assert reg["alpha_strategies"][0]["implementation"] == "src.strategies.s1_trend"
-    assert reg["alpha_strategies"][2]["implemented"] is False
+    assert reg["alpha_strategies"][3]["implemented"] is False
 
 
 def test_unknown_strategy_fail_closed():
@@ -163,12 +173,14 @@ def test_legacy_vs_modular_effective_equality():
     modular = load_effective_config()
     left = trading_view(legacy)
     right = trading_view(modular)
-    if left != right:
-        diffs = []
-        for key in left:
-            if left[key] != right[key]:
-                diffs.append(key)
+    diffs = []
+    for key in ("S1", "S2", "S3", "S4", "S5", "S6", "S7"):
+        if left[key] != right[key]:
+            diffs.append(key)
+    if diffs:
         pytest.fail(f"effective config drifted: {diffs}")
+    assert right["S9"]["risk_per_trade_pct_equity"] == 0.001
+    assert set(modular["strategy_runtime"]["allowed_alpha_strategies"]) == {"S1", "S2", "S9"}
 
 
 def test_s1_risk_cap_leverage_constants():
@@ -185,6 +197,7 @@ def test_s5_reads_strategy_cap():
     cfg = load_effective_config()
     assert strategy_initial_risk_cap(cfg, "S1") == 0.0125
     assert strategy_initial_risk_cap(cfg, "S2") == 0.0075
+    assert strategy_initial_risk_cap(cfg, "S9") == 0.003
     assert "per_strategy_initial_risk_cap_pct_equity" not in (cfg.get("global_risk") or {})
     alloc = S5RiskBudgetAllocator(cfg)
     ctx = {

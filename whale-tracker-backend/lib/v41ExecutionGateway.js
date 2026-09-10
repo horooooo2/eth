@@ -6,6 +6,7 @@ const keysMod = require('./userExchangeKeys');
 const okxTrade = require('./okxTradeClient');
 const executeReady = require('./v41ExecuteReadiness');
 const demoV1 = require('./v41DemoExecuteV1');
+const s9Demo = require('./v41S9Demo');
 const prot = require('./v41ProtectiveStop');
 const startupRecovery = require('./v41StartupRecovery');
 const {
@@ -736,17 +737,34 @@ async function executeOrderIntent(orderIntent, auth = {}) {
         executeDeps.hasNonterminalOpening !== undefined
           ? executeDeps.hasNonterminalOpening
           : listNonterminalRecords().some((r) => r.order_intent_id !== orderIntentId);
-      await demoV1.assertDemoV1Opening(orderIntent, {
-        instId,
-        accountEnvironment,
-        tdMode,
-        posMode,
-        actualLeverage,
-        leverageCap: executeDeps.leverageCap || demoV1.S1_LEVERAGE_CAP,
-        exchangeQty,
-        ownedOpen,
-        hasNonterminalOpening,
-      });
+      const sid = String(orderIntent.origin_strategy_id || orderIntent.strategy_id || '').toUpperCase();
+      if (sid === 'S9') {
+        await s9Demo.assertS9DemoOpening(orderIntent, {
+          instId,
+          accountEnvironment,
+          actualLeverage,
+          leverageCap: executeDeps.leverageCap || s9Demo.S9_LEVERAGE_CAP,
+        });
+        s9Demo.assertS9PreSubmit(orderIntent, {
+          bid: executeDeps.bid,
+          ask: executeDeps.ask,
+          bids: executeDeps.bids,
+          asks: executeDeps.asks,
+          final_okx_sz: executeDeps.finalOkxSz,
+        });
+      } else {
+        await demoV1.assertDemoV1Opening(orderIntent, {
+          instId,
+          accountEnvironment,
+          tdMode,
+          posMode,
+          actualLeverage,
+          leverageCap: executeDeps.leverageCap || demoV1.S1_LEVERAGE_CAP,
+          exchangeQty,
+          ownedOpen,
+          hasNonterminalOpening,
+        });
+      }
       ready = executeDeps.readiness.assertBeforeAlphaSubmit(orderIntent, {
         instId,
         posMode,

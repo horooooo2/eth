@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from src.core.orchestrator import Orchestrator
+from src.runtime.alpha_ids import SELECTABLE_ALPHAS, coerce_selectable
 from src.runtime.alpha_execution import (
     ALPHA_EXECUTE,
     ALPHA_SHADOW,
@@ -35,14 +36,20 @@ ROOT = Path(__file__).resolve().parents[2]
 
 STRATEGY_META = {
     "S1": {
-        "name": "趋势跟踪 S1",
+        "name": "趋势跟踪",
         "description": "适合趋势行情，结合趋势强度和波动率过滤寻找顺势机会。",
         "live_allowed": True,
     },
     "S2": {
-        "name": "极端情绪反转 S2",
-        "description": "在极端超买超卖、资金费率和持仓变化同时满足时寻找反转机会。",
+        "name": "极端情绪反转",
+        "description": "在极端超买超卖与反转确认条件同时满足时寻找反转机会。当前未接入真实 funding / OI。",
         "live_allowed": True,
+    },
+    "S9": {
+        "name": "高频动量突破",
+        "description": "分钟级短周期动量突破，仅用于 OKX 模拟盘验证，不允许实盘。",
+        "live_allowed": False,
+        "release_stage": "DEMO_VALIDATION",
     },
     "S8": {
         "name": "巨鲸行为共振",
@@ -104,7 +111,7 @@ class EngineRuntime:
         default_active = (
             (loaded.effective.get("strategy_runtime") or {}).get("default_active_strategy_id") or active_strategy
         )
-        self.active_strategy = default_active if default_active in ("S1", "S2") else "S1"
+        self.active_strategy = coerce_selectable(default_active)
         self.user_id = os.getenv("V41_ENGINE_USER_ID") or None
         self.account_scope = os.getenv("V41_ENGINE_ACCOUNT_SCOPE", "default")
         self.node_gateway_url = os.getenv("V41_NODE_GATEWAY_URL", "http://127.0.0.1:80").rstrip("/")
@@ -162,7 +169,7 @@ class EngineRuntime:
         self._active_strategy_changed_at = _now_iso()
 
         saved = self.store.get_kv("active_strategy")
-        if saved in ("S1", "S2"):
+        if saved in SELECTABLE_ALPHAS:
             self.active_strategy = saved
         self.orchestrator.active_strategy_id = self.active_strategy
 
@@ -239,11 +246,11 @@ class EngineRuntime:
         return (getattr(self.orchestrator, "diagnostics", {}) or {}).get("S1")
 
     def _active_diag(self):
-        sid = self.active_strategy if self.active_strategy in ("S1", "S2") else "S1"
+        sid = coerce_selectable(self.active_strategy)
         return (getattr(self.orchestrator, "diagnostics", {}) or {}).get(sid)
 
     def strategy_diagnostics(self, strategy_id: str = "S1") -> Dict[str, Any]:
-        sid = strategy_id if strategy_id in ("S1", "S2") else "S1"
+        sid = coerce_selectable(strategy_id)
         diag = (getattr(self.orchestrator, "diagnostics", {}) or {}).get(sid)
         pool = self.orchestrator.data_pool
         indicators = {
@@ -514,7 +521,7 @@ class EngineRuntime:
         return {"ok": True, "state": self.state, "s6_level": s6.level, "result": result}
 
     def get_active_strategy(self) -> Dict[str, Any]:
-        sid = self.active_strategy if self.active_strategy in ("S1", "S2") else "S1"
+        sid = coerce_selectable(self.active_strategy)
         s7 = self.orchestrator.s7.score_strategy(sid)
         s5 = (self.orchestrator.context or {}).get("S5") or {}
         budgets = s5.get("strategy_risk_budget_pct_equity") or {}
@@ -534,7 +541,7 @@ class EngineRuntime:
 
     def list_strategies(self) -> Dict[str, Any]:
         items = []
-        for sid in ("S1", "S2"):
+        for sid in SELECTABLE_ALPHAS:
             s7 = self.orchestrator.s7.score_strategy(sid)
             meta = STRATEGY_META.get(sid, {})
             state = str(s7.get("state") or "ON")
@@ -586,7 +593,7 @@ class EngineRuntime:
         }
 
     def _attach_execution_architecture(self, snap: Dict[str, Any]) -> Dict[str, Any]:
-        sid = self.active_strategy if self.active_strategy in ("S1", "S2") else "S1"
+        sid = coerce_selectable(self.active_strategy)
         snap["alpha_execution"] = getattr(self, "alpha_execution", ALPHA_SHADOW)
         snap["account_environment"] = snap.get("account_environment")
         snap["live_permission"] = live_trading_enabled()
@@ -609,7 +616,7 @@ class EngineRuntime:
     def list_execution_selections(self) -> Dict[str, Any]:
         """Unified selector: alpha strategies + QA test modes (QA is not alpha)."""
         items: List[Dict[str, Any]] = []
-        for sid in ("S1", "S2"):
+        for sid in SELECTABLE_ALPHAS:
             s7 = self.orchestrator.s7.score_strategy(sid)
             meta = STRATEGY_META.get(sid, {})
             state = str(s7.get("state") or "ON")
@@ -794,11 +801,11 @@ class EngineRuntime:
         - flip active_strategy_id (orchestrator hard gate)
         Position ownership is Phase D1.
         """
-        if strategy_id not in ("S1", "S2"):
-            return {"ok": False, "error": {"code": "INVALID_STRATEGY", "message": "only S1/S2"}}
+        if strategy_id not in SELECTABLE_ALPHAS:
+            return {"ok": False, "error": {"code": "INVALID_STRATEGY", "message": "only S1/S2/S9"}}
 
         with self._strategy_switch_lock:
-            prev = self.active_strategy if self.active_strategy in ("S1", "S2") else "S1"
+            prev = coerce_selectable(self.active_strategy)
             if strategy_id == prev:
                 return {
                     "ok": True,
@@ -1109,7 +1116,7 @@ class EngineRuntime:
         if str(meta.get("execution_status") or "").upper() == "WOULD_SUBMIT":
             raise ValueError("WOULD_SUBMIT cannot create position ownership")
         origin = str(candidate.get("origin_strategy_id") or "").strip()
-        if origin not in ("S1", "S2"):
+        if origin not in SELECTABLE_ALPHAS:
             raise ValueError("origin_strategy_id required")
         ti = str(candidate.get("origin_trade_intent_id") or "").strip()
         if not ti:
@@ -1142,6 +1149,13 @@ class EngineRuntime:
         payload = pos.to_dict()
         self.store.upsert_open_position(payload, _now_iso())
         self.bus.emit("position.opened", payload)
+        if str(origin).upper() == "S9":
+            orch = getattr(self, "orchestrator", None)
+            if orch is not None and hasattr(orch, "s9_runtime"):
+                import time as _time
+                orch.s9_runtime.setdefault("opening_times", []).append(_time.time())
+                orch.s9_runtime["day_count"] = int(orch.s9_runtime.get("day_count") or 0) + 1
+                orch.s9_runtime["consecutive_stops"] = 0
         return payload
 
     def exit_policy_for_position(self, position_id: str) -> Dict[str, Any]:
