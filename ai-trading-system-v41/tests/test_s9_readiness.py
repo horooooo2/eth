@@ -14,10 +14,21 @@ from src.runtime.s9_readiness import (
 
 
 def test_missing_capabilities_not_ready():
-    for key in ("public_websocket", "fee_from_okx_account", "node_presubmit_book"):
+    for key in (
+        "public_ws_capability",
+        "fee_capability",
+        "node_presubmit_capability",
+        "public_websocket",
+        "fee_from_okx_account",
+        "node_presubmit_book",
+    ):
         out = s9_implementation_readiness(adapters={key: False})
         assert out["status"] == "NOT_READY"
-        assert key in out["blockers"]
+        assert any(k in out["blockers"] for k in (key, {
+            "public_websocket": "public_ws_capability",
+            "fee_from_okx_account": "fee_capability",
+            "node_presubmit_book": "node_presubmit_capability",
+        }.get(key, key)))
 
 
 def test_wired_implementation_ready_validation_unverified():
@@ -56,3 +67,49 @@ def test_preflight_ready_without_live_fill():
     assert "fee_ready" in bad["blockers"]
     live = s9_demo_preflight_readiness(runtime={**rt, "live_permission": True})
     assert live["status"] == "NOT_READY"
+
+
+def test_implementation_ready_preflight_not_when_runtime_blocked():
+    impl = s9_implementation_readiness()
+    assert impl["status"] == "READY"
+    assert impl["detection"] == "capability_registration"
+    for key in (
+        "public_ws_capability",
+        "fee_capability",
+        "node_presubmit_capability",
+        "protective_stop_capability",
+        "active_exit_capability",
+    ):
+        assert impl["checks"][key] is True
+    rt = {
+        "account_environment": "OKX_DEMO",
+        "live_allowed": False,
+        "live_permission": False,
+        "trusted_owner_ready": True,
+        "s6_level": 0,
+        "reconciliation_status": "MATCHED",
+        "ownership_clear": True,
+        "data_state": "OFF",
+        "fee_ready": False,
+        "recovery_status": "FAILED",
+        "demo_allowed": True,
+    }
+    pre = s9_demo_preflight_readiness(runtime=rt)
+    assert pre["status"] == "NOT_READY"
+    assert "fee_ready" in pre["blockers"]
+    assert "market_data_ready" in pre["blockers"]
+    assert "recovery_ready" in pre["blockers"]
+
+
+def test_readiness_does_not_use_absolute_deploy_paths():
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1] / "src" / "runtime" / "s9_readiness.py"
+    text = src.read_text(encoding="utf-8")
+    assert "/root/whale-tracker-backend" not in text
+    assert "/root/whale-tracker-deploy" not in text
+    assert "_backend_file" not in text
+    assert "_backend_roots" not in text
+    assert "whale-tracker-deploy" not in text
+    fake_missing = s9_implementation_readiness()
+    assert fake_missing["status"] == "READY"

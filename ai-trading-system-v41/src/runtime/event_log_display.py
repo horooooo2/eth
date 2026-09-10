@@ -42,6 +42,7 @@ SYSTEM_EVENT_TYPES = {
     "RECONCILIATION_MATCHED",
     "S9_MARKET_DATA_CONNECTED",
     "S9_MARKET_DATA_DISCONNECTED",
+    "S9_MARKET_DATA_CONNECTING",
     "S9_MARKET_DATA_DEGRADED",
     "S9_MARKET_DATA_READY",
     "S9_FEE_READY",
@@ -286,6 +287,48 @@ def _qty_line(filled: Optional[float], target: Optional[float]) -> str:
     return ""
 
 
+SYSTEM_HARD_BLOCKERS = {
+    "ACCOUNT_CONTEXT_NOT_READY",
+    "OWNER_NOT_READY",
+    "CREDENTIAL_NOT_FOUND",
+    "ACCOUNT_ENV_NOT_READY",
+    "FEE_API_TIMEOUT",
+    "FEE_API_ERROR",
+    "FEE_RESPONSE_INVALID",
+    "S9_COST_DATA_UNAVAILABLE",
+    "S9_FEE_UNAVAILABLE",
+    "S9_DATA_1M_STALE",
+    "S9_DATA_5M_STALE",
+    "S9_MARKET_DATA_DISCONNECTED",
+    "S9_MARKET_DATA_CONNECTING",
+    "S9_MARKET_DATA_DEGRADED",
+    "MARKET_DATA_STALE",
+    "MARKET_DATA_WARMING_UP",
+    "S9_ORDERBOOK_STALE",
+    "S9_TRADES_STALE",
+    "S9_DATA_DEGRADED",
+    "STARTUP_RECOVERY_FAILED",
+    "EXECUTION_RECOVERY_FAILED",
+    "EXECUTION_RECOVERY_PENDING",
+    "RECONCILIATION_NOT_MATCHED",
+    "RECONCILIATION_MISMATCH",
+    "S9_IMPLEMENTATION_NOT_READY",
+    "S9_DEMO_PREFLIGHT_NOT_READY",
+    "ENGINE_OWNER_NOT_BOUND",
+    "ALPHA_EXECUTION_USER_NOT_READY",
+}
+
+
+def format_no_trade_message(name: str, sym: str, codes: List[str]) -> str:
+    reasons = [reason_zh(c) for c in codes]
+    reason_block = "原因：\n" + "；\n".join(reasons) if reasons else ""
+    if any(code in SYSTEM_HARD_BLOCKERS for code in codes):
+        head = "系统尚未具备交易条件"
+        return f"{head}\n{reason_block}".strip() if reason_block else head
+    head = " · ".join([p for p in (name or "策略", sym, "本轮不交易") if p])
+    return f"{head}\n{reason_block}".strip() if reason_block else head
+
+
 def format_user_message(event: Mapping[str, Any]) -> str:
     et = _norm(event.get("event_type")).upper()
     name = _strategy_label(event)
@@ -302,8 +345,7 @@ def format_user_message(event: Mapping[str, Any]) -> str:
     covered = pick_qty(event, ("covered_contracts", "sz", "owned_contracts"))
 
     if et in {"STRATEGY_NO_TRADE", "S9_NO_TRADE"}:
-        head = " · ".join([p for p in (name or "策略", sym, "本轮不交易") if p])
-        return f"{head}\n{reason_block}".strip() if reason_block else head
+        return format_no_trade_message(name, sym, codes)
 
     if et == "ORDER_SUBMITTED":
         return "平仓订单已提交，等待成交" if reduce else "开仓订单已提交，等待成交"

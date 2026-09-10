@@ -53,6 +53,22 @@ test('chinese primary copy', () => {
   });
   assert.match(noTrade, /本轮不交易/);
   assert.match(noTrade, /S1 趋势跟踪/);
+  const systemNt = display.formatUserMessage({
+    event_type: 'S9_NO_TRADE',
+    strategy_id: 'S9',
+    symbol: 'BTC-USDT-SWAP',
+    reason_codes: ['ACCOUNT_CONTEXT_NOT_READY', 'S9_COST_DATA_UNAVAILABLE'],
+  });
+  assert.match(systemNt, /系统尚未具备交易条件/);
+  assert.doesNotMatch(systemNt.split('\n')[0], /本轮不交易/);
+  const alphaNt = display.formatUserMessage({
+    event_type: 'S9_NO_TRADE',
+    strategy_id: 'S9',
+    symbol: 'BTC-USDT-SWAP',
+    reason_codes: ['S9_NO_BREAKOUT', 'ADX'],
+  });
+  assert.match(alphaNt, /本轮不交易/);
+  assert.doesNotMatch(alphaNt, /系统尚未具备交易条件/);
   assert.doesNotMatch(noTrade, /\bNO_TRADE\b/);
   const partial = display.formatUserMessage({
     event_type: 'ORDER_PARTIALLY_FILLED',

@@ -323,6 +323,76 @@ test('12 startup recovery FAILED blocks opening', async () => {
   );
 });
 
+test('12b startup recovery retries after trusted owner binds', async () => {
+  process.env.V41_ALPHA_EXECUTION = 'EXECUTE';
+  binding.clearBoundEngineOwner();
+  delete process.env.V41_ENGINE_OWNER_USER_ID;
+  const deps = {
+    ensureExecTable: () => {},
+    getOkxCredentialsForUser: (id) =>
+      id
+        ? { apiKey: 'k', secret: 's', passphrase: 'p', simulated: true }
+        : null,
+    listNonterminal: () => [],
+    getOrder: async () => null,
+    upsertOrder: () => {},
+    getAlgoOrder: async () => null,
+    listRecoverableStops: () => [],
+    reconcile: async () => ({ block: false, status: 'MATCHED' }),
+  };
+  const first = await startup.runStartupRecovery(deps);
+  assert.equal(first.status, 'FAILED');
+  assert.equal(first.reason, 'ACCOUNT_CONTEXT_NOT_READY');
+  assert.equal(first.details.missing, 'trusted_owner');
+  binding.bindEngineOwner('owner-after-login');
+  const second = await startup.runStartupRecovery({
+    ...deps,
+    ownerUserId: 'owner-after-login',
+  });
+  assert.equal(second.status, 'READY');
+  binding.clearBoundEngineOwner();
+});
+
+test('12c owner bind recovery rerun never placeOrder or placeAlgo', async () => {
+  process.env.V41_ALPHA_EXECUTION = 'EXECUTE';
+  binding.clearBoundEngineOwner();
+  delete process.env.V41_ENGINE_OWNER_USER_ID;
+  const calls = { place: 0, algo: 0 };
+  const deps = {
+    ensureExecTable: () => {},
+    getOkxCredentialsForUser: (id) =>
+      id ? { apiKey: 'k', secret: 's', passphrase: 'p', simulated: true } : null,
+    listNonterminal: () => [],
+    getOrder: async () => null,
+    upsertOrder: () => {},
+    getAlgoOrder: async () => null,
+    listRecoverableStops: () => [],
+    reconcile: async () => ({ block: false, status: 'MATCHED' }),
+    placeOrder: async () => {
+      calls.place += 1;
+      throw new Error('placeOrder must not run during recovery');
+    },
+    placeAlgoOrder: async () => {
+      calls.algo += 1;
+      throw new Error('placeAlgo must not run during recovery');
+    },
+  };
+  const first = await startup.runStartupRecovery(deps);
+  assert.equal(first.status, 'FAILED');
+  assert.equal(first.reason, 'ACCOUNT_CONTEXT_NOT_READY');
+  binding.bindEngineOwner('owner-after-login');
+  const second = await startup.runStartupRecovery({
+    ...deps,
+    ownerUserId: 'owner-after-login',
+  });
+  assert.equal(second.status, 'READY');
+  assert.equal(second.mutations, 0);
+  assert.ok(second.private_queries >= 1);
+  assert.equal(calls.place, 0);
+  assert.equal(calls.algo, 0);
+  binding.clearBoundEngineOwner();
+});
+
 test('13 SHADOW startup no private mutation', async () => {
   process.env.V41_ALPHA_EXECUTION = 'SHADOW';
   const mutations = { n: 0 };

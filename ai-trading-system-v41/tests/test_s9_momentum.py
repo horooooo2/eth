@@ -242,6 +242,43 @@ def test_orphan_cleanup_never_force_cancelled():
     assert fail["force_local_cancelled"] is False
 
 
+def test_same_closed_1m_skips_repeat_decision():
+    from src.strategies.s9_momentum import S9MomentumStrategy
+
+    strat = S9MomentumStrategy({"S9_high_frequency_momentum": {"enabled": True}})
+    one = _bars(40, start=100, step=0.2, freq="1min")
+    five = _bars(80, start=100, step=0.8, freq="5min")
+    ctx1: dict = {}
+    strat.generate(closed_1m=one, closed_5m=five, context=ctx1, emit_intents=False)
+    assert ctx1["s9"].get("skipped") is not True
+    ctx2: dict = {}
+    strat.generate(closed_1m=one, closed_5m=five, context=ctx2, emit_intents=False)
+    assert ctx2["s9"]["skipped"] is True
+    assert ctx2["s9"]["skip_reason"] == "SAME_CLOSED_CANDLE"
+    assert ctx2["s9"]["reason_codes"] == []
+    assert "S9_SIGNAL_ALREADY_USED" not in ctx2["s9"].get("reason_codes", [])
+
+
+def test_same_closed_does_not_record_evaluation():
+    from src.core.orchestrator import Orchestrator
+
+    loaded = load_runtime_config()
+    orch = Orchestrator(loaded.effective, mode="paper")
+    orch.active_strategy_id = "S9"
+    one = _bars(40, start=100, step=0.2, freq="1min")
+    five = _bars(80, start=100, step=0.8, freq="5min")
+    orch.s9_closed_1m = one
+    orch.s9_closed_5m = five
+    orch.context.setdefault("S3.regime", "range")
+    first = orch._s9_generate(emit_intents=False, extra_block=[])
+    count = orch.diagnostics["S9"].evaluation_count
+    second = orch._s9_generate(emit_intents=False, extra_block=[])
+    assert first == []
+    assert second == []
+    assert orch.diagnostics["S9"].evaluation_count == count
+    assert orch.context.get("s9", {}).get("skip_reason") == "SAME_CLOSED_CANDLE"
+
+
 def test_same_1m_not_repeated():
     cfg = _cfg()
     bull = _bars(80, start=100, step=0.8, freq="5min")

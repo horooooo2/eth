@@ -41,13 +41,19 @@ function isShadowRuntime() {
   return true;
 }
 
-function failStatus(code, message) {
+function failStatus(code, message, details) {
   setExecutionRecoveryStatus({
     status: 'FAILED',
     reason: code,
     error: message,
+    details: details || undefined,
   });
-  persistRecoverySafe('FAILED', { reason: code, error: message, at: recovery.at });
+  persistRecoverySafe('FAILED', {
+    reason: code,
+    error: message,
+    details: details || undefined,
+    at: recovery.at,
+  });
   return getExecutionRecoveryStatus();
 }
 
@@ -71,12 +77,25 @@ async function runStartupRecovery(deps = {}) {
     String(process.env.V41_ENGINE_OWNER_USER_ID || '').trim();
   persistRecoverySafe('STARTED', { reason: 'EXECUTE_RECOVERY' });
   if (!owner) {
-    return failStatus('ACCOUNT_CONTEXT_NOT_READY', 'trusted owner missing');
+    return failStatus('ACCOUNT_CONTEXT_NOT_READY', 'trusted owner missing', {
+      missing: 'trusted_owner',
+      bound_engine_owner: userBinding.getBoundEngineOwner() || null,
+      owner_env_user_id: String(process.env.V41_ENGINE_OWNER_USER_ID || '').trim() || null,
+      user_exchange_keys: null,
+      simulated: null,
+      account_environment: null,
+    });
   }
   const getCreds = deps.getOkxCredentialsForUser;
   const creds = typeof getCreds === 'function' ? getCreds(owner) : null;
   if (!creds || !creds.apiKey) {
-    return failStatus('ACCOUNT_CONTEXT_NOT_READY', 'OKX credentials not ready');
+    return failStatus('ACCOUNT_CONTEXT_NOT_READY', 'OKX credentials not ready', {
+      missing: 'user_exchange_keys',
+      trusted_owner: owner,
+      user_exchange_keys: creds ? 'incomplete' : null,
+      simulated: creds && creds.simulated != null ? Boolean(creds.simulated) : null,
+      account_environment: null,
+    });
   }
   const env = alphaGate.resolveAccountEnvironment(creds);
   if (env !== 'OKX_DEMO') {

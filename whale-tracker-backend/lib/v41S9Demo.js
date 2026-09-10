@@ -1,3 +1,5 @@
+require('./s9Capabilities');
+
 /**
  * S9 Demo opening + Node final pre-submit gates.
  * Independent from DEMO_EXECUTE_V1 (S1 only). live_allowed stays false.

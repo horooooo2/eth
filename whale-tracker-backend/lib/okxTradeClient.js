@@ -364,14 +364,32 @@ async function cancelAlgoOrders(items) {
   return data.data || [];
 }
 
-async function getTradeFee({ instId = 'BTC-USDT-SWAP', instType = 'SWAP' } = {}) {
-  const path = `/api/v5/account/trade-fee${qs({ instType, instId })}`;
-  const data = await okxPrivate('GET', path);
-  const row = (data.data && data.data[0]) || null;
-  if (!row) return null;
-  const taker = Number(row.taker);
-  const maker = Number(row.maker);
-  if (!Number.isFinite(taker) || !Number.isFinite(maker)) return null;
+function tradeFeeQuery({ instId = 'BTC-USDT-SWAP', instType = 'SWAP' } = {}) {
+  const type = String(instType || 'SWAP').toUpperCase();
+  if (type === 'SWAP' || type === 'FUTURES' || type === 'OPTION') {
+    const family = String(instId || 'BTC-USDT-SWAP')
+      .trim()
+      .replace(/-SWAP$/i, '') || 'BTC-USDT';
+    return { instType: type, instFamily: family };
+  }
+  return { instType: type, instId: instId || undefined };
+}
+
+function firstFiniteFee(...values) {
+  for (const value of values) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n !== 0) return n;
+    if (Number.isFinite(n) && value !== '' && value != null) return n;
+  }
+  return null;
+}
+
+function parseTradeFeeRow(row, { instId = 'BTC-USDT-SWAP', instType = 'SWAP' } = {}) {
+  if (!row || typeof row !== 'object') return null;
+  const group = Array.isArray(row.feeGroup) ? row.feeGroup[0] : null;
+  const taker = firstFiniteFee(row.taker, row.takerU, row.takerUSDC, group && group.taker);
+  const maker = firstFiniteFee(row.maker, row.makerU, row.makerUSDC, group && group.maker);
+  if (taker == null || maker == null) return null;
   return {
     instId: row.instId || instId,
     instType: row.instType || instType,
@@ -379,7 +397,15 @@ async function getTradeFee({ instId = 'BTC-USDT-SWAP', instType = 'SWAP' } = {})
     maker,
     taker_bps: Math.abs(taker) * 10_000,
     maker_bps: Math.abs(maker) * 10_000,
+    http_status: 200,
+    okx_code: '0',
   };
+}
+
+async function getTradeFee({ instId = 'BTC-USDT-SWAP', instType = 'SWAP' } = {}) {
+  const path = `/api/v5/account/trade-fee${qs(tradeFeeQuery({ instId, instType }))}`;
+  const data = await okxPrivate('GET', path);
+  return parseTradeFeeRow((data.data && data.data[0]) || null, { instId, instType });
 }
 
 async function getAccountConfig(options = {}) {
@@ -635,6 +661,8 @@ module.exports = {
   getCredentials,
   withTradeCredentials,
   getAccountConfig,
+  tradeFeeQuery,
+  parseTradeFeeRow,
   getTradeFee,
   getPublicInstrument,
   getPublicBooks5,

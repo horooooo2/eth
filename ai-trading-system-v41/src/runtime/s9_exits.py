@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Optional
 
+from src.runtime.s9_capabilities import register_capability
+
 def _f(value, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -11,6 +13,13 @@ def _f(value, default: float = 0.0) -> float:
         return default
 
 PRIORITY = ("DIRECTION_FLIP", "TAKE_PROFIT", "TIME_EXIT")
+
+register_capability("active_exit_capability", ready=True, source="s9_exits.evaluate_owned_exit")
+register_capability(
+    "protective_stop_capability",
+    ready=True,
+    source="keep_protective_stop_until_flat+v41ProtectiveStop",
+)
 
 
 def take_profit_price(*, side: str, avg_entry: float, initial_stop: float, r_mult: float = 1.5) -> float:

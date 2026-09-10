@@ -305,14 +305,23 @@ class EngineRuntime:
             return
         if str(os.getenv("V41_S9_PUBLIC_WS", "1")).strip().lower() in {"0", "false", "off"}:
             return
-        from src.adapters.okx_public_ws import OkxPublicWsClient
+        from src.adapters.okx_public_ws import (
+            BUSINESS_WS_URL,
+            PUBLIC_WS_URL,
+            S9_CANDLE_CHANNELS,
+            S9_PUBLIC_CHANNELS,
+            OkxPublicWsClient,
+        )
 
         hub = getattr(self.orchestrator, "s9_hub", None)
         if hub is None:
             return
-        client = OkxPublicWsClient()
-        hub.attach_client(client)
-        client.start()
+        public = OkxPublicWsClient(url=PUBLIC_WS_URL, channels=S9_PUBLIC_CHANNELS)
+        candle = OkxPublicWsClient(url=BUSINESS_WS_URL, channels=S9_CANDLE_CHANNELS)
+        hub.attach_client(public, role="public")
+        hub.attach_client(candle, role="candle")
+        public.start()
+        candle.start()
         self._s9_ws_started = True
 
     def _s1_diag(self):
@@ -426,6 +435,10 @@ class EngineRuntime:
                 self.state = "RUNNING"
             if self.console_mode != "QA_HFT_SIM":
                 self._set_alpha_opening(True)
+            try:
+                self._start_s9_public_ws()
+            except Exception as exc:  # noqa: BLE001
+                self.last_error = f"s9 public ws: {exc}"
             self.bus.emit("engine.status", {"state": self.state, "alpha_opening_enabled": self.alpha_opening_enabled})
             return {"ok": True, "state": self.state, "alpha_opening_enabled": self.alpha_opening_enabled}
         self._stop.clear()
@@ -996,6 +1009,11 @@ class EngineRuntime:
                 },
             )
             self.bus.emit("engine.status", {"active_strategy": strategy_id, "previous": prev})
+            if strategy_id == "S9":
+                try:
+                    self._start_s9_public_ws()
+                except Exception as exc:  # noqa: BLE001
+                    self.last_error = f"s9 public ws: {exc}"
             return {
                 "ok": True,
                 "previous": prev,

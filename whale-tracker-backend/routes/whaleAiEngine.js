@@ -11,13 +11,34 @@ const alphaGate = require('../lib/v41AlphaLiveGate');
 const userBinding = require('../lib/v41UserBinding');
 const runtimeEvents = require('../lib/v41RuntimeEvents');
 const eventLogDisplay = require('../lib/eventLogDisplay');
+const { overlayS9RuntimeReadiness } = require('../lib/s9ReadinessOverlay');
+require('../lib/s9Capabilities');
+
+async function recoverOwnerAccountContext(userId) {
+  const uid = String(userId || '').trim();
+  if (!uid) return null;
+  const startup = require('../lib/v41StartupRecovery');
+  const st = startup.getExecutionRecoveryStatus();
+  const retry =
+    st.status === 'PENDING' ||
+    (st.status === 'FAILED' && st.reason === 'ACCOUNT_CONTEXT_NOT_READY');
+  if (!retry) return st;
+  const gateway = require('../lib/v41ExecutionGateway');
+  return gateway.runStartupRecovery({ ownerUserId: uid });
+}
 
 async function bindSessionUser(req) {
   const userId = String(req.user?.user?.id || '').trim();
   if (!userId) return { user_id_ready: false };
   userBinding.bindEngineOwner(userId);
   try {
-    return await v41.bindUser(userId);
+    const bound = await v41.bindUser(userId);
+    try {
+      bound.recovery = await recoverOwnerAccountContext(userId);
+    } catch (err) {
+      console.warn('[V41_RECOVERY_AFTER_BIND_FAILED]', err.message || err);
+    }
+    return bound;
   } catch (err) {
     console.warn('[V41_BIND_USER_FAILED]', err.message || err);
     return { ok: false, user_id: userId, user_id_ready: true, bind_error: err.message };
@@ -125,7 +146,7 @@ router.get('/owner-status', (req, res) => {
 router.get('/health', async (req, res) => {
   if (!gateEngine(req, res)) return;
   try {
-    const data = await v41.health();
+    const data = overlayS9RuntimeReadiness(await v41.health());
     res.json(withFreshness({ ok: Boolean(data?.ok), health: data }));
   } catch (err) {
     if (
@@ -155,6 +176,8 @@ router.get('/dashboard', async (req, res) => {
       await bindSessionUser(req);
     }
     const snapshot = attachAccountEnvironment(await v41.getSnapshot(), uid);
+    if (snapshot && snapshot.s9_readiness) overlayS9RuntimeReadiness(snapshot.s9_readiness);
+    if (snapshot) overlayS9RuntimeReadiness(snapshot);
     const view = snapshot?.view || null;
     res.json(
       withFreshness({
@@ -339,7 +362,7 @@ router.get('/internal/okx-trade-fee', async (req, res) => {
     return res.status(status).json({
       ok: false,
       code: err.code || 'S9_COST_DATA_UNAVAILABLE',
-      reason: 'S9_COST_DATA_UNAVAILABLE',
+      reason: err.reason || 'S9_COST_DATA_UNAVAILABLE',
       error: err.message || 'fee api failed',
       details: err.details,
     });

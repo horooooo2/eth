@@ -7,9 +7,13 @@ import json
 import time
 
 from src.adapters.okx_public_ws import (
+    BUSINESS_WS_URL,
     CONN_CONNECTED,
     CONN_DISCONNECTED,
     CONN_RECONNECTING,
+    PUBLIC_WS_URL,
+    S9_CANDLE_CHANNELS,
+    S9_PUBLIC_CHANNELS,
     OkxPublicWsClient,
     candle_is_closed,
     parse_public_message,
@@ -28,10 +32,14 @@ def _candle(ts, confirm, close=100.0):
 
 
 def test_subscribe_channels():
-    args = s9_subscribe_args()
-    ch = {a["channel"] for a in args}
-    assert ch == {"candle1m", "candle5m", "books5", "trades"}
-    assert all(a["instId"] == "BTC-USDT-SWAP" for a in args)
+    pub = s9_subscribe_args(channels=S9_PUBLIC_CHANNELS)
+    candles = s9_subscribe_args(channels=S9_CANDLE_CHANNELS)
+    assert {a["channel"] for a in pub} == {"books5", "trades"}
+    assert {a["channel"] for a in candles} == {"candle1m", "candle5m"}
+    assert all(a["instId"] == "BTC-USDT-SWAP" for a in pub + candles)
+    assert "/business" in BUSINESS_WS_URL
+    assert "/public" in PUBLIC_WS_URL
+    assert "/business" not in PUBLIC_WS_URL
 
 
 def test_parse_closed_and_forming_candles():
@@ -124,11 +132,46 @@ def test_forming_ignored_for_signal_and_direction():
     assert hub.new_closed_1m_timestamp() is None
 
 
+def test_age_from_close_and_rest_seed():
+    now = 1_000_000.0
+    hub = S9MarketHub(now_fn=lambda: now)
+    hub.connection_state = CONN_CONNECTED
+    hub.ingest_candle(
+        "candle1m",
+        {"ts": int((now - 80) * 1000), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "closed": True},
+    )
+    hub.ingest_candle(
+        "candle5m",
+        {"ts": int((now - 320) * 1000), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "closed": True},
+    )
+    assert hub.closed_age_sec(hub.closed_1m, now, bar_seconds=60) == 20
+    assert hub.closed_age_sec(hub.closed_5m, now, bar_seconds=300) == 20
+    assert hub.needs_rest_seed(now) is False
+    hub.closed_1m.clear()
+    hub.ingest_candle(
+        "candle1m",
+        {"ts": int((now - 200) * 1000), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "closed": True},
+    )
+    assert hub.needs_rest_seed(now) is True
+
+
+def test_initial_disconnect_is_connecting():
+    events = []
+    hub = S9MarketHub(on_event=lambda ev, _d: events.append(ev))
+    hub.refresh_state()
+    assert "S9_MARKET_DATA_CONNECTING" in events
+    assert "S9_MARKET_DATA_DISCONNECTED" not in events
+    hub._on_conn(CONN_CONNECTED)
+    hub._on_conn(CONN_DISCONNECTED)
+    assert "S9_MARKET_DATA_CONNECTED" in events
+    assert "S9_MARKET_DATA_DISCONNECTED" in events
+
+
 def test_stale_1m_5m_book_trades():
     hub = S9MarketHub(now_fn=lambda: 1_000_000)
     hub.connection_state = CONN_CONNECTED
     hub.ingest_candle("candle1m", {"ts": (1_000_000 - 200) * 1000, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "closed": True})
-    hub.ingest_candle("candle5m", {"ts": (1_000_000 - 400) * 1000, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "closed": True})
+    hub.ingest_candle("candle5m", {"ts": (1_000_000 - 800) * 1000, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "closed": True})
     snap = hub.snapshot(fee_ready=True, now_ts=1_000_000)
     assert snap["data_state"] == "OFF"
     assert "S9_DATA_1M_STALE" in snap["reasons"] or "S9_DATA_5M_STALE" in snap["reasons"]
@@ -275,3 +318,190 @@ def test_spread_window_rules():
         authorized_base_qty=1,
     )
     assert "S9_SPREAD_TOO_WIDE" in p80_block["reasons"]
+
+
+def test_parse_object_candle_and_subscribe_error_channel():
+    obj = parse_public_message(
+        {
+            "arg": {"channel": "candle1m", "instId": "BTC-USDT-SWAP"},
+            "data": [{"ts": "1700000000000", "o": "1", "h": "2", "l": "0.5", "c": "1.5", "vol": "10", "confirm": "1"}],
+        }
+    )
+    assert obj["items"][0]["closed"] is True
+    assert obj["items"][0]["open_at"] == 1_700_000_000_000
+    assert obj["items"][0]["close_at"] == 1_700_000_060_000
+    err = parse_public_message(
+        {
+            "event": "error",
+            "code": "60018",
+            "msg": "Subscribe failed, wrong URL or channel:candle1m,instId:BTC-USDT-SWAP doesn't exist.",
+        }
+    )
+    assert err["type"] == "event"
+    assert err["channel"] == "candle1m"
+
+
+def test_ws_candle_progression_and_diagnostics():
+    hub = S9MarketHub(now_fn=lambda: 1_000_000)
+    t1 = 1_000_000_000
+    t2 = t1 + 60_000
+    hub.ingest_ws(
+        {
+            "channel": "candle1m",
+            "items": [
+                {
+                    "ts": t1,
+                    "open": 1,
+                    "high": 1,
+                    "low": 1,
+                    "close": 1,
+                    "volume": 1,
+                    "closed": True,
+                    "confirm": "1",
+                    "open_at": t1,
+                    "close_at": t1 + 60_000,
+                }
+            ],
+        }
+    )
+    assert hub.last_1m_open_at == t1
+    assert hub.last_1m_close_at == t1 + 60_000
+    assert hub.last_1m_confirmed is True
+    assert hub.last_1m_received_at is not None
+    hub.ingest_ws(
+        {
+            "channel": "candle1m",
+            "items": [
+                {
+                    "ts": t2,
+                    "open": 1,
+                    "high": 1,
+                    "low": 1,
+                    "close": 1,
+                    "volume": 1,
+                    "closed": True,
+                    "confirm": "1",
+                    "open_at": t2,
+                    "close_at": t2 + 60_000,
+                }
+            ],
+        }
+    )
+    assert max(hub.closed_1m) == t2
+    assert hub.last_1m_open_at == t2
+    five = t1
+    hub.ingest_ws(
+        {
+            "channel": "candle5m",
+            "items": [
+                {
+                    "ts": five,
+                    "open": 1,
+                    "high": 1,
+                    "low": 1,
+                    "close": 1,
+                    "volume": 1,
+                    "closed": True,
+                    "confirm": "1",
+                    "open_at": five,
+                    "close_at": five + 300_000,
+                }
+            ],
+        }
+    )
+    assert hub.last_5m_open_at == five
+    assert hub.last_5m_close_at == five + 300_000
+    assert hub.last_5m_confirmed is True
+    snap = hub.snapshot(now_ts=1_000_000)
+    assert snap["last_1m_confirmed"] is True
+    assert snap["last_5m_confirmed"] is True
+
+
+def test_forming_ignored_closed_accepted():
+    hub = S9MarketHub()
+    ts = 1_700_000_000_000
+    hub.ingest_candle(
+        "candle1m",
+        {"ts": ts, "open": 1, "high": 2, "low": 1, "close": 1.5, "volume": 9, "closed": False, "confirm": "0"},
+        source="ws",
+    )
+    assert ts not in hub.closed_1m
+    assert hub.forming_1m is not None
+    hub.ingest_candle(
+        "candle1m",
+        {"ts": ts, "open": 1, "high": 2, "low": 1, "close": 1.8, "volume": 10, "closed": True, "confirm": "1"},
+        source="ws",
+    )
+    assert ts in hub.closed_1m
+    assert hub.forming_1m is None
+
+
+class _FakeConn:
+    def __init__(self, state, url=""):
+        self.connection_state = state
+        self.url = url
+
+
+def test_live_ws_candles_do_not_use_rest():
+    now = 1_000_000.0
+    hub = S9MarketHub(now_fn=lambda: now)
+    hub.candle_client = _FakeConn(CONN_CONNECTED, url=BUSINESS_WS_URL)
+    hub.last_candle_ws_received_at = now - 5
+    hub.ingest_candle(
+        "candle1m",
+        {"ts": int((now - 80) * 1000), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "closed": True},
+    )
+    hub.ingest_candle(
+        "candle5m",
+        {"ts": int((now - 320) * 1000), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "closed": True},
+    )
+    assert hub.rest_hydrate_reason(now) is None
+    assert hub.needs_rest_seed(now) is False
+
+
+def test_gap_rest_when_candle_ws_stale_books_live():
+    now = 1_000_000.0
+    hub = S9MarketHub(now_fn=lambda: now)
+    hub.connection_state = CONN_CONNECTED
+    hub.candle_client = _FakeConn(CONN_DISCONNECTED, url=BUSINESS_WS_URL)
+    hub.public_client = _FakeConn(CONN_CONNECTED, url=PUBLIC_WS_URL)
+    hub.ingest_book(
+        {
+            "timestamp": int(now * 1000),
+            "bids": [[100, 1]],
+            "asks": [[100.01, 1]],
+            "best_bid": 100,
+            "best_ask": 100.01,
+        }
+    )
+    hub.ingest_trade({"timestamp": int(now * 1000), "side": "buy", "qty": 1, "price": 100})
+    hub.ingest_candle(
+        "candle1m",
+        {"ts": int((now - 200) * 1000), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "closed": True},
+    )
+    hub.ingest_candle(
+        "candle5m",
+        {"ts": int((now - 800) * 1000), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "closed": True},
+    )
+    assert hub.book_age_sec(now) <= 2
+    assert hub.trades_age_sec(now) <= 3
+    assert hub.rest_hydrate_reason(now) == "gap_recovery"
+
+
+def test_rest_seed_same_closed_does_not_reopen_evaluation():
+    hub = S9MarketHub()
+    ts = 1_700_000_000_000
+    hub.ingest_candle(
+        "candle1m",
+        {"ts": ts, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "closed": True},
+    )
+    assert hub.new_closed_1m_timestamp() == ts
+    hub.mark_1m_evaluated(ts)
+    hub.seed_closed_bars(
+        "1m",
+        __import__("pandas").DataFrame(
+            {"open": [1], "high": [1], "low": [1], "close": [1], "volume": [1]},
+            index=[__import__("pandas").Timestamp(ts, unit="ms", tz="UTC")],
+        ),
+    )
+    assert hub.new_closed_1m_timestamp() is None

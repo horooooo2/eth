@@ -150,10 +150,12 @@ class Orchestrator:
         if bars is None:
             try:
                 if active == "S9":
-                    if self.s9_hub.closed_1m_df().empty:
+                    rest_reason = self.s9_hub.rest_hydrate_reason()
+                    if rest_reason:
                         bars_1m = self.adapter.get_klines(self.symbol, timeframe="1m", limit=250)
                         bars_5m = self.adapter.get_klines(self.symbol, timeframe="5m", limit=150)
                         self._apply_s9_market(bars_1m, bars_5m)
+                        self.s9_hub.mark_rest_hydrate(rest_reason)
                     else:
                         self._apply_s9_market()
                     bars = self.s9_closed_1m
@@ -195,7 +197,13 @@ class Orchestrator:
                 self.context["s9_fee_event"] = self.s9_fee.last_event
                 on_evt = getattr(self.s9_hub, "on_event", None)
                 if callable(on_evt):
-                    on_evt(self.s9_fee.last_event, {"source": "okx_account_trade_fee"})
+                    on_evt(
+                        self.s9_fee.last_event,
+                        {
+                            "source": "okx_account_trade_fee",
+                            "reason_code": getattr(self.s9_fee, "last_reason_code", None),
+                        },
+                    )
         elif hasattr(self.adapter, "get_trade_fee_bps") and self.context.get("okx_fee_bps") is None:
             try:
                 self.context["okx_fee_bps"] = self.adapter.get_trade_fee_bps(self.symbol)
@@ -334,6 +342,15 @@ class Orchestrator:
             "connection_state": snap["connection_state"],
             "forming_1m": snap.get("forming_1m"),
             "forming_5m": snap.get("forming_5m"),
+            "last_1m_open_at": snap.get("last_1m_open_at"),
+            "last_1m_close_at": snap.get("last_1m_close_at"),
+            "last_1m_received_at": snap.get("last_1m_received_at"),
+            "last_1m_confirmed": snap.get("last_1m_confirmed"),
+            "last_5m_open_at": snap.get("last_5m_open_at"),
+            "last_5m_close_at": snap.get("last_5m_close_at"),
+            "last_5m_received_at": snap.get("last_5m_received_at"),
+            "last_5m_confirmed": snap.get("last_5m_confirmed"),
+            "rest_hydrate_reason": getattr(hub, "last_rest_reason", None),
             "s9_market": snap,
         }
         self.context["market_data"] = dict(self.market_meta)
@@ -657,6 +674,8 @@ class Orchestrator:
             emit_intents=False,
         )
         payload = dict(self.context.get("s9") or {})
+        if payload.get("skipped"):
+            return []
         reasons = list(payload.get("reason_codes") or extra_block)
         decision = str(payload.get("decision") or "NO_TRADE")
         direction = str(payload.get("direction") or "NONE")

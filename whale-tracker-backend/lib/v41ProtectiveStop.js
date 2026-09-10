@@ -2,6 +2,7 @@
  * Independent OKX protective stop (POST /api/v5/trade/order-algo).
  * Demo V1: net_mode, reduceOnly, sz = owned contracts (never closeFraction=1).
  */
+require('./s9Capabilities');
 const crypto = require('crypto');
 const { getDb } = require('./db');
 

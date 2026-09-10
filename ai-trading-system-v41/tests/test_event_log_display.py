@@ -95,6 +95,26 @@ def test_chinese_primary_copy() -> None:
     assert submitted == "开仓订单已提交，等待成交"
     assert format_user_message({"event_type": "ENGINE_START"}) == "交易引擎已启动"
     assert "盘口数据已过期" == format_user_message({"event_type": "S9_ORDERBOOK_STALE"})
+    system_nt = format_user_message(
+        {
+            "event_type": "S9_NO_TRADE",
+            "strategy_id": "S9",
+            "symbol": "BTC-USDT-SWAP",
+            "reason_codes": ["ACCOUNT_CONTEXT_NOT_READY", "S9_COST_DATA_UNAVAILABLE"],
+        }
+    )
+    assert system_nt.startswith("系统尚未具备交易条件")
+    assert "本轮不交易" not in system_nt.split("\n")[0]
+    alpha_nt = format_user_message(
+        {
+            "event_type": "S9_NO_TRADE",
+            "strategy_id": "S9",
+            "symbol": "BTC-USDT-SWAP",
+            "reason_codes": ["S9_NO_BREAKOUT", "S9_VOLUME_NOT_EXPANDED"],
+        }
+    )
+    assert "本轮不交易" in alpha_nt
+    assert not alpha_nt.startswith("系统尚未具备交易条件")
     assert "当前交易对仍由其他策略持有" in format_user_message({"event_type": "SYMBOL_OWNERSHIP_CONFLICT"})
 
     assert reason_zh("CLOSE_VS_EMA20") == "收盘价与 EMA20 的位置不符合趋势要求"

@@ -48,7 +48,9 @@ def test_cache_expiry_refresh_success_and_failure():
     state["ok"] = False
     assert client.get_taker_bps() is None
     assert client.snapshot()["reason"] == "S9_COST_DATA_UNAVAILABLE"
+    assert client.snapshot()["reason_code"] == "FEE_API_TIMEOUT"
     assert client.last_event == "S9_FEE_UNAVAILABLE"
+    assert client.last_reason_code == "FEE_API_TIMEOUT"
 
 
 @pytest.mark.parametrize(
@@ -74,3 +76,28 @@ def test_owner_or_credential_missing():
     client = S9FeeClient(fetcher=boom, ttl_sec=60, now_fn=time.time)
     assert client.get_taker_bps() is None
     assert client.last_event == "S9_FEE_UNAVAILABLE"
+    assert client.last_reason_code == "FEE_API_ERROR"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "OWNER_NOT_READY",
+        "CREDENTIAL_NOT_FOUND",
+        "ACCOUNT_ENV_NOT_READY",
+        "FEE_API_TIMEOUT",
+        "FEE_API_ERROR",
+        "FEE_RESPONSE_INVALID",
+    ],
+)
+def test_fee_failure_subreasons(code):
+    from src.runtime.s9_fee import FeeFetchError
+
+    def boom():
+        raise FeeFetchError(code, code)
+
+    client = S9FeeClient(fetcher=boom, ttl_sec=60, now_fn=time.time)
+    assert client.get_taker_bps() is None
+    assert client.snapshot()["reason"] == "S9_COST_DATA_UNAVAILABLE"
+    assert client.snapshot()["reason_code"] == code
+    assert client.last_reason_code == code

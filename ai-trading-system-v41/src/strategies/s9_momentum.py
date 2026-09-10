@@ -69,14 +69,14 @@ def closed_only(df: pd.DataFrame, *, timeframe: str, now: Optional[pd.Timestamp]
     return df
 
 
-def bar_age_seconds(ts: Any, now: Optional[pd.Timestamp] = None) -> float:
+def bar_age_seconds(ts: Any, now: Optional[pd.Timestamp] = None, *, bar_seconds: float = 0.0) -> float:
     now_ts = now if now is not None else pd.Timestamp.now(tz="UTC")
     if now_ts.tzinfo is None:
         now_ts = now_ts.tz_localize("UTC")
     t = pd.Timestamp(ts)
     if t.tzinfo is None:
         t = t.tz_localize("UTC")
-    return float((now_ts - t).total_seconds())
+    return float((now_ts - t).total_seconds()) - float(bar_seconds)
 
 
 def signal_key(direction: str, closed_1m_ts: Any) -> str:
@@ -263,7 +263,7 @@ def evaluate_entry(
         out["reason_codes"] = ["S9_DATA_5M_STALE"]
         out["diagnostics"]["s9_data_state"] = "OFF"
         return out
-    age5 = bar_age_seconds(closed_5m.index[-1], now)
+    age5 = bar_age_seconds(closed_5m.index[-1], now, bar_seconds=300)
     if age5 > float((cfg.get("direction") or {}).get("max_age_seconds") or fresh_5m):
         out["reason_codes"] = ["S9_DATA_5M_STALE"]
         out["diagnostics"]["s9_data_state"] = "OFF"
@@ -288,7 +288,7 @@ def evaluate_entry(
         out["reason_codes"] = ["S9_DATA_1M_STALE"]
         out["diagnostics"]["s9_data_state"] = "OFF"
         return out
-    if bar_age_seconds(closed_1m.index[-1], now) > fresh_1m:
+    if bar_age_seconds(closed_1m.index[-1], now, bar_seconds=60) > fresh_1m:
         out["reason_codes"] = ["S9_DATA_1M_STALE"]
         out["diagnostics"]["s9_data_state"] = "OFF"
         return out
@@ -400,9 +400,11 @@ class S9MomentumStrategy:
         if self._last_eval_1m == stamp:
             context["s9"] = {
                 "decision": "NO_TRADE",
-                "reason_codes": ["S9_SIGNAL_ALREADY_USED"],
+                "reason_codes": [],
+                "skipped": True,
+                "skip_reason": "SAME_CLOSED_CANDLE",
                 "signal_key": self._last_signal_key,
-                "diagnostics": {"source_1m_candle_timestamp": stamp, "repeat_evaluation": False},
+                "diagnostics": {"source_1m_candle_timestamp": stamp, "repeat_evaluation": True},
             }
             return []
         self._last_eval_1m = stamp

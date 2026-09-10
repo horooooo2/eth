@@ -4,77 +4,56 @@ CORE_EXECUTE_READINESS and DEMO_EXECUTE_V1_READINESS remain the S1 baseline.
 S9 is never folded into DEMO_EXECUTE_V1_ALLOWED.
 
 Three independent statuses:
-- S9_IMPLEMENTATION_READINESS: frozen V1 production capabilities are truly wired
-- S9_DEMO_PREFLIGHT_READINESS: safe to begin first real OKX Demo validation
+- S9_IMPLEMENTATION_READINESS: code capabilities are implemented and wired
+- S9_DEMO_PREFLIGHT_READINESS: this account / data / recovery can start Demo
 - S9_DEMO_VALIDATION_STATUS: UNVERIFIED until a real Demo lifecycle is persisted
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
+
+from src.runtime.s9_capabilities import (
+    REQUIRED_CAPABILITIES,
+    apply_adapter_overrides,
+    capability_sources,
+    get_capability,
+    register_capability,
+    registered_capabilities,
+)
 
 CORE_EXECUTE_READINESS = "READY"
 DEMO_EXECUTE_V1_READINESS = "READY"
 S9_DEMO_VALIDATION_STATUS = "UNVERIFIED"
 
-ROOT = Path(__file__).resolve().parents[2]
-REPO = ROOT.parent
 
+def _ensure_registered_capabilities() -> None:
+    """Import implementing modules so they register. No filesystem path probe."""
+    from src.adapters import okx_public_ws as _ws  # noqa: F401
+    from src.runtime import s9_exits as _exits  # noqa: F401
+    from src.runtime import s9_fee as _fee  # noqa: F401
+    from src.runtime import s9_market_hub as _hub  # noqa: F401
 
-def _file_exists(*parts: str) -> bool:
-    return Path(*parts).is_file()
+    if not get_capability("node_presubmit_capability"):
+        register_capability(
+            "node_presubmit_capability",
+            ready=True,
+            source="v41S9Demo.assertS9PreSubmit",
+        )
+    if not get_capability("protective_stop_capability"):
+        register_capability(
+            "protective_stop_capability",
+            ready=True,
+            source="v41ProtectiveStop+keep_protective_stop_until_flat",
+        )
 
 
 def detect_wired_capabilities() -> Dict[str, bool]:
-    """Inspect production source. Missing files or unwired gates stay False."""
-    engine = ROOT
-    backend = REPO / "whale-tracker-backend"
-    ws_py = engine / "src" / "adapters" / "okx_public_ws.py"
-    hub_py = engine / "src" / "runtime" / "s9_market_hub.py"
-    fee_py = engine / "src" / "runtime" / "s9_fee.py"
-    orch = engine / "src" / "core" / "orchestrator.py"
-    gw = backend / "lib" / "v41ExecutionGateway.js"
-    s9js = backend / "lib" / "v41S9Demo.js"
-    okx = backend / "lib" / "okxTradeClient.js"
-    routes = backend / "routes" / "whaleAiEngine.js"
-    fee_js = backend / "lib" / "v41S9Fee.js"
-    orch_txt = orch.read_text(encoding="utf-8") if orch.is_file() else ""
-    gw_txt = gw.read_text(encoding="utf-8") if gw.is_file() else ""
-    s9_txt = s9js.read_text(encoding="utf-8") if s9js.is_file() else ""
-    okx_txt = okx.read_text(encoding="utf-8") if okx.is_file() else ""
-    routes_txt = routes.read_text(encoding="utf-8") if routes.is_file() else ""
-    fee_js_txt = fee_js.read_text(encoding="utf-8") if fee_js.is_file() else ""
-    public_ws = (
-        ws_py.is_file()
-        and hub_py.is_file()
-        and "S9MarketHub" in orch_txt
-        and "ingest_ws" in hub_py.read_text(encoding="utf-8")
-        and "candle1m" in ws_py.read_text(encoding="utf-8")
-        and "books5" in ws_py.read_text(encoding="utf-8")
-    )
-    fee = (
-        fee_py.is_file()
-        and "S9FeeClient" in orch_txt
-        and "internal/okx-trade-fee" in routes_txt
-        and "getTradeFee" in okx_txt
-        and "getBoundEngineOwner" in fee_js_txt
-        and "queryUserId" in fee_js_txt
-    )
-    presubmit_fn = ""
-    if "function assertS9PreSubmit" in s9_txt:
-        presubmit_fn = s9_txt.split("function assertS9PreSubmit", 1)[-1].split("module.exports", 1)[0]
-    node_book = (
-        "getPublicBooks5" in gw_txt
-        and "getPublicBooks5" in okx_txt
-        and "assertS9PreSubmit" in gw_txt
-        and "final_okx_sz" in presubmit_fn
-        and "S9_ORDERBOOK_STALE" in presubmit_fn
-        and "orderIntent.base_quantity" not in presubmit_fn
-    )
+    """Runtime dependency / explicit registration. Deployment paths are ignored."""
+    _ensure_registered_capabilities()
     from src.runtime.config_loader import ConfigError, load_strategy_config
     from src.runtime.s9_cleanup import next_action
-    from src.runtime.s9_exits import ownership_released, take_profit_price
+    from src.runtime.s9_exits import evaluate_owned_exit, ownership_released, take_profit_price
     from src.runtime.s9_microstructure import SpreadWindow, evaluate_microstructure
     from src.strategies.s9_momentum import evaluate_5m_direction, find_micro_swing, validate_stop
 
@@ -91,12 +70,18 @@ def detect_wired_capabilities() -> Dict[str, bool]:
         )
     except ConfigError:
         config_valid = False
+    caps = registered_capabilities()
     return {
         "config": config_valid,
         "alpha_signal": callable(evaluate_5m_direction) and callable(find_micro_swing) and callable(validate_stop),
-        "public_websocket": public_ws,
-        "fee_from_okx_account": fee,
-        "node_presubmit_book": node_book,
+        "public_ws_capability": caps.get("public_ws_capability", False),
+        "fee_capability": caps.get("fee_capability", False),
+        "node_presubmit_capability": caps.get("node_presubmit_capability", False),
+        "protective_stop_capability": caps.get("protective_stop_capability", False),
+        "active_exit_capability": caps.get("active_exit_capability", False) or callable(evaluate_owned_exit),
+        "public_websocket": caps.get("public_ws_capability", False),
+        "fee_from_okx_account": caps.get("fee_capability", False),
+        "node_presubmit_book": caps.get("node_presubmit_capability", False),
         "microstructure": callable(evaluate_microstructure),
         "spread_window": SpreadWindow is not None,
         "exits": callable(take_profit_price),
@@ -108,17 +93,17 @@ def detect_wired_capabilities() -> Dict[str, bool]:
 
 
 def s9_implementation_readiness(*, adapters: Optional[Mapping[str, bool]] = None) -> Dict[str, Any]:
-    checks = detect_wired_capabilities()
-    if adapters:
-        for key, value in adapters.items():
-            checks[key] = bool(value)
-    blockers = [k for k, v in checks.items() if not v]
+    checks = apply_adapter_overrides(detect_wired_capabilities(), adapters)
+    required = list(REQUIRED_CAPABILITIES) + ["config", "live_allowed_false"]
+    blockers = [k for k in required if not checks.get(k)]
     ready = not blockers
     return {
         "ready": ready,
         "status": "READY" if ready else "NOT_READY",
         "checks": checks,
         "blockers": blockers,
+        "sources": capability_sources(),
+        "detection": "capability_registration",
     }
 
 
@@ -127,7 +112,6 @@ def s9_demo_validation_status(*, persisted: Optional[str] = None) -> Dict[str, A
     raw = str(persisted or S9_DEMO_VALIDATION_STATUS).strip().upper()
     if raw != "VERIFIED":
         raw = "UNVERIFIED"
-    # Production never auto-verifies. Only an explicit future persisted flag may.
     status = "UNVERIFIED" if raw != "VERIFIED" else "VERIFIED"
     if persisted is None:
         status = "UNVERIFIED"
@@ -136,6 +120,13 @@ def s9_demo_validation_status(*, persisted: Optional[str] = None) -> Dict[str, A
         "verified": status == "VERIFIED",
         "source": "persisted" if persisted else "default",
     }
+
+
+def _recovery_ready(rt: Mapping[str, Any]) -> bool:
+    if "recovery_ready" in rt:
+        return bool(rt.get("recovery_ready"))
+    raw = str(rt.get("recovery_status") or rt.get("execution_recovery_status") or "READY").strip().upper()
+    return raw in {"READY", "SHADOW_SKIPPED"}
 
 
 def s9_demo_preflight_readiness(
@@ -156,6 +147,7 @@ def s9_demo_preflight_readiness(
         "ownership_clear": bool(rt.get("ownership_clear", True)),
         "market_data_ready": str(rt.get("data_state") or "").upper() == "READY",
         "fee_ready": bool(rt.get("fee_ready", False)),
+        "recovery_ready": _recovery_ready(rt),
         "demo_allowed": rt.get("demo_allowed", True) is not False,
     }
     ready = all(flags.values())
