@@ -7,12 +7,6 @@
   "implemented": true,
   "demo_allowed": true,
   "live_allowed": true,
-  "display": {
-    "summary_zh": "S1 是趋势跟踪策略，使用小时级行情判断中长期方向，只在趋势结构、趋势质量和市场状态同时满足条件时开仓。单笔初始风险为账户权益的 0.40%，策略风险上限为 1.25%。止损依据已确认的价格结构和 ATR 约束确定，适合捕捉相对持续的趋势行情。",
-    "entry_summary_zh": "在小时级别趋势方向、趋势质量分数和市场状态同时满足时考虑开仓。",
-    "risk_summary_zh": "单笔初始风险为账户权益的 0.40%，策略风险上限 1.25%，杠杆上限 6 倍。",
-    "exit_summary_zh": "止损依据已确认的价格结构（CONFIRMED_SWING_2X2）和 ATR 约束，由交易所侧保护止损执行。"
-  },
   "enabled": true,
   "timeframe": "1h",
   "risk_per_trade_pct_equity": 0.004,

@@ -18,18 +18,6 @@ from src.runtime.config_loader import (
 )
 from src.runtime.demo_execute_v1 import DEMO_EXECUTE_V1_ALLOWED
 
-
-def _release_flag(runtime: Any, sid: str, key: str, default: bool = False) -> bool:
-    docs = getattr(getattr(runtime, "config_bundle", None), "documents", None) or {}
-    doc = docs.get(str(sid).upper()) or {}
-    if isinstance(doc, Mapping) and key in doc:
-        return bool(doc.get(key))
-    if key == "demo_allowed" and str(sid).upper() == "S1":
-        return bool(DEMO_EXECUTE_V1_ALLOWED.get("S1"))
-    if key == "live_allowed":
-        return bool(strategy_live_allowed(sid))
-    return default
-
 SECRET_KEYS = {
     "api_key",
     "secret",
@@ -43,7 +31,7 @@ SECRET_KEYS = {
     "access_key",
 }
 
-KNOWN_IDS = ("S1", "S2", "S9", "S8", "S3", "S4", "S5", "S6", "S7")
+KNOWN_IDS = ("S1", "S2", "S8", "S3", "S4", "S5", "S6", "S7")
 
 
 def _is_secret_key(key: str) -> bool:
@@ -145,7 +133,7 @@ def list_strategy_configs(runtime: Any) -> Dict[str, Any]:
                 "effective_config_hash": config_hash(redact_secrets(_effective_for(runtime, sid)))
                 if _effective_for(runtime, sid) is not None
                 else None,
-                "demo_allowed": _release_flag(runtime, sid, "demo_allowed"),
+                "demo_allowed": bool(DEMO_EXECUTE_V1_ALLOWED.get(sid)),
                 "live_allowed": bool(strategy_live_allowed(sid)),
                 "live_permission": live_trading_enabled(),
             }
@@ -175,7 +163,7 @@ def get_strategy_config(runtime: Any, config_id: str) -> Optional[Dict[str, Any]
         "source_kind": source_kind_of(runtime),
         "effective_config": redacted,
         "effective_config_hash": hashed,
-        "demo_allowed": _release_flag(runtime, sid, "demo_allowed"),
+        "demo_allowed": bool(DEMO_EXECUTE_V1_ALLOWED.get(sid)),
         "live_allowed": bool(strategy_live_allowed(sid)),
         "live_permission": live_trading_enabled(),
     }

@@ -10,7 +10,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-const ID_RE = /^S[1-9]$/;
+const ID_RE = /^S[1-8]$/;
 
 const SECRET_KEY_RE =
   /^(api[_-]?key|secret|passphrase|password|token|jwt|session|authorization|private[_-]?key|access[_-]?key)$/i;
@@ -29,11 +29,6 @@ const WRAPPER_KEYS = new Set([
   'deprecation_status',
   'canonical_source',
   'replacement',
-  'display',
-  'summary_zh',
-  'entry_summary_zh',
-  'risk_summary_zh',
-  'exit_summary_zh',
 ]);
 
 const REGISTRY = Object.freeze({
@@ -64,20 +59,6 @@ const REGISTRY = Object.freeze({
     config_rel: 'strategies/s2_reversal.json',
     dependencies: ['S3', 'S4', 'S5', 'S6', 'S7'],
     preferred_sections: ['market', 'sentiment', 'reversal', 'risk', 'stop', 'dependencies'],
-  },
-  S9: {
-    id: 'S9',
-    type: 'ALPHA',
-    name: '高频动量突破',
-    strategy_key: 'S9_high_frequency_momentum',
-    release_stage: 'DEMO_VALIDATION',
-    implemented: true,
-    demo_allowed: true,
-    live_policy_allowed: false,
-    implementation: 'src.strategies.s9_momentum',
-    config_rel: 'strategies/s9_high_frequency_momentum.json',
-    dependencies: ['S3', 'S4', 'S5', 'S6', 'S7'],
-    preferred_sections: ['market', 'signal', 'risk', 'stop', 'dependencies'],
   },
   S8: {
     id: 'S8',
@@ -165,7 +146,7 @@ const REGISTRY = Object.freeze({
   },
 });
 
-const ALPHA_IDS = ['S1', 'S2', 'S9', 'S8'];
+const ALPHA_IDS = ['S1', 'S2', 'S8'];
 const SYSTEM_IDS = ['S3', 'S4', 'S5', 'S6', 'S7'];
 
 function normalizeId(raw) {
@@ -623,7 +604,6 @@ async function getConfig(rawId, options = {}) {
   const redactedRaw = raw == null ? null : redactSecrets(raw);
   const trading = redactedRaw == null ? null : redactSecrets(tradingPayload(entry, redactedRaw));
   const diskHash = trading == null ? null : configHash(trading);
-  const display = redactedRaw && redactedRaw.display && typeof redactedRaw.display === 'object' ? redactedRaw.display : {};
   const effective = runtime.effective_config == null ? null : redactSecrets(runtime.effective_config);
   const effectiveTrading = effective == null ? null : (id === 'S8' ? effective : stripWrapper(effective));
   const effectiveHash = effectiveTrading != null ? configHash(effectiveTrading) : null;
@@ -652,11 +632,6 @@ async function getConfig(rawId, options = {}) {
     preferred_sections: entry.preferred_sections,
     source: sourceFor(pack, id),
     raw_config: redactedRaw,
-    display,
-    summary_zh: display.summary_zh || '',
-    entry_summary_zh: display.entry_summary_zh || '',
-    risk_summary_zh: display.risk_summary_zh || '',
-    exit_summary_zh: display.exit_summary_zh || '',
     effective_config: effective,
     implementation_overlay: implementationOverlay(entry),
     market: pack.ok ? marketHints(entry, raw) : { symbols: [], timeframe: null },

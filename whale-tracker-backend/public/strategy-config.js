@@ -105,21 +105,21 @@
     const parts = [];
     if (detail.id === 'S8' || detail.release?.implemented === false) {
       parts.push(`<div class="err-panel warn-panel">
-        <div class="err-code">研究中 / 尚未实现</div>
-        <div class="err-msg">S8 巨鲸行为共振目前处于研究阶段，尚未实现可执行交易逻辑，也不允许模拟盘或实盘交易。</div>
+        <div class="err-code">RESEARCH / NOT IMPLEMENTED</div>
+        <div class="err-msg">S8 仅研究占位，不能当作可运行策略。</div>
       </div>`);
     }
     parts.push(`<h3>基本信息</h3>
-      ${renderTree('策略 ID', detail.id)}
+      ${renderTree('Strategy ID', detail.id)}
       ${renderTree('名称', detail.name)}
-      ${renderTree('配置键', detail.strategy_key)}
-      ${renderTree('发布阶段', detail.release?.stage)}
-      ${renderTree('已实现', detail.release?.implemented)}
-      ${renderTree('模拟盘允许', detail.release?.demo_allowed)}
-      ${renderTree('实盘能力', detail.release?.live_allowed)}
-      ${renderTree('实盘权限', detail.release?.live_permission)}
-      ${renderTree('实现模块', detail.implementation || '—')}
-      ${renderTree('配置来源', detail.source?.config_path)}
+      ${renderTree('strategy_key', detail.strategy_key)}
+      ${renderTree('release stage', detail.release?.stage)}
+      ${renderTree('implemented', detail.release?.implemented)}
+      ${renderTree('demo_allowed', detail.release?.demo_allowed)}
+      ${renderTree('live_allowed', detail.release?.live_allowed)}
+      ${renderTree('live_permission', detail.release?.live_permission)}
+      ${renderTree('implementation module', detail.implementation || '—')}
+      ${renderTree('config source', detail.source?.config_path)}
       ${renderTree('schema_version', detail.source?.schema_version)}
     `);
     if (detail.market) {
@@ -142,7 +142,7 @@
       const badges = detail.dependencies
         .map((id) => `<button type="button" class="badge link" data-jump="${escapeHtml(id)}">${escapeHtml(id)}</button>`)
         .join('');
-      parts.push(`<h3>依赖模块</h3><div class="kv"><span class="k">modules</span><span class="v">${badges}</span></div>`);
+      parts.push(`<h3>依赖</h3><div class="kv"><span class="k">modules</span><span class="v">${badges}</span></div>`);
     }
     if (raw && typeof raw === 'object') {
       parts.push('<h3>配置详情</h3>');

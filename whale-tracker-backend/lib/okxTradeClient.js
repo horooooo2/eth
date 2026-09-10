@@ -328,24 +328,6 @@ async function cancelAlgoOrders(items) {
   return data.data || [];
 }
 
-async function getTradeFee({ instId = 'BTC-USDT-SWAP', instType = 'SWAP' } = {}) {
-  const path = `/api/v5/account/trade-fee${qs({ instType, instId })}`;
-  const data = await okxPrivate('GET', path);
-  const row = (data.data && data.data[0]) || null;
-  if (!row) return null;
-  const taker = Number(row.taker);
-  const maker = Number(row.maker);
-  if (!Number.isFinite(taker) || !Number.isFinite(maker)) return null;
-  return {
-    instId: row.instId || instId,
-    instType: row.instType || instType,
-    taker,
-    maker,
-    taker_bps: Math.abs(taker) * 10_000,
-    maker_bps: Math.abs(maker) * 10_000,
-  };
-}
-
 async function getAccountConfig(options = {}) {
   const timeoutMs =
     Number(options.timeoutMs) || Number(process.env.OKX_TIMEOUT_MS) || 60_000;
@@ -599,7 +581,6 @@ module.exports = {
   getCredentials,
   withTradeCredentials,
   getAccountConfig,
-  getTradeFee,
   getPublicInstrument,
   getLeverageInfo,
   getOrder,

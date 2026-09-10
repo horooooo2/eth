@@ -20,7 +20,6 @@ STRATEGY_LIVE_ALLOWED: Dict[str, bool] = {
     "S1": True,
     "S2": True,
     "S8": False,
-    "S9": False,
 }
 
 _ALPHA_TO_GATEWAY = {

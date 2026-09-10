@@ -13,7 +13,6 @@ DEMO_EXECUTE_V1_ALLOWED = {
     "S1": True,
     "S2": False,
     "S8": False,
-    "S9": False,
 }
 
 V1_SYMBOL = "BTC-USDT-SWAP"

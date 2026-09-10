@@ -72,13 +72,6 @@ export const whaleAiEngineState = computed(
     engineSnapshot.value?.engine?.state ||
     (engineAvailable.value ? 'UNKNOWN' : 'OFFLINE'),
 );
-export const whaleAiUserIdReady = computed(() =>
-  Boolean(
-    engineSnapshot.value?.user_id_ready ||
-      engineView.value?.engine?.user_id_ready ||
-      engineView.value?.user_id_ready,
-  ),
-);
 export const whaleAiAlphaExecution = computed(() => {
   const fromSnap = String(engineSnapshot.value?.alpha_execution || '').toUpperCase();
   const fromView = String(engineView.value?.engine?.alpha_execution || '').toUpperCase();
@@ -214,6 +207,10 @@ export async function refreshWhaleAiKeyStatus(force = false) {
 }
 
 export async function refreshWhaleAiTradeStatus(force = false) {
+  if (!isLoggedIn.value) {
+    tradeStatus.value = null;
+    return null;
+  }
   if (tradeInflight && !force) return tradeInflight;
   tradeLoading.value = true;
   tradeInflight = (async () => {
@@ -232,6 +229,7 @@ export async function refreshWhaleAiTradeStatus(force = false) {
 }
 
 export async function fetchEngineHealth() {
+  if (!isLoggedIn.value) return null;
   try {
     const data = await fetchWhaleAiEngineHealth();
     engineAvailable.value = Boolean(data.engineAvailable && data.ok);
@@ -248,6 +246,10 @@ export async function fetchEngineHealth() {
 }
 
 export async function fetchEngineDashboard() {
+  if (!isLoggedIn.value) {
+    clearWhaleAiEngine();
+    return null;
+  }
   engineLoading.value = true;
   try {
     const data = await fetchWhaleAiEngineDashboard();

@@ -285,7 +285,7 @@ def create_app() -> FastAPI:
             if not result.get("ok"):
                 raise HTTPException(status_code=403, detail=result.get("error") or _hft_disabled_error())
             return result
-        if sel_id in ("S1", "S2", "S9"):
+        if sel_id in ("S1", "S2"):
             # Leaving QA if needed, then switch alpha
             if runtime.console_mode == "QA_HFT_SIM":
                 runtime.exit_qa_hft_sim(resume_alpha_openings=False)

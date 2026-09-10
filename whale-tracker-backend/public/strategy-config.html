@@ -178,8 +178,7 @@
       <section class="card">
         <div class="detail-head" id="detailHead">加载中…</div>
         <div class="tabs">
-          <button class="tab on" data-tab="summary" type="button">概要</button>
-          <button class="tab" data-tab="structured" type="button">结构化视图</button>
+          <button class="tab on" data-tab="structured" type="button">结构化视图</button>
           <button class="tab" data-tab="raw" type="button">原始配置</button>
           <button class="tab" data-tab="effective" type="button">运行生效值</button>
         </div>
@@ -209,7 +208,7 @@
     const view = window.StrategyConfigView;
     let listPayload = null;
     let current = null;
-    let tab = 'summary';
+    let tab = 'structured';
 
     function dotClass(status) {
       const s = String(status || '');
@@ -298,18 +297,7 @@
         </div>
       `;
       const copyBar = document.getElementById('copyBar');
-      if (tab === 'summary') {
-        copyBar.hidden = true;
-        const d = current.display || {};
-        const summary = current.summary_zh || d.summary_zh || '暂无概要';
-        document.getElementById('detailBody').innerHTML = `
-          <div class="body">
-            <p>${view.escapeHtml(summary)}</p>
-            ${current.entry_summary_zh || d.entry_summary_zh ? `<p>入场：${view.escapeHtml(current.entry_summary_zh || d.entry_summary_zh)}</p>` : ''}
-            ${current.risk_summary_zh || d.risk_summary_zh ? `<p>风险：${view.escapeHtml(current.risk_summary_zh || d.risk_summary_zh)}</p>` : ''}
-            ${current.exit_summary_zh || d.exit_summary_zh ? `<p>退出：${view.escapeHtml(current.exit_summary_zh || d.exit_summary_zh)}</p>` : ''}
-          </div>`;
-      } else if (tab === 'structured') {
+      if (tab === 'structured') {
         copyBar.hidden = true;
         document.getElementById('detailBody').innerHTML = view.renderStructured(current);
         document.querySelectorAll('[data-jump]').forEach((el) => {

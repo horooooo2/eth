@@ -46,7 +46,7 @@ _ACTION_ALLOW = "ALLOW"
 _ACTION_SHRINK = "SHRINK"
 _ACTION_BLOCK = "BLOCK"
 
-_COUNTABLE_STRATEGIES = {"S1", "S2", "S9"}
+_COUNTABLE_STRATEGIES = {"S1", "S2"}
 _NON_COUNTABLE_STATUS = {
     "SHADOW",
     "WOULD_SUBMIT",
@@ -109,13 +109,11 @@ def strategy_config_key(strategy_id: str) -> str:
         return "S1_trend"
     if sid == "S2":
         return "S2_reversal"
-    if sid == "S9":
-        return "S9_high_frequency_momentum"
     return ""
 
 
 def strategy_initial_risk_cap(config: Mapping[str, Any], strategy_id: str) -> float:
-    """Read the real per-strategy cap from S1/S2/S9 JSON.
+    """Read the real per-strategy cap from S1_trend / S2_reversal.
 
     Does **not** read the missing ``global_risk.per_strategy_initial_risk_cap_pct_equity``.
     """
@@ -129,9 +127,7 @@ def strategy_initial_risk_cap(config: Mapping[str, Any], strategy_id: str) -> fl
 def planned_trade_risk_pct(config: Mapping[str, Any], strategy_id: str) -> float:
     key = strategy_config_key(strategy_id)
     block = config.get(key) or {}
-    sid = str(strategy_id).upper()
-    defaults = {"S1": 0.004, "S2": 0.003, "S9": 0.001}
-    default = defaults.get(sid, 0.0)
+    default = 0.004 if str(strategy_id).upper() == "S1" else 0.003
     return max(0.0, _f(block.get("risk_per_trade_pct_equity"), default))
 
 
@@ -301,8 +297,8 @@ def compute_risk_usage(
     current_equity: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Sum initial risk of countable ACTIVE owned positions."""
-    strategy_quote = {"S1": 0.0, "S2": 0.0, "S9": 0.0}
-    strategy_frozen_pct = {"S1": 0.0, "S2": 0.0, "S9": 0.0}
+    strategy_quote = {"S1": 0.0, "S2": 0.0}
+    strategy_frozen_pct = {"S1": 0.0, "S2": 0.0}
     counted = 0
     for pos in positions or []:
         if not is_countable_owned_position(pos):
@@ -318,13 +314,13 @@ def compute_risk_usage(
 
     eq = _f(current_equity)
     if eq > _EPS:
-        strategy_used = {sid: (strategy_quote[sid] / eq) for sid in ("S1", "S2", "S9")}
+        strategy_used = {sid: (strategy_quote[sid] / eq) for sid in ("S1", "S2")}
         denominator = "current_authoritative_equity"
     else:
         strategy_used = dict(strategy_frozen_pct)
         denominator = "equity_at_entry_frozen"
 
-    portfolio_used = strategy_used["S1"] + strategy_used["S2"] + strategy_used["S9"]
+    portfolio_used = strategy_used["S1"] + strategy_used["S2"]
     return {
         "portfolio_risk_used_pct_equity": portfolio_used,
         "strategy_risk_used_pct_equity": strategy_used,
@@ -456,16 +452,11 @@ def attach_usage_to_s5(s5: Mapping[str, Any], usage: Mapping[str, Any], config: 
     caps = {
         "S1": strategy_initial_risk_cap(config, "S1"),
         "S2": strategy_initial_risk_cap(config, "S2"),
-        "S9": strategy_initial_risk_cap(config, "S9"),
     }
-    used = dict(usage.get("strategy_risk_used_pct_equity") or {"S1": 0.0, "S2": 0.0, "S9": 0.0})
+    used = dict(usage.get("strategy_risk_used_pct_equity") or {"S1": 0.0, "S2": 0.0})
     out["strategy_risk_cap_pct_equity"] = caps
     out["strategy_risk_limit_pct_equity"] = caps
-    out["strategy_risk_used_pct_equity"] = {
-        "S1": _f(used.get("S1")),
-        "S2": _f(used.get("S2")),
-        "S9": _f(used.get("S9")),
-    }
+    out["strategy_risk_used_pct_equity"] = {"S1": _f(used.get("S1")), "S2": _f(used.get("S2"))}
     out["portfolio_risk_used_pct_equity"] = _f(usage.get("portfolio_risk_used_pct_equity"))
     out["portfolio_risk_limit_pct_equity"] = _f(out.get("portfolio_risk_budget_pct_equity"))
     return out

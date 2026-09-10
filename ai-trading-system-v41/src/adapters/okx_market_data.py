@@ -46,17 +46,7 @@ def split_closed_bars(
     """Return (closed_bars, forming_row_or_none, candle_closed)."""
     if df is None or df.empty or not isinstance(df.index, pd.DatetimeIndex):
         return df, None, True
-    tf = str(timeframe).lower()
-    if tf in {"1m", "1min"}:
-        delta = pd.Timedelta(minutes=1)
-    elif tf in {"5m", "5min"}:
-        delta = pd.Timedelta(minutes=5)
-    elif tf in {"15m", "15min"}:
-        delta = pd.Timedelta(minutes=15)
-    elif tf in {"1h", "1H", "60m"}:
-        delta = pd.Timedelta(hours=1)
-    else:
-        delta = pd.Timedelta(minutes=5)
+    delta = pd.Timedelta(hours=1) if str(timeframe).lower() in {"1h", "1H", "60m"} else pd.Timedelta(minutes=5)
     last_open = df.index[-1]
     if last_open.tzinfo is None:
         last_open = last_open.tz_localize("UTC")
@@ -113,42 +103,6 @@ class OkxPublicMarket:
         self._cache[key] = (now, out)
         self.last_error = None
         return out.copy()
-
-    def fetch_order_book(self, symbol: str, depth: int = 5) -> Dict[str, Any]:
-        if self._exchange is None:
-            self._init()
-        if self._exchange is None:
-            raise RuntimeError(self.last_error or "OKX market client unavailable")
-        ccxt_symbol = to_ccxt_swap_symbol(symbol)
-        book = self._exchange.fetch_order_book(ccxt_symbol, limit=int(depth))
-        return {
-            "bids": list(book.get("bids") or []),
-            "asks": list(book.get("asks") or []),
-            "timestamp": book.get("timestamp") or book.get("datetime"),
-            "symbol": ccxt_symbol,
-        }
-
-    def fetch_trades(self, symbol: str, limit: int = 50) -> list:
-        if self._exchange is None:
-            self._init()
-        if self._exchange is None:
-            raise RuntimeError(self.last_error or "OKX market client unavailable")
-        ccxt_symbol = to_ccxt_swap_symbol(symbol)
-        rows = self._exchange.fetch_trades(ccxt_symbol, limit=int(limit))
-        out = []
-        for row in rows or []:
-            out.append(
-                {
-                    "id": row.get("id"),
-                    "timestamp": row.get("timestamp"),
-                    "datetime": row.get("datetime"),
-                    "side": row.get("side"),
-                    "price": row.get("price"),
-                    "qty": row.get("amount"),
-                    "amount": row.get("amount"),
-                }
-            )
-        return out
 
     def status(self) -> Dict[str, Any]:
         return {

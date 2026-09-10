@@ -72,7 +72,7 @@ class S5RiskBudgetAllocator:
             or self.config.get("strategy_runtime", {}).get("default_active_strategy_id")
             or "S1"
         )
-        if active not in ("S1", "S2", "S9"):
+        if active not in ("S1", "S2"):
             active = "S1"
 
         regime_mults = self.cfg.get("regime_multipliers", {}).get(regime, {})
@@ -83,20 +83,19 @@ class S5RiskBudgetAllocator:
         # Contract-only: multipliers may shrink, never renormalize unused risk back up
         final_active = min(capped_base, raw_active)
 
-        final = {"S1": 0.0, "S2": 0.0, "S9": 0.0}
-        raw = {"S1": 0.0, "S2": 0.0, "S9": 0.0}
+        final = {"S1": 0.0, "S2": 0.0}
+        raw = {"S1": 0.0, "S2": 0.0}
         final[active] = final_active
         raw[active] = raw_active
 
         portfolio_budget = self._portfolio_budget(context)
         # Allocated share budget is informational. Hard opening caps come from
-        # S1/S2/S9 strategy_initial_risk_cap_pct_equity — not the
+        # S1_trend / S2_reversal.strategy_initial_risk_cap_pct_equity — not the
         # missing global_risk.per_strategy_initial_risk_cap_pct_equity map.
-        strategy_budget = {"S1": 0.0, "S2": 0.0, "S9": 0.0}
+        strategy_budget = {"S1": 0.0, "S2": 0.0}
         strategy_caps = {
             "S1": strategy_initial_risk_cap(self.config, "S1"),
             "S2": strategy_initial_risk_cap(self.config, "S2"),
-            "S9": strategy_initial_risk_cap(self.config, "S9"),
         }
         for sid, share in final.items():
             budget = portfolio_budget * share

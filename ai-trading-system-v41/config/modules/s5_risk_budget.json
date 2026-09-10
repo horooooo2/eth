@@ -3,9 +3,6 @@
   "config_type": "SYSTEM_MODULE",
   "module_id": "S5",
   "name": "Risk Budget",
-  "display": {
-    "summary_zh": "负责计算组合和单策略风险预算，并在新开仓前检查当前已使用风险和预计新增风险。"
-  },
   "release_stage": "PRODUCTION",
   "implemented": true,
   "enabled": true,

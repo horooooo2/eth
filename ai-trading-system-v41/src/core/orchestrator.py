@@ -11,8 +11,6 @@ from src.core.data_pool import FeatureDataPool
 from src.core.edge_estimator import EdgeEstimator
 from src.core.rule_evaluator import RuleEvaluator
 from src.core.signal_lifecycle import SignalLifecycleManager, TradeIntent
-from src.runtime.alpha_ids import coerce_selectable
-from src.runtime.s9_microstructure import SpreadWindow
 from src.strategies.s1_trend import S1TrendStrategy
 from src.strategies.s2_reversal import S2ReversalStrategy
 from src.strategies.s3_regime import S3RegimeStrategy
@@ -20,7 +18,6 @@ from src.strategies.s4_execution import S4ExecutionStrategy
 from src.strategies.s5_risk_budget import S5RiskBudgetAllocator
 from src.strategies.s6_anomaly import S6AnomalyDetector
 from src.strategies.s7_health import S7HealthMonitor
-from src.strategies.s9_momentum import S9MomentumStrategy
 from src.utils.logger import log_decision, setup_logger
 
 
@@ -59,25 +56,15 @@ class Orchestrator:
 
         self.s1 = S1TrendStrategy(config, self.evaluator, self.lifecycle)
         self.s2 = S2ReversalStrategy(config, self.evaluator, self.lifecycle)
-        self.s9 = S9MomentumStrategy(config)
         self.s3 = S3RegimeStrategy(config, self.evaluator)
         self.s4 = S4ExecutionStrategy(config, self.evaluator, self.lifecycle)
         self.s5 = S5RiskBudgetAllocator(config)
         self.s6 = S6AnomalyDetector(config, self.evaluator)
         self.s7 = S7HealthMonitor(config)
-        self.s9_spread = SpreadWindow()
-        self.s9_runtime: Dict[str, Any] = {
-            "last_direction": None,
-            "cooldown_bars": 0,
-            "consecutive_stops": 0,
-            "pause_until_epoch": 0.0,
-            "opening_times": [],
-            "nonterminal_exit_position_ids": set(),
-        }
 
         self.context: Dict[str, Any] = {}
         self.last_orders: List[Dict[str, Any]] = []
-        # Invariant: exactly one active alpha strategy (S1, S2 or S9)
+        # Invariant: exactly one active alpha strategy (S1 or S2)
         self.active_strategy_id: str = "S1"
         self.alpha_opening_enabled: bool = True
         self.s1_timeframe: str = str((config.get("S1_trend") or {}).get("timeframe") or "1h")
@@ -85,14 +72,11 @@ class Orchestrator:
         self.market_fetch_limit: int = 200
         self.market_state: str = "WARMING_UP"
         self.market_meta: Dict[str, Any] = {}
-        self.s9_closed_1m = None
-        self.s9_closed_5m = None
         from src.runtime.strategy_diagnostics import StrategyDiagnostics
 
         self.diagnostics: Dict[str, StrategyDiagnostics] = {
             "S1": StrategyDiagnostics("S1"),
             "S2": StrategyDiagnostics("S2"),
-            "S9": StrategyDiagnostics("S9"),
         }
 
     @classmethod
@@ -122,7 +106,7 @@ class Orchestrator:
         return list(self.config.get("engine_contract", {}).get("decision_order", []))
 
     async def run_cycle(self, bars=None, microstructure=None) -> Dict[str, Any]:
-        active = coerce_selectable(self.active_strategy_id)
+        active = self.active_strategy_id if self.active_strategy_id in ("S1", "S2") else "S1"
         self.active_strategy_id = active
         alpha_open = bool(getattr(self, "alpha_opening_enabled", True))
         self.context = {
@@ -145,17 +129,11 @@ class Orchestrator:
         }
         if bars is None:
             try:
-                if active == "S9":
-                    bars_1m = self.adapter.get_klines(self.symbol, timeframe="1m", limit=250)
-                    bars_5m = self.adapter.get_klines(self.symbol, timeframe="5m", limit=150)
-                    self._apply_s9_market(bars_1m, bars_5m)
-                    bars = bars_1m
-                else:
-                    bars = self.adapter.get_klines(
-                        self.symbol,
-                        timeframe=self.s1_timeframe or "1h",
-                        limit=self.market_fetch_limit,
-                    )
+                bars = self.adapter.get_klines(
+                    self.symbol,
+                    timeframe=self.s1_timeframe or "1h",
+                    limit=self.market_fetch_limit,
+                )
             except Exception as exc:  # noqa: BLE001
                 from src.adapters.okx_market_data import to_okx_inst_id, use_real_okx_market
 
@@ -163,28 +141,16 @@ class Orchestrator:
                 self.market_meta = {
                     "source": "OKX" if use_real_okx_market() else "MOCK",
                     "instrument": to_okx_inst_id(self.symbol),
-                    "timeframe": "1m" if active == "S9" else (self.s1_timeframe or "1h"),
+                    "timeframe": self.s1_timeframe or "1h",
                     "state": "STALE",
                     "error": str(exc),
                     "bars_loaded": 0,
                 }
                 self.context["market_data"] = dict(self.market_meta)
                 raise
-        elif active == "S9" and self.s9_closed_1m is None:
-            self._apply_s9_market(bars, bars)
-        if active != "S9":
-            self._apply_market_bars(bars, microstructure=microstructure)
-        else:
-            if microstructure is not None:
-                self.context["microstructure"] = microstructure
-            self.data_pool.set_context({"market_data_state": self.market_state})
+        self._apply_market_bars(bars, microstructure=microstructure)
         account = self.adapter.get_account_info()
         self.context["equity"] = account.get("equity")
-        if hasattr(self.adapter, "get_trade_fee_bps") and self.context.get("okx_fee_bps") is None:
-            try:
-                self.context["okx_fee_bps"] = self.adapter.get_trade_fee_bps(self.symbol)
-            except Exception:
-                self.context["okx_fee_bps"] = None
         from src.runtime.risk_usage import compute_risk_usage
 
         self.context["risk_usage"] = compute_risk_usage(
@@ -267,50 +233,6 @@ class Orchestrator:
         self.context["market_data"] = dict(self.market_meta)
         self.data_pool.set_context({"market_data_state": self.market_state})
 
-    def _apply_s9_market(self, bars_1m, bars_5m) -> None:
-        from src.adapters.okx_market_data import split_closed_bars, to_okx_inst_id, use_real_okx_market
-        from src.strategies.s9_momentum import closed_only
-
-        c1, _, _ = split_closed_bars(bars_1m, timeframe="1m")
-        c5, _, _ = split_closed_bars(bars_5m, timeframe="5m")
-        if c1 is None or getattr(c1, "empty", True):
-            c1 = closed_only(bars_1m, timeframe="1m")
-        if c5 is None or getattr(c5, "empty", True):
-            c5 = closed_only(bars_5m, timeframe="5m")
-        self.s9_closed_1m = c1
-        self.s9_closed_5m = c5
-        n1 = int(len(c1)) if c1 is not None else 0
-        n5 = int(len(c5)) if c5 is not None else 0
-        warmup = (self.config.get("S9_high_frequency_momentum") or {}).get("warmup") or {}
-        need1 = int(warmup.get("closed_1m_bars") or 200)
-        need5 = int(warmup.get("closed_5m_bars") or 100)
-        if n1 <= 0 or n5 <= 0:
-            self.market_state = "OFF"
-        elif n1 < need1 or n5 < need5:
-            self.market_state = "WARMING_UP"
-        else:
-            self.market_state = "READY"
-        latest_1m = str(c1.index[-1]) if n1 else None
-        latest_5m = str(c5.index[-1]) if n5 else None
-        prev_1m = (self.market_meta or {}).get("latest_closed_candle_at")
-        if latest_1m and latest_1m != prev_1m and int(self.s9_runtime.get("cooldown_bars") or 0) > 0:
-            self.s9_runtime["cooldown_bars"] = int(self.s9_runtime["cooldown_bars"]) - 1
-        self.market_meta = {
-            "source": "OKX" if use_real_okx_market() else "MOCK",
-            "instrument": to_okx_inst_id(self.symbol),
-            "timeframe": "1m",
-            "latest_closed_candle_at": latest_1m,
-            "latest_closed_5m_at": latest_5m,
-            "closed_1m_bars": n1,
-            "closed_5m_bars": n5,
-            "state": self.market_state,
-        }
-        self.context["market_data"] = dict(self.market_meta)
-        self.data_pool.set_context({"market_data_state": self.market_state})
-        if n1 and c1 is not None:
-            last = c1.iloc[-1]
-            self.data_pool.set_context({"close": float(last["close"]), "atr14": float(last.get("atr14") or 1.0)})
-
     # --- decision_order steps ---
 
     def S6_safety_gate(self) -> Dict[str, Any]:
@@ -319,11 +241,6 @@ class Orchestrator:
         return result
 
     def data_quality_gate(self) -> Dict[str, Any]:
-        if coerce_selectable(self.active_strategy_id) == "S9":
-            ok = str(self.market_state) in {"READY", "WARMING_UP", "DEGRADED"}
-            self.context["data_quality_ok"] = ok
-            self.data_pool.set_context({"data_quality_ok": ok})
-            return {"data_quality_ok": ok}
         ok = True
         close = self.data_pool.get("close")
         atr = self.data_pool.get("atr14")
@@ -388,7 +305,7 @@ class Orchestrator:
     def S5_risk_budget_allocation(self) -> Dict[str, Any]:
         health = {
             sid: float(self.context.get("S7", {}).get(sid, {}).get("health_score", 80.0))
-            for sid in ("S1", "S2", "S9")
+            for sid in ("S1", "S2")
         }
         # S4 is execution-only — never an allocation health input for V4.2
         if str((self.config.get("S5_risk_budget") or {}).get("allocation_mode")) != "single_active_alpha":
@@ -398,8 +315,7 @@ class Orchestrator:
 
     def S1_S2_signal_generation(self) -> Dict[str, Any]:
         # Update edge estimate into pool/context before entries
-        self._s9_manage_exits()
-        active = coerce_selectable(self.active_strategy_id)
+        active = self.active_strategy_id if self.active_strategy_id in ("S1", "S2") else "S1"
         self.active_strategy_id = active
         self.context["active_strategy_id"] = active
         regime = str(self.context.get("S3.regime", "range"))
@@ -453,8 +369,6 @@ class Orchestrator:
             intents.extend(self.s2.generate(symbol=self.symbol, data_pool=self.data_pool, context=self.context))
             if not emit_intents:
                 intents = []
-        elif active == "S9":
-            intents.extend(self._s9_generate(emit_intents=emit_intents, extra_block=extra_block))
         # Defense in depth: drop any mismatched emits
         filtered: List[TradeIntent] = []
         for intent in intents:
@@ -467,394 +381,12 @@ class Orchestrator:
         self.context["trade_intents"] = filtered
         return {"count": len(filtered), "active_strategy_id": active, "intents": [i.to_dict() for i in filtered]}
 
-    def _s9_manage_exits(self) -> None:
-        """Engine-side S9 exits. Never cancel protective stop before flatten."""
-        from src.runtime.demo_execute_v1 import normalize_swap_symbol
-        from src.runtime.s9_exits import evaluate_owned_exit, take_profit_price
-        from src.strategies.s9_momentum import evaluate_5m_direction
-
-        owned = [
-            p if isinstance(p, dict) else {}
-            for p in list(self.context.get("owned_open_positions") or [])
-        ]
-        s9_pos = [
-            p
-            for p in owned
-            if str(p.get("origin_strategy_id") or "").upper() == "S9"
-            and float(p.get("quantity") or 0) > 0
-        ]
-        if not s9_pos:
-            self.context.pop("SYMBOL_EXIT_LOCK", None)
-            return
-        pending = self.context.setdefault("pending_order_intents", [])
-        cfg = (self.config.get("S9_high_frequency_momentum") or {}).get("exits") or {}
-        direction = {"state": str(self.s9_runtime.get("last_direction") or "NEUTRAL")}
-        if self.s9_closed_5m is not None and len(self.s9_closed_5m):
-            direction = evaluate_5m_direction(self.s9_closed_5m, self.config.get("S9_high_frequency_momentum") or {})
-        new_state = str(direction.get("state") or "NEUTRAL")
-        prev_state = str(self.s9_runtime.get("last_direction") or new_state)
-        bid = ask = 0.0
-        try:
-            book = self.adapter.get_order_book(self.symbol, depth=5) or {}
-            bids = list(book.get("bids") or [])
-            asks = list(book.get("asks") or [])
-            bid = float(bids[0][0]) if bids else 0.0
-            ask = float(asks[0][0]) if asks else 0.0
-        except Exception:
-            bid = ask = 0.0
-        now_epoch = __import__("time").time()
-        import uuid
-        from datetime import datetime, timezone
-
-        for pos in s9_pos:
-            pid = str(pos.get("position_id") or "")
-            already = any(
-                str(oi.get("position_id") or "") == pid
-                and bool(oi.get("reduce_only"))
-                and str(oi.get("status") or "").upper()
-                in {"CREATED", "RECEIVED", "SUBMITTED", "PARTIALLY_FILLED", "PENDING_GATEWAY"}
-                for oi in pending
-            )
-            if already or pid in self.s9_runtime["nonterminal_exit_position_ids"]:
-                self.context["SYMBOL_EXIT_LOCK"] = True
-                continue
-            snap = pos.get("entry_risk_snapshot") or {}
-            stop_snap = pos.get("stop_policy_snapshot") or {}
-            avg = float(snap.get("entry_price") or snap.get("avg_entry_price") or 0)
-            stop = float(stop_snap.get("stop_price") or snap.get("stop_price") or 0)
-            meta = pos.get("metadata") or {}
-            first_fill = meta.get("first_fill_at_epoch")
-            if first_fill is None:
-                opened = str(pos.get("opened_at") or "")
-                try:
-                    first_fill = datetime.fromisoformat(opened.replace("Z", "+00:00")).timestamp()
-                except Exception:
-                    first_fill = now_epoch
-            side = str(pos.get("side") or "long")
-            reason = evaluate_owned_exit(
-                side=side,
-                best_bid=bid,
-                best_ask=ask,
-                avg_entry=avg,
-                initial_stop=stop,
-                first_fill_at_epoch=float(first_fill),
-                now_epoch=now_epoch,
-                prev_direction=prev_state,
-                new_direction=new_state,
-                max_holding_minutes=float(cfg.get("max_holding_minutes") or 30),
-                pending_exit=False,
-            )
-            if not reason:
-                continue
-            qty = float(pos.get("quantity") or 0)
-            exit_side = "sell" if side.lower() in ("long", "buy") else "buy"
-            intent = {
-                "order_intent_id": f"s9-exit-{pid}-{uuid.uuid4().hex[:8]}",
-                "position_id": pid,
-                "origin_strategy_id": "S9",
-                "strategy_id": "S9",
-                "origin_trade_intent_id": pos.get("origin_trade_intent_id"),
-                "symbol": normalize_swap_symbol(str(pos.get("symbol") or self.symbol)),
-                "side": exit_side,
-                "reduce_only": True,
-                "purpose": "exit",
-                "exit_reason": reason,
-                "keep_protective_stop_until_flat": True,
-                "cancel_stop_before_exit": False,
-                "quantity_unit": "BASE",
-                "base_quantity": qty,
-                "owned_remaining_base_qty": qty,
-                "status": "CREATED",
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "take_profit_price": take_profit_price(side=side, avg_entry=avg, initial_stop=stop)
-                if avg and stop
-                else None,
-            }
-            pending.append(intent)
-            self.s9_runtime["nonterminal_exit_position_ids"].add(pid)
-            self.context["SYMBOL_EXIT_LOCK"] = True
-            self.context["s9_exit"] = {"reason": reason, "position_id": pid, "cancel_stop_before_exit": False}
-        self.s9_runtime["last_direction"] = new_state
-
-    def _s9_symbol_blocked(self) -> Optional[str]:
-        from src.runtime.s9_cleanup import symbol_conflict
-        from src.runtime.s9_exits import dust_block
-        from src.runtime.demo_execute_v1 import normalize_swap_symbol
-
-        target = normalize_swap_symbol(self.symbol)
-        other = False
-        exchange_net = 0.0
-        local_owned = 0.0
-        pending_exit = 0
-        pending_open = 0
-        protective = 0
-        recon = str(self.context.get("reconciliation_status") or "MATCHED")
-        for pos in list(self.context.get("owned_open_positions") or []):
-            data = pos if isinstance(pos, dict) else {}
-            sym = normalize_swap_symbol(str(data.get("symbol") or ""))
-            if sym != target:
-                continue
-            origin = str(data.get("origin_strategy_id") or "").upper()
-            qty = float(data.get("quantity") or 0)
-            if origin and origin != "S9" and qty:
-                other = True
-            if origin == "S9":
-                local_owned += qty
-        exchange_net = float(self.context.get("exchange_net_position_contracts") or local_owned)
-        pending_open = int(self.context.get("pending_opening_orders") or 0)
-        pending_exit = int(self.context.get("pending_exit_orders") or 0)
-        protective = int(self.context.get("protective_algo_nonterminal_count") or 0)
-        dust = dust_block(local_owned=local_owned, exchange_net=exchange_net)
-        if dust:
-            return dust
-        if pending_open or pending_exit or protective or str(recon).upper() != "MATCHED":
-            if local_owned or exchange_net or pending_open or pending_exit or protective:
-                return "SYMBOL_OWNERSHIP_CONFLICT"
-        return symbol_conflict(other_owned_same_symbol=other)
-
-    def _s9_generate(self, *, emit_intents: bool, extra_block: List[str]) -> List[TradeIntent]:
-        diag = self.diagnostics.get("S9")
-        closed_1m = self.s9_closed_1m
-        closed_5m = self.s9_closed_5m
-        result = self.s9.generate(
-            closed_1m=closed_1m,
-            closed_5m=closed_5m,
-            context=self.context,
-            emit_intents=False,
-        )
-        payload = dict(self.context.get("s9") or {})
-        reasons = list(payload.get("reason_codes") or extra_block)
-        decision = str(payload.get("decision") or "NO_TRADE")
-        direction = str(payload.get("direction") or "NONE")
-        if extra_block:
-            decision = "NO_TRADE"
-            reasons = extra_block + reasons
-        own_block = self._s9_symbol_blocked()
-        if own_block:
-            decision = "NO_TRADE"
-            reasons = [own_block]
-        freq_cfg = (self.config.get("S9_high_frequency_momentum") or {}).get("frequency") or {}
-        from src.runtime.s9_exits import frequency_block
-        import time as _time
-
-        now_epoch = _time.time()
-        if now_epoch < float(self.s9_runtime.get("pause_until_epoch") or 0):
-            decision = "NO_TRADE"
-            reasons = ["S9_COOLDOWN"]
-        if int(self.s9_runtime.get("cooldown_bars") or 0) > 0:
-            decision = "NO_TRADE"
-            reasons = ["S9_COOLDOWN"]
-        hour_opens = [t for t in self.s9_runtime.get("opening_times") or [] if now_epoch - t <= 3600]
-        self.s9_runtime["opening_times"] = hour_opens
-        from datetime import datetime, timezone
-
-        day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        day_opens = [t for t in hour_opens]  # hour list is subset; day tracked separately below
-        day_count = int(self.s9_runtime.get("day_count") or 0)
-        if self.s9_runtime.get("day_key") != day_key:
-            self.s9_runtime["day_key"] = day_key
-            self.s9_runtime["day_count"] = 0
-            day_count = 0
-        freq_reason = frequency_block(
-            hour_count=len(hour_opens),
-            day_count=day_count,
-            max_hour=int(freq_cfg.get("max_completed_or_filled_openings_per_rolling_hour") or 6),
-            max_day=int(freq_cfg.get("max_openings_per_utc_calendar_day") or 30),
-        )
-        if freq_reason:
-            decision = "NO_TRADE"
-            reasons = [freq_reason]
-        if diag:
-            diag.record_evaluation(
-                decision=decision,
-                reason_codes=reasons,
-                direction=direction,
-                symbol=self.symbol,
-                raw_signal=decision == "CANDIDATE",
-                trade_intent=False,
-                source_closed_candle_timestamp=str((payload.get("diagnostics") or {}).get("source_1m_candle_timestamp") or ""),
-            )
-        self.context["s9_candidate"] = None
-        if decision != "CANDIDATE" or not emit_intents or extra_block or own_block:
-            return []
-
-        from src.runtime.risk_usage import authorize_opening, planned_trade_risk_pct, strategy_initial_risk_cap
-        from src.runtime.demo_execute_v1 import compute_base_quantity
-
-        planned = planned_trade_risk_pct(self.config, "S9")
-        s5_ctx = self.context.get("S5") or {}
-        portfolio_limit = float(s5_ctx.get("portfolio_risk_budget_pct_equity") or 0.0) or float(
-            self.s5._portfolio_budget(self.context)
-        )
-        strategy_limit = float(
-            (s5_ctx.get("strategy_risk_cap_pct_equity") or {}).get("S9") or strategy_initial_risk_cap(self.config, "S9")
-        )
-        auth = authorize_opening(
-            strategy_id="S9",
-            planned_trade_risk_pct_equity=planned,
-            usage=self.context.get("risk_usage") or {},
-            portfolio_risk_limit_pct_equity=portfolio_limit,
-            strategy_risk_limit_pct_equity=strategy_limit,
-            reserved_opening_risk_pct_equity=float(self.context.get("reserved_opening_risk_pct_equity") or 0.0),
-        )
-        payload["s5_authorization"] = auth.to_dict()
-        if auth.action == "BLOCK":
-            if diag:
-                diag.record_evaluation(
-                    decision="NO_TRADE",
-                    reason_codes=[auth.reason_code],
-                    direction=direction,
-                    symbol=self.symbol,
-                )
-            return []
-        risk_pct = float(auth.allowed_risk_pct_equity if auth.action == "SHRINK" else planned)
-        equity = float(self.context.get("equity") or 0.0)
-        entry = float(payload.get("trigger_reference_price") or 0)
-        stop = float(payload.get("stop_price") or 0)
-        sizing = None
-        if equity > 0 and entry > 0 and stop > 0:
-            try:
-                sizing = compute_base_quantity(equity=equity, risk_pct=risk_pct, entry_price=entry, stop_price=stop)
-            except ValueError:
-                sizing = None
-        payload["authorized_base_quantity"] = None if not sizing else sizing["base_quantity"]
-        payload["s9_risk_pct"] = risk_pct
-        payload["s9_risk_amount_quote"] = None if not sizing else sizing.get("risk_amount_quote")
-        self.context["s9_candidate"] = payload
-        return []
-
     def S4_execution_timing(self) -> Dict[str, Any]:
-        if coerce_selectable(self.active_strategy_id) == "S9":
-            return self._s9_s4_validate()
         intents: List[TradeIntent] = list(self.context.get("trade_intents") or [])
         confirmed = self.s4.process_intents(intents, self.data_pool, self.context)
         return {"confirmed": [i.to_dict() for i in confirmed]}
 
-    def _s9_s4_validate(self) -> Dict[str, Any]:
-        from src.runtime.s9_microstructure import (
-            cost_gate,
-            entry_drift_exceeded,
-            evaluate_microstructure,
-            round_trip_cost_bps,
-        )
-
-        cand = dict(self.context.get("s9_candidate") or {})
-        if not cand:
-            self.context["confirmed_intents"] = []
-            return {"confirmed": []}
-        side = str(cand.get("direction") or "LONG")
-        qty = float(cand.get("authorized_base_quantity") or 0)
-        book = {}
-        trades: List[Dict[str, Any]] = []
-        try:
-            book = self.adapter.get_order_book(self.symbol, depth=5) or {}
-        except Exception:
-            book = {}
-        try:
-            trades = list(self.adapter.get_recent_trades(self.symbol, limit=40) or [])
-        except Exception:
-            trades = []
-        bids = list(book.get("bids") or [])
-        asks = list(book.get("asks") or [])
-        bid = float(bids[0][0]) if bids else 0.0
-        ask = float(asks[0][0]) if asks else 0.0
-        now_ts = __import__("time").time()
-        book_age = 0.0
-        trades_age = 0.0
-        ts_book = book.get("timestamp")
-        if ts_book:
-            try:
-                book_age = max(0.0, now_ts - float(ts_book) / (1000.0 if float(ts_book) > 1e12 else 1.0))
-            except (TypeError, ValueError):
-                book_age = 99.0
-        if trades:
-            t0 = trades[-1].get("timestamp") or 0
-            try:
-                trades_age = max(0.0, now_ts - float(t0) / (1000.0 if float(t0) > 1e12 else 1.0))
-            except (TypeError, ValueError):
-                trades_age = 99.0
-        micro_cfg = (self.config.get("S9_high_frequency_momentum") or {}).get("microstructure") or {}
-        micro = evaluate_microstructure(
-            side=side,
-            bid=bid,
-            ask=ask,
-            bids=bids,
-            asks=asks,
-            trades=trades,
-            spread_window=self.s9_spread,
-            now_ts=now_ts,
-            book_age_sec=book_age,
-            trades_age_sec=trades_age,
-            cfg={"microstructure": micro_cfg},
-            authorized_base_qty=qty,
-        )
-        cand["pre_submit_orderbook_snapshot"] = {"bids": bids[:5], "asks": asks[:5]}
-        cand["diagnostics"] = {**(cand.get("diagnostics") or {}), **{k: micro.get(k) for k in micro if k.startswith("s9_")}}
-        reasons = list(micro.get("reasons") or [])
-        fee = self.context.get("okx_fee_bps")
-        if fee is None:
-            reasons.append("S9_COST_DATA_UNAVAILABLE")
-        slip = float(micro.get("s9_expected_slippage_bps") or 0)
-        spr = float(micro.get("s9_spread_bps") or 0)
-        if fee is not None:
-            rtc = round_trip_cost_bps(entry_fee_bps=float(fee), exit_fee_bps=float(fee), spread=spr, slip=slip)
-            cand["diagnostics"]["s9_estimated_round_trip_cost_bps"] = rtc
-            entry = float(cand.get("trigger_reference_price") or 0)
-            stop = float(cand.get("stop_price") or 0)
-            target_bps = abs(entry - stop) / entry * 10_000.0 * 1.5 if entry else 0
-            cost_reason = cost_gate(target_distance_bps=target_bps, round_trip_bps=rtc)
-            if cost_reason:
-                reasons.append(cost_reason)
-        exec_px = ask if side == "LONG" else bid
-        if entry_drift_exceeded(side=side, trigger=float(cand.get("trigger_reference_price") or 0), executable=exec_px):
-            reasons.append("S9_ENTRY_PRICE_DRIFT_EXCEEDED")
-        diag = self.diagnostics.get("S9")
-        if reasons or qty <= 0:
-            if diag:
-                diag.record_evaluation(
-                    decision="NO_TRADE",
-                    reason_codes=reasons or ["S9_DATA_DEGRADED"],
-                    direction=side,
-                    symbol=self.symbol,
-                )
-            self.context["confirmed_intents"] = []
-            return {"confirmed": [], "reasons": reasons}
-        intent = self.lifecycle.create_intent(
-            strategy_id="S9",
-            symbol=self.symbol,
-            direction=side.lower(),
-            reference_price=exec_px,
-            reference_atr=float((cand.get("diagnostics") or {}).get("s9_atr14") or 1.0),
-            signal_snapshot=cand,
-            metadata={
-                "signal_key": cand.get("signal_key"),
-                "stop_price": cand.get("stop_price"),
-                "take_profit_price": cand.get("take_profit_price"),
-                "trigger_reference_price": cand.get("trigger_reference_price"),
-                "authorized_base_quantity": qty,
-                "s9": cand,
-            },
-        )
-        self.lifecycle.transition(intent, "WAITING_EXECUTION_CONFIRMATION")
-        self.lifecycle.transition(intent, "CONFIRMED")
-        self.context["confirmed_intents"] = [intent]
-        self.context["trade_intents"] = [intent]
-        if diag:
-            diag.record_evaluation(
-                decision="ALLOW",
-                reason_codes=[],
-                direction=side,
-                symbol=self.symbol,
-                raw_signal=True,
-                trade_intent=True,
-                source_closed_candle_timestamp=str((cand.get("diagnostics") or {}).get("source_1m_candle_timestamp") or ""),
-            )
-        return {"confirmed": [intent.to_dict()]}
-
     def cost_slippage_gate(self) -> Dict[str, Any]:
-        if coerce_selectable(self.active_strategy_id) == "S9":
-            self.context["cost_gate_pass"] = True
-            return {"ok": True, "skipped": "S9_OWN_COST_GATE"}
         min_r = float(self.config.get("cost_model", {}).get("minimum_required_R", 0.15))
         edge = float(self.context.get("expected_edge_after_cost_R", -1.0))
         ok = edge >= min_r and bool(self.context.get("edge_estimate_available", False))
@@ -962,10 +494,7 @@ class Orchestrator:
             )
 
             side = "buy" if str(intent.direction).lower() == "long" else "sell"
-            if str(intent.strategy_id).upper() == "S9":
-                equity = float(self.context.get("equity") or 0.0)
-            else:
-                equity = float(self.context.get("equity") or 100000.0)
+            equity = float(self.context.get("equity") or 100000.0)
             s1_cfg = self.config.get("S1_trend") or {}
             planned_risk_pct = planned_trade_risk_pct(self.config, intent.strategy_id)
             if planned_risk_pct <= 0:
@@ -979,31 +508,20 @@ class Orchestrator:
             closed_candles = None
             if hasattr(self.data_pool, "get_closed_bars"):
                 closed_candles = self.data_pool.get_closed_bars()
+            stop_info = resolve_s1_stop_price(
+                direction=str(intent.direction),
+                entry_price=entry_price,
+                atr14=atr,
+                s1_cfg=s1_cfg,
+                closed_candles=closed_candles,
+            )
+            stop_price = (
+                float(stop_info["stop_price"])
+                if stop_info and stop_info.get("stop_price") is not None
+                else None
+            )
             sizing = None
-            if str(intent.strategy_id).upper() == "S9":
-                stop_price = float((intent.metadata or {}).get("stop_price") or 0) or None
-                stop_info = {"method": "MICRO_SWING_1X1", "stop_price": stop_price, "structure_method": "MICRO_SWING_1X1"}
-                auth_qty = (intent.metadata or {}).get("authorized_base_quantity")
-                if auth_qty:
-                    sizing = {
-                        "base_quantity": float(auth_qty),
-                        "risk_amount_quote": (intent.metadata or {}).get("s9_risk_amount_quote")
-                        or ((intent.metadata or {}).get("s9") or {}).get("s9_risk_amount_quote"),
-                    }
-            else:
-                stop_info = resolve_s1_stop_price(
-                    direction=str(intent.direction),
-                    entry_price=entry_price,
-                    atr14=atr,
-                    s1_cfg=s1_cfg,
-                    closed_candles=closed_candles,
-                )
-                stop_price = (
-                    float(stop_info["stop_price"])
-                    if stop_info and stop_info.get("stop_price") is not None
-                    else None
-                )
-            if sizing is None and stop_price:
+            if stop_price:
                 try:
                     sizing = compute_base_quantity(
                         equity=equity,
@@ -1020,33 +538,20 @@ class Orchestrator:
             policy = self.lifecycle.get_policy(intent.strategy_id)
             symbol = normalize_swap_symbol(intent.symbol)
             md = self.context.get("market_data") or self.market_meta or {}
-            candle_at = str(
-                (intent.metadata or {}).get("signal_key")
-                and str((intent.signal_snapshot or {}).get("diagnostics") or {}).get("source_1m_candle_timestamp")
-                or md.get("latest_closed_candle_at")
-                or ""
+            candle_at = str(md.get("latest_closed_candle_at") or "")
+            skey = signal_key(
+                strategy_id=str(intent.strategy_id),
+                symbol=symbol,
+                direction=str(intent.direction),
+                closed_candle_at=candle_at,
             )
-            if str(intent.strategy_id).upper() == "S9" and (intent.metadata or {}).get("signal_key"):
-                skey = str(intent.metadata.get("signal_key"))
-            else:
-                skey = signal_key(
-                    strategy_id=str(intent.strategy_id),
-                    symbol=symbol,
-                    direction=str(intent.direction),
-                    closed_candle_at=candle_at,
-                )
             existing = list(self.context.get("pending_order_intents") or []) + list(self.last_orders or [])
             if candle_at and opening_signal_already_used(existing, skey):
                 self.lifecycle.transition(intent, "RISK_REJECTED")
                 continue
             if alpha_execution == ALPHA_EXECUTE and not demo_execute_v1_allowed(intent.strategy_id):
-                if str(intent.strategy_id).upper() != "S9":
-                    self.lifecycle.transition(intent, "RISK_REJECTED")
-                    continue
-                s9_cfg = self.config.get("S9_high_frequency_momentum") or {}
-                if s9_cfg.get("live_allowed") is True or s9_cfg.get("demo_allowed") is False:
-                    self.lifecycle.transition(intent, "RISK_REJECTED")
-                    continue
+                self.lifecycle.transition(intent, "RISK_REJECTED")
+                continue
 
             s5_ctx = self.context.get("S5") or {}
             portfolio_limit = float(s5_ctx.get("portfolio_risk_budget_pct_equity") or 0.0)
@@ -1169,18 +674,11 @@ class Orchestrator:
                     "origin_strategy_id": intent.strategy_id,
                     "reference_atr": float(intent.reference_atr),
                     "stop_price": stop_price,
-                    "formula": "MICRO_SWING_1X1"
-                    if str(intent.strategy_id).upper() == "S9"
-                    else "min(1.5*atr14, structure_invalidation_distance)",
-                    "structure_method": (stop_info or {}).get("structure_method")
-                    or (stop_info or {}).get("method"),
+                    "formula": "min(1.5*atr14, structure_invalidation_distance)",
+                    "structure_method": (stop_info or {}).get("structure_method"),
                     "complete": bool(stop_price),
                 },
                 "created_at": datetime.now(timezone.utc).isoformat(),
-                "trade_intent_created_at": getattr(intent, "created_at", None),
-                "ttl_seconds": 20 if str(intent.strategy_id).upper() == "S9" else None,
-                "keep_protective_stop_until_flat": True,
-                "cancel_stop_before_exit": False,
                 "status": "CREATED",
                 "demo_execute_v1_ready": bool(
                     sizing

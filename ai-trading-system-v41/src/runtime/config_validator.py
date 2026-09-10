@@ -25,10 +25,10 @@ def validate_system_config(config: Mapping[str, Any]) -> List[str]:
         default = runtime.get("default_active_strategy_id")
         if runtime.get("max_active_alpha_strategies") != 1:
             errors.append("max_active_alpha_strategies must be 1")
-        if default not in ("S1", "S2", "S9"):
-            errors.append("default_active_strategy_id must be S1, S2 or S9")
-        if set(allowed) not in ({"S1", "S2"}, {"S1", "S2", "S9"}):
-            errors.append("allowed_alpha_strategies must be S1+S2 or S1+S2+S9")
+        if default not in ("S1", "S2"):
+            errors.append("default_active_strategy_id must be S1 or S2")
+        if sorted(allowed) != ["S1", "S2"] and set(allowed) != {"S1", "S2"}:
+            errors.append("allowed_alpha_strategies must be exactly S1 and S2")
         if s5.get("allocation_mode") != "single_active_alpha":
             errors.append("S5 allocation_mode must be single_active_alpha for V4.2")
         if s5.get("execution_engine_is_allocation_target") is not False:
