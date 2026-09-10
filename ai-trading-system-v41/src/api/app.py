@@ -7,7 +7,7 @@ import json
 import os
 from typing import Any, Dict, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from src.runtime.engine_runtime import get_runtime
@@ -47,6 +47,26 @@ class KillBody(BaseModel):
 
 class BindUserBody(BaseModel):
     user_id: str = Field(min_length=1)
+
+
+class RuntimeEventIn(BaseModel):
+    event_id: Optional[str] = None
+    occurred_at: Optional[str] = None
+    event_type: str
+    severity: Optional[str] = "info"
+    strategy_id: Optional[str] = None
+    symbol: Optional[str] = None
+    direction: Optional[str] = None
+    decision: Optional[str] = None
+    reason_code: Optional[str] = None
+    reason_codes: Optional[list] = None
+    source_closed_candle_timestamp: Optional[str] = None
+    trade_intent_id: Optional[str] = None
+    order_intent_id: Optional[str] = None
+    position_id: Optional[str] = None
+    signal_key: Optional[str] = None
+    message: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
 
 
 class HftSimStartBody(BaseModel):
@@ -148,6 +168,51 @@ def create_app() -> FastAPI:
     @app.get("/internal/v1/execution-metrics")
     async def execution_metrics(_: None = Depends(require_engine_token)) -> Any:
         return runtime.snapshot().get("execution") or {}
+
+    @app.get("/internal/v1/runtime-events")
+    async def runtime_events(
+        _: None = Depends(require_engine_token),
+        limit: int = Query(200, ge=1, le=500),
+        before: Optional[str] = None,
+        after: Optional[str] = None,
+        before_event_id: Optional[str] = None,
+        after_event_id: Optional[str] = None,
+        strategy_id: Optional[str] = None,
+        symbol: Optional[str] = None,
+        event_type: Optional[str] = None,
+        severity: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        rec = getattr(runtime, "event_recorder", None)
+        if rec is None:
+            from src.runtime.runtime_events import RuntimeEventRecorder
+
+            rec = RuntimeEventRecorder(runtime.store)
+        events = rec.list_events(
+            limit=limit,
+            before=before,
+            after=after,
+            before_event_id=before_event_id,
+            after_event_id=after_event_id,
+            strategy_id=strategy_id,
+            symbol=symbol,
+            event_type=event_type,
+            severity=severity,
+        )
+        return {"ok": True, "count": len(events), "limit": limit, "events": events}
+
+    @app.post("/internal/v1/runtime-events")
+    async def ingest_runtime_event(
+        body: RuntimeEventIn,
+        _: None = Depends(require_engine_token),
+    ) -> Dict[str, Any]:
+        rec = getattr(runtime, "event_recorder", None)
+        if rec is None:
+            from src.runtime.runtime_events import RuntimeEventRecorder
+
+            rec = RuntimeEventRecorder(runtime.store)
+        payload = body.model_dump() if hasattr(body, "model_dump") else body.dict()
+        saved = rec.persist_direct(payload)
+        return {"ok": True, "inserted": bool(saved), "event": saved}
 
     @app.post("/internal/v1/control/start")
     async def control_start(_: None = Depends(require_engine_token)) -> Dict[str, Any]:

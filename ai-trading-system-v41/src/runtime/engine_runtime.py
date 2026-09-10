@@ -27,6 +27,7 @@ from src.runtime.alpha_execution import (
 )
 from src.runtime.engine_store import EngineStore
 from src.runtime.position_ownership import PositionOwnershipRegistry
+from src.runtime.runtime_events import RuntimeEventRecorder
 from src.telemetry.dashboard_snapshot import build_dashboard_snapshot
 from src.telemetry.event_bus import get_event_bus
 
@@ -68,6 +69,7 @@ class EngineRuntime:
         tick_interval_sec: float = 5.0,
         execution_mode: str = "paper",
         active_strategy: str = "S1",
+        store_path: Optional[Path] = None,
     ) -> None:
         self.config_path = Path(config_path or (ROOT / "config" / "ai_trading_system_v4_2_personal_single_strategy.json"))
         if not self.config_path.exists():
@@ -122,8 +124,10 @@ class EngineRuntime:
         if exec_norm.get("deprecation_code"):
             print(exec_norm["deprecation_code"])
 
-        self.store = EngineStore()
+        self.store = EngineStore(store_path)
         self.bus = get_event_bus()
+        self.event_recorder = RuntimeEventRecorder(self.store)
+        self.bus.set_persist_hook(self.event_recorder.persist_bus_event)
         self.positions = PositionOwnershipRegistry()
         self.positions.load(self.store.list_open_positions(200))
         self._annotate_loaded_positions()
@@ -1361,11 +1365,33 @@ class EngineRuntime:
                 self.last_error = None
                 if self.state not in ("PAUSED", "LOCKED", "RECOVERY"):
                     self.state = "RUNNING"
+                symbol = getattr(self.orchestrator, "market_meta", {}).get("instrument") or self.symbol
+                candle = str(
+                    (getattr(self.orchestrator, "market_meta", {}) or {}).get("latest_closed_candle_at") or ""
+                )
                 for sid, diag in (getattr(self.orchestrator, "diagnostics", {}) or {}).items():
                     ev = diag.consume_log_event()
                     if ev:
-                        ev["symbol"] = getattr(self.orchestrator, "market_meta", {}).get("instrument") or self.symbol
+                        ev["symbol"] = ev.get("symbol") or symbol
+                        ev["source_closed_candle_timestamp"] = (
+                            ev.get("source_closed_candle_timestamp") or candle
+                        )
                         self.bus.emit("strategy.decision", ev)
+                    elif getattr(diag, "last_evaluated_at", None):
+                        self.event_recorder.persist_bus_event(
+                            {
+                                "type": "strategy.decision",
+                                "timestamp": diag.last_evaluated_at,
+                                "payload": {
+                                    "strategy_id": sid,
+                                    "symbol": symbol,
+                                    "direction": getattr(diag, "last_direction", ""),
+                                    "decision": getattr(diag, "last_decision", "NO_TRADE"),
+                                    "reason_codes": list(getattr(diag, "last_reason_codes", []) or []),
+                                    "source_closed_candle_timestamp": candle,
+                                },
+                            }
+                        )
                 snap = self.snapshot()
                 self._persist_and_emit(snap)
             except Exception as err:  # noqa: BLE001
@@ -1403,10 +1429,12 @@ def get_runtime() -> EngineRuntime:
         symbol = os.getenv("V41_ENGINE_SYMBOL", "BTC/USDT:USDT")
         tick = float(os.getenv("V41_ENGINE_TICK_SEC", "5"))
         exec_norm = resolve_runtime_execution()
+        store_env = os.getenv("V41_ENGINE_DB_PATH")
         _runtime = EngineRuntime(
             mode=mode,
             symbol=symbol,
             tick_interval_sec=tick,
             execution_mode=exec_norm["alpha_execution"],
+            store_path=Path(store_env) if store_env else None,
         )
     return _runtime

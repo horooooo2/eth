@@ -11,7 +11,6 @@ import pytest
 from src.core.signal_lifecycle import TradeIntent
 from src.runtime.alpha_execution import LEGACY_PAPER_SOURCE
 from src.runtime.engine_runtime import EngineRuntime
-from src.runtime.engine_store import EngineStore
 from src.runtime.position_ownership import PositionOwnershipRegistry
 from src.runtime.risk_usage import (
     PORTFOLIO_RISK_BUDGET_EXCEEDED,
@@ -75,8 +74,7 @@ def _owned(
 
 def _runtime(monkeypatch, tmp_path, name: str = "risk.db") -> EngineRuntime:
     monkeypatch.setenv("V41_ENGINE_AUTOSTART", "0")
-    rt = EngineRuntime(config_path=CFG_PATH, mode="paper")
-    rt.store = EngineStore(tmp_path / name)
+    rt = EngineRuntime(config_path=CFG_PATH, mode="paper", store_path=tmp_path / name)
     rt.positions = PositionOwnershipRegistry()
     rt.orchestrator.context = {"equity": EQUITY}
     return rt

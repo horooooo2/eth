@@ -1,5 +1,6 @@
 'use strict';
 
+require('./helpers/isolateSqlite');
 const { test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const ready = require('../lib/v41ExecuteReadiness');

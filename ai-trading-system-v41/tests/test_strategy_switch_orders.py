@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.runtime.engine_runtime import EngineRuntime
-from src.runtime.engine_store import EngineStore
 from src.runtime.position_ownership import PositionOwnershipRegistry
 from src.telemetry.dashboard_snapshot import build_dashboard_snapshot
 
@@ -14,8 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _runtime(monkeypatch, tmp_path) -> EngineRuntime:
     monkeypatch.setenv("V41_ENGINE_AUTOSTART", "0")
-    rt = EngineRuntime(config_path=ROOT / "config" / "system_config.json", mode="paper")
-    rt.store = EngineStore(tmp_path / "switch.db")
+    rt = EngineRuntime(config_path=ROOT / "config" / "system_config.json", mode="paper", store_path=tmp_path / "switch.db")
     rt.positions = PositionOwnershipRegistry()
     rt.order_intents = []
     rt.active_strategy = "S1"

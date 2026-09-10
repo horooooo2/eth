@@ -5,14 +5,11 @@
 const express = require('express');
 const { requireUser, canResumeEngine } = require('../lib/authStore');
 const v41 = require('../lib/v41EngineClient');
-const {
-  executeOrderIntent,
-  cancelOrderIntent,
-  getExecutionRecoveryStatus,
-} = require('../lib/v41ExecutionGateway');
+const { executeOrderIntent, cancelOrderIntent } = require('../lib/v41ExecutionGateway');
 const { getOkxCredentialsForUser } = require('../lib/userExchangeKeys');
 const alphaGate = require('../lib/v41AlphaLiveGate');
 const userBinding = require('../lib/v41UserBinding');
+const runtimeEvents = require('../lib/v41RuntimeEvents');
 
 async function bindSessionUser(req) {
   const userId = String(req.user?.user?.id || '').trim();
@@ -119,18 +116,10 @@ router.get('/dashboard', async (req, res) => {
     }
     const snapshot = attachAccountEnvironment(await v41.getSnapshot(), sessionId);
     const view = snapshot?.view || null;
-    const execution_recovery_status = getExecutionRecoveryStatus();
-    if (snapshot && typeof snapshot === 'object') {
-      snapshot.execution_recovery_status = execution_recovery_status;
-      if (snapshot.view && typeof snapshot.view === 'object') {
-        snapshot.view.execution_recovery_status = execution_recovery_status;
-      }
-    }
     res.json(
       withFreshness({
         snapshot,
         view,
-        execution_recovery_status,
         // Flatten personal ViewModel fields for Vue convenience
         ...(view
           ? {
@@ -573,6 +562,41 @@ router.post('/execution/select', async (req, res) => {
   } catch (err) {
     sendErr(res, err);
   }
+});
+
+router.get('/events', async (req, res) => {
+  if (!assertLogin(req, res)) return;
+  const filters = {
+    limit: req.query.limit,
+    before: req.query.before,
+    after: req.query.after,
+    before_event_id: req.query.before_event_id,
+    after_event_id: req.query.after_event_id,
+    strategy_id: req.query.strategy_id,
+    symbol: req.query.symbol,
+    event_type: req.query.event_type,
+    severity: req.query.severity,
+  };
+  let python = [];
+  let pythonError = '';
+  try {
+    const data = await v41.listRuntimeEvents(filters);
+    python = Array.isArray(data?.events) ? data.events : [];
+  } catch (err) {
+    pythonError = err.message || 'python events unavailable';
+  }
+  const node = runtimeEvents.list(filters);
+  const events = runtimeEvents.mergeEvents(python, node, filters);
+  res.json({
+    ok: true,
+    source: 'SERVER',
+    count: events.length,
+    limit: Math.max(1, Math.min(Number(filters.limit) || 200, 500)),
+    python_count: python.length,
+    node_count: node.length,
+    python_error: pythonError || undefined,
+    events,
+  });
 });
 
 router.get('/whale-bridge/status', (req, res) => {

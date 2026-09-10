@@ -166,7 +166,7 @@ function engineError(err, fallbackCode) {
   return out;
 }
 
-async function request(method, path, data, timeoutOverrideMs) {
+async function request(method, path, data, timeoutOverrideMs, params) {
   const c = cfg();
   if (!c.enabled) {
     const err = new Error('V4.1 engine disabled');
@@ -180,6 +180,7 @@ async function request(method, path, data, timeoutOverrideMs) {
       method,
       url: `${c.baseUrl}${path}`,
       data,
+      params,
       timeout: Math.max(500, Number(timeoutOverrideMs) || c.timeoutMs),
       headers: {
         'X-Engine-Token': c.token,
@@ -321,6 +322,14 @@ async function executionSelect(body) {
   return request('POST', '/internal/v1/execution/select', body || {});
 }
 
+async function listRuntimeEvents(params = {}) {
+  return request('GET', '/internal/v1/runtime-events', undefined, undefined, params);
+}
+
+async function ingestRuntimeEvent(body) {
+  return request('POST', '/internal/v1/runtime-events', body || {});
+}
+
 module.exports = {
   cfg,
   bridgeStatus,
@@ -354,4 +363,6 @@ module.exports = {
   whaleTelemetry,
   executionSelections,
   executionSelect,
+  listRuntimeEvents,
+  ingestRuntimeEvent,
 };

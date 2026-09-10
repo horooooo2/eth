@@ -6,6 +6,15 @@ const alphaGate = require('./v41AlphaLiveGate');
 const demoV1 = require('./v41DemoExecuteV1');
 const prot = require('./v41ProtectiveStop');
 const userBinding = require('./v41UserBinding');
+const runtimeEvents = require('./v41RuntimeEvents');
+
+function persistRecoverySafe(status, extra) {
+  try {
+    runtimeEvents.recordRecovery(status, extra);
+  } catch (err) {
+    console.warn('[V41_RUNTIME_EVENT_PERSIST_FAILED]', err && err.message ? err.message : err);
+  }
+}
 
 let recovery = {
   status: 'PENDING',
@@ -38,6 +47,7 @@ function failStatus(code, message) {
     reason: code,
     error: message,
   });
+  persistRecoverySafe('FAILED', { reason: code, error: message, at: recovery.at });
   return getExecutionRecoveryStatus();
 }
 
@@ -59,6 +69,7 @@ async function runStartupRecovery(deps = {}) {
     deps.ownerUserId ||
     userBinding.getBoundEngineOwner() ||
     String(process.env.V41_ENGINE_OWNER_USER_ID || '').trim();
+  persistRecoverySafe('STARTED', { reason: 'EXECUTE_RECOVERY' });
   if (!owner) {
     return failStatus('ACCOUNT_CONTEXT_NOT_READY', 'trusted owner missing');
   }
@@ -92,6 +103,14 @@ async function runStartupRecovery(deps = {}) {
     if (typeof deps.reconcile === 'function') {
       const recon = await deps.reconcile();
       recovery.private_queries += 1;
+      try {
+        runtimeEvents.recordReconciliation(!(recon && recon.block), {
+          reason_code: recon && (recon.reason_code || recon.status),
+          status: recon && recon.status,
+        });
+      } catch {
+        // observability only
+      }
       if (recon && recon.block) {
         return failStatus(recon.reason_code || 'RECONCILIATION_MISMATCH', recon.status);
       }
@@ -103,6 +122,7 @@ async function runStartupRecovery(deps = {}) {
       stops: stops.length,
       mutations: 0,
     });
+    persistRecoverySafe('READY', { orders: orders.length, stops: stops.length, at: recovery.at });
     return getExecutionRecoveryStatus();
   } catch (err) {
     return failStatus(err.code || 'EXECUTION_RECOVERY_FAILED', err.message || String(err));

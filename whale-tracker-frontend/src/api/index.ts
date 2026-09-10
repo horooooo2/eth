@@ -650,6 +650,50 @@ export async function fetchWhaleAiRuntimeLogs(limit = 1000) {
   return data;
 }
 
+export type WhaleAiEngineEvent = {
+  event_id: string;
+  occurred_at: string;
+  created_at?: string;
+  event_type: string;
+  severity?: string;
+  strategy_id?: string;
+  symbol?: string;
+  direction?: string;
+  decision?: string;
+  reason_code?: string;
+  reason_codes?: string[];
+  source_closed_candle_timestamp?: string;
+  trade_intent_id?: string;
+  order_intent_id?: string;
+  position_id?: string;
+  signal_key?: string;
+  message?: string;
+  details?: Record<string, unknown>;
+  source?: string;
+};
+
+export async function fetchWhaleAiEngineEvents(params?: {
+  limit?: number;
+  before?: string;
+  after?: string;
+  before_event_id?: string;
+  after_event_id?: string;
+  strategy_id?: string;
+  symbol?: string;
+  event_type?: string;
+  severity?: string;
+}) {
+  const { data } = await http.get<{
+    ok: boolean;
+    source?: string;
+    count: number;
+    limit: number;
+    events: WhaleAiEngineEvent[];
+    python_error?: string;
+  }>('/whale-ai/engine/events', { params });
+  return data;
+}
+
 export async function appendWhaleAiRuntimeLog(body: {
   lvl: string;
   msg: string;

@@ -11,7 +11,6 @@ from src.runtime.demo_execute_v1 import (
     signal_key,
 )
 from src.runtime.engine_runtime import EngineRuntime
-from src.runtime.engine_store import EngineStore
 
 ROOT = Path(__file__).resolve().parents[1]
 CFG = ROOT / "config" / "system_config.json"
@@ -108,8 +107,7 @@ def test_signal_key_idempotent():
 
 def test_s1_order_intent_not_ready_without_structure(monkeypatch, tmp_path):
     monkeypatch.setenv("V41_ENGINE_AUTOSTART", "0")
-    rt = EngineRuntime(config_path=CFG, mode="paper")
-    rt.store = EngineStore(tmp_path / "s1stop.db")
+    rt = EngineRuntime(config_path=CFG, mode="paper", store_path=tmp_path / "s1stop.db")
     from datetime import datetime, timezone
     from src.core.signal_lifecycle import TradeIntent
 
@@ -150,8 +148,7 @@ def test_s1_order_intent_not_ready_without_structure(monkeypatch, tmp_path):
 
 def test_kill_v1_locks_and_does_not_flatten(monkeypatch, tmp_path):
     monkeypatch.setenv("V41_ENGINE_AUTOSTART", "0")
-    rt = EngineRuntime(config_path=CFG, mode="paper")
-    rt.store = EngineStore(tmp_path / "kill.db")
+    rt = EngineRuntime(config_path=CFG, mode="paper", store_path=tmp_path / "kill.db")
     rt.order_intents = [
         {
             "order_intent_id": "oi-open",

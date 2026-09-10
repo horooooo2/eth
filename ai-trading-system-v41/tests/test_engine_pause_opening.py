@@ -6,7 +6,6 @@ import asyncio
 from pathlib import Path
 
 from src.runtime.engine_runtime import EngineRuntime
-from src.runtime.engine_store import EngineStore
 from src.runtime.strategy_diagnostics import StrategyDiagnostics
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,8 +14,7 @@ CFG = ROOT / "config" / "system_config.json"
 
 def _rt(monkeypatch, tmp_path) -> EngineRuntime:
     monkeypatch.setenv("V41_ENGINE_AUTOSTART", "0")
-    rt = EngineRuntime(config_path=CFG, mode="paper", tick_interval_sec=0.05)
-    rt.store = EngineStore(tmp_path / "pause.db")
+    rt = EngineRuntime(config_path=CFG, mode="paper", tick_interval_sec=0.05, store_path=tmp_path / "pause.db")
     return rt
 
 

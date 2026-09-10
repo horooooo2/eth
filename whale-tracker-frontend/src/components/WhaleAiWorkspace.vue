@@ -41,8 +41,8 @@ import {
   fetchWhaleAiTradeBalance,
   fetchWhaleAiTradeOrdersPending,
   fetchWhaleAiTradePositions,
-  fetchWhaleAiRuntimeLogs,
-  appendWhaleAiRuntimeLog,
+  fetchWhaleAiEngineEvents,
+  type WhaleAiEngineEvent,
   fetchV41HftSimStatus,
   fetchV41HftSimCapability,
   fetchExecutionSelections,
@@ -52,6 +52,7 @@ import {
   type ExecutionSelection,
 } from '@/api';
 import { useRealtimePrivate, type PrivateRealtimeMessage } from '@/composables/useRealtimePrivate';
+import { isPositionEvent, mapBusToEngineEvent, severityToLvl } from '@/utils/runtimeEvents';
 
 const emit = defineEmits<{
   requestLogin: [];
@@ -329,6 +330,7 @@ type LogChannel = 'SYSTEM' | 'POSITION';
 
 type LogItem = {
   id?: number;
+  eventId?: string;
   ts?: number;
   t: string;
   lvl: 'info' | 'success' | 'warn' | 'error';
@@ -338,10 +340,12 @@ type LogItem = {
   strategy_id?: string;
   symbol?: string;
   reason_code?: string;
+  source?: string;
 };
 
-const LOG_KEEP = 300;
 const LOG_SHOW = 120;
+const logLimit = ref(200);
+const logTypeFilter = ref('');
 const TICK_FRESH_SEC = 20;
 const EVAL_FRESH_SEC = 20;
 
@@ -363,7 +367,6 @@ const positionLogBox = ref<HTMLElement | null>(null);
 const systemPinned = ref(true);
 const positionPinned = ref(true);
 let logScrollLock = 0;
-const lastPositionEventKey = ref('');
 const okxLastUpdate = ref('--');
 
 const controlBusy = ref(false);
@@ -853,27 +856,7 @@ function onPrivateRealtime(msg: PrivateRealtimeMessage) {
   if (et === 'engine.sequence_gap' || msg.payload?.resnapshot) {
     pushLog('warn', '引擎事件序号缺口，正在重新拉取快照');
   }
-  if (et === 'strategy.active.changed') {
-    pushLog('info', `策略已切换为 ${String((msg.payload as { active_strategy_id?: string })?.active_strategy_id || '')}`, {
-      channel: 'SYSTEM',
-    });
-  }
-  if (et === 'strategy.decision') {
-    applyPositionDecision(msg.payload as Record<string, unknown>);
-  }
-  if (et === 'trade_intent.created') {
-    const p = (msg.payload || {}) as { strategy_id?: string; symbol?: string; direction?: string };
-    pushLog(
-      'success',
-      `[信号] ${p.strategy_id || activeStrategy.value} · ${p.symbol || ''} · ${directionLabelZh(String(p.direction || ''))}`,
-      {
-        channel: 'POSITION',
-        event_type: '信号',
-        strategy_id: p.strategy_id,
-        symbol: p.symbol,
-      },
-    );
-  }
+  ingestEngineEvent(mapBusToEngineEvent(msg));
   if (mainConsoleVisible.value) void pollEngineDashboard();
 }
 
@@ -949,34 +932,53 @@ function scrollLogToLatest(channel: LogChannel) {
   });
 }
 
-function applyPositionDecision(payload?: Record<string, unknown> | null) {
-  if (!payload) return;
-  const strategyId = String(payload.strategy_id || activeStrategy.value || 'S1');
-  const symbol = String(payload.symbol || s1Diagnostics.value?.market_data?.instrument || '');
-  const direction = String(payload.direction || payload.direction_candidate || 'NONE');
-  const decision = String(payload.decision || payload.result || 'NO_TRADE');
-  const codes = Array.isArray(payload.reason_codes)
-    ? payload.reason_codes.map((x) => String(x))
-    : payload.reason_code
-      ? [String(payload.reason_code)]
-      : [];
-  const eventType = String(payload.event_type || (decision === 'ALLOW' ? '信号' : decision === 'BLOCK' ? '拒绝' : '拒绝'));
-  const key = `${strategyId}|${symbol}|${direction}|${codes.join(',')}`;
-  if (key === lastPositionEventKey.value) return;
-  lastPositionEventKey.value = key;
-  const lvl: LogItem['lvl'] = decision === 'ALLOW' ? 'success' : decision === 'BLOCK' ? 'warn' : 'info';
-  const reasonsZh = codes.length ? codes.map(reasonLabelZh).join('；') : '无明确原因';
-  pushLog(
-    lvl,
-    `[${eventType}] ${strategyId} · ${symbol || '—'} · ${directionLabelZh(direction)} · ${decisionLabelZh(decision)} · ${reasonsZh}`,
-    {
-      channel: 'POSITION',
-      event_type: eventType,
-      strategy_id: strategyId,
-      symbol,
-      reason_code: codes[0] || '',
-    },
-  );
+function eventToLogItem(ev: WhaleAiEngineEvent): LogItem {
+  const occurred = Date.parse(ev.occurred_at);
+  const ts = Number.isFinite(occurred) ? occurred : Date.now();
+  const codes = ev.reason_codes?.length ? ev.reason_codes : ev.reason_code ? [ev.reason_code] : [];
+  const reasonsZh = codes.length ? codes.map(reasonLabelZh).join('；') : '';
+  const msg =
+    ev.message ||
+    [
+      ev.event_type,
+      ev.strategy_id || '—',
+      ev.symbol || '—',
+      ev.direction ? directionLabelZh(ev.direction) : '',
+      ev.decision ? decisionLabelZh(ev.decision) : '',
+      reasonsZh,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+  return {
+    eventId: ev.event_id,
+    ts,
+    t: formatLogTime(ts),
+    lvl: severityToLvl(ev.severity),
+    msg,
+    channel: isPositionEvent(ev.event_type) ? 'POSITION' : 'SYSTEM',
+    event_type: ev.event_type,
+    strategy_id: ev.strategy_id,
+    symbol: ev.symbol,
+    reason_code: ev.reason_code,
+    source: 'SERVER',
+  };
+}
+
+function upsertServerLog(item: LogItem) {
+  if (!item.eventId) return;
+  const bucket = logsFor(item.channel);
+  if (bucket.value.some((row) => row.eventId === item.eventId)) return;
+  bucket.value.push(item);
+  bucket.value.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  if (bucket.value.length > logLimit.value) {
+    bucket.value = bucket.value.slice(-logLimit.value);
+  }
+}
+
+function ingestEngineEvent(ev: WhaleAiEngineEvent | null) {
+  if (!ev?.event_id) return;
+  if (logTypeFilter.value && ev.event_type !== logTypeFilter.value) return;
+  upsertServerLog(eventToLogItem(ev));
 }
 
 function pushLog(
@@ -1008,49 +1010,22 @@ function pushLog(
     symbol: opts?.symbol,
     reason_code: opts?.reason_code,
   });
-  if (bucket.value.length > LOG_KEEP) bucket.value = bucket.value.slice(-LOG_KEEP);
-  const shouldPersist = opts?.persist !== false;
-  if (shouldPersist && isLoggedIn.value) {
-    void appendWhaleAiRuntimeLog({
-      lvl,
-      msg: text,
-      source: opts?.source || 'ui',
-      ts,
-      channel,
-      event_type: opts?.event_type,
-      strategy_id: opts?.strategy_id,
-      symbol: opts?.symbol,
-      reason_code: opts?.reason_code,
-    }).catch(() => {
-      /* ignore persist errors — console still shows locally */
-    });
-  }
+  if (bucket.value.length > logLimit.value) bucket.value = bucket.value.slice(-logLimit.value);
 }
 
-async function loadRuntimeLogs() {
+async function loadEngineEvents() {
   if (!isLoggedIn.value) return;
   try {
-    const data = await fetchWhaleAiRuntimeLogs(LOG_KEEP * 2);
-    const rows = Array.isArray(data.logs) ? data.logs : [];
-    const mapped = rows.map((r) => {
-      const channel: LogChannel = String(r.channel || 'SYSTEM').toUpperCase() === 'POSITION' ? 'POSITION' : 'SYSTEM';
-      return {
-        id: r.id,
-        ts: Number(r.ts) || Date.now(),
-        t: formatLogTime(Number(r.ts) || Date.now()),
-        lvl: (['info', 'success', 'warn', 'error'].includes(String(r.lvl))
-          ? r.lvl
-          : 'info') as LogItem['lvl'],
-        msg: String(r.msg || ''),
-        channel,
-        event_type: r.event_type,
-        strategy_id: r.strategy_id,
-        symbol: r.symbol,
-        reason_code: r.reason_code,
-      };
+    const data = await fetchWhaleAiEngineEvents({
+      limit: logLimit.value,
+      event_type: logTypeFilter.value || undefined,
     });
-    systemLogs.value = mapped.filter((r) => r.channel === 'SYSTEM').slice(-LOG_KEEP);
-    positionLogs.value = mapped.filter((r) => r.channel === 'POSITION').slice(-LOG_KEEP);
+    const events = Array.isArray(data.events) ? data.events : [];
+    systemLogs.value = [];
+    positionLogs.value = [];
+    for (const ev of [...events].reverse()) {
+      ingestEngineEvent(ev);
+    }
     pinLogChannel('SYSTEM', true);
     pinLogChannel('POSITION', true);
     scrollLogToLatest('SYSTEM');
@@ -1689,29 +1664,21 @@ watch(isLoggedIn, (logged) => {
 });
 
 watch(isLoggedIn, (ok) => {
-  if (ok) void loadRuntimeLogs();
+  if (ok) void loadEngineEvents();
   else {
     systemLogs.value = [];
     positionLogs.value = [];
   }
 });
 
+watch([logLimit, logTypeFilter], () => {
+  if (isLoggedIn.value) void loadEngineEvents();
+});
+
 watch(whaleAiStrategyDiagnostics, (diag) => {
   if (!diag) return;
   if (typeof diag.alpha_opening_enabled === 'boolean') {
     alphaOpeningEnabled.value = diag.alpha_opening_enabled;
-  }
-  if (diag.pending_log_event) {
-    applyPositionDecision(diag.pending_log_event as Record<string, unknown>);
-  } else if (diag.last_decision) {
-    applyPositionDecision({
-      strategy_id: diag.strategy_id,
-      symbol: diag.market_data?.instrument,
-      direction: diag.decision?.direction_candidate || 'NONE',
-      decision: diag.last_decision,
-      reason_codes: diag.last_reason_codes || [],
-      event_type: diag.last_decision === 'ALLOW' ? '信号' : '拒绝',
-    });
   }
 });
 
@@ -1750,9 +1717,10 @@ onMounted(() => {
   if (isLoggedIn.value) {
     void refreshWhaleAiKeyStatus(true);
     void refreshWhaleAiTradeStatus(true).then(() => loadAccountSnapshot());
-    void loadRuntimeLogs().then(() => {
+    void loadEngineEvents().then(() => {
       if (!systemLogs.value.length) {
-        pushLog('info', '个人交易舱已加载：账户/持仓接 OKX，策略与信号接 V4.1 引擎', {
+        pushLog('info', '个人交易舱已加载：账户/持仓接 OKX，运行日志来自服务器', {
+          persist: false,
           channel: 'SYSTEM',
         });
       }
@@ -2149,6 +2117,33 @@ onUnmounted(() => {
       </section>
 
       <section class="card log-panel">
+        <div class="log-toolbar">
+          <span class="log-badge on">日志来源：SERVER</span>
+          <label class="log-filter">
+            最近
+            <select v-model.number="logLimit">
+              <option :value="100">100</option>
+              <option :value="200">200</option>
+              <option :value="500">500</option>
+            </select>
+          </label>
+          <label class="log-filter">
+            类型
+            <select v-model="logTypeFilter">
+              <option value="">全部</option>
+              <option value="STRATEGY_NO_TRADE">STRATEGY_NO_TRADE</option>
+              <option value="STRATEGY_CANDIDATE">STRATEGY_CANDIDATE</option>
+              <option value="ORDER_SUBMITTED">ORDER_SUBMITTED</option>
+              <option value="ORDER_FILLED">ORDER_FILLED</option>
+              <option value="POSITION_OPENED">POSITION_OPENED</option>
+              <option value="S5_RISK_CHANGED">S5_RISK_CHANGED</option>
+              <option value="S6_BLOCK">S6_BLOCK</option>
+              <option value="S6_LOCK">S6_LOCK</option>
+              <option value="ENGINE_START">ENGINE_START</option>
+            </select>
+          </label>
+          <span class="section-sub">关闭网页后服务器继续记录，重新打开会加载历史</span>
+        </div>
         <div class="log-split">
           <div class="log-col log-col-system">
             <div class="section-title">
@@ -2172,7 +2167,7 @@ onUnmounted(() => {
               <div v-if="!systemLogs.length" class="log-entry">暂无系统运行日志</div>
               <div
                 v-for="(l, idx) in systemLogs.slice(-LOG_SHOW)"
-                :key="`sys-${l.id || l.ts || l.t}-${idx}`"
+                :key="`sys-${l.eventId || l.id || l.ts || l.t}-${idx}`"
                 class="log-entry"
               >
                 <span class="log-time">{{ l.t }}</span>
@@ -2203,7 +2198,7 @@ onUnmounted(() => {
               <div v-if="!positionLogs.length" class="log-entry">暂无仓位生命周期事件</div>
               <div
                 v-for="(l, idx) in positionLogs.slice(-LOG_SHOW)"
-                :key="`pos-${l.id || l.ts || l.t}-${idx}`"
+                :key="`pos-${l.eventId || l.id || l.ts || l.t}-${idx}`"
                 class="log-entry"
               >
                 <span class="log-time">{{ l.t }}</span>
@@ -2791,6 +2786,27 @@ th {
 
 .log-panel {
   position: relative;
+}
+.log-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.log-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.log-filter select {
+  background: #21262d;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1px 6px;
 }
 .log-split {
   display: grid;

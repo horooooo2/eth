@@ -1,5 +1,6 @@
 'use strict';
 
+require('./helpers/isolateSqlite');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { computeRuntimeStatuses, staleThresholdMs } = require('../lib/v41EngineClient');

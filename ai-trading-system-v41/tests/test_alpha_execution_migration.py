@@ -17,7 +17,6 @@ from src.runtime.alpha_execution import (
     strategy_live_allowed,
 )
 from src.runtime.engine_runtime import EngineRuntime
-from src.runtime.engine_store import EngineStore
 from src.runtime.position_ownership import PositionOwnershipRegistry
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,8 +28,7 @@ def _runtime(monkeypatch, tmp_path, **kwargs) -> EngineRuntime:
     monkeypatch.delenv("V41_ALPHA_EXECUTION", raising=False)
     monkeypatch.delenv("V41_ENGINE_EXECUTION_MODE", raising=False)
     monkeypatch.setenv("V41_LIVE_TRADING_ENABLED", "false")
-    rt = EngineRuntime(config_path=CFG, mode="paper", **kwargs)
-    rt.store = EngineStore(tmp_path / "mig.db")
+    rt = EngineRuntime(config_path=CFG, mode="paper", store_path=tmp_path / "mig.db", **kwargs)
     rt.positions = PositionOwnershipRegistry()
     return rt
 

@@ -1,5 +1,6 @@
 'use strict';
 
+require('./helpers/isolateSqlite');
 const { test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const ready = require('../lib/v41ExecuteReadiness');
@@ -196,7 +197,7 @@ test('2 fill 4→7 amends stop to 7', async () => {
   const second = await prot.ensureProtectiveStop(oi, { owned_contracts: 7, filled_contracts: 7 }, algo);
   assert.equal(second.amended, true);
   assert.equal(String(second.covered_contracts), '7');
-  const rec = prot.findByPositionId('pos-amend');
+  const rec = prot.findByPositionId(oi.position_id);
   assert.equal(String(rec.covered_contracts), '7');
 });
 

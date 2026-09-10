@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.runtime.engine_runtime import EngineRuntime
-from src.runtime.engine_store import EngineStore
 from src.runtime.position_ownership import PositionOwnershipRegistry
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,8 +13,7 @@ CFG = ROOT / "config" / "system_config.json"
 
 def test_register_position_keeps_origin(monkeypatch, tmp_path):
     monkeypatch.setenv("V41_ENGINE_AUTOSTART", "0")
-    rt = EngineRuntime(config_path=CFG, mode="paper")
-    rt.store = EngineStore(tmp_path / "p.db")
+    rt = EngineRuntime(config_path=CFG, mode="paper", store_path=tmp_path / "p.db")
     rt.positions = PositionOwnershipRegistry()
 
     pos = rt.register_owned_position(
@@ -43,8 +41,7 @@ def test_register_position_keeps_origin(monkeypatch, tmp_path):
 
 def test_strategy_switch_preserves_positions(monkeypatch, tmp_path):
     monkeypatch.setenv("V41_ENGINE_AUTOSTART", "0")
-    rt = EngineRuntime(config_path=CFG, mode="paper")
-    rt.store = EngineStore(tmp_path / "p2.db")
+    rt = EngineRuntime(config_path=CFG, mode="paper", store_path=tmp_path / "p2.db")
     rt.positions = PositionOwnershipRegistry()
     rt.active_strategy = "S1"
     rt.orchestrator.active_strategy_id = "S1"
@@ -71,12 +68,7 @@ def test_strategy_switch_preserves_positions(monkeypatch, tmp_path):
 def test_ownership_restored_after_restart(monkeypatch, tmp_path):
     monkeypatch.setenv("V41_ENGINE_AUTOSTART", "0")
     db = tmp_path / "p3.db"
-    store = EngineStore(db)
-    reg = PositionOwnershipRegistry()
-    # simulate runtime write
-    rt = EngineRuntime(config_path=CFG, mode="paper")
-    rt.store = store
-    rt.positions = reg
+    rt = EngineRuntime(config_path=CFG, mode="paper", store_path=db)
     pos = rt.register_owned_position(
         {
             "symbol": "ETH-USDT-SWAP",
@@ -88,11 +80,8 @@ def test_ownership_restored_after_restart(monkeypatch, tmp_path):
         }
     )
 
-    # New runtime instance reloads from same DB
-    rt2 = EngineRuntime(config_path=CFG, mode="paper")
-    rt2.store = EngineStore(db)
-    rt2.positions = PositionOwnershipRegistry()
-    rt2.positions.load(rt2.store.list_open_positions())
+    # New runtime instance reloads from same temp DB
+    rt2 = EngineRuntime(config_path=CFG, mode="paper", store_path=db)
     restored = rt2.positions.get(pos["position_id"])
     assert restored is not None
     assert restored.origin_strategy_id == "S2"
@@ -100,9 +89,14 @@ def test_ownership_restored_after_restart(monkeypatch, tmp_path):
     assert restored.exit_policy_snapshot.get("origin_strategy_id") == "S2"
 
 
-def test_shadow_mode_flag_on_order_intent(monkeypatch):
+def test_shadow_mode_flag_on_order_intent(monkeypatch, tmp_path):
     monkeypatch.setenv("V41_ENGINE_AUTOSTART", "0")
-    rt = EngineRuntime(config_path=CFG, mode="paper", execution_mode="node_gateway_shadow")
+    rt = EngineRuntime(
+        config_path=CFG,
+        mode="paper",
+        execution_mode="node_gateway_shadow",
+        store_path=tmp_path / "shadow.db",
+    )
     assert rt.execution_mode == "node_gateway_shadow"
     rt.orchestrator.execution_mode = "node_gateway_shadow"
     # Build a fake confirmed intent path via register only — dispatch unit covered by mode check

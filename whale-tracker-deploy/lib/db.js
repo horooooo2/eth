@@ -2,7 +2,9 @@
  * SQLite 连接与建表（better-sqlite3）
  * 库文件默认：项目根/data/whale.db，可用 SQLITE_PATH 覆盖
  */
+const crypto = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const {
@@ -22,9 +24,35 @@ const ALERT_RETENTION_MS = CLOSED_POSITION_RETENTION_MS;
 
 let db;
 let Database;
+let isolatedTestDir = null;
+
+function isolateTestDbPath() {
+  if (isolatedTestDir) return process.env.SQLITE_PATH;
+  const id = `${process.pid}-${Date.now()}-${crypto.randomUUID()}`;
+  isolatedTestDir = fs.mkdtempSync(path.join(os.tmpdir(), `whale-test-${id}-`));
+  const file = path.join(isolatedTestDir, `whale-${id}.db`);
+  process.env.SQLITE_PATH = file;
+  const cleanup = () => {
+    try {
+      closeDb();
+    } catch {
+      // ignore
+    }
+    if (!isolatedTestDir) return;
+    try {
+      fs.rmSync(isolatedTestDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+    isolatedTestDir = null;
+  };
+  process.on('exit', cleanup);
+  return file;
+}
 
 function resolveDbPath() {
   if (process.env.SQLITE_PATH) return process.env.SQLITE_PATH;
+  if (process.env.NODE_TEST_CONTEXT) return isolateTestDbPath();
   return path.join(__dirname, '..', 'data', 'whale.db');
 }
 
@@ -193,6 +221,33 @@ function migrate(database) {
     );
     CREATE INDEX IF NOT EXISTS idx_whale_ai_runtime_logs_user_ts
       ON whale_ai_runtime_logs(user_id, ts DESC);
+
+    CREATE TABLE IF NOT EXISTS v41_runtime_events (
+      event_id TEXT PRIMARY KEY,
+      occurred_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      strategy_id TEXT,
+      symbol TEXT,
+      direction TEXT,
+      decision TEXT,
+      reason_code TEXT,
+      reason_codes_json TEXT,
+      source_closed_candle_timestamp TEXT,
+      trade_intent_id TEXT,
+      order_intent_id TEXT,
+      position_id TEXT,
+      signal_key TEXT,
+      message TEXT,
+      details_json TEXT,
+      reason_signature TEXT,
+      no_trade_key TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_v41_runtime_events_occurred
+      ON v41_runtime_events(occurred_at DESC, event_id DESC);
+    CREATE INDEX IF NOT EXISTS idx_v41_runtime_events_type
+      ON v41_runtime_events(event_type, occurred_at DESC);
   `);
 
   // soft migrations

@@ -11,3 +11,22 @@ whale-tracker-backend/cache/*.json
 .vscode/
 .idea/
 .tmp-edge-profile/
+.deploy-pack/
+
+# Python bytecode / test caches
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+
+# Local engine / backend runtime state
+ai-trading-system-v41/data/
+ai-trading-system-v41/logs/
+whale-tracker-backend/data/
+whale-tracker-backend/tmp_*/
+*.db
+*.db-wal
+*.db-shm
+*.jsonl

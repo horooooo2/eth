@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 class EventBus:
@@ -13,6 +13,10 @@ class EventBus:
         self._seq = 0
         self._subscribers: List[asyncio.Queue] = []
         self._lock = asyncio.Lock()
+        self._persist_hook: Optional[Callable[[Dict[str, Any]], Any]] = None
+
+    def set_persist_hook(self, hook: Optional[Callable[[Dict[str, Any]], Any]]) -> None:
+        self._persist_hook = hook
 
     @property
     def sequence(self) -> int:
@@ -32,7 +36,7 @@ class EventBus:
     def emit(self, event_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         self._seq += 1
         event = {
-            "event_id": str(uuid.uuid4()),
+            "event_id": f"py_{uuid.uuid4()}",
             "sequence": self._seq,
             "type": event_type,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -55,6 +59,11 @@ class EventBus:
                 dead.append(q)
         for q in dead:
             self.unsubscribe(q)
+        if self._persist_hook is not None:
+            try:
+                self._persist_hook(event)
+            except Exception:
+                pass
         return event
 
 

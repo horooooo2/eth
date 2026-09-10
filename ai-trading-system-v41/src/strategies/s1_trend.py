@@ -174,6 +174,7 @@ class S1TrendStrategy:
             diag = owner.get("S1") if isinstance(owner, dict) else owner
         if diag is None:
             return
+        candle = str((context.get("market_data") or {}).get("latest_closed_candle_at") or "")
         diag.record_evaluation(
             decision=decision,
             reason_codes=reason_codes,
@@ -181,4 +182,5 @@ class S1TrendStrategy:
             symbol=symbol,
             raw_signal=raw_signal,
             trade_intent=trade_intent,
+            source_closed_candle_timestamp=candle,
         )

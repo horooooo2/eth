@@ -1,5 +1,6 @@
 'use strict';
 
+require('./helpers/isolateSqlite');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const gate = require('../lib/v41AlphaLiveGate');

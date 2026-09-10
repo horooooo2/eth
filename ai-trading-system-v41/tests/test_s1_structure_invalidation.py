@@ -14,7 +14,6 @@ from src.runtime.demo_execute_v1 import (
     signal_key,
 )
 from src.runtime.engine_runtime import EngineRuntime
-from src.runtime.engine_store import EngineStore
 
 ROOT = Path(__file__).resolve().parents[1]
 CFG = ROOT / "config" / "system_config.json"
@@ -70,8 +69,7 @@ def _resolve(direction: str, candles, *, atr14: float = ATR14, entry: float = EN
 
 def _make_runtime(tmp_path, monkeypatch):
     monkeypatch.setenv("V41_ENGINE_AUTOSTART", "0")
-    rt = EngineRuntime(config_path=CFG, mode="paper")
-    rt.store = EngineStore(tmp_path / "s1-structure.db")
+    rt = EngineRuntime(config_path=CFG, mode="paper", store_path=tmp_path / "s1-structure.db")
     return rt
 
 

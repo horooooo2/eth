@@ -50,6 +50,7 @@ class StrategyDiagnostics:
         self.last_reason_codes: List[str] = []
         self.last_direction: str = "NONE"
         self.last_symbol: str = ""
+        self.last_closed_candle: str = ""
         self.last_emit_key: Optional[str] = None
         self.last_emit_at: Optional[str] = None
         self.pending_log_event: Optional[Dict[str, Any]] = None
@@ -64,6 +65,7 @@ class StrategyDiagnostics:
         symbol: str = "",
         raw_signal: bool = False,
         trade_intent: bool = False,
+        source_closed_candle_timestamp: str = "",
     ) -> None:
         self.evaluation_count += 1
         self.last_evaluated_at = _now_iso()
@@ -71,6 +73,8 @@ class StrategyDiagnostics:
         self.last_reason_codes = list(reason_codes)
         self.last_direction = direction
         self.last_symbol = str(symbol or "")
+        if source_closed_candle_timestamp:
+            self.last_closed_candle = str(source_closed_candle_timestamp)
         codes = set(reason_codes)
         if "S3_REGIME_BLOCK" in codes or "S3_DIRECTION_BLOCK" in codes:
             self.S3_rejected_count += 1
@@ -115,9 +119,14 @@ class StrategyDiagnostics:
         return ev
 
     def _maybe_queue_log_event(self) -> None:
-        reason = ",".join(self.last_reason_codes)
-        key = f"{self.strategy_id}|{self.last_symbol}|{self.last_direction}|{reason}"
+        reason = ",".join(sorted({str(c).strip() for c in self.last_reason_codes if str(c).strip()}))
+        key = (
+            f"{self.strategy_id}|{self.last_symbol}|{self.last_closed_candle}|"
+            f"{self.last_decision}|{reason}"
+        )
         now = datetime.now(timezone.utc)
+        if self.last_emit_key == key and self.last_closed_candle:
+            return
         if self.last_emit_key == key and self.last_emit_at:
             try:
                 prev = datetime.fromisoformat(self.last_emit_at.replace("Z", "+00:00"))
@@ -144,6 +153,7 @@ class StrategyDiagnostics:
             "decision": self.last_decision,
             "reason_codes": list(self.last_reason_codes),
             "reason_code": self.last_reason_codes[0] if self.last_reason_codes else "",
+            "source_closed_candle_timestamp": self.last_closed_candle,
             "ts": self.last_evaluated_at,
         }
 

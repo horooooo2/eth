@@ -8,9 +8,6 @@ from pathlib import Path
 from src.core.orchestrator import Orchestrator
 from src.core.signal_lifecycle import SignalLifecycleManager
 from src.runtime.engine_runtime import EngineRuntime
-from src.runtime.engine_store import EngineStore
-from src.runtime.position_ownership import PositionOwnershipRegistry
-from src.runtime.engine_store import EngineStore
 from src.runtime.position_ownership import PositionOwnershipRegistry
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -76,8 +73,7 @@ def test_inactive_strategy_cannot_emit_intent(monkeypatch):
 
 def _isolated_runtime(monkeypatch, tmp_path) -> EngineRuntime:
     monkeypatch.setenv("V41_ENGINE_AUTOSTART", "0")
-    rt = EngineRuntime(config_path=ROOT / "config" / "system_config.json", mode="paper")
-    rt.store = EngineStore(tmp_path / "active.db")
+    rt = EngineRuntime(config_path=ROOT / "config" / "system_config.json", mode="paper", store_path=tmp_path / "active.db")
     rt.positions = PositionOwnershipRegistry()
     rt.order_intents = []
     return rt

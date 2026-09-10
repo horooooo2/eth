@@ -69,6 +69,15 @@ async function resolveInstrumentSpec(instId) {
   return spec;
 }
 const v41 = require('./v41EngineClient');
+const runtimeEvents = require('./v41RuntimeEvents');
+
+function persistRuntimeEventSafe(report) {
+  try {
+    runtimeEvents.recordGatewayReport(report);
+  } catch (err) {
+    console.warn('[V41_RUNTIME_EVENT_PERSIST_FAILED]', err && err.message ? err.message : err);
+  }
+}
 const axios = require('axios');
 const qaEx = require('./v41QaExchange');
 const alphaGate = require('./v41AlphaLiveGate');
@@ -587,6 +596,7 @@ async function executeOrderIntent(orderIntent, auth = {}) {
       created_at: now,
     });
     console.log('[V41_ORDER_QA_EXCHANGE]', orderIntentId, exchangeOrderId, qaGate.accountMode);
+    persistRuntimeEventSafe(report);
     try {
       await v41.sendExecutionReport(report);
     } catch (err) {
@@ -902,6 +912,7 @@ async function executeOrderIntent(orderIntent, auth = {}) {
   });
 
   console.log('[V41_ORDER_SUBMITTED]', orderIntentId, status, exchangeOrderId);
+  persistRuntimeEventSafe(report);
   try {
     await v41.sendExecutionReport(report);
     console.log('[V41_EXECUTION_REPORT_SENT]', orderIntentId);
@@ -1005,6 +1016,7 @@ async function cancelOrderIntent(payload) {
     reason: payload.reason || 'ACTIVE_STRATEGY_CHANGED',
     completed_at: new Date().toISOString(),
   };
+  persistRuntimeEventSafe(report);
   try {
     await v41.sendExecutionReport(report);
   } catch {
