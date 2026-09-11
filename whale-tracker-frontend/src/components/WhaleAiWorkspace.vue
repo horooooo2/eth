@@ -18,6 +18,7 @@ import {
   whaleAiEngineError,
   whaleAiEngineSnapshot,
   whaleAiEngineState,
+  whaleAiEngineStatusUnknown,
   whaleAiStrategyDiagnostics,
   whaleAiIncidents,
   whaleAiLastEngineUpdate,
@@ -45,6 +46,7 @@ import {
   selectExecution,
   startV41HftSim,
   stopV41HftSim,
+  retryableErrorText,
   type ExecutionSelection,
 } from '@/api';
 import { useRealtimePrivate, type PrivateRealtimeMessage } from '@/composables/useRealtimePrivate';
@@ -389,17 +391,29 @@ const strategyCatalog: Record<string, { name: string; desc: string }> = {
   },
 };
 
-const engineOnline = computed(() => whaleAiEngineAvailable.value && whaleAiEngineState.value !== 'OFFLINE');
+/** Engine status fetch failed: unknown. Never render this as paused or as a switch. */
+const engineStatusUnknown = computed(() => whaleAiEngineStatusUnknown.value);
+const engineOnline = computed(
+  () =>
+    whaleAiEngineAvailable.value &&
+    !engineStatusUnknown.value &&
+    whaleAiEngineState.value !== 'OFFLINE',
+);
 
+/** '' means unknown. Must not fall back to S1. */
 const activeStrategy = computed(() => {
-  const id = String(whaleAiActiveStrategy.value || 'S1').toUpperCase();
+  const id = String(whaleAiActiveStrategy.value || '').toUpperCase();
   if (id === 'S2' || id === 'S9' || id === 'S1') return id;
-  return 'S1';
+  return '';
 });
+
+const activeStrategyLabel = computed(() => activeStrategy.value || '—');
+
+const UNKNOWN_STRATEGY = { name: '—', desc: '引擎状态暂时无法获取，未收到可信的策略信息。' };
 
 const currentStrategy = computed(() => {
   if (isQaConsole.value) return strategyCatalog['QA-HFT-SIM'];
-  return strategyCatalog[activeStrategy.value] || strategyCatalog.S1;
+  return strategyCatalog[activeStrategy.value] || UNKNOWN_STRATEGY;
 });
 
 const alphaItems = computed(() => executionItems.value.filter((i) => i.kind === 'alpha'));
@@ -422,6 +436,7 @@ const activeHealth = computed(() => {
 });
 
 const systemStateLabel = computed(() => {
+  if (engineStatusUnknown.value) return '引擎状态暂时无法获取';
   if (!engineOnline.value) return '引擎离线';
   const state = String(whaleAiEngineState.value || '').toUpperCase();
   const map: Record<string, string> = {
@@ -436,6 +451,7 @@ const systemStateLabel = computed(() => {
 });
 
 const systemDot = computed(() => {
+  if (engineStatusUnknown.value) return 'yellow';
   if (!engineOnline.value) return 'red';
   const state = String(whaleAiEngineState.value || '').toUpperCase();
   if (state === 'RUNNING') return 'green';
@@ -478,6 +494,7 @@ function engineStateLabelZh(state: string) {
     RECOVERY: '恢复检查中',
     OFFLINE: '引擎离线',
     UNKNOWN: '未知',
+    UNAVAILABLE: '状态暂时无法获取',
   };
   return map[String(state || '').toUpperCase()] || state;
 }
@@ -496,7 +513,17 @@ function qaSideLabelZh(side: string) {
   return map[key] || side;
 }
 
-const s1Diagnostics = computed(() => whaleAiStrategyDiagnostics.value);
+/**
+ * Diagnostics are per-strategy. Only render them when they belong to the strategy we
+ * are currently labelling, otherwise a stale payload gets attributed to another one.
+ */
+const s1Diagnostics = computed(() => {
+  const diag = whaleAiStrategyDiagnostics.value;
+  if (!diag) return null;
+  const owner = String(diag.strategy_id || '').toUpperCase();
+  if (owner && activeStrategy.value && owner !== activeStrategy.value) return null;
+  return diag;
+});
 const lastTickAt = computed(
   () => s1Diagnostics.value?.last_tick_at || whaleAiEngineSnapshot.value?.engine?.last_tick_at || null,
 );
@@ -545,7 +572,8 @@ const strategyStatusLabel = computed(() => {
   if (isQaConsole.value) {
     return qaStatus.value?.running ? 'QA 开平仓测试 · 运行中' : 'QA 开平仓测试 · 已停止';
   }
-  const sid = activeStrategy.value;
+  const sid = activeStrategyLabel.value;
+  if (engineStatusUnknown.value) return `${sid} · 状态暂时无法获取`;
   if (!engineOnline.value) return `${sid} · 引擎离线`;
   if (emergencyLocked.value) return `${sid} · 已锁定`;
   const state = String(whaleAiEngineState.value || '').toUpperCase();
@@ -560,6 +588,7 @@ const strategyStatusLabel = computed(() => {
 
 const strategyStatusClass = computed(() => {
   if (isQaConsole.value) return qaStatus.value?.running ? 'tag-on' : 'tag-warn';
+  if (engineStatusUnknown.value) return 'tag-warn';
   if (!engineOnline.value || emergencyLocked.value || marketDataState.value === 'STALE') {
     return 'tag-off';
   }
@@ -1264,10 +1293,11 @@ async function pollEngineDashboard() {
   try {
     await fetchEngineDashboard();
   } catch (err) {
-    const msg = err instanceof Error ? err.message : whaleAiEngineError.value || '引擎离线';
+    const msg = retryableErrorText(err, whaleAiEngineError.value || '请求失败');
+    const line = `引擎状态暂时无法获取：${msg}（策略与引擎状态保持上次可信值，未发生切换）`;
     // Avoid flooding logs every 3s — only note once per consecutive failure burst via bridge freshness
-    if (systemLogs.value[systemLogs.value.length - 1]?.msg !== `引擎拉取失败：${msg}`) {
-      pushLog('warn', `引擎拉取失败：${msg}`, { channel: 'SYSTEM' });
+    if (systemLogs.value[systemLogs.value.length - 1]?.msg !== line) {
+      pushLog('warn', line, { channel: 'SYSTEM' });
     }
   }
 }
@@ -1493,7 +1523,9 @@ async function confirmResume() {
 
 function syncPendingStrategy() {
   if (!isQaConsole.value) {
-    pendingExecutionId.value = selectedExecutionId.value || activeStrategy.value;
+    const next = selectedExecutionId.value || activeStrategy.value;
+    // Unknown engine status must not reset the operator's pending selection.
+    if (next) pendingExecutionId.value = next;
   }
 }
 
@@ -1512,18 +1544,27 @@ function logStrategyHeartbeat() {
     );
     return;
   }
-  const sid = activeStrategy.value;
+  const sid = activeStrategyLabel.value;
   const engineState = String(whaleAiEngineState.value || 'UNKNOWN').toUpperCase();
   const md = s1Diagnostics.value?.market_data || {};
   const evals = Number(s1Diagnostics.value?.evaluation_count || 0);
   const signals = Number(s1Diagnostics.value?.raw_signal_count || 0);
   const intents = Number(s1Diagnostics.value?.trade_intent_created_count || 0);
   const mdState = String(md.state || '').toUpperCase();
+  // Unknown is not paused: report it as unknown and do not quote counters as current.
+  if (engineStatusUnknown.value) {
+    pushLog(
+      'warn',
+      `${sid} · 引擎状态暂时无法获取 · 未确认是否暂停 · 上次可信心跳 ${ageText(lastTickAt.value)}`,
+      { channel: 'SYSTEM', strategy_id: activeStrategy.value || undefined },
+    );
+    return;
+  }
   if (engineState === 'PAUSED' || !engineOnline.value) {
     pushLog(
       'warn',
       `${sid} · 已暂停 · 决策循环已停止 · 上次心跳 ${ageText(lastTickAt.value)}`,
-      { channel: 'SYSTEM', strategy_id: sid },
+      { channel: 'SYSTEM', strategy_id: activeStrategy.value || undefined },
     );
     return;
   }
@@ -1823,14 +1864,14 @@ onUnmounted(() => {
             <div v-if="!isQaConsole" class="strategy-details">
               <div class="mini">
                 <div class="k">策略编号</div>
-                <div class="v">{{ activeStrategy }}</div>
+                <div class="v">{{ activeStrategyLabel }}</div>
               </div>
               <div class="mini">
                 <div class="k">健康度</div>
                 <div class="v" :class="healthTone">{{ healthScoreText }}</div>
               </div>
               <div class="mini">
-                <div class="k">{{ activeStrategy }}风险</div>
+                <div class="k">{{ activeStrategyLabel }}风险</div>
                 <div class="v blue">{{ strategyRiskBudgetText }}</div>
               </div>
               <div class="mini">
@@ -1957,7 +1998,9 @@ onUnmounted(() => {
         <div class="card">
           <div class="section-title">
             <span>当前交易信号</span>
-            <span class="section-sub">{{ engineOnline ? '交易意图' : '引擎离线' }}</span>
+            <span class="section-sub">{{
+              engineOnline ? '交易意图' : engineStatusUnknown ? '状态暂时无法获取' : '引擎离线'
+            }}</span>
           </div>
           <div v-if="!signals.length" class="empty">暂无信号</div>
           <div v-else class="signal-list">
@@ -1973,7 +2016,7 @@ onUnmounted(() => {
                 <div class="signal-kv"><div class="k">信号时间</div><div class="v">{{ s.age }}</div></div>
                 <div class="signal-kv"><div class="k">价格偏移</div><div class="v">{{ s.drift }}</div></div>
                 <div class="signal-kv"><div class="k">预期收益</div><div class="v">{{ s.edge }}</div></div>
-                <div class="signal-kv"><div class="k">当前策略</div><div class="v">{{ activeStrategy }}</div></div>
+                <div class="signal-kv"><div class="k">当前策略</div><div class="v">{{ activeStrategyLabel }}</div></div>
               </div>
             </div>
           </div>
@@ -2076,7 +2119,7 @@ onUnmounted(() => {
               <span>系统运行日志</span>
               <span class="section-sub">
                 <span class="log-badge" :class="engineOnline ? 'on' : 'off'">
-                  引擎{{ engineOnline ? '在线' : '离线' }}
+                  引擎{{ engineOnline ? '在线' : engineStatusUnknown ? '状态未知' : '离线' }}
                 </span>
                 {{ Math.min(systemLogs.length, LOG_SHOW) }}/{{ systemLogs.length }}
               </span>
@@ -2152,7 +2195,7 @@ onUnmounted(() => {
         <h3>确认切换执行模式</h3>
         <p v-if="pendingSelection?.kind === 'qa_test'">
           将进入「QA 开平仓链路测试」。不会修改 active_strategy_id（当前注册 Alpha 仍为
-          {{ activeStrategy }}），但会暂停新的 Alpha 开仓；账户环境由 Node 根据当前 OKX 密钥识别。
+          {{ activeStrategyLabel }}），但会暂停新的 Alpha 开仓；账户环境由 Node 根据当前 OKX 密钥识别。
         </p>
         <p v-else>
           将切换到「{{ pendingSelection?.name || pendingExecutionId }}」。旧策略停止产生新信号，现有持仓继续按原风控规则管理。

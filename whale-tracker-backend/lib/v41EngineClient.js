@@ -39,6 +39,10 @@ function rememberEnginePayload(data) {
   lastSuccessfulSnapshotAt = Date.now();
   if (!data || typeof data !== 'object') return;
   const engine = data.engine && typeof data.engine === 'object' ? data.engine : data;
+  // Only /health and /snapshot carry engine truth. Payloads without `state`
+  // (e.g. strategy diagnostics, which expose runtime_state) must not erase it,
+  // otherwise the bridge reports OFFLINE/INACTIVE while Python keeps ticking.
+  if (!String(engine.state || data.state || '')) return;
   lastEngineHealth = {
     state: String(engine.state || data.state || ''),
     last_tick_at: engine.last_tick_at || data.last_tick_at || null,
@@ -190,7 +194,7 @@ async function request(method, path, data, timeoutOverrideMs, params) {
     });
     lastLatencyMs = Date.now() - started;
     lastError = '';
-    if (path.includes('/snapshot') || path.includes('/health') || path.includes('/diagnostics')) {
+    if (path.includes('/snapshot') || path.includes('/health')) {
       rememberEnginePayload(res.data);
     } else {
       lastSuccessfulSnapshotAt = Date.now();
@@ -343,6 +347,7 @@ module.exports = {
   cfg,
   bridgeStatus,
   computeRuntimeStatuses,
+  rememberEnginePayload,
   staleThresholdMs,
   startEngineProbe,
   health,

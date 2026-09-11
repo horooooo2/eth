@@ -56,6 +56,16 @@ const engineLoading = ref(false);
 const lastEngineUpdate = ref(0);
 const engineError = ref('');
 const strategyDiagnostics = ref<V41StrategyDiagnostics | null>(null);
+/**
+ * Last active_strategy the engine actually reported. Survives fetch failures so a
+ * transient gateway error can never be rendered as a strategy switch.
+ */
+const lastTrustedStrategy = ref('');
+/** Engine status fetch failed — state is unknown, NOT paused and NOT offline. */
+const engineStatusUnknown = ref(false);
+const engineFetchFailures = ref(0);
+/** Keep the last good snapshot for this many consecutive failures before dropping it. */
+const KEEP_SNAPSHOT_FAILURES = 3;
 
 export const whaleAiEngineSnapshot = computed(() => engineSnapshot.value);
 export const whaleAiEngineView = computed(() => engineView.value);
@@ -65,13 +75,18 @@ export const whaleAiEngineLoading = computed(() => engineLoading.value);
 export const whaleAiLastEngineUpdate = computed(() => lastEngineUpdate.value);
 export const whaleAiEngineError = computed(() => engineError.value);
 export const whaleAiStrategyDiagnostics = computed(() => strategyDiagnostics.value);
+export const whaleAiEngineStatusUnknown = computed(() => engineStatusUnknown.value);
+export const whaleAiLastTrustedStrategy = computed(() => lastTrustedStrategy.value);
 
-export const whaleAiEngineState = computed(
-  () =>
+export const whaleAiEngineState = computed(() => {
+  // A stale snapshot must never keep claiming RUNNING/PAUSED once the fetch broke.
+  if (engineStatusUnknown.value) return 'UNAVAILABLE';
+  return (
     engineView.value?.engine?.state ||
     engineSnapshot.value?.engine?.state ||
-    (engineAvailable.value ? 'UNKNOWN' : 'OFFLINE'),
-);
+    (engineAvailable.value ? 'UNKNOWN' : 'OFFLINE')
+  );
+});
 export const whaleAiAlphaExecution = computed(() => {
   const fromSnap = String(engineSnapshot.value?.alpha_execution || '').toUpperCase();
   const fromView = String(engineView.value?.engine?.alpha_execution || '').toUpperCase();
@@ -153,11 +168,16 @@ export const whaleAiTradeIntents = computed<V41TradeIntent[]>(
   () => engineView.value?.signals || engineSnapshot.value?.trade_intents || [],
 );
 export const whaleAiIncidents = computed<V41Incident[]>(() => engineSnapshot.value?.incidents || []);
+/**
+ * Never defaults to S1. When the engine is unreachable we keep the last strategy the
+ * engine actually reported; if it never reported one we return '' (unknown).
+ */
 export const whaleAiActiveStrategy = computed(
   () =>
     engineView.value?.active_strategy?.id ||
     engineSnapshot.value?.engine?.active_strategy ||
-    'S1',
+    lastTrustedStrategy.value ||
+    '',
 );
 export const whaleAiMarketRisk = computed(() => engineView.value?.market_risk || null);
 export const whaleAiPortfolioRiskUsed = computed(() => {
@@ -182,6 +202,9 @@ export function clearWhaleAiEngine() {
   lastEngineUpdate.value = 0;
   engineError.value = '';
   strategyDiagnostics.value = null;
+  lastTrustedStrategy.value = '';
+  engineStatusUnknown.value = false;
+  engineFetchFailures.value = 0;
 }
 
 export async function refreshWhaleAiKeyStatus(force = false) {
@@ -255,9 +278,12 @@ export async function fetchEngineDashboard() {
     const data = await fetchWhaleAiEngineDashboard();
     engineBridge.value = data.bridge || null;
     if (!data.snapshot || data.ok === false) {
+      // Node reached us but could not read the engine — unknown, not a strategy switch.
       engineSnapshot.value = null;
       engineView.value = null;
       engineAvailable.value = false;
+      engineStatusUnknown.value = true;
+      engineFetchFailures.value += 1;
       engineError.value = data.message || data.code || 'ENGINE OFFLINE';
       return null;
     }
@@ -282,10 +308,18 @@ export async function fetchEngineDashboard() {
     engineAvailable.value = Boolean(data.engineAvailable);
     lastEngineUpdate.value = Date.now();
     engineError.value = '';
+    engineStatusUnknown.value = false;
+    engineFetchFailures.value = 0;
     const sid =
       engineView.value?.active_strategy?.id ||
       engineSnapshot.value?.engine?.active_strategy ||
-      'S1';
+      lastTrustedStrategy.value ||
+      '';
+    if (sid) lastTrustedStrategy.value = sid;
+    if (!sid) {
+      strategyDiagnostics.value = data.snapshot.strategy_diagnostics || null;
+      return data.snapshot;
+    }
     try {
       strategyDiagnostics.value = await fetchWhaleAiStrategyDiagnostics(sid);
     } catch {
@@ -295,9 +329,14 @@ export async function fetchEngineDashboard() {
   } catch (err) {
     engineAvailable.value = false;
     engineError.value = err instanceof Error ? err.message : 'ENGINE OFFLINE';
-    // Spec: do not keep pretending live — clear snapshot on hard failure
-    engineSnapshot.value = null;
-    engineView.value = null;
+    // Transient gateway errors must not be rendered as a state change. Mark the status
+    // unknown immediately, but only drop the last good snapshot after repeated failures.
+    engineStatusUnknown.value = true;
+    engineFetchFailures.value += 1;
+    if (engineFetchFailures.value >= KEEP_SNAPSHOT_FAILURES) {
+      engineSnapshot.value = null;
+      engineView.value = null;
+    }
     // Still refresh bridge freshness (NEVER/OFFLINE) so footer is truthful
     try {
       const health = await fetchWhaleAiEngineHealth();
