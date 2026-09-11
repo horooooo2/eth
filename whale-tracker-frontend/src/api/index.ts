@@ -1056,6 +1056,19 @@ export type V41StrategyDiagnostics = {
     state?: string;
     forming?: boolean;
     error?: string;
+    // S9 only: per-stream warmup progress. S9 has no `bars_loaded`.
+    closed_1m_bars?: number;
+    closed_5m_bars?: number;
+    s9_market?: {
+      closed_1m_bars?: number;
+      closed_5m_bars?: number;
+      spread_samples?: number;
+      spread_ready?: boolean;
+      fee_ready?: boolean;
+      warmup_state?: string;
+      data_state?: string;
+      connection_state?: string;
+    };
   };
   indicators?: Record<string, number | null | undefined>;
   gates?: Record<string, unknown>;

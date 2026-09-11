@@ -206,6 +206,38 @@ def test_data_state_ready_degraded_off():
     assert ready["opening_allowed"] is True
 
 
+def test_fee_ttl_refresh_does_not_flap_data_state():
+    """Telemetry reads the fee cache without refreshing it. Crossing the soft TTL
+    must not push fee_ready=False into the hub, which used to emit a
+    S9_MARKET_DATA_DEGRADED every 60s until the next engine tick refreshed."""
+    from src.runtime.s9_fee import S9FeeClient
+
+    now_ms = _now_ms()
+    now = {"t": now_ms / 1000.0}
+    events: list[str] = []
+    hub = S9MarketHub(now_fn=lambda: now["t"], on_event=lambda ev, _d: events.append(ev))
+    _seed_bars(hub, now_ms)
+    _fresh_book_trades(hub, now_ms)
+
+    fee = S9FeeClient(
+        fetcher=lambda: {"ok": True, "taker_bps": 2.0},
+        ttl_sec=60,
+        now_fn=lambda: now["t"],
+    )
+    assert fee.get_taker_bps() == 2.0
+    assert hub.refresh_state(fee_ready=fee.snapshot()["ready"] is True)["data_state"] == "READY"
+    assert events[-1] == "S9_MARKET_DATA_READY"
+
+    # 61s later a telemetry snapshot lands before the next engine tick.
+    now["t"] += 61.0
+    _fresh_book_trades(hub, int(now["t"] * 1000))
+    assert fee.snapshot()["ready"] is True
+    assert hub.snapshot(fee_ready=fee.snapshot()["ready"] is True)["data_state"] == "READY"
+    # A following WS message re-evaluates from the persisted fee_ready.
+    assert hub.refresh_state()["data_state"] == "READY"
+    assert "S9_MARKET_DATA_DEGRADED" not in events
+
+
 def test_disconnect_reconnect_restore(monkeypatch):
     events = []
 

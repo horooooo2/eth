@@ -48,6 +48,7 @@ import {
   stopV41HftSim,
   retryableErrorText,
   type ExecutionSelection,
+  type V41StrategyDiagnostics,
 } from '@/api';
 import { useRealtimePrivate, type PrivateRealtimeMessage } from '@/composables/useRealtimePrivate';
 import { mapBusToEngineEvent, severityToLvl } from '@/utils/runtimeEvents';
@@ -1529,6 +1530,29 @@ function syncPendingStrategy() {
   }
 }
 
+// S9 warmup requirements, mirroring s9_market_hub.py WARMUP_1M / WARMUP_5M / SPREAD_REQUIRED.
+const S9_WARMUP_1M = 200;
+const S9_WARMUP_5M = 100;
+const S9_SPREAD_REQUIRED = 60;
+
+type MarketDataMeta = NonNullable<V41StrategyDiagnostics['market_data']>;
+
+/** Display only. S9 reports progress per stream and never sets `bars_loaded`. */
+function warmupProgressText(md: MarketDataMeta): string {
+  const s9 = md.s9_market;
+  if (md.closed_1m_bars === undefined && md.closed_5m_bars === undefined && !s9) {
+    return `已加载 ${Number(md.bars_loaded || 0)} 根K线`;
+  }
+  const n1 = Number(md.closed_1m_bars ?? s9?.closed_1m_bars ?? 0);
+  const n5 = Number(md.closed_5m_bars ?? s9?.closed_5m_bars ?? 0);
+  const spread = Number(s9?.spread_samples || 0);
+  return [
+    `1分钟K线 ${n1}/${S9_WARMUP_1M}`,
+    `5分钟K线 ${n5}/${S9_WARMUP_5M}`,
+    `价差样本 ${spread}/${S9_SPREAD_REQUIRED}`,
+  ].join(' · ');
+}
+
 function logStrategyHeartbeat() {
   if (!mainConsoleVisible.value || !isLoggedIn.value) return;
   if (isQaConsole.value) {
@@ -1579,7 +1603,7 @@ function logStrategyHeartbeat() {
   if (mdState === 'WARMING_UP') {
     pushLog(
       'warn',
-      `${sid} · 行情预热 · 已加载 ${Number(md.bars_loaded || 0)} 根K线 · 评估 ${evals} 次`,
+      `${sid} · 行情预热 · ${warmupProgressText(md)} · 评估 ${evals} 次`,
       { channel: 'SYSTEM', strategy_id: sid },
     );
     return;

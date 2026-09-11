@@ -1,7 +1,12 @@
 """S9 OKX account taker fee via Node trusted-owner chain.
 
 Never uses frontend / query / body / localStorage user_id.
-Never invents a default fee. Stale cache after failed refresh is unusable.
+Never invents a default fee.
+
+Cache is stale-while-revalidate: reaching the soft TTL schedules a refresh but
+keeps the last-known-good fee usable, so a routine refresh no longer flips
+fee_ready to false for the duration of the fetch. Readiness is lost only when
+no fee was ever fetched, or when the last-known-good fee passes hard expiry.
 """
 
 from __future__ import annotations
@@ -16,7 +21,11 @@ from src.runtime.s9_capabilities import register_capability
 
 S9_FEE_TTL_SEC = 60.0
 S9_FEE_TIMEOUT_SEC = 8.0
+# Last-known-good fee survives failed refreshes up to this age, then S9 fails
+# closed. 5x TTL tolerates four consecutive refresh failures.
+S9_FEE_HARD_EXPIRY_SEC = 300.0
 S9_INST_ID = "BTC-USDT-SWAP"
+FEE_CACHE_HARD_EXPIRED = "FEE_CACHE_HARD_EXPIRED"
 FEE_SUBREASONS = {
     "OWNER_NOT_READY",
     "CREDENTIAL_NOT_FOUND",
@@ -43,32 +52,63 @@ class S9FeeClient:
         token: Optional[str] = None,
         fetcher: Optional[Callable[[], Dict[str, Any]]] = None,
         ttl_sec: float = S9_FEE_TTL_SEC,
+        hard_expiry_sec: float = S9_FEE_HARD_EXPIRY_SEC,
         now_fn: Optional[Callable[[], float]] = None,
     ) -> None:
         self.node_url = (node_url or os.getenv("V41_NODE_GATEWAY_URL") or "http://127.0.0.1:80").rstrip("/")
         self.token = token or os.getenv("V41_ENGINE_INTERNAL_TOKEN") or "dev-internal-token"
         self._fetcher = fetcher
         self.ttl_sec = float(ttl_sec)
+        self.hard_expiry_sec = max(float(hard_expiry_sec), float(ttl_sec))
         self._now = now_fn or time.time
         self._cache: Optional[Dict[str, Any]] = None
         self.last_event: Optional[str] = None
         self.last_reason_code: Optional[str] = None
+        self.last_success_at: Optional[float] = None
+        self.last_refresh_error: Optional[str] = None
+        self.last_refresh_error_at: Optional[float] = None
 
     def clear(self) -> None:
         self._cache = None
         self.last_reason_code = None
+        self.last_success_at = None
+        self.last_refresh_error = None
+        self.last_refresh_error_at = None
 
-    def _expired(self, now_ts: Optional[float] = None) -> bool:
+    def _age_sec(self, now_ts: Optional[float] = None) -> Optional[float]:
         if not self._cache:
-            return True
+            return None
         now = now_ts if now_ts is not None else self._now()
-        updated = float(self._cache.get("updated_at_epoch") or 0)
-        return now - updated > self.ttl_sec
+        return max(0.0, now - float(self._cache.get("updated_at_epoch") or 0))
+
+    def _soft_expired(self, now_ts: Optional[float] = None) -> bool:
+        """Due for refresh. Does NOT make the cached fee unusable."""
+        age = self._age_sec(now_ts)
+        return age is None or age > self.ttl_sec
+
+    def _hard_expired(self, now_ts: Optional[float] = None) -> bool:
+        """Too old to trust. S9 must fail closed."""
+        age = self._age_sec(now_ts)
+        return age is None or age > self.hard_expiry_sec
+
+    def _last_success_iso(self) -> Optional[str]:
+        if self.last_success_at is None:
+            return None
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.last_success_at))
 
     def _fail(self, code: str) -> None:
         self._cache = None
         self.last_event = "S9_FEE_UNAVAILABLE"
         self.last_reason_code = code if code in FEE_SUBREASONS else "FEE_API_ERROR"
+
+    def _note_refresh_failure(self, code: str) -> None:
+        """Record a failed refresh, keeping last-known-good until hard expiry."""
+        now = self._now()
+        normalized = code if code in FEE_SUBREASONS else "FEE_API_ERROR"
+        self.last_refresh_error = normalized
+        self.last_refresh_error_at = now
+        if not self._cache or self._hard_expired(now):
+            self._fail(normalized)
 
     def _parse_error_body(self, body: Any, status_code: int) -> FeeFetchError:
         row = body if isinstance(body, dict) else {}
@@ -115,8 +155,17 @@ class S9FeeClient:
         return body
 
     def snapshot(self) -> Dict[str, Any]:
+        now = self._now()
         row = self._cache or {}
-        ready = bool(row.get("ready")) and not self._expired()
+        age = self._age_sec(now)
+        hard_expired = self._hard_expired(now)
+        ready = bool(row.get("ready")) and not hard_expired
+        if ready:
+            reason_code = None
+        elif row and hard_expired:
+            reason_code = FEE_CACHE_HARD_EXPIRED
+        else:
+            reason_code = self.last_reason_code or self.last_refresh_error or "S9_COST_DATA_UNAVAILABLE"
         return {
             "ready": ready,
             "taker_bps": row.get("taker_bps"),
@@ -125,18 +174,28 @@ class S9FeeClient:
             "updated_at": row.get("updated_at"),
             "owner_bound": row.get("owner_bound"),
             "account_environment": row.get("account_environment"),
+            # Serving last-known-good while a refresh is due or in flight.
+            "stale": bool(ready and self._soft_expired(now)),
+            "fee_age": age,
+            "ttl_sec": self.ttl_sec,
+            "hard_expiry_sec": self.hard_expiry_sec,
+            # Survives fail-closed so operators can see when the fee last worked.
+            "last_success_at": row.get("updated_at") or self._last_success_iso(),
+            "last_success_at_epoch": self.last_success_at,
+            "fee_refresh_error": self.last_refresh_error,
+            "fee_refresh_error_at": self.last_refresh_error_at,
             "reason": None if ready else "S9_COST_DATA_UNAVAILABLE",
-            "reason_code": None if ready else (self.last_reason_code or "S9_COST_DATA_UNAVAILABLE"),
+            "reason_code": reason_code,
         }
 
     def refresh(self) -> Dict[str, Any]:
         try:
             body = self._get()
         except FeeFetchError as exc:
-            self._fail(exc.code)
+            self._note_refresh_failure(exc.code)
             return self.snapshot()
         except Exception:
-            self._fail("FEE_API_ERROR")
+            self._note_refresh_failure("FEE_API_ERROR")
             return self.snapshot()
         taker = body.get("taker_bps")
         try:
@@ -144,9 +203,10 @@ class S9FeeClient:
         except (TypeError, ValueError):
             taker_bps = None
         if taker_bps is None or taker_bps <= 0 or body.get("ok") is False:
-            self._fail("FEE_RESPONSE_INVALID")
+            self._note_refresh_failure("FEE_RESPONSE_INVALID")
             return self.snapshot()
         now = self._now()
+        # Single rebind: readers never observe a half-updated fee.
         self._cache = {
             "ready": True,
             "ok": True,
@@ -160,12 +220,15 @@ class S9FeeClient:
             "instId": body.get("instId") or S9_INST_ID,
             "reason_code": None,
         }
+        self.last_success_at = now
+        self.last_refresh_error = None
+        self.last_refresh_error_at = None
         self.last_event = "S9_FEE_READY"
         self.last_reason_code = None
         return self.snapshot()
 
     def get_taker_bps(self) -> Optional[float]:
-        if self._expired():
+        if self._soft_expired():
             snap = self.refresh()
         else:
             snap = self.snapshot()
