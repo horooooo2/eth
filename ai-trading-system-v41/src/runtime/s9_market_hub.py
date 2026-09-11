@@ -21,6 +21,7 @@ from src.adapters.okx_public_ws import (
     S9_INST_ID,
     parse_books5_payload,
 )
+from src.runtime.s9_candle_identity import closed_candle_id
 from src.runtime.s9_microstructure import SpreadWindow, aggressive_flow, spread_bps
 
 CLOSED_1M_MAX_AGE = 90
@@ -206,8 +207,8 @@ class S9MarketHub:
         *,
         source: str = "manual",
     ) -> Optional[Dict[str, Any]]:
-        ts = int(item.get("ts") or 0)
-        if ts <= 0:
+        ts = closed_candle_id(item.get("ts"))
+        if ts is None:
             return None
         closed = bool(item.get("closed") or item.get("confirmed"))
         store = self.closed_1m if channel == "candle1m" else self.closed_5m if channel == "candle5m" else None
@@ -258,7 +259,9 @@ class S9MarketHub:
             return
         store = self.closed_1m if timeframe in {"1m", "1min", "candle1m"} else self.closed_5m
         for idx, row in df.iterrows():
-            ts = int(pd.Timestamp(idx).timestamp() * 1000)
+            ts = closed_candle_id(idx)
+            if ts is None:
+                continue
             store[ts] = {
                 "ts": ts,
                 "open": float(row["open"]),

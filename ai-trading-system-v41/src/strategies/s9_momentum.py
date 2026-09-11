@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import pandas as pd
 
+from src.runtime.s9_candle_identity import closed_candle_id, closed_candle_iso
+
 S9_ID = "S9"
 S9_SYMBOL = "BTC-USDT-SWAP"
 
@@ -85,10 +87,7 @@ def signal_key(direction: str, closed_1m_ts: Any) -> str:
         side = "LONG"
     elif side in ("SELL", "SHORT"):
         side = "SHORT"
-    ts = pd.Timestamp(closed_1m_ts)
-    if ts.tzinfo is None:
-        ts = ts.tz_localize("UTC")
-    stamp = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+    stamp = closed_candle_iso(closed_1m_ts)
     return f"S9:{S9_SYMBOL}:{side}:{stamp}"
 
 
@@ -525,7 +524,7 @@ def evaluate_entry(
         loc = (close - float(last["low"])) / rng if side == "LONG" else (float(last["high"]) - close) / rng
     body = abs(close - float(last["open"])) / rng if rng else None
     diag["s9_breakout_level"] = level
-    diag["source_1m_candle_timestamp"] = str(closed_1m.index[-1])
+    diag["source_1m_candle_timestamp"] = closed_candle_iso(closed_1m.index[-1])
     diag["s9_body_ratio"] = body
     diag["s9_close_location"] = loc
     if mode == EARLY_MOMENTUM:
@@ -611,7 +610,7 @@ class S9MomentumStrategy:
         self.config = config
         self.cfg = config.get("S9_high_frequency_momentum") or config.get("S9") or {}
         self._last_signal_key: Optional[str] = None
-        self._last_eval_1m: Optional[str] = None
+        self._last_eval_1m: Optional[int] = None
         self._last_direction_5m_ts: Optional[str] = None
         self._last_direction_state: Optional[str] = None
 
@@ -627,18 +626,23 @@ class S9MomentumStrategy:
             return []
         if closed_1m is None or closed_1m.empty:
             return []
-        stamp = str(closed_1m.index[-1])
-        if self._last_eval_1m == stamp:
+        candle_id = closed_candle_id(closed_1m.index[-1])
+        if candle_id is None:
+            return []
+        if self._last_eval_1m == candle_id:
             context["s9"] = {
                 "decision": "NO_TRADE",
                 "reason_codes": [],
                 "skipped": True,
                 "skip_reason": "SAME_CLOSED_CANDLE",
                 "signal_key": self._last_signal_key,
-                "diagnostics": {"source_1m_candle_timestamp": stamp, "repeat_evaluation": True},
+                "diagnostics": {
+                    "source_1m_candle_timestamp": closed_candle_iso(candle_id),
+                    "repeat_evaluation": True,
+                },
             }
             return []
-        self._last_eval_1m = stamp
+        self._last_eval_1m = candle_id
         result = evaluate_entry(
             closed_1m=closed_1m,
             closed_5m=closed_5m,
@@ -658,8 +662,12 @@ class S9MomentumStrategy:
             diag["s9_direction_updated"] = bool(ts5)
             self._last_direction_5m_ts = ts5 or self._last_direction_5m_ts
             self._last_direction_state = state or self._last_direction_state
-        if result.get("signal_key"):
-            self._last_signal_key = str(result["signal_key"])
         if result.get("decision") != "CANDIDATE" or not emit_intents:
             return []
         return [result]
+
+    def mark_signal_used(self, key: str) -> None:
+        """Consume a signal only after PRE_S4 candidate is actually committed."""
+        raw = str(key or "").strip()
+        if raw:
+            self._last_signal_key = raw

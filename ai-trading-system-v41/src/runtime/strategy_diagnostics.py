@@ -26,10 +26,46 @@ def reason_for_lhs(lhs: str) -> str:
     return REASON_BY_LHS.get(str(lhs), f"COND_{str(lhs).upper().replace('.', '_')}")
 
 
+_S9_S3_FAIL = {
+    "S9_S3_DIRECTION_BLOCK",
+    "S9_EARLY_S3_OPPOSITION_BLOCK",
+    "S3_REGIME_BLOCK",
+    "S3_DIRECTION_BLOCK",
+}
+_S9_BREAKOUT_FAIL = {"S9_NO_BREAKOUT", "S9_EARLY_BREAKOUT_NOT_TRIGGERED"}
+_S9_VOLUME_FAIL = {"S9_VOLUME_NOT_EXPANDED", "S9_EARLY_VOLUME_NOT_EXPANDED"}
+_S9_CANDLE_FAIL = {"S9_CANDLE_QUALITY_BLOCK", "S9_EARLY_CANDLE_QUALITY_BLOCK"}
+_S9_ATR_FAIL = {"S9_VOLATILITY_TOO_LOW", "S9_VOLATILITY_TOO_HIGH"}
+_S9_STRUCTURE_FAIL = {
+    "S9_STRUCTURE_STOP_NOT_FOUND",
+    "S9_STRUCTURE_STOP_TOO_TIGHT",
+    "S9_STRUCTURE_STOP_TOO_WIDE",
+}
+
+
 class StrategyDiagnostics:
     def __init__(self, strategy_id: str) -> None:
         self.strategy_id = strategy_id
         self.evaluation_count = 0
+        self.direction_pass_count = 0
+        self.s3_pass_count = 0
+        self.breakout_pass_count = 0
+        self.volume_pass_count = 0
+        self.candle_pass_count = 0
+        self.atr_pass_count = 0
+        self.structure_pass_count = 0
+        self.candidate_count = 0
+        self.pending_candidate_created_count = 0
+        self.pending_candidate_resumed_count = 0
+        self.pending_candidate_expired_count = 0
+        self.pending_candidate_invalidated_count = 0
+        self.pending_candidate_active = False
+        self.pending_candidate_signal_key = ""
+        self.pending_candidate_closed_1m_id = None
+        self.pending_candidate_created_at_epoch_ms: Optional[float] = None
+        self.pending_candidate_expires_at_epoch_ms: Optional[float] = None
+        self.trade_intent_count = 0
+        self.order_intent_count = 0
         self.raw_signal_count = 0
         self.trade_intent_created_count = 0
         self.trade_intent_expired_count = 0
@@ -91,8 +127,94 @@ class StrategyDiagnostics:
             self.last_raw_signal_at = self.last_evaluated_at
         if trade_intent:
             self.trade_intent_created_count += 1
+            self.trade_intent_count += 1
             self.last_trade_intent_at = self.last_evaluated_at
         self._maybe_queue_log_event()
+
+    def record_s9_gates(self, *, decision: str, reason_codes: List[str]) -> None:
+        """Increment S9 entry-gate pass counters from the raw evaluate result.
+
+        Independent of runtime-event emit / 10-minute NO_TRADE dedupe.
+        extra_block reasons must not be passed in.
+        """
+        codes = {str(c).strip() for c in (reason_codes or []) if str(c).strip()}
+        if "S9_DATA_5M_STALE" in codes or "S9_DIRECTION_NEUTRAL" in codes:
+            return
+        self.direction_pass_count += 1
+        if codes & _S9_S3_FAIL:
+            return
+        self.s3_pass_count += 1
+        if "S9_DATA_1M_STALE" in codes:
+            return
+        if codes & _S9_BREAKOUT_FAIL:
+            return
+        self.breakout_pass_count += 1
+        if codes & _S9_VOLUME_FAIL:
+            return
+        self.volume_pass_count += 1
+        if codes & _S9_CANDLE_FAIL:
+            return
+        self.candle_pass_count += 1
+        if codes & _S9_ATR_FAIL:
+            return
+        self.atr_pass_count += 1
+        if codes & _S9_STRUCTURE_FAIL:
+            return
+        self.structure_pass_count += 1
+
+    def note_s9_candidate(self) -> None:
+        self.candidate_count += 1
+
+    def note_pending_created(self) -> None:
+        self.pending_candidate_created_count += 1
+
+    def note_pending_resumed(self) -> None:
+        self.pending_candidate_resumed_count += 1
+
+    def note_pending_expired(self) -> None:
+        self.pending_candidate_expired_count += 1
+
+    def note_pending_invalidated(self) -> None:
+        self.pending_candidate_invalidated_count += 1
+
+    def set_pending_live(
+        self,
+        *,
+        active: bool,
+        signal_key: str = "",
+        closed_1m_id: Any = None,
+        created_at_epoch_ms: Optional[float] = None,
+        expires_at_epoch_ms: Optional[float] = None,
+    ) -> None:
+        self.pending_candidate_active = bool(active)
+        self.pending_candidate_signal_key = str(signal_key or "") if active else ""
+        self.pending_candidate_closed_1m_id = closed_1m_id if active else None
+        self.pending_candidate_created_at_epoch_ms = created_at_epoch_ms if active else None
+        self.pending_candidate_expires_at_epoch_ms = expires_at_epoch_ms if active else None
+
+    def _pending_live_fields(self) -> Dict[str, Any]:
+        from datetime import datetime, timezone
+
+        active = bool(self.pending_candidate_active)
+        age_ms = None
+        expires_in_ms = None
+        if active and self.pending_candidate_created_at_epoch_ms is not None:
+            now_ms = datetime.now(timezone.utc).timestamp() * 1000.0
+            age_ms = int(max(0.0, now_ms - float(self.pending_candidate_created_at_epoch_ms)))
+            if self.pending_candidate_expires_at_epoch_ms is not None:
+                expires_in_ms = int(float(self.pending_candidate_expires_at_epoch_ms) - now_ms)
+        return {
+            "pending_candidate_count": 1 if active else 0,
+            "pending_candidate_active": active,
+            "pending_candidate_signal_key": self.pending_candidate_signal_key if active else "",
+            "pending_candidate_closed_1m_id": self.pending_candidate_closed_1m_id if active else None,
+            "pending_candidate_age_ms": age_ms,
+            "pending_candidate_expires_in_ms": expires_in_ms,
+            "pending_candidate_created_count": self.pending_candidate_created_count,
+            "pending_candidate_resumed_count": self.pending_candidate_resumed_count,
+            "pending_candidate_expired_count": self.pending_candidate_expired_count,
+            "pending_candidate_invalidated_count": self.pending_candidate_invalidated_count,
+        }
 
     def note_s4_reject(self) -> None:
         self.S4_rejected_count += 1
@@ -105,6 +227,7 @@ class StrategyDiagnostics:
 
     def note_order_intent(self) -> None:
         self.order_intent_created_count += 1
+        self.order_intent_count += 1
         self.last_order_intent_at = _now_iso()
 
     def note_structure(self, payload: Optional[Dict[str, Any]]) -> None:
@@ -179,6 +302,17 @@ class StrategyDiagnostics:
             "last_tick_at": last_tick_at,
             "last_evaluated_at": self.last_evaluated_at,
             "evaluation_count": self.evaluation_count,
+            "direction_pass_count": self.direction_pass_count,
+            "s3_pass_count": self.s3_pass_count,
+            "breakout_pass_count": self.breakout_pass_count,
+            "volume_pass_count": self.volume_pass_count,
+            "candle_pass_count": self.candle_pass_count,
+            "atr_pass_count": self.atr_pass_count,
+            "structure_pass_count": self.structure_pass_count,
+            "candidate_count": self.candidate_count,
+            **self._pending_live_fields(),
+            "trade_intent_count": self.trade_intent_count,
+            "order_intent_count": self.order_intent_count,
             "last_raw_signal_at": self.last_raw_signal_at,
             "last_trade_intent_at": self.last_trade_intent_at,
             "last_order_intent_at": self.last_order_intent_at,

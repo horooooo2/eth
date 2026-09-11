@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from src.adapters.okx_public_ws import S9_INST_ID
+from src.runtime.s9_candle_identity import closed_candle_id, closed_candle_iso
 from src.runtime.s9_microstructure import aggressive_flow, depth_imbalance_5, spread_bps
 from src.strategies.s9_momentum import (
     STRONG_BEARISH,
@@ -205,7 +206,7 @@ def maybe_record(orch: Any) -> bool:
         dist_bo = (close - float(level)) / close * 10_000.0
     else:
         dist_bo = (float(level) - close) / close * 10_000.0
-    ts = str(one.index[-1])
+    ts = closed_candle_iso(one.index[-1])
     payload = {
         "timestamp": ts,
         "symbol": S9_INST_ID,
@@ -253,10 +254,13 @@ def backfill_outcomes(orch: Any) -> int:
         outcome = dict(row.get("outcome") or {})
         if all(outcome.get(f"{h}m_directional_return") is not None for h in HORIZONS):
             continue
-        ts = pd.Timestamp(row["closed_1m_timestamp"])
-        if ts.tzinfo is None:
-            ts = ts.tz_localize("UTC")
-        if ts not in one.index:
+        want = closed_candle_id(row["closed_1m_timestamp"])
+        ts = None
+        for idx in one.index:
+            if closed_candle_id(idx) == want:
+                ts = idx
+                break
+        if ts is None:
             continue
         close = _f((row.get("payload") or {}).get("close"))
         if close is None:

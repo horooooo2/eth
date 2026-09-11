@@ -475,6 +475,7 @@ class EngineRuntime:
         if self.state == "LOCKED":
             # Already stopped harder than pause — treat as success for UI「停止」
             self._set_alpha_opening(False)
+            self.orchestrator.drop_pending_s9_candidate("ENGINE_PAUSE")
             return {
                 "ok": True,
                 "state": self.state,
@@ -484,6 +485,7 @@ class EngineRuntime:
         self._pause.clear()
         self.state = "PAUSED"
         self._set_alpha_opening(False)
+        self.orchestrator.drop_pending_s9_candidate("ENGINE_PAUSE")
         self.bus.emit("engine.status", {"state": self.state, "alpha_opening_enabled": False})
         return {"ok": True, "state": self.state, "alpha_opening_enabled": False}
 
@@ -494,6 +496,7 @@ class EngineRuntime:
         self._pause.clear()
         self.state = "LOCKED"
         self._set_alpha_opening(False)
+        self.orchestrator.drop_pending_s9_candidate("ENGINE_KILL")
         incident = {
             "incident_id": f"INC-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}",
             "type": reason,
@@ -977,6 +980,8 @@ class EngineRuntime:
             changed_at = _now_iso()
             self.active_strategy = strategy_id
             self.orchestrator.active_strategy_id = strategy_id
+            if prev == "S9" and strategy_id != "S9":
+                self.orchestrator.drop_pending_s9_candidate("STRATEGY_NOT_S9")
             self._active_strategy_changed_at = changed_at
             self.store.set_kv("active_strategy", strategy_id, changed_at)
 
@@ -1528,6 +1533,7 @@ class EngineRuntime:
     async def shutdown(self) -> None:
         self._stop.set()
         self._pause.set()
+        self.orchestrator.drop_pending_s9_candidate("ENGINE_STOP")
         if self._task:
             self._task.cancel()
             try:

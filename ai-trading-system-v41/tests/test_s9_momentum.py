@@ -301,6 +301,135 @@ def test_same_1m_not_repeated():
         assert "S9_SIGNAL_ALREADY_USED" in second["reason_codes"]
 
 
+def _candidate_payload(one: pd.DataFrame) -> dict:
+    key = signal_key("LONG", one.index[-1])
+    return {
+        "decision": "CANDIDATE",
+        "direction": "LONG",
+        "reason_codes": [],
+        "signal_key": key,
+        "diagnostics": {
+            "source_1m_candle_timestamp": str(one.index[-1]),
+            "s9_direction_state": "STRONG_BULLISH",
+        },
+        "s9_entry_mode": TREND_CONTINUATION,
+        "trigger_reference_price": 100.0,
+        "stop_price": 99.0,
+    }
+
+
+def test_early_gate_failures_do_not_consume_signal():
+    from src.strategies.s9_momentum import S9MomentumStrategy
+
+    strat = S9MomentumStrategy({"S9_high_frequency_momentum": {"enabled": True}})
+    end = pd.Timestamp("2026-09-10 10:00", tz="UTC")
+    one = _bars(40, start=100, step=0.2, freq="1min", end=end)
+    five = _bars(80, start=100, step=0.0, freq="5min", end=end)
+    ctx: dict = {}
+    strat.generate(closed_1m=one, closed_5m=five, context=ctx, emit_intents=False)
+    assert ctx["s9"]["decision"] == "NO_TRADE"
+    assert ctx["s9"]["reason_codes"]
+    assert ctx["s9"]["reason_codes"][0] in {"S9_DIRECTION_NEUTRAL", "S9_DATA_5M_STALE"}
+    assert strat._last_signal_key is None
+
+
+def test_candidate_not_marked_used_until_committed(monkeypatch):
+    from src.strategies import s9_momentum as s9mod
+    from src.strategies.s9_momentum import S9MomentumStrategy
+
+    one = _bars(40, start=100, step=0.2, freq="1min")
+    five = _bars(80, start=100, step=0.8, freq="5min")
+    cand = _candidate_payload(one)
+    key = cand["signal_key"]
+
+    def fake_eval(*, last_signal_key=None, **_kwargs):
+        if last_signal_key == key:
+            return {
+                "decision": "NO_TRADE",
+                "direction": None,
+                "reason_codes": ["S9_SIGNAL_ALREADY_USED"],
+                "signal_key": None,
+                "diagnostics": dict(cand["diagnostics"]),
+                "s9_entry_mode": TREND_CONTINUATION,
+            }
+        return dict(cand)
+
+    monkeypatch.setattr(s9mod, "evaluate_entry", fake_eval)
+    strat = S9MomentumStrategy({"S9_high_frequency_momentum": {"enabled": True}})
+    ctx: dict = {}
+    strat.generate(closed_1m=one, closed_5m=five, context=ctx, emit_intents=False)
+    assert ctx["s9"]["decision"] == "CANDIDATE"
+    assert strat._last_signal_key is None
+    strat._last_eval_1m = None
+    ctx2: dict = {}
+    strat.generate(closed_1m=one, closed_5m=five, context=ctx2, emit_intents=False)
+    assert ctx2["s9"]["decision"] == "CANDIDATE"
+    assert "S9_SIGNAL_ALREADY_USED" not in ctx2["s9"].get("reason_codes", [])
+    strat.mark_signal_used(key)
+    strat._last_eval_1m = None
+    ctx3: dict = {}
+    strat.generate(closed_1m=one, closed_5m=five, context=ctx3, emit_intents=False)
+    assert "S9_SIGNAL_ALREADY_USED" in ctx3["s9"]["reason_codes"]
+
+
+def test_extra_block_does_not_consume_or_count_candidate(monkeypatch):
+    from src.core.orchestrator import Orchestrator
+    from src.strategies import s9_momentum as s9mod
+
+    loaded = load_runtime_config()
+    orch = Orchestrator(loaded.effective, mode="paper")
+    orch.active_strategy_id = "S9"
+    one = _bars(40, start=100, step=0.2, freq="1min")
+    five = _bars(80, start=100, step=0.8, freq="5min")
+    orch.s9_closed_1m = one
+    orch.s9_closed_5m = five
+    cand = _candidate_payload(one)
+    key = cand["signal_key"]
+    monkeypatch.setattr(s9mod, "evaluate_entry", lambda **_kw: dict(cand))
+    orch._s9_generate(emit_intents=True, extra_block=["MARKET_DATA_STALE"])
+    assert orch.s9._last_signal_key is None
+    assert orch.context.get("s9_candidate") is None
+    assert orch._pending_s9_candidate is not None
+    assert orch._pending_s9_candidate.signal_key == key
+    diag = orch.diagnostics["S9"]
+    assert diag.candidate_count == 0
+    assert diag.pending_candidate_created_count == 1
+    assert diag.pending_candidate_active is True
+    assert diag.structure_pass_count == 1
+    assert diag.direction_pass_count == 1
+    snap = diag.to_dict(active=True, runtime_state="RUNNING", alpha_opening_enabled=True, last_tick_at=None)
+    assert snap["candidate_count"] == 0
+    assert snap["pending_candidate_count"] == 1
+    assert snap["pending_candidate_active"] is True
+    assert snap["pending_candidate_signal_key"] == key
+    assert snap["structure_pass_count"] == 1
+
+
+def test_s9_gate_counters_ignore_event_dedupe():
+    from src.runtime.strategy_diagnostics import StrategyDiagnostics
+
+    diag = StrategyDiagnostics("S9")
+    for _ in range(3):
+        diag.record_evaluation(decision="NO_TRADE", reason_codes=["S9_DIRECTION_NEUTRAL"], direction="NONE")
+        diag.record_s9_gates(decision="NO_TRADE", reason_codes=["S9_DIRECTION_NEUTRAL"])
+    assert diag.evaluation_count == 3
+    assert diag.direction_pass_count == 0
+    diag.record_s9_gates(decision="NO_TRADE", reason_codes=["S9_S3_DIRECTION_BLOCK"])
+    assert diag.direction_pass_count == 1
+    assert diag.s3_pass_count == 0
+    diag.record_s9_gates(decision="NO_TRADE", reason_codes=["S9_EARLY_BREAKOUT_NOT_TRIGGERED"])
+    assert diag.s3_pass_count == 1
+    assert diag.breakout_pass_count == 0
+    diag.record_s9_gates(decision="NO_TRADE", reason_codes=["S9_VOLATILITY_TOO_LOW"])
+    assert diag.breakout_pass_count == 1
+    assert diag.volume_pass_count == 1
+    assert diag.candle_pass_count == 1
+    assert diag.atr_pass_count == 0
+    diag.record_s9_gates(decision="NO_TRADE", reason_codes=["S9_SIGNAL_ALREADY_USED"])
+    assert diag.structure_pass_count == 1
+    assert diag.candidate_count == 0
+
+
 def test_chinese_reasons():
     assert reason_zh("S9_SPREAD_TOO_WIDE") == "当前买卖价差过大"
     assert "CODEX" in reason_zh("CODEX") or "未识别" in reason_zh("CODEX")

@@ -93,6 +93,7 @@ class Orchestrator:
         self.market_meta: Dict[str, Any] = {}
         self.s9_closed_1m = None
         self.s9_closed_5m = None
+        self._pending_s9_candidate = None
         from src.runtime.strategy_diagnostics import StrategyDiagnostics
 
         self.diagnostics: Dict[str, StrategyDiagnostics] = {
@@ -130,6 +131,8 @@ class Orchestrator:
     async def run_cycle(self, bars=None, microstructure=None) -> Dict[str, Any]:
         active = coerce_selectable(self.active_strategy_id)
         self.active_strategy_id = active
+        if active != "S9":
+            self.drop_pending_s9_candidate("STRATEGY_NOT_S9")
         alpha_open = bool(getattr(self, "alpha_opening_enabled", True))
         self.context = {
             "mode": self.mode,
@@ -665,10 +668,211 @@ class Orchestrator:
                 return "SYMBOL_OWNERSHIP_CONFLICT"
         return symbol_conflict(other_owned_same_symbol=other)
 
+    def drop_pending_s9_candidate(self, reason: str = "INVALIDATED") -> None:
+        """Discard the pending S9 candidate slot. Drop is terminal."""
+        from src.runtime.s9_pending_candidate import expired as pending_expired
+
+        pending = getattr(self, "_pending_s9_candidate", None)
+        if pending is None:
+            self._s9_sync_pending_diagnostics()
+            return
+        diag = self.diagnostics.get("S9")
+        code = str(reason or "INVALIDATED").upper()
+        if code == "RESUMED":
+            if diag:
+                diag.note_pending_resumed()
+        elif code in {"EXPIRED", "TTL"} or pending_expired(pending):
+            if diag:
+                diag.note_pending_expired()
+        else:
+            if diag:
+                diag.note_pending_invalidated()
+        self._pending_s9_candidate = None
+        self._s9_sync_pending_diagnostics()
+
+    def _s9_sync_pending_diagnostics(self) -> None:
+        diag = self.diagnostics.get("S9")
+        if not diag:
+            return
+        pending = getattr(self, "_pending_s9_candidate", None)
+        if pending is None:
+            diag.set_pending_live(active=False)
+            return
+        diag.set_pending_live(
+            active=True,
+            signal_key=pending.signal_key,
+            closed_1m_id=pending.closed_1m_id,
+            created_at_epoch_ms=pending.created_at.timestamp() * 1000.0,
+            expires_at_epoch_ms=pending.expires_at.timestamp() * 1000.0,
+        )
+
+    def _s9_current_closed_1m_id(self) -> Optional[int]:
+        from src.runtime.s9_candle_identity import closed_candle_id
+
+        closed_1m = self.s9_closed_1m
+        if closed_1m is None or getattr(closed_1m, "empty", True):
+            return None
+        try:
+            return closed_candle_id(closed_1m.index[-1])
+        except Exception:
+            return None
+
+    def _s9_has_owned_or_pending_opening(self) -> bool:
+        from src.runtime.s9_pending_candidate import has_owned_position, has_pending_opening
+
+        owned = list(self.context.get("owned_open_positions") or getattr(self, "owned_open_positions", None) or [])
+        if has_owned_position(owned):
+            return True
+        return has_pending_opening(
+            pending_opening_orders=self.context.get("pending_opening_orders") or 0,
+            pending_order_intents=self.context.get("pending_order_intents") or [],
+        )
+
+    def _s9_refresh_pending_slot(self, *, extra_block: List[str]) -> None:
+        from src.runtime.s9_pending_candidate import (
+            extra_block_drops_pending,
+            expired as pending_expired,
+            snapshot_valid,
+        )
+
+        pending = getattr(self, "_pending_s9_candidate", None)
+        if pending is None:
+            self._s9_sync_pending_diagnostics()
+            return
+        if coerce_selectable(self.active_strategy_id) != "S9":
+            self.drop_pending_s9_candidate("STRATEGY_NOT_S9")
+            return
+        if extra_block_drops_pending(extra_block):
+            self.drop_pending_s9_candidate("RUNTIME_BLOCK")
+            return
+        if self._s9_has_owned_or_pending_opening():
+            self.drop_pending_s9_candidate("POSITION_OR_OPENING")
+            return
+        if pending_expired(pending):
+            self.drop_pending_s9_candidate("EXPIRED")
+            return
+        current_id = self._s9_current_closed_1m_id()
+        if current_id is None or int(current_id) != int(pending.closed_1m_id):
+            self.drop_pending_s9_candidate("NEW_CLOSED_1M")
+            return
+        used = str(getattr(self.s9, "_last_signal_key", None) or "").strip()
+        if used and used == pending.signal_key:
+            self.drop_pending_s9_candidate("SIGNAL_USED")
+            return
+        if not snapshot_valid(pending):
+            self.drop_pending_s9_candidate("SNAPSHOT_INVALID")
+            return
+        self._s9_sync_pending_diagnostics()
+
+    def _s9_save_pending_candidate(self, payload: Dict[str, Any]) -> bool:
+        from src.runtime.s9_pending_candidate import build_pending, pending_ttl_seconds
+
+        if getattr(self, "_pending_s9_candidate", None) is not None:
+            return True
+        closed_id = self._s9_current_closed_1m_id()
+        if closed_id is None:
+            return False
+        pending = build_pending(
+            payload=payload,
+            closed_1m_id=closed_id,
+            symbol=self.symbol,
+            ttl_seconds=pending_ttl_seconds(self.config),
+        )
+        if pending is None:
+            return False
+        self._pending_s9_candidate = pending
+        diag = self.diagnostics.get("S9")
+        if diag:
+            diag.note_pending_created()
+        self._s9_sync_pending_diagnostics()
+        return True
+
+    def _s9_try_resume_pending(self, *, emit_intents: bool, extra_block: List[str]) -> bool:
+        from src.runtime.s9_pending_candidate import is_transient_market_block_only, payload_for_resume
+
+        pending = getattr(self, "_pending_s9_candidate", None)
+        if pending is None:
+            return False
+        if is_transient_market_block_only(extra_block):
+            return False
+        if extra_block or not emit_intents:
+            return False
+        if self._s9_has_owned_or_pending_opening():
+            self.drop_pending_s9_candidate("POSITION_OR_OPENING")
+            return False
+        own_block = self._s9_symbol_blocked()
+        if own_block:
+            self.drop_pending_s9_candidate("OWNERSHIP")
+            return False
+        payload = payload_for_resume(pending)
+        committed = self._s9_commit_pre_s4(payload, record_s5_block=False)
+        if not committed:
+            self.drop_pending_s9_candidate("PRE_S4_BLOCK")
+            return False
+        self.drop_pending_s9_candidate("RESUMED")
+        return True
+
+    def _s9_commit_pre_s4(self, payload: Dict[str, Any], *, record_s5_block: bool = True) -> bool:
+        """Write s9_candidate / PRE_S4 and mark the signal used. Does not re-run Alpha."""
+        from src.runtime.demo_execute_v1 import compute_base_quantity
+        from src.runtime.risk_usage import authorize_opening, planned_trade_risk_pct, strategy_initial_risk_cap
+
+        diag = self.diagnostics.get("S9")
+        direction = str(payload.get("direction") or "NONE")
+        planned = planned_trade_risk_pct(self.config, "S9")
+        s5_ctx = self.context.get("S5") or {}
+        portfolio_limit = float(s5_ctx.get("portfolio_risk_budget_pct_equity") or 0.0) or float(
+            self.s5._portfolio_budget(self.context)
+        )
+        strategy_limit = float(
+            (s5_ctx.get("strategy_risk_cap_pct_equity") or {}).get("S9") or strategy_initial_risk_cap(self.config, "S9")
+        )
+        auth = authorize_opening(
+            strategy_id="S9",
+            planned_trade_risk_pct_equity=planned,
+            usage=self.context.get("risk_usage") or {},
+            portfolio_risk_limit_pct_equity=portfolio_limit,
+            strategy_risk_limit_pct_equity=strategy_limit,
+            reserved_opening_risk_pct_equity=float(self.context.get("reserved_opening_risk_pct_equity") or 0.0),
+        )
+        payload["s5_authorization"] = auth.to_dict()
+        if auth.action == "BLOCK":
+            if record_s5_block and diag:
+                diag.record_evaluation(
+                    decision="NO_TRADE",
+                    reason_codes=[auth.reason_code],
+                    direction=direction,
+                    symbol=self.symbol,
+                )
+            return False
+        risk_pct = float(auth.allowed_risk_pct_equity if auth.action == "SHRINK" else planned)
+        equity = float(self.context.get("equity") or 0.0)
+        entry = float(payload.get("trigger_reference_price") or 0)
+        stop = float(payload.get("stop_price") or 0)
+        sizing = None
+        if equity > 0 and entry > 0 and stop > 0:
+            try:
+                sizing = compute_base_quantity(equity=equity, risk_pct=risk_pct, entry_price=entry, stop_price=stop)
+            except ValueError:
+                sizing = None
+        payload["authorized_base_quantity"] = None if not sizing else sizing["base_quantity"]
+        payload["s9_risk_pct"] = risk_pct
+        payload["s9_risk_amount_quote"] = None if not sizing else sizing.get("risk_amount_quote")
+        self.context["s9_candidate"] = payload
+        if diag:
+            diag.note_s9_candidate()
+        key = str(payload.get("signal_key") or "").strip()
+        if key:
+            self.s9.mark_signal_used(key)
+        return True
+
     def _s9_generate(self, *, emit_intents: bool, extra_block: List[str]) -> List[TradeIntent]:
+        from src.runtime.s9_pending_candidate import is_transient_market_block_only
+
         diag = self.diagnostics.get("S9")
         closed_1m = self.s9_closed_1m
         closed_5m = self.s9_closed_5m
+        self._s9_refresh_pending_slot(extra_block=extra_block)
         result = self.s9.generate(
             closed_1m=closed_1m,
             closed_5m=closed_5m,
@@ -679,6 +883,7 @@ class Orchestrator:
         if payload.get("skipped"):
             from src.runtime.s9_microstructure_recorder import research_tick
 
+            self._s9_try_resume_pending(emit_intents=emit_intents, extra_block=extra_block)
             research_tick(self, skipped=True)
             return []
         from src.runtime.s9_microstructure_recorder import research_tick
@@ -705,8 +910,12 @@ class Orchestrator:
                     "s9_entry_mode": payload.get("s9_entry_mode") or diag_payload.get("s9_entry_mode"),
                 },
             }
-        reasons = list(payload.get("reason_codes") or extra_block)
-        decision = str(payload.get("decision") or "NO_TRADE")
+        raw_reasons = list(payload.get("reason_codes") or [])
+        raw_decision = str(payload.get("decision") or "NO_TRADE")
+        if diag:
+            diag.record_s9_gates(decision=raw_decision, reason_codes=raw_reasons)
+        reasons = list(raw_reasons or extra_block)
+        decision = raw_decision
         direction = str(payload.get("direction") or "NONE")
         if extra_block:
             decision = "NO_TRADE"
@@ -720,18 +929,20 @@ class Orchestrator:
         import time as _time
 
         now_epoch = _time.time()
+        cooldown = False
         if now_epoch < float(self.s9_runtime.get("pause_until_epoch") or 0):
             decision = "NO_TRADE"
             reasons = ["S9_COOLDOWN"]
+            cooldown = True
         if int(self.s9_runtime.get("cooldown_bars") or 0) > 0:
             decision = "NO_TRADE"
             reasons = ["S9_COOLDOWN"]
+            cooldown = True
         hour_opens = [t for t in self.s9_runtime.get("opening_times") or [] if now_epoch - t <= 3600]
         self.s9_runtime["opening_times"] = hour_opens
         from datetime import datetime, timezone
 
         day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        day_opens = [t for t in hour_opens]  # hour list is subset; day tracked separately below
         day_count = int(self.s9_runtime.get("day_count") or 0)
         if self.s9_runtime.get("day_key") != day_key:
             self.s9_runtime["day_key"] = day_key
@@ -757,52 +968,18 @@ class Orchestrator:
                 source_closed_candle_timestamp=str((payload.get("diagnostics") or {}).get("source_1m_candle_timestamp") or ""),
             )
         self.context["s9_candidate"] = None
+        if (
+            raw_decision == "CANDIDATE"
+            and is_transient_market_block_only(extra_block)
+            and not own_block
+            and not cooldown
+            and not freq_reason
+        ):
+            self._s9_save_pending_candidate(payload)
+            return []
         if decision != "CANDIDATE" or not emit_intents or extra_block or own_block:
             return []
-
-        from src.runtime.risk_usage import authorize_opening, planned_trade_risk_pct, strategy_initial_risk_cap
-        from src.runtime.demo_execute_v1 import compute_base_quantity
-
-        planned = planned_trade_risk_pct(self.config, "S9")
-        s5_ctx = self.context.get("S5") or {}
-        portfolio_limit = float(s5_ctx.get("portfolio_risk_budget_pct_equity") or 0.0) or float(
-            self.s5._portfolio_budget(self.context)
-        )
-        strategy_limit = float(
-            (s5_ctx.get("strategy_risk_cap_pct_equity") or {}).get("S9") or strategy_initial_risk_cap(self.config, "S9")
-        )
-        auth = authorize_opening(
-            strategy_id="S9",
-            planned_trade_risk_pct_equity=planned,
-            usage=self.context.get("risk_usage") or {},
-            portfolio_risk_limit_pct_equity=portfolio_limit,
-            strategy_risk_limit_pct_equity=strategy_limit,
-            reserved_opening_risk_pct_equity=float(self.context.get("reserved_opening_risk_pct_equity") or 0.0),
-        )
-        payload["s5_authorization"] = auth.to_dict()
-        if auth.action == "BLOCK":
-            if diag:
-                diag.record_evaluation(
-                    decision="NO_TRADE",
-                    reason_codes=[auth.reason_code],
-                    direction=direction,
-                    symbol=self.symbol,
-                )
-            return []
-        risk_pct = float(auth.allowed_risk_pct_equity if auth.action == "SHRINK" else planned)
-        equity = float(self.context.get("equity") or 0.0)
-        entry = float(payload.get("trigger_reference_price") or 0)
-        stop = float(payload.get("stop_price") or 0)
-        sizing = None
-        if equity > 0 and entry > 0 and stop > 0:
-            try:
-                sizing = compute_base_quantity(equity=equity, risk_pct=risk_pct, entry_price=entry, stop_price=stop)
-            except ValueError:
-                sizing = None
-        payload["authorized_base_quantity"] = None if not sizing else sizing["base_quantity"]
-        payload["s9_risk_pct"] = risk_pct
-        payload["s9_risk_amount_quote"] = None if not sizing else sizing.get("risk_amount_quote")
-        self.context["s9_candidate"] = payload
+        self._s9_commit_pre_s4(payload, record_s5_block=True)
         return []
 
     def S4_execution_timing(self) -> Dict[str, Any]:
