@@ -484,7 +484,7 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <WhaleAiWorkspace v-show="workspace === 'whale-ai'" />
+      <WhaleAiWorkspace v-show="workspace === 'whale-ai'" class="ai-workspace" />
     </div>
     </template>
   </div>
@@ -581,6 +581,10 @@ onUnmounted(() => {
   background: var(--ai-bg);
   padding: 0;
   overflow: hidden;
+}
+.app-shell.theme-ai .ai-workspace {
+  flex: 1;
+  min-height: 0;
 }
 .app-shell.theme-ai .sidebar :deep(.fresh-btn.sidebar),
 .app-shell.theme-ai .sidebar :deep(.prefs-trigger.sidebar) {

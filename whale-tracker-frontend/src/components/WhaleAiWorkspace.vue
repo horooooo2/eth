@@ -847,13 +847,35 @@ function logsFor(channel: LogChannel) {
   return channel === 'POSITION' ? positionLogs : systemLogs;
 }
 
+function logBoxEl(channel: LogChannel) {
+  return channel === 'POSITION' ? positionLogBox.value : systemLogBox.value;
+}
+
+function isLogPinned(channel: LogChannel) {
+  return channel === 'POSITION' ? positionPinned.value : systemPinned.value;
+}
+
+const logScrollIgnoreUntil: Record<LogChannel, number> = { SYSTEM: 0, POSITION: 0 };
+const logBoxObservers: Record<LogChannel, { ro?: ResizeObserver; io?: IntersectionObserver }> = {
+  SYSTEM: {},
+  POSITION: {},
+};
+
+function ignoreLogScrollBriefly(channel: LogChannel, ms = 240) {
+  logScrollIgnoreUntil[channel] = Math.max(logScrollIgnoreUntil[channel], performance.now() + ms);
+}
+
+function logBoxLaidOut(el: HTMLElement | null): el is HTMLElement {
+  return !!el && el.clientHeight >= 8;
+}
+
 function onLogScroll(channel: LogChannel) {
   if (logScrollLock) return;
-  const el = channel === 'POSITION' ? positionLogBox.value : systemLogBox.value;
-  if (!el) return;
+  if (performance.now() < logScrollIgnoreUntil[channel]) return;
+  const el = logBoxEl(channel);
+  if (!logBoxLaidOut(el)) return;
   const pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 28;
-  if (channel === 'POSITION') positionPinned.value = pinned;
-  else systemPinned.value = pinned;
+  pinLogChannel(channel, pinned);
 }
 
 function pinLogChannel(channel: LogChannel, pinned: boolean) {
@@ -861,16 +883,25 @@ function pinLogChannel(channel: LogChannel, pinned: boolean) {
   else systemPinned.value = pinned;
 }
 
+function snapLogBoxToEnd(el: HTMLElement) {
+  el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+}
+
 function applyLogScroll(channel: LogChannel) {
-  const el = channel === 'POSITION' ? positionLogBox.value : systemLogBox.value;
-  if (!el) return false;
+  const el = logBoxEl(channel);
+  if (!logBoxLaidOut(el)) return false;
   logScrollLock += 1;
-  el.scrollTop = el.scrollHeight;
+  ignoreLogScrollBriefly(channel, 320);
+  snapLogBoxToEnd(el);
   pinLogChannel(channel, true);
   requestAnimationFrame(() => {
-    logScrollLock = Math.max(0, logScrollLock - 1);
+    snapLogBoxToEnd(el);
+    requestAnimationFrame(() => {
+      snapLogBoxToEnd(el);
+      logScrollLock = Math.max(0, logScrollLock - 1);
+    });
   });
-  return el.scrollHeight - el.scrollTop - el.clientHeight < 28;
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 4;
 }
 
 function scrollLogToLatest(channel: LogChannel) {
@@ -882,6 +913,33 @@ function scrollLogToLatest(channel: LogChannel) {
       requestAnimationFrame(() => applyLogScroll(channel));
     });
   });
+}
+
+function detachLogBoxObservers(channel: LogChannel) {
+  logBoxObservers[channel].ro?.disconnect();
+  logBoxObservers[channel].io?.disconnect();
+  logBoxObservers[channel] = {};
+}
+
+function attachLogBoxObservers(el: HTMLElement | null, channel: LogChannel) {
+  detachLogBoxObservers(channel);
+  if (!el) return;
+  const stickIfPinned = () => {
+    if (!isLogPinned(channel)) return;
+    ignoreLogScrollBriefly(channel);
+    scrollLogToLatest(channel);
+  };
+  const ro = new ResizeObserver(stickIfPinned);
+  ro.observe(el);
+  const io = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) stickIfPinned();
+    },
+    { threshold: 0.05 },
+  );
+  io.observe(el);
+  logBoxObservers[channel] = { ro, io };
+  stickIfPinned();
 }
 
 function eventToLogItem(ev: WhaleAiEngineEvent): LogItem {
@@ -1590,10 +1648,17 @@ watch(whaleAiTradeReady, () => {
   void loadAccountSnapshot();
 });
 
+watch(systemLogBox, (el) => attachLogBoxObservers(el, 'SYSTEM'), { flush: 'post' });
+watch(positionLogBox, (el) => attachLogBoxObservers(el, 'POSITION'), { flush: 'post' });
+
 watch(mainConsoleVisible, (visible) => {
   if (visible) {
     startPolling();
     startPrivateWs();
+    pinLogChannel('SYSTEM', true);
+    pinLogChannel('POSITION', true);
+    scrollLogToLatest('SYSTEM');
+    scrollLogToLatest('POSITION');
   } else {
     stopPolling();
     stopPrivateWs();
@@ -1632,6 +1697,8 @@ onMounted(() => {
 onUnmounted(() => {
   stopPolling();
   stopPrivateWs();
+  detachLogBoxObservers('SYSTEM');
+  detachLogBoxObservers('POSITION');
 });
 </script>
 
@@ -1738,7 +1805,7 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section class="grid-2">
+      <section class="grid-2 compact-row">
         <div class="card strategy-box">
           <div class="section-title">
             <span>当前执行策略</span>
@@ -2023,15 +2090,17 @@ onUnmounted(() => {
               回到最新
             </button>
             <div ref="systemLogBox" class="log-box" @scroll="onLogScroll('SYSTEM')">
-              <div v-if="!systemLogs.length" class="log-entry">暂无系统运行日志</div>
-              <div
-                v-for="(l, idx) in systemLogs.slice(-LOG_SHOW)"
-                :key="`sys-${l.eventId || l.id || l.ts || l.t}-${idx}`"
-                class="log-entry"
-              >
-                <span class="log-time">{{ l.t }}</span>
-                <span :class="`log-${l.lvl}`">[{{ logLevelLabel(l.lvl) }}]</span>
-                {{ l.msg }}
+              <div class="log-stack">
+                <div v-if="!systemLogs.length" class="log-entry">暂无系统运行日志</div>
+                <div
+                  v-for="(l, idx) in systemLogs.slice(-LOG_SHOW)"
+                  :key="`sys-${l.eventId || l.id || l.ts || l.t}-${idx}`"
+                  class="log-entry"
+                >
+                  <span class="log-time">{{ l.t }}</span>
+                  <span :class="`log-${l.lvl}`">[{{ logLevelLabel(l.lvl) }}]</span>
+                  {{ l.msg }}
+                </div>
               </div>
             </div>
           </div>
@@ -2054,15 +2123,17 @@ onUnmounted(() => {
               回到最新
             </button>
             <div ref="positionLogBox" class="log-box" @scroll="onLogScroll('POSITION')">
-              <div v-if="!positionLogs.length" class="log-entry">暂无仓位生命周期事件</div>
-              <div
-                v-for="(l, idx) in positionLogs.slice(-LOG_SHOW)"
-                :key="`pos-${l.eventId || l.id || l.ts || l.t}-${idx}`"
-                class="log-entry"
-              >
-                <span class="log-time">{{ l.t }}</span>
-                <span :class="`log-${l.lvl}`">[{{ logLevelLabel(l.lvl) }}]</span>
-                {{ l.msg }}
+              <div class="log-stack">
+                <div v-if="!positionLogs.length" class="log-entry">暂无仓位生命周期事件</div>
+                <div
+                  v-for="(l, idx) in positionLogs.slice(-LOG_SHOW)"
+                  :key="`pos-${l.eventId || l.id || l.ts || l.t}-${idx}`"
+                  class="log-entry"
+                >
+                  <span class="log-time">{{ l.t }}</span>
+                  <span :class="`log-${l.lvl}`">[{{ logLevelLabel(l.lvl) }}]</span>
+                  {{ l.msg }}
+                </div>
               </div>
             </div>
           </div>
@@ -2128,7 +2199,8 @@ onUnmounted(() => {
   --yellow: #d29922;
   --red: #f85149;
   height: 100%;
-  overflow: auto;
+  min-height: 0;
+  overflow: hidden;
   background: var(--bg);
   color: var(--text);
   font-family:
@@ -2145,10 +2217,20 @@ onUnmounted(() => {
 .app {
   max-width: none;
   width: 100%;
+  height: 100%;
   margin: 0;
-  padding: 12px 16px 16px;
+  padding: 12px 16px 8px;
   box-sizing: border-box;
-  min-height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.app > .header,
+.app > .metrics,
+.app > .grid-2,
+.app > .grid-3,
+.app > .footer-note {
+  flex-shrink: 0;
 }
 .gate {
   max-width: 520px;
@@ -2330,6 +2412,14 @@ onUnmounted(() => {
   gap: 16px;
   margin-bottom: 16px;
 }
+.compact-row {
+  gap: 12px;
+  margin-bottom: 12px;
+  align-items: stretch;
+}
+.compact-row > .card {
+  padding: 10px 12px;
+}
 .grid-3 {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
@@ -2345,6 +2435,10 @@ onUnmounted(() => {
   font-size: 16px;
   margin-bottom: 12px;
 }
+.compact-row .section-title {
+  font-size: 14px;
+  margin-bottom: 6px;
+}
 .section-sub {
   color: var(--muted);
   font-size: 12px;
@@ -2352,6 +2446,11 @@ onUnmounted(() => {
 }
 .tip {
   margin-top: 8px;
+}
+.compact-row .tip {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.4;
 }
 .mode {
   margin-left: 10px;
@@ -2368,6 +2467,11 @@ onUnmounted(() => {
   padding: 14px;
   margin-bottom: 12px;
 }
+.compact-row .strategy-current {
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+}
 .strategy-current-top {
   display: flex;
   justify-content: space-between;
@@ -2380,16 +2484,34 @@ onUnmounted(() => {
   font-weight: 850;
   margin-bottom: 5px;
 }
+.compact-row .strategy-name {
+  font-size: 16px;
+  margin-bottom: 2px;
+}
 .strategy-desc {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.6;
+}
+.compact-row .strategy-desc {
+  font-size: 11px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .strategy-select-row {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 10px;
   align-items: end;
+}
+.compact-row .strategy-select-row {
+  gap: 8px;
+}
+.compact-row .field label {
+  margin-bottom: 3px;
 }
 .strategy-actions {
   flex-wrap: nowrap;
@@ -2412,11 +2534,20 @@ select {
   font-size: 13px;
   font: inherit;
 }
+.compact-row select {
+  padding: 6px 9px;
+  border-radius: 8px;
+}
 .strategy-details {
   display: grid;
   grid-template-columns: repeat(4, minmax(100px, 1fr));
   gap: 8px;
   margin-top: 12px;
+}
+.compact-row .strategy-details {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 8px;
 }
 .mini {
   background: #11161d;
@@ -2424,10 +2555,17 @@ select {
   border-radius: 9px;
   padding: 9px 10px;
 }
+.compact-row .mini {
+  padding: 5px 7px;
+  border-radius: 7px;
+}
 .mini .k {
   color: var(--muted);
   font-size: 10px;
   margin-bottom: 4px;
+}
+.compact-row .mini .k {
+  margin-bottom: 2px;
 }
 .mini .v {
   font-size: 12px;
@@ -2468,6 +2606,9 @@ select {
   grid-template-columns: 1fr 1fr;
   gap: 8px 18px;
 }
+.compact-row .system-grid {
+  gap: 0 16px;
+}
 .system-item {
   display: flex;
   justify-content: space-between;
@@ -2477,11 +2618,20 @@ select {
   padding: 8px 0;
   font-size: 12px;
 }
+.compact-row .system-item {
+  padding: 5px 0;
+}
 .system-item span:first-child {
   color: var(--muted);
 }
 .risk-bar {
   margin-top: 10px;
+}
+.compact-row .risk-bar {
+  margin-top: 6px;
+}
+.compact-row .track {
+  height: 7px;
 }
 .risk-line {
   display: flex;
@@ -2633,6 +2783,11 @@ th {
   gap: 8px;
   flex-wrap: wrap;
 }
+.compact-row .btn {
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+}
 
 .control-bar {
   display: flex;
@@ -2645,13 +2800,19 @@ th {
 
 .log-panel {
   position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 0;
 }
 .log-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
+  flex-shrink: 0;
 }
 .log-filter {
   display: inline-flex;
@@ -2672,13 +2833,19 @@ th {
   grid-template-columns: 55% 45%;
   gap: 12px;
   align-items: stretch;
+  flex: 1;
+  min-height: 0;
 }
 .log-col {
   min-width: 0;
+  min-height: 0;
   position: relative;
+  display: flex;
+  flex-direction: column;
 }
 .log-col .section-title {
-  margin-bottom: 8px;
+  margin-bottom: 6px;
+  flex-shrink: 0;
 }
 .log-badge {
   display: inline-block;
@@ -2709,20 +2876,33 @@ th {
   cursor: pointer;
 }
 .log-box {
-  height: 280px;
+  flex: 1;
+  min-height: 0;
+  height: auto;
   overflow: auto;
   overflow-anchor: none;
   background: var(--panel2);
   border: 1px solid var(--border2);
   border-radius: 10px;
-  padding: 12px;
+  padding: 6px 10px 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
   font-family: Consolas, monospace;
   font-size: 13px;
-  line-height: 1.65;
+  line-height: 1.5;
+}
+.log-stack {
+  margin-top: auto;
+  width: 100%;
 }
 .log-entry {
   padding: 2px 0;
   border-bottom: 1px solid #161b22;
+}
+.log-entry:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
 }
 .log-time {
   color: var(--muted);
@@ -2745,7 +2925,7 @@ th {
   text-align: center;
   color: var(--muted);
   font-size: 11px;
-  padding: 8px 0 4px;
+  padding: 6px 0 0;
 }
 
 .modal-backdrop {
@@ -2810,7 +2990,8 @@ textarea {
   .metrics {
     grid-template-columns: repeat(2, 1fr);
   }
-  .strategy-details {
+  .strategy-details,
+  .compact-row .strategy-details {
     grid-template-columns: repeat(2, 1fr);
   }
 }
@@ -2823,6 +3004,7 @@ textarea {
   }
   .strategy-select-row,
   .strategy-details,
+  .compact-row .strategy-details,
   .system-grid,
   .signal-meta {
     grid-template-columns: 1fr;
