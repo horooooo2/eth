@@ -144,6 +144,7 @@ class EngineRuntime:
             print(exec_norm["deprecation_code"])
 
         self.store = EngineStore(store_path)
+        self.orchestrator.engine_store = self.store
         self.bus = get_event_bus()
         self.event_recorder = RuntimeEventRecorder(self.store)
         self.bus.set_persist_hook(self.event_recorder.persist_bus_event)
@@ -1509,6 +1510,12 @@ class EngineRuntime:
                         ev.get("source_closed_candle_timestamp") or candle
                     )
                     self.bus.emit("strategy.decision", ev)
+                runtime = getattr(self.orchestrator, "s9_runtime", None) or {}
+                dir_ev = runtime.pop("pending_direction_event", None) if isinstance(runtime, dict) else None
+                if dir_ev:
+                    dir_ev["symbol"] = dir_ev.get("symbol") or symbol
+                    dir_ev["strategy_id"] = "S9"
+                    self.bus.emit("strategy.decision", dir_ev)
                 snap = self.snapshot()
                 self._persist_and_emit(snap)
             except Exception as err:  # noqa: BLE001

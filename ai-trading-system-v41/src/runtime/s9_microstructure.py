@@ -117,8 +117,25 @@ def evaluate_microstructure(
     trades_age_sec: float,
     cfg: Mapping[str, Any],
     authorized_base_qty: float,
+    entry_mode: str = "TREND_CONTINUATION",
 ) -> Dict[str, Any]:
     mcfg = dict(cfg.get("microstructure") or cfg)
+    early = str(entry_mode or "").upper() == "EARLY_MOMENTUM"
+    if early:
+        early_cfg = dict(cfg.get("early_microstructure") or {})
+        long_depth_min = _f(early_cfg.get("long_depth_imbalance_min"), 0.05)
+        short_depth_max = _f(early_cfg.get("short_depth_imbalance_max"), -0.05)
+        long_flow_min = _f(early_cfg.get("long_flow_imbalance_min"), 0.10)
+        short_flow_max = _f(early_cfg.get("short_flow_imbalance_max"), -0.10)
+        depth_code = "S9_EARLY_DEPTH_BLOCK"
+        flow_code = "S9_EARLY_FLOW_BLOCK"
+    else:
+        long_depth_min = _f(mcfg.get("long_depth_imbalance_min"), -0.10)
+        short_depth_max = _f(mcfg.get("short_depth_imbalance_max"), 0.10)
+        long_flow_min = _f(mcfg.get("long_flow_imbalance_min"), 0.05)
+        short_flow_max = _f(mcfg.get("short_flow_imbalance_max"), -0.05)
+        depth_code = "S9_INSUFFICIENT_BOOK_DEPTH"
+        flow_code = "S9_DATA_DEGRADED"
     reasons: List[str] = []
     if book_age_sec > _f(mcfg.get("orderbook_max_age_seconds"), 2):
         reasons.append("S9_ORDERBOOK_STALE")
@@ -142,10 +159,10 @@ def evaluate_microstructure(
     if imb is None:
         reasons.append("S9_DATA_DEGRADED")
     else:
-        if str(side).upper() == "LONG" and imb < _f(mcfg.get("long_depth_imbalance_min"), -0.10):
-            reasons.append("S9_INSUFFICIENT_BOOK_DEPTH")
-        if str(side).upper() == "SHORT" and imb > _f(mcfg.get("short_depth_imbalance_max"), 0.10):
-            reasons.append("S9_INSUFFICIENT_BOOK_DEPTH")
+        if str(side).upper() == "LONG" and imb < long_depth_min:
+            reasons.append(depth_code)
+        if str(side).upper() == "SHORT" and imb > short_depth_max:
+            reasons.append(depth_code)
     window_sec = _f(mcfg.get("trades_window_seconds"), 15)
     recent = []
     for row in trades:
@@ -157,10 +174,10 @@ def evaluate_microstructure(
     if flow is None:
         reasons.append("S9_DATA_DEGRADED")
     else:
-        if str(side).upper() == "LONG" and flow < _f(mcfg.get("long_flow_imbalance_min"), 0.05):
-            reasons.append("S9_DATA_DEGRADED")
-        if str(side).upper() == "SHORT" and flow > _f(mcfg.get("short_flow_imbalance_max"), -0.05):
-            reasons.append("S9_DATA_DEGRADED")
+        if str(side).upper() == "LONG" and flow < long_flow_min:
+            reasons.append(flow_code)
+        if str(side).upper() == "SHORT" and flow > short_flow_max:
+            reasons.append(flow_code)
     mid = (bid + ask) / 2.0
     levels = asks if str(side).upper() == "LONG" else bids
     vwap = expected_vwap(levels, authorized_base_qty)
@@ -172,7 +189,7 @@ def evaluate_microstructure(
         if slip > _f(mcfg.get("max_expected_slippage_bps"), 2.0):
             reasons.append("S9_EXPECTED_SLIPPAGE_TOO_HIGH")
     data_state = "READY" if not reasons else "DEGRADED"
-    return {
+    out = {
         "ok": not reasons,
         "reasons": reasons,
         "data_state": data_state,
@@ -182,7 +199,12 @@ def evaluate_microstructure(
         "s9_aggressive_flow_15s": flow,
         "s9_expected_slippage_bps": slip,
         "expected_vwap": vwap,
+        "s9_entry_mode": "EARLY_MOMENTUM" if early else "TREND_CONTINUATION",
     }
+    if early:
+        out["early_depth_imbalance"] = imb
+        out["early_flow_imbalance"] = flow
+    return out
 
 
 def round_trip_cost_bps(*, entry_fee_bps: float, exit_fee_bps: float, spread: float, slip: float) -> float:

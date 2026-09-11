@@ -1,4 +1,4 @@
-import { eventZh, reasonZh, statusZh, strategyNameZh } from '@/utils/strategyDisplayZh';
+import { directionStateZh, eventZh, reasonZh, s9ReasonZh, statusZh, strategyNameZh } from '@/utils/strategyDisplayZh';
 
 export const CATEGORY_POSITION = 'POSITION';
 export const CATEGORY_SYSTEM = 'SYSTEM';
@@ -277,8 +277,13 @@ const SYSTEM_HARD_BLOCKERS = new Set([
   'ALPHA_EXECUTION_USER_NOT_READY',
 ]);
 
-function formatNoTradeMessage(name: string, sym: string, codes: string[]): string {
-  const reasons = codes.map((c) => reasonZh(c));
+function formatNoTradeMessage(
+  name: string,
+  sym: string,
+  codes: string[],
+  extras?: { direction_state?: string | null; adx_insufficient?: boolean; side?: string | null },
+): string {
+  const reasons = codes.map((c) => (c.startsWith('S9_') ? s9ReasonZh(c, extras) : reasonZh(c)));
   const reasonBlock = reasons.length ? `原因：\n${reasons.join('；\n')}` : '';
   if (codes.some((c) => SYSTEM_HARD_BLOCKERS.has(c))) {
     return reasonBlock ? `系统尚未具备交易条件\n${reasonBlock}` : '系统尚未具备交易条件';
@@ -301,7 +306,16 @@ export function formatUserMessage(event: LogEventLike): string {
   const covered = pickQty(event, ['covered_contracts', 'sz', 'owned_contracts']);
 
   if (et === 'STRATEGY_NO_TRADE' || et === 'S9_NO_TRADE') {
-    return formatNoTradeMessage(name, sym, codes);
+    const details = detailsOf(event);
+    return formatNoTradeMessage(name, sym, codes, {
+      direction_state: String(event.s9_direction_state || details.s9_direction_state || ''),
+      adx_insufficient: Boolean(event.s9_adx_insufficient || details.s9_adx_insufficient),
+      side: String(event.direction || details.direction || ''),
+    });
+  }
+  if (et === 'S9_DIRECTION') {
+    const details = detailsOf(event);
+    return directionStateZh(String(event.s9_direction_state || details.s9_direction_state || ''));
   }
   if (et === 'ORDER_SUBMITTED') {
     return reduce ? '平仓订单已提交，等待成交' : '开仓订单已提交，等待成交';

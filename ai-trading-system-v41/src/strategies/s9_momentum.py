@@ -92,14 +92,112 @@ def signal_key(direction: str, closed_1m_ts: Any) -> str:
     return f"S9:{S9_SYMBOL}:{side}:{stamp}"
 
 
-def evaluate_5m_direction(closed_5m: pd.DataFrame, cfg: Mapping[str, Any] | None = None) -> Dict[str, Any]:
+CLOSE_VS_EMA9_W = 0.30
+EMA_STRUCTURE_W = 0.30
+SLOPE_W = 0.20
+ROC_W = 0.20
+SCORE_STRONG = 0.80
+SCORE_EARLY = 0.40
+ADX_STRONG = 18.0
+ADX_EARLY = 14.0
+
+STRONG_BULLISH = "STRONG_BULLISH"
+EARLY_BULLISH = "EARLY_BULLISH"
+NEUTRAL = "NEUTRAL"
+EARLY_BEARISH = "EARLY_BEARISH"
+STRONG_BEARISH = "STRONG_BEARISH"
+TREND_CONTINUATION = "TREND_CONTINUATION"
+EARLY_MOMENTUM = "EARLY_MOMENTUM"
+ENTRY_NONE = "NONE"
+
+BULLISH_STATES = frozenset({STRONG_BULLISH, EARLY_BULLISH, "BULLISH"})
+BEARISH_STATES = frozenset({STRONG_BEARISH, EARLY_BEARISH, "BEARISH"})
+EARLY_STATES = frozenset({EARLY_BULLISH, EARLY_BEARISH})
+STRONG_STATES = frozenset({STRONG_BULLISH, STRONG_BEARISH})
+
+
+def _signed_component(value: float, weight: float) -> float:
+    if value > 0:
+        return float(weight)
+    if value < 0:
+        return -float(weight)
+    return 0.0
+
+
+def score_direction_components(
+    *,
+    close: float,
+    ema9: float,
+    ema21: float,
+    slope: float,
+    roc3: Optional[float],
+) -> Dict[str, float]:
+    close_vs_ema9 = _signed_component(float(close) - float(ema9), CLOSE_VS_EMA9_W)
+    ema_structure = _signed_component(float(ema9) - float(ema21), EMA_STRUCTURE_W)
+    slope_c = _signed_component(float(slope), SLOPE_W)
+    roc_c = _signed_component(float(roc3), ROC_W) if roc3 is not None else 0.0
+    score = close_vs_ema9 + ema_structure + slope_c + roc_c
+    score = max(-1.0, min(1.0, score))
+    return {
+        "s9_close_vs_ema9_component": close_vs_ema9,
+        "s9_ema_structure_component": ema_structure,
+        "s9_slope_component": slope_c,
+        "s9_roc_component": roc_c,
+        "s9_direction_score": score,
+    }
+
+
+def classify_direction_state(score: float, adx14: Optional[float]) -> str:
+    if adx14 is None:
+        return NEUTRAL
+    adx_v = float(adx14)
+    if adx_v < ADX_EARLY:
+        return NEUTRAL
+    s = float(score)
+    if s >= SCORE_STRONG and adx_v >= ADX_STRONG:
+        return STRONG_BULLISH
+    if s <= -SCORE_STRONG and adx_v >= ADX_STRONG:
+        return STRONG_BEARISH
+    if s >= SCORE_EARLY:
+        return EARLY_BULLISH
+    if s <= -SCORE_EARLY:
+        return EARLY_BEARISH
+    return NEUTRAL
+
+
+def entry_mode_for_state(state: str) -> str:
+    if state in STRONG_STATES or state in {"BULLISH", "BEARISH"}:
+        return TREND_CONTINUATION
+    if state in EARLY_STATES:
+        return EARLY_MOMENTUM
+    return ENTRY_NONE
+
+
+def side_for_state(state: str) -> Optional[str]:
+    if state in BULLISH_STATES:
+        return "LONG"
+    if state in BEARISH_STATES:
+        return "SHORT"
+    return None
+
+
+def roc_n(close: pd.Series, bars: int = 3) -> Optional[float]:
+    if close is None or len(close) < bars + 1:
+        return None
+    prev = float(close.iloc[-1 - int(bars)])
+    if prev == 0:
+        return None
+    return (float(close.iloc[-1]) - prev) / prev
+
+
+def _direction_metrics(closed_5m: pd.DataFrame, cfg: Mapping[str, Any] | None = None) -> Optional[Dict[str, Any]]:
     dcfg = dict((cfg or {}).get("direction") or cfg or {})
     fast_n = int(dcfg.get("ema_fast", 9))
     slow_n = int(dcfg.get("ema_slow", 21))
     slope_n = int(dcfg.get("slope_bars", 3))
-    adx_min = _f(dcfg.get("adx_min", 18))
-    if closed_5m is None or len(closed_5m) < max(slow_n, 14) + slope_n:
-        return {"state": "NEUTRAL", "reason": "S9_DATA_5M_STALE", "adx14": None}
+    roc_bars = int(dcfg.get("roc_bars", 3))
+    if closed_5m is None or len(closed_5m) < max(slow_n, 14) + max(slope_n, roc_bars):
+        return None
     close = closed_5m["close"].astype(float)
     ema_fast = ema(close, fast_n)
     ema_slow = ema(close, slow_n)
@@ -109,6 +207,35 @@ def evaluate_5m_direction(closed_5m: pd.DataFrame, cfg: Mapping[str, Any] | None
     last_slow = float(ema_slow.iloc[-1])
     last_adx = float(adx14.iloc[-1])
     slope = float(ema_fast.iloc[-1] - ema_fast.iloc[-1 - slope_n])
+    roc3 = roc_n(close, roc_bars)
+    parts = score_direction_components(
+        close=last_close, ema9=last_fast, ema21=last_slow, slope=slope, roc3=roc3
+    )
+    return {
+        "close": last_close,
+        "ema9": last_fast,
+        "ema21": last_slow,
+        "ema9_slope_3": slope,
+        "adx14": last_adx,
+        "s9_roc3": roc3,
+        "s9_adx14": last_adx,
+        "source_5m_candle_timestamp": str(closed_5m.index[-1]),
+        **parts,
+    }
+
+
+def evaluate_5m_direction_legacy(closed_5m: pd.DataFrame, cfg: Mapping[str, Any] | None = None) -> Dict[str, Any]:
+    """OLD S9: single hard trend gate. Kept for replay comparison only."""
+    dcfg = dict((cfg or {}).get("direction") or cfg or {})
+    adx_min = _f(dcfg.get("adx_min", 18))
+    metrics = _direction_metrics(closed_5m, cfg)
+    if metrics is None:
+        return {"state": "NEUTRAL", "reason": "S9_DATA_5M_STALE", "adx14": None}
+    last_close = float(metrics["close"])
+    last_fast = float(metrics["ema9"])
+    last_slow = float(metrics["ema21"])
+    slope = float(metrics["ema9_slope_3"])
+    last_adx = float(metrics["adx14"])
     bullish = last_close > last_fast and last_fast > last_slow and slope > 0 and last_adx >= adx_min
     bearish = last_close < last_fast and last_fast < last_slow and slope < 0 and last_adx >= adx_min
     if bullish:
@@ -117,24 +244,63 @@ def evaluate_5m_direction(closed_5m: pd.DataFrame, cfg: Mapping[str, Any] | None
         state = "BEARISH"
     else:
         state = "NEUTRAL"
-    return {
-        "state": state,
-        "reason": None if state != "NEUTRAL" else "S9_DIRECTION_NEUTRAL",
-        "close": last_close,
-        "ema9": last_fast,
-        "ema21": last_slow,
-        "ema9_slope_3": slope,
-        "adx14": last_adx,
-        "source_5m_candle_timestamp": str(closed_5m.index[-1]),
-    }
+    out = dict(metrics)
+    out["state"] = state
+    out["reason"] = None if state != "NEUTRAL" else "S9_DIRECTION_NEUTRAL"
+    return out
 
 
-def s3_allows(direction: str, *, regime: str, bias: float, cfg: Mapping[str, Any] | None = None) -> Optional[str]:
+def evaluate_5m_direction(closed_5m: pd.DataFrame, cfg: Mapping[str, Any] | None = None) -> Dict[str, Any]:
+    metrics = _direction_metrics(closed_5m, cfg)
+    if metrics is None:
+        return {
+            "state": NEUTRAL,
+            "reason": "S9_DATA_5M_STALE",
+            "adx14": None,
+            "s9_direction_score": None,
+            "s9_entry_mode": ENTRY_NONE,
+        }
+    score = float(metrics["s9_direction_score"])
+    adx14 = float(metrics["adx14"])
+    state = classify_direction_state(score, adx14)
+    out = dict(metrics)
+    out["state"] = state
+    out["s9_direction_state"] = state
+    out["s9_entry_mode"] = entry_mode_for_state(state)
+    if state == NEUTRAL:
+        out["reason"] = "S9_DIRECTION_NEUTRAL"
+        out["s9_adx_insufficient"] = adx14 < ADX_EARLY
+    else:
+        out["reason"] = None
+        out["s9_adx_insufficient"] = False
+    return out
+
+
+def s3_allows(
+    direction: str,
+    *,
+    regime: str,
+    bias: float,
+    cfg: Mapping[str, Any] | None = None,
+    entry_mode: str = TREND_CONTINUATION,
+) -> Optional[str]:
     scfg = dict((cfg or {}).get("s3") or {})
-    blocked = {str(x).lower() for x in (scfg.get("block_regimes") or ["panic", "range"])}
-    if str(regime or "").lower() in blocked:
-        return "S9_S3_DIRECTION_BLOCK"
+    regime_l = str(regime or "").lower()
     side = str(direction).upper()
+    mode = str(entry_mode or TREND_CONTINUATION).upper()
+    if mode == EARLY_MOMENTUM:
+        if regime_l == "panic":
+            return "S9_S3_DIRECTION_BLOCK"
+        long_min = _f(scfg.get("early_long_bias_min"), -0.25)
+        short_max = _f(scfg.get("early_short_bias_max"), 0.25)
+        if side == "LONG" and float(bias) < long_min:
+            return "S9_EARLY_S3_OPPOSITION_BLOCK"
+        if side == "SHORT" and float(bias) > short_max:
+            return "S9_EARLY_S3_OPPOSITION_BLOCK"
+        return None
+    blocked = {str(x).lower() for x in (scfg.get("block_regimes") or ["panic", "range"])}
+    if regime_l in blocked:
+        return "S9_S3_DIRECTION_BLOCK"
     long_min = _f(scfg.get("long_bias_min", 0.20))
     short_max = _f(scfg.get("short_bias_max", -0.20))
     if side == "LONG" and float(bias) < long_min:
@@ -240,6 +406,38 @@ def validate_stop(
     return None
 
 
+def _mode_entry_params(cfg: Mapping[str, Any], entry_mode: str) -> Dict[str, Any]:
+    if str(entry_mode).upper() == EARLY_MOMENTUM:
+        br = dict(cfg.get("early_breakout") or {})
+        vol = dict(cfg.get("early_volume") or {})
+        candle = dict(cfg.get("early_candle") or {})
+        return {
+            "lookback": int(br.get("lookback_bars") or 10),
+            "buffer_bps": _f(br.get("buffer_bps"), 2.0),
+            "vol_period": int(vol.get("ema_period") or 20),
+            "min_ratio": _f(vol.get("min_ratio"), 1.50),
+            "min_body": _f(candle.get("min_body_ratio"), 0.65),
+            "min_loc": _f(candle.get("min_close_location"), 0.75),
+            "breakout_code": "S9_EARLY_BREAKOUT_NOT_TRIGGERED",
+            "volume_code": "S9_EARLY_VOLUME_NOT_EXPANDED",
+            "candle_code": "S9_EARLY_CANDLE_QUALITY_BLOCK",
+        }
+    br = dict(cfg.get("breakout") or {})
+    vol = dict(cfg.get("volume") or {})
+    candle = dict(cfg.get("candle") or {})
+    return {
+        "lookback": int(br.get("lookback_bars") or 20),
+        "buffer_bps": _f(br.get("buffer_bps"), 1.0),
+        "vol_period": int(vol.get("ema_period") or 20),
+        "min_ratio": _f(vol.get("min_ratio"), 1.30),
+        "min_body": _f(candle.get("min_body_ratio"), 0.55),
+        "min_loc": _f(candle.get("min_close_location"), 0.65),
+        "breakout_code": "S9_NO_BREAKOUT",
+        "volume_code": "S9_VOLUME_NOT_EXPANDED",
+        "candle_code": "S9_CANDLE_QUALITY_BLOCK",
+    }
+
+
 def evaluate_entry(
     *,
     closed_1m: pd.DataFrame,
@@ -249,6 +447,7 @@ def evaluate_entry(
     cfg: Mapping[str, Any],
     now: Optional[pd.Timestamp] = None,
     last_signal_key: Optional[str] = None,
+    direction_version: str = "v1_1",
 ) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "decision": "NO_TRADE",
@@ -256,6 +455,7 @@ def evaluate_entry(
         "reason_codes": [],
         "signal_key": None,
         "diagnostics": {},
+        "s9_entry_mode": ENTRY_NONE,
     }
     fresh_1m = int((cfg.get("freshness") or {}).get("closed_1m_max_age_seconds") or 90)
     fresh_5m = int((cfg.get("freshness") or {}).get("closed_5m_max_age_seconds") or 360)
@@ -268,60 +468,88 @@ def evaluate_entry(
         out["reason_codes"] = ["S9_DATA_5M_STALE"]
         out["diagnostics"]["s9_data_state"] = "OFF"
         return out
-    direction = evaluate_5m_direction(closed_5m, cfg)
-    out["diagnostics"].update(
+    if str(direction_version or "v1_1") == "legacy":
+        direction = evaluate_5m_direction_legacy(closed_5m, cfg)
+        mode = TREND_CONTINUATION if direction["state"] in {"BULLISH", "BEARISH"} else ENTRY_NONE
+    else:
+        direction = evaluate_5m_direction(closed_5m, cfg)
+        mode = str(direction.get("s9_entry_mode") or entry_mode_for_state(direction["state"]))
+    diag = out["diagnostics"]
+    diag.update(
         {
             "s9_direction_state": direction["state"],
             "s9_direction_reason": direction.get("reason"),
+            "s9_direction_score": direction.get("s9_direction_score"),
+            "s9_close_vs_ema9_component": direction.get("s9_close_vs_ema9_component"),
+            "s9_ema_structure_component": direction.get("s9_ema_structure_component"),
+            "s9_slope_component": direction.get("s9_slope_component"),
+            "s9_roc_component": direction.get("s9_roc_component"),
+            "s9_roc3": direction.get("s9_roc3"),
+            "s9_adx14": direction.get("adx14"),
+            "s9_entry_mode": mode,
+            "close": direction.get("close"),
+            "ema9": direction.get("ema9"),
+            "ema21": direction.get("ema21"),
+            "ema9_slope_3": direction.get("ema9_slope_3"),
+            "s9_adx_insufficient": direction.get("s9_adx_insufficient"),
             "source_5m_candle_timestamp": direction.get("source_5m_candle_timestamp"),
         }
     )
-    if direction["state"] == "NEUTRAL":
+    out["s9_entry_mode"] = mode
+    if mode == ENTRY_NONE or direction["state"] in {NEUTRAL, "NEUTRAL"}:
         out["reason_codes"] = ["S9_DIRECTION_NEUTRAL"]
         return out
-    side = "LONG" if direction["state"] == "BULLISH" else "SHORT"
-    s3_block = s3_allows(side, regime=s3_regime, bias=s3_bias, cfg=cfg)
+    side = side_for_state(direction["state"])
+    if not side:
+        out["reason_codes"] = ["S9_DIRECTION_NEUTRAL"]
+        return out
+    s3_block = s3_allows(side, regime=s3_regime, bias=s3_bias, cfg=cfg, entry_mode=mode)
     if s3_block:
         out["reason_codes"] = [s3_block]
         return out
     if closed_1m is None or closed_1m.empty:
         out["reason_codes"] = ["S9_DATA_1M_STALE"]
-        out["diagnostics"]["s9_data_state"] = "OFF"
+        diag["s9_data_state"] = "OFF"
         return out
     if bar_age_seconds(closed_1m.index[-1], now, bar_seconds=60) > fresh_1m:
         out["reason_codes"] = ["S9_DATA_1M_STALE"]
-        out["diagnostics"]["s9_data_state"] = "OFF"
+        diag["s9_data_state"] = "OFF"
         return out
-    lookback = int((cfg.get("breakout") or {}).get("lookback_bars") or 20)
-    level = breakout_level(closed_1m, side=side, lookback=lookback)
+    params = _mode_entry_params(cfg, mode)
+    level = breakout_level(closed_1m, side=side, lookback=params["lookback"])
     last = closed_1m.iloc[-1]
     close = float(last["close"])
-    buffer = _f((cfg.get("breakout") or {}).get("buffer_bps"), 1.0)
-    out["diagnostics"]["s9_breakout_level"] = level
-    out["diagnostics"]["source_1m_candle_timestamp"] = str(closed_1m.index[-1])
-    if level is None or not breakout_hit(close, level, side=side, buffer_bps=buffer):
-        out["reason_codes"] = ["S9_NO_BREAKOUT"]
-        return out
-    vr = volume_ratio(closed_1m, int((cfg.get("volume") or {}).get("ema_period") or 20))
-    out["diagnostics"]["s9_volume_ratio"] = vr
-    if vr is None or vr < _f((cfg.get("volume") or {}).get("min_ratio"), 1.30):
-        out["reason_codes"] = ["S9_VOLUME_NOT_EXPANDED"]
-        return out
-    cq = candle_quality(
-        last,
-        side=side,
-        min_body=_f((cfg.get("candle") or {}).get("min_body_ratio"), 0.55),
-        min_loc=_f((cfg.get("candle") or {}).get("min_close_location"), 0.65),
-    )
     rng = float(last["high"]) - float(last["low"])
-    out["diagnostics"]["s9_body_ratio"] = abs(float(last["close"]) - float(last["open"])) / rng if rng else None
+    loc = None
+    if rng > 0:
+        loc = (close - float(last["low"])) / rng if side == "LONG" else (float(last["high"]) - close) / rng
+    body = abs(close - float(last["open"])) / rng if rng else None
+    diag["s9_breakout_level"] = level
+    diag["source_1m_candle_timestamp"] = str(closed_1m.index[-1])
+    diag["s9_body_ratio"] = body
+    diag["s9_close_location"] = loc
+    if mode == EARLY_MOMENTUM:
+        diag["early_breakout_level"] = level
+        diag["early_body_ratio"] = body
+        diag["early_close_location"] = loc
+    if level is None or not breakout_hit(close, level, side=side, buffer_bps=params["buffer_bps"]):
+        out["reason_codes"] = [params["breakout_code"]]
+        return out
+    vr = volume_ratio(closed_1m, params["vol_period"])
+    diag["s9_volume_ratio"] = vr
+    if mode == EARLY_MOMENTUM:
+        diag["early_volume_ratio"] = vr
+    if vr is None or vr < params["min_ratio"]:
+        out["reason_codes"] = [params["volume_code"]]
+        return out
+    cq = candle_quality(last, side=side, min_body=params["min_body"], min_loc=params["min_loc"])
     if cq:
-        out["reason_codes"] = [cq]
+        out["reason_codes"] = [params["candle_code"]]
         return out
     atr14 = float(atr(closed_1m, int((cfg.get("atr") or {}).get("period") or 14)).iloc[-1])
     atr_bps = atr14 / close * 10_000.0 if close else 0.0
-    out["diagnostics"]["s9_atr14"] = atr14
-    out["diagnostics"]["s9_atr_bps"] = atr_bps
+    diag["s9_atr14"] = atr14
+    diag["s9_atr_bps"] = atr_bps
     min_bps = _f((cfg.get("atr") or {}).get("min_bps"), 5)
     max_bps = _f((cfg.get("atr") or {}).get("max_bps"), 50)
     if atr_bps < min_bps:
@@ -344,7 +572,7 @@ def evaluate_entry(
         max_atr_mult=_f((cfg.get("stop") or {}).get("max_atr_mult"), 1.2),
     )
     dist = abs(close - stop_px)
-    out["diagnostics"].update(
+    diag.update(
         {
             "s9_structure_price": stop_px,
             "s9_structure_distance": dist,
@@ -370,10 +598,11 @@ def evaluate_entry(
             "trigger_reference_price": close,
             "stop_price": stop_px,
             "take_profit_price": tp,
+            "s9_entry_mode": mode,
         }
     )
-    out["diagnostics"]["s9_take_profit_price"] = tp
-    out["diagnostics"]["s9_entry_trigger"] = "BREAKOUT"
+    diag["s9_take_profit_price"] = tp
+    diag["s9_entry_trigger"] = "EARLY_BREAKOUT" if mode == EARLY_MOMENTUM else "BREAKOUT"
     return out
 
 
@@ -383,6 +612,8 @@ class S9MomentumStrategy:
         self.cfg = config.get("S9_high_frequency_momentum") or config.get("S9") or {}
         self._last_signal_key: Optional[str] = None
         self._last_eval_1m: Optional[str] = None
+        self._last_direction_5m_ts: Optional[str] = None
+        self._last_direction_state: Optional[str] = None
 
     def generate(
         self,
@@ -417,6 +648,16 @@ class S9MomentumStrategy:
             last_signal_key=self._last_signal_key,
         )
         context["s9"] = result
+        diag = result.setdefault("diagnostics", {})
+        ts5 = str(diag.get("source_5m_candle_timestamp") or "")
+        state = str(diag.get("s9_direction_state") or "")
+        if ts5 and ts5 == self._last_direction_5m_ts:
+            diag["s9_direction_repeat"] = True
+        else:
+            diag["s9_direction_repeat"] = False
+            diag["s9_direction_updated"] = bool(ts5)
+            self._last_direction_5m_ts = ts5 or self._last_direction_5m_ts
+            self._last_direction_state = state or self._last_direction_state
         if result.get("signal_key"):
             self._last_signal_key = str(result["signal_key"])
         if result.get("decision") != "CANDIDATE" or not emit_intents:

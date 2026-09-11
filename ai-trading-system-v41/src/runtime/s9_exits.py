@@ -40,10 +40,17 @@ def time_exit_due(*, first_fill_at_epoch: float, now_epoch: float, max_holding_m
     return (now_epoch - first_fill_at_epoch) >= float(max_holding_minutes) * 60.0
 
 
+_FLIP_BEARISH = frozenset({"EARLY_BEARISH", "STRONG_BEARISH", "BEARISH"})
+_FLIP_BULLISH = frozenset({"EARLY_BULLISH", "STRONG_BULLISH", "BULLISH"})
+
+
 def direction_flip_exit(*, side: str, prev_state: str, new_state: str) -> bool:
-    if str(side).upper() == "LONG":
-        return prev_state == "BULLISH" and new_state == "BEARISH"
-    return prev_state == "BEARISH" and new_state == "BULLISH"
+    """Opposite EARLY/STRONG flips the position. NEUTRAL holds."""
+    _ = prev_state
+    nxt = str(new_state or "")
+    if str(side).upper() in {"LONG", "BUY"}:
+        return nxt in _FLIP_BEARISH
+    return nxt in _FLIP_BULLISH
 
 
 def pick_exit_reason(flags: Mapping[str, bool]) -> Optional[str]:

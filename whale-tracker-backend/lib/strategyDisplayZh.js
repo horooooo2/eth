@@ -17,7 +17,13 @@ const REASON_ZH = {
   S9_EXPECTED_MOVE_INSUFFICIENT_AFTER_COST: '扣除交易成本后预期空间不足',
   S9_TRADE_INTENT_EXPIRED: '交易机会已过期',
   S9_ENTRY_PRICE_DRIFT_EXCEEDED: '入场价格漂移超过允许范围',
-  S9_DIRECTION_NEUTRAL: '5分钟方向为中性，暂不开仓',
+  S9_DIRECTION_NEUTRAL: '5分钟方向暂不明确',
+  S9_EARLY_BREAKOUT_NOT_TRIGGERED: '5分钟出现早期动量，但1分钟突破强度不足',
+  S9_EARLY_VOLUME_NOT_EXPANDED: '5分钟出现早期动量，但成交量放大不足',
+  S9_EARLY_CANDLE_QUALITY_BLOCK: '5分钟出现早期动量，但K线质量不足',
+  S9_EARLY_DEPTH_BLOCK: '5分钟出现早期动量，但盘口方向确认不足',
+  S9_EARLY_FLOW_BLOCK: '5分钟出现早期动量，但主动成交方向确认不足',
+  S9_EARLY_S3_OPPOSITION_BLOCK: '5分钟出现早期动量，但更大周期方向仍明显相反',
   S9_NO_BREAKOUT: '尚未出现有效突破',
   S9_SIGNAL_ALREADY_USED: '同一根已收盘1分钟K线已使用过信号',
   S9_EXPECTED_SLIPPAGE_TOO_HIGH: '预计成交滑点过高',
@@ -211,6 +217,52 @@ const STRATEGY_NAME_ZH = {
   S9: '高频动量突破',
 };
 
+const DIRECTION_STATE_ZH = {
+  STRONG_BULLISH: '5分钟方向：强多头趋势',
+  EARLY_BULLISH: '5分钟方向：早期多头动量',
+  NEUTRAL: '5分钟方向暂不明确',
+  EARLY_BEARISH: '5分钟方向：早期空头动量',
+  STRONG_BEARISH: '5分钟方向：强空头趋势',
+  BULLISH: '5分钟方向：强多头趋势',
+  BEARISH: '5分钟方向：强空头趋势',
+};
+
+function directionStateZh(state) {
+  const key = String(state || '').trim().toUpperCase();
+  return DIRECTION_STATE_ZH[key] || DIRECTION_STATE_ZH.NEUTRAL;
+}
+
+const EARLY_DIR_PHRASE = {
+  EARLY_BULLISH: '5分钟出现早期多头动量',
+  EARLY_BEARISH: '5分钟出现早期空头动量',
+  STRONG_BULLISH: '5分钟方向：强多头趋势',
+  STRONG_BEARISH: '5分钟方向：强空头趋势',
+};
+
+function s9ReasonZh(code, extras) {
+  const key = String(code || '').trim();
+  const extra = extras || {};
+  const state = String(extra.direction_state || '').trim().toUpperCase();
+  const phrase = EARLY_DIR_PHRASE[state];
+  if (key === 'S9_DIRECTION_NEUTRAL') {
+    if (extra.adx_insufficient) return '5分钟方向暂不明确：ADX趋势强度不足';
+    return directionStateZh(state || 'NEUTRAL');
+  }
+  const templates = {
+    S9_EARLY_BREAKOUT_NOT_TRIGGERED: '{dir}，但1分钟突破强度不足',
+    S9_EARLY_VOLUME_NOT_EXPANDED: '{dir}，但成交量放大不足',
+    S9_EARLY_CANDLE_QUALITY_BLOCK: '{dir}，但K线质量不足',
+    S9_EARLY_DEPTH_BLOCK: '{dir}，但盘口方向确认不足',
+    S9_EARLY_FLOW_BLOCK: '{dir}，但主动{flow}不足',
+    S9_EARLY_S3_OPPOSITION_BLOCK: '{dir}，但更大周期方向仍明显相反',
+  };
+  if (templates[key] && phrase) {
+    const flow = state === 'EARLY_BEARISH' || String(extra.side || '').toUpperCase() === 'SHORT' ? '卖盘' : '买盘';
+    return templates[key].replace('{dir}', phrase).replace('{flow}', flow);
+  }
+  return reasonZh(key);
+}
+
 function reasonZh(code) {
   const key = String(code || '').trim();
   if (!key) return '';
@@ -241,7 +293,10 @@ module.exports = {
   STATUS_ZH,
   EVENT_ZH,
   STRATEGY_NAME_ZH,
+  DIRECTION_STATE_ZH,
   reasonZh,
+  s9ReasonZh,
+  directionStateZh,
   statusZh,
   eventZh,
   strategyNameZh,

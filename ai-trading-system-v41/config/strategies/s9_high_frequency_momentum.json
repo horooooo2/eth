@@ -9,7 +9,7 @@
   "live_allowed": false,
   "display": {
     "summary_zh": "S9 是分钟级高频动量突破策略。它使用5分钟行情判断短期方向，在1分钟周期等待价格突破、成交量增强和盘口条件合格后入场。每笔初始风险为账户权益的0.10%，策略风险上限为0.30%，最多持有一个仓位。交易所侧始终保留保护止损，1.5R止盈、30分钟时间退出和方向翻转退出由交易引擎主动执行。第一阶段仅用于 BTC-USDT-SWAP 的 OKX 模拟盘验证。",
-    "entry_summary_zh": "仅在最新已收盘的 5 分钟方向有效、S3 方向足够强、且最新已收盘 1 分钟突破前 20 根高低点（含 1bps 缓冲）时考虑开仓。",
+    "entry_summary_zh": "使用已收盘 5 分钟方向分数区分强趋势延续与早期动量。强趋势沿用 20 根 1bps 突破；早期动量需更强的 10 根 2bps 突破、更高成交量和盘口确认，且不得在无动量时抄底摸顶。",
     "risk_summary_zh": "单笔初始风险为账户权益的 0.10%，策略风险上限 0.30%，杠杆上限 3 倍，同一策略最多 1 个仓位。",
     "exit_summary_zh": "交易所侧保护止损始终存在。引擎按 1.5R 主动止盈、持仓满 30 分钟或 5 分钟方向有效翻转时减仓退出。"
   },
@@ -30,24 +30,43 @@
     "ema_slow": 21,
     "adx_period": 14,
     "adx_min": 18,
-    "slope_bars": 3
+    "adx_early_min": 14,
+    "slope_bars": 3,
+    "roc_bars": 3,
+    "score_strong": 0.8,
+    "score_early": 0.4
   },
   "s3": {
     "long_bias_min": 0.2,
     "short_bias_max": -0.2,
-    "block_regimes": ["panic", "range"]
+    "block_regimes": ["panic", "range"],
+    "early_block_regimes": ["panic"],
+    "early_long_bias_min": -0.25,
+    "early_short_bias_max": 0.25
   },
   "breakout": {
     "lookback_bars": 20,
     "buffer_bps": 1
   },
+  "early_breakout": {
+    "lookback_bars": 10,
+    "buffer_bps": 2
+  },
   "volume": {
     "ema_period": 20,
     "min_ratio": 1.3
   },
+  "early_volume": {
+    "ema_period": 20,
+    "min_ratio": 1.5
+  },
   "candle": {
     "min_body_ratio": 0.55,
     "min_close_location": 0.65
+  },
+  "early_candle": {
+    "min_body_ratio": 0.65,
+    "min_close_location": 0.75
   },
   "atr": {
     "period": 14,
@@ -75,6 +94,12 @@
     "spread_window_seconds": 300,
     "spread_required_samples": 60,
     "max_expected_slippage_bps": 2.0
+  },
+  "early_microstructure": {
+    "long_depth_imbalance_min": 0.05,
+    "short_depth_imbalance_max": -0.05,
+    "long_flow_imbalance_min": 0.1,
+    "short_flow_imbalance_max": -0.1
   },
   "cost": {
     "target_r": 1.5,

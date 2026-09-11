@@ -21,7 +21,13 @@ REASON_ZH: Dict[str, str] = {
     "S9_EXPECTED_MOVE_INSUFFICIENT_AFTER_COST": "扣除交易成本后预期空间不足",
     "S9_TRADE_INTENT_EXPIRED": "交易机会已过期",
     "S9_ENTRY_PRICE_DRIFT_EXCEEDED": "入场价格漂移超过允许范围",
-    "S9_DIRECTION_NEUTRAL": "5分钟方向为中性，暂不开仓",
+    "S9_DIRECTION_NEUTRAL": "5分钟方向暂不明确",
+    "S9_EARLY_BREAKOUT_NOT_TRIGGERED": "5分钟出现早期动量，但1分钟突破强度不足",
+    "S9_EARLY_VOLUME_NOT_EXPANDED": "5分钟出现早期动量，但成交量放大不足",
+    "S9_EARLY_CANDLE_QUALITY_BLOCK": "5分钟出现早期动量，但K线质量不足",
+    "S9_EARLY_DEPTH_BLOCK": "5分钟出现早期动量，但盘口方向确认不足",
+    "S9_EARLY_FLOW_BLOCK": "5分钟出现早期动量，但主动成交方向确认不足",
+    "S9_EARLY_S3_OPPOSITION_BLOCK": "5分钟出现早期动量，但更大周期方向仍明显相反",
     "S9_NO_BREAKOUT": "尚未出现有效突破",
     "S9_SIGNAL_ALREADY_USED": "同一根已收盘1分钟K线已使用过信号",
     "S9_ORDERBOOK_STALE": "盘口数据已过期",
@@ -124,6 +130,12 @@ STATUS_ZH: Dict[str, str] = {
     "BULLISH": "看多",
     "BEARISH": "看空",
     "NEUTRAL": "中性",
+    "STRONG_BULLISH": "强多头趋势",
+    "EARLY_BULLISH": "早期多头动量",
+    "EARLY_BEARISH": "早期空头动量",
+    "STRONG_BEARISH": "强空头趋势",
+    "TREND_CONTINUATION": "趋势延续",
+    "EARLY_MOMENTUM": "早期动量",
     "ALLOW": "允许",
     "NO_TRADE": "本轮不交易",
     "CANDIDATE": "候选",
@@ -234,6 +246,55 @@ STRATEGY_NAME_ZH: Dict[str, str] = {
     "S8": "巨鲸行为共振",
     "S9": "高频动量突破",
 }
+
+
+DIRECTION_STATE_ZH: Dict[str, str] = {
+    "STRONG_BULLISH": "5分钟方向：强多头趋势",
+    "EARLY_BULLISH": "5分钟方向：早期多头动量",
+    "NEUTRAL": "5分钟方向暂不明确",
+    "EARLY_BEARISH": "5分钟方向：早期空头动量",
+    "STRONG_BEARISH": "5分钟方向：强空头趋势",
+    "BULLISH": "5分钟方向：强多头趋势",
+    "BEARISH": "5分钟方向：强空头趋势",
+}
+
+_EARLY_DIR_PHRASE = {
+    "EARLY_BULLISH": "5分钟出现早期多头动量",
+    "EARLY_BEARISH": "5分钟出现早期空头动量",
+    "STRONG_BULLISH": "5分钟方向：强多头趋势",
+    "STRONG_BEARISH": "5分钟方向：强空头趋势",
+}
+
+
+def direction_state_zh(state: Any) -> str:
+    key = str(state or "").strip().upper()
+    return DIRECTION_STATE_ZH.get(key, DIRECTION_STATE_ZH["NEUTRAL"])
+
+
+def s9_reason_zh(code: Any, *, direction_state: Any = None, adx_insufficient: bool = False, side: Any = None) -> str:
+    key = str(code or "").strip()
+    state = str(direction_state or "").strip().upper()
+    phrase = _EARLY_DIR_PHRASE.get(state)
+    if key == "S9_DIRECTION_NEUTRAL":
+        if adx_insufficient:
+            return "5分钟方向暂不明确：ADX趋势强度不足"
+        return direction_state_zh(state or "NEUTRAL")
+    templates = {
+        "S9_EARLY_BREAKOUT_NOT_TRIGGERED": "{dir}，但1分钟突破强度不足",
+        "S9_EARLY_VOLUME_NOT_EXPANDED": "{dir}，但成交量放大不足",
+        "S9_EARLY_CANDLE_QUALITY_BLOCK": "{dir}，但K线质量不足",
+        "S9_EARLY_DEPTH_BLOCK": "{dir}，但盘口方向确认不足",
+        "S9_EARLY_FLOW_BLOCK": "{dir}，但主动{flow}不足",
+        "S9_EARLY_S3_OPPOSITION_BLOCK": "{dir}，但更大周期方向仍明显相反",
+    }
+    if key in templates and phrase:
+        flow = "买盘" if (state == "EARLY_BULLISH" or str(side or "").upper() == "LONG") else "卖盘"
+        if key == "S9_EARLY_FLOW_BLOCK" and state == "EARLY_BEARISH":
+            flow = "卖盘"
+        if key == "S9_EARLY_FLOW_BLOCK" and state == "EARLY_BULLISH":
+            flow = "买盘"
+        return templates[key].format(dir=phrase, flow=flow)
+    return reason_zh(key)
 
 
 def reason_zh(code: Any) -> str:

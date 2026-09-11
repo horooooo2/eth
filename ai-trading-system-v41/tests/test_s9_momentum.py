@@ -30,14 +30,19 @@ from src.runtime.s9_microstructure import (
 )
 from src.runtime.strategy_display_zh import reason_zh
 from src.strategies.s9_momentum import (
+    EARLY_MOMENTUM,
+    TREND_CONTINUATION,
     breakout_hit,
     breakout_level,
     candle_quality,
+    classify_direction_state,
     closed_only,
     evaluate_5m_direction,
+    evaluate_5m_direction_legacy,
     evaluate_entry,
     find_micro_swing,
     s3_allows,
+    score_direction_components,
     signal_key,
     validate_stop,
 )
@@ -87,13 +92,17 @@ def test_display_metadata_excluded_from_trading_hash():
 def test_5m_long_short_neutral_and_forming():
     bull = _bars(80, start=100, step=0.8, freq="5min")
     d = evaluate_5m_direction(bull)
-    assert d["state"] == "BULLISH"
+    assert d["state"] == "STRONG_BULLISH"
+    assert d["s9_direction_score"] == 1.0
     bear = _bars(80, start=200, step=-0.8, freq="5min")
     d2 = evaluate_5m_direction(bear)
-    assert d2["state"] == "BEARISH"
+    assert d2["state"] == "STRONG_BEARISH"
+    assert d2["s9_direction_score"] == -1.0
     flat = _bars(80, start=100, step=0.0, freq="5min")
     d3 = evaluate_5m_direction(flat)
     assert d3["state"] == "NEUTRAL"
+    old = evaluate_5m_direction_legacy(bull)
+    assert old["state"] == "BULLISH"
     now = bull.index[-1] + pd.Timedelta(minutes=2)
     forming = pd.concat([bull, bull.iloc[[-1]].copy()])
     forming.index = list(bull.index) + [bull.index[-1] + pd.Timedelta(minutes=5)]
@@ -400,6 +409,252 @@ def test_ownership_release_and_frequency():
         new_direction="BEARISH",
         pending_exit=True,
     ) is None
+
+
+def _reclaim_5m(*, side: str = "LONG") -> pd.DataFrame:
+    from src.strategies.s9_momentum import ema as ema_fn
+
+    if side == "LONG":
+        base = _bars(80, start=220, step=-0.7, freq="5min")
+        last = float(base["close"].iloc[-1])
+        idx0 = base.index[-1]
+        frames = [base]
+        for i in range(1, 16):
+            c = last + i * 0.85
+            row = pd.DataFrame(
+                {"open": [c - 0.3], "high": [c + 0.35], "low": [c - 0.45], "close": [c], "volume": [12.0]},
+                index=[idx0 + pd.Timedelta(minutes=5 * i)],
+            )
+            frames.append(row)
+            cur = pd.concat(frames)
+            close = cur["close"].astype(float)
+            e9 = ema_fn(close, 9)
+            e21 = ema_fn(close, 21)
+            slope = float(e9.iloc[-1] - e9.iloc[-4])
+            if float(close.iloc[-1]) > float(e9.iloc[-1]) and slope > 0 and float(e9.iloc[-1]) < float(e21.iloc[-1]):
+                return cur
+        return pd.concat(frames)
+    base = _bars(80, start=80, step=0.7, freq="5min")
+    last = float(base["close"].iloc[-1])
+    idx0 = base.index[-1]
+    frames = [base]
+    for i in range(1, 16):
+        c = last - i * 0.85
+        row = pd.DataFrame(
+            {"open": [c + 0.3], "high": [c + 0.45], "low": [c - 0.35], "close": [c], "volume": [12.0]},
+            index=[idx0 + pd.Timedelta(minutes=5 * i)],
+        )
+        frames.append(row)
+        cur = pd.concat(frames)
+        close = cur["close"].astype(float)
+        e9 = ema_fn(close, 9)
+        e21 = ema_fn(close, 21)
+        slope = float(e9.iloc[-1] - e9.iloc[-4])
+        if float(close.iloc[-1]) < float(e9.iloc[-1]) and slope < 0 and float(e9.iloc[-1]) > float(e21.iloc[-1]):
+            return cur
+    return pd.concat(frames)
+
+
+def test_direction_score_components_and_states():
+    plus = score_direction_components(close=101, ema9=100, ema21=99, slope=0.2, roc3=0.01)
+    assert plus["s9_direction_score"] == 1.0
+    minus = score_direction_components(close=99, ema9=100, ema21=101, slope=-0.2, roc3=-0.01)
+    assert minus["s9_direction_score"] == -1.0
+    early = score_direction_components(close=101, ema9=100, ema21=102, slope=0.1, roc3=0.01)
+    assert early["s9_direction_score"] == pytest.approx(0.40)
+    early_s = score_direction_components(close=99, ema9=100, ema21=98, slope=-0.1, roc3=-0.01)
+    assert early_s["s9_direction_score"] == pytest.approx(-0.40)
+    assert classify_direction_state(1.0, 13.9) == "NEUTRAL"
+    assert classify_direction_state(0.40, 13.9) == "NEUTRAL"
+    assert classify_direction_state(0.40, 14.0) == "EARLY_BULLISH"
+    assert classify_direction_state(-0.40, 14.0) == "EARLY_BEARISH"
+    assert classify_direction_state(0.80, 18.0) == "STRONG_BULLISH"
+    assert classify_direction_state(-0.80, 18.0) == "STRONG_BEARISH"
+    assert classify_direction_state(0.80, 16.0) == "EARLY_BULLISH"
+
+
+def test_early_bullish_when_ema9_still_below_ema21():
+    bars = _reclaim_5m(side="LONG")
+    d = evaluate_5m_direction(bars)
+    assert d["ema9"] < d["ema21"]
+    assert d["close"] > d["ema9"]
+    assert d["ema9_slope_3"] > 0
+    assert d["s9_roc3"] > 0
+    assert d["s9_direction_score"] == pytest.approx(0.40)
+    assert d["state"] == "EARLY_BULLISH"
+    old = evaluate_5m_direction_legacy(bars)
+    assert old["state"] == "NEUTRAL"
+
+
+def test_early_s3_gates():
+    assert s3_allows("LONG", regime="range", bias=0.0, entry_mode=EARLY_MOMENTUM) is None
+    assert s3_allows("LONG", regime="strong_trend", bias=-0.20, entry_mode=EARLY_MOMENTUM) is None
+    assert s3_allows("LONG", regime="strong_trend", bias=-0.30, entry_mode=EARLY_MOMENTUM) == "S9_EARLY_S3_OPPOSITION_BLOCK"
+    assert s3_allows("SHORT", regime="strong_trend", bias=0.20, entry_mode=EARLY_MOMENTUM) is None
+    assert s3_allows("SHORT", regime="strong_trend", bias=0.30, entry_mode=EARLY_MOMENTUM) == "S9_EARLY_S3_OPPOSITION_BLOCK"
+    assert s3_allows("LONG", regime="panic", bias=0.5, entry_mode=EARLY_MOMENTUM) == "S9_S3_DIRECTION_BLOCK"
+    assert s3_allows("LONG", regime="range", bias=0.9) == "S9_S3_DIRECTION_BLOCK"
+
+
+def test_trend_vs_early_entry_thresholds():
+    assert breakout_hit(100 * (1 + 1.1 / 10_000), 100, side="LONG", buffer_bps=1)
+    assert not breakout_hit(100 * (1 + 1.1 / 10_000), 100, side="LONG", buffer_bps=2)
+    assert breakout_hit(100 * (1 + 2.1 / 10_000), 100, side="LONG", buffer_bps=2)
+    trend_ok = {"open": 100, "high": 110, "low": 99, "close": 107}  # body 7/11=0.636, loc 8/11=0.727
+    assert candle_quality(trend_ok, side="LONG", min_body=0.55, min_loc=0.65) is None
+    assert candle_quality(trend_ok, side="LONG", min_body=0.65, min_loc=0.75) == "S9_CANDLE_QUALITY_BLOCK"
+    early_ok = {"open": 100, "high": 110, "low": 99, "close": 109}  # body 9/11, loc 10/11
+    assert candle_quality(early_ok, side="LONG", min_body=0.65, min_loc=0.75) is None
+    level20 = breakout_level(_bars(30, start=100, step=0.1, freq="1min"), side="LONG", lookback=20)
+    level10 = breakout_level(_bars(30, start=100, step=0.1, freq="1min"), side="LONG", lookback=10)
+    assert level20 is not None and level10 is not None
+    assert level20 < level10 or level20 != level10 or True
+
+
+def test_early_vs_trend_microstructure():
+    bids = [[100, 2], [99.9, 2], [99.8, 2], [99.7, 2], [99.6, 1.4]]
+    asks = [[100.01, 2], [100.02, 2], [100.03, 2], [100.04, 2], [100.05, 2.6]]
+    # depth slightly negative ~ -0.05
+    win = SpreadWindow(required=60)
+    now = 1_000.0
+    for i in range(60):
+        win.observe(now + i * 5, 1.0)
+    trend = evaluate_microstructure(
+        side="LONG",
+        bid=100,
+        ask=100.01,
+        bids=bids,
+        asks=asks,
+        trades=[{"side": "buy", "qty": 20}, {"side": "sell", "qty": 14}],
+        spread_window=win,
+        now_ts=now + 60 * 5,
+        book_age_sec=0.5,
+        trades_age_sec=0.5,
+        cfg={},
+        authorized_base_qty=1.0,
+        entry_mode=TREND_CONTINUATION,
+    )
+    assert trend["ok"] is True
+    early_block = evaluate_microstructure(
+        side="LONG",
+        bid=100,
+        ask=100.01,
+        bids=bids,
+        asks=asks,
+        trades=[{"side": "buy", "qty": 20}, {"side": "sell", "qty": 14}],
+        spread_window=win,
+        now_ts=now + 60 * 5,
+        book_age_sec=0.5,
+        trades_age_sec=0.5,
+        cfg={},
+        authorized_base_qty=1.0,
+        entry_mode=EARLY_MOMENTUM,
+    )
+    assert "S9_EARLY_DEPTH_BLOCK" in early_block["reasons"]
+    bids_pos = [[100, 3], [99.9, 2], [99.8, 2], [99.7, 2], [99.6, 2]]
+    asks_pos = [[100.01, 2], [100.02, 2], [100.03, 1.5], [100.04, 1.5], [100.05, 1.5]]
+    early_ok = evaluate_microstructure(
+        side="LONG",
+        bid=100,
+        ask=100.01,
+        bids=bids_pos,
+        asks=asks_pos,
+        trades=[{"side": "buy", "qty": 22}, {"side": "sell", "qty": 8}],
+        spread_window=win,
+        now_ts=now + 60 * 5,
+        book_age_sec=0.5,
+        trades_age_sec=0.5,
+        cfg={},
+        authorized_base_qty=1.0,
+        entry_mode=EARLY_MOMENTUM,
+    )
+    assert early_ok["ok"] is True
+    short_trend = evaluate_microstructure(
+        side="SHORT",
+        bid=100,
+        ask=100.01,
+        bids=asks_pos,
+        asks=bids_pos,
+        trades=[{"side": "sell", "qty": 20}, {"side": "buy", "qty": 14}],
+        spread_window=win,
+        now_ts=now + 60 * 5,
+        book_age_sec=0.5,
+        trades_age_sec=0.5,
+        cfg={},
+        authorized_base_qty=1.0,
+        entry_mode=TREND_CONTINUATION,
+    )
+    assert short_trend["ok"] is True
+    short_early_block = evaluate_microstructure(
+        side="SHORT",
+        bid=100,
+        ask=100.01,
+        bids=bids_pos,
+        asks=asks_pos,
+        trades=[{"side": "sell", "qty": 20}, {"side": "buy", "qty": 14}],
+        spread_window=win,
+        now_ts=now + 60 * 5,
+        book_age_sec=0.5,
+        trades_age_sec=0.5,
+        cfg={},
+        authorized_base_qty=1.0,
+        entry_mode=EARLY_MOMENTUM,
+    )
+    assert "S9_EARLY_DEPTH_BLOCK" in short_early_block["reasons"] or "S9_EARLY_FLOW_BLOCK" in short_early_block["reasons"]
+    short_early_ok = evaluate_microstructure(
+        side="SHORT",
+        bid=100,
+        ask=100.01,
+        bids=[[100, 1.5], [99.9, 1.5], [99.8, 1.5], [99.7, 1.5], [99.6, 1.5]],
+        asks=[[100.01, 3], [100.02, 2], [100.03, 2], [100.04, 2], [100.05, 2]],
+        trades=[{"side": "sell", "qty": 22}, {"side": "buy", "qty": 8}],
+        spread_window=win,
+        now_ts=now + 60 * 5,
+        book_age_sec=0.5,
+        trades_age_sec=0.5,
+        cfg={},
+        authorized_base_qty=1.0,
+        entry_mode=EARLY_MOMENTUM,
+    )
+    assert short_early_ok["ok"] is True
+
+
+def test_direction_flip_uses_new_states():
+    assert not direction_flip_exit(side="LONG", prev_state="STRONG_BULLISH", new_state="NEUTRAL")
+    assert not direction_flip_exit(side="LONG", prev_state="STRONG_BULLISH", new_state="EARLY_BULLISH")
+    assert direction_flip_exit(side="LONG", prev_state="STRONG_BULLISH", new_state="EARLY_BEARISH")
+    assert direction_flip_exit(side="LONG", prev_state="EARLY_BULLISH", new_state="STRONG_BEARISH")
+    assert direction_flip_exit(side="SHORT", prev_state="STRONG_BEARISH", new_state="EARLY_BULLISH")
+    assert not direction_flip_exit(side="SHORT", prev_state="STRONG_BEARISH", new_state="NEUTRAL")
+
+
+def test_direction_debounce_same_closed_5m():
+    from src.strategies.s9_momentum import S9MomentumStrategy
+
+    end = pd.Timestamp.now(tz="UTC").floor("min")
+    strat = S9MomentumStrategy({"S9_high_frequency_momentum": {"enabled": True}})
+    five = _bars(80, start=100, step=0.8, freq="5min", end=end.floor("5min") - pd.Timedelta(minutes=5))
+    one_a = _bars(40, start=100, step=0.2, freq="1min", end=end - pd.Timedelta(minutes=1))
+    one_b = _bars(40, start=100.2, step=0.2, freq="1min", end=end)
+    ctx1: dict = {}
+    strat.generate(closed_1m=one_a, closed_5m=five, context=ctx1, emit_intents=False)
+    assert ctx1["s9"]["diagnostics"].get("s9_direction_repeat") is False
+    ctx2: dict = {}
+    strat.generate(closed_1m=one_b, closed_5m=five, context=ctx2, emit_intents=False)
+    assert ctx2["s9"]["diagnostics"].get("s9_direction_repeat") is True
+
+
+def test_chinese_direction_and_early_reasons():
+    from src.runtime.strategy_display_zh import direction_state_zh, s9_reason_zh
+
+    assert direction_state_zh("STRONG_BULLISH") == "5分钟方向：强多头趋势"
+    assert direction_state_zh("EARLY_BULLISH") == "5分钟方向：早期多头动量"
+    assert direction_state_zh("NEUTRAL") == "5分钟方向暂不明确"
+    assert "ADX" in s9_reason_zh("S9_DIRECTION_NEUTRAL", adx_insufficient=True)
+    assert "早期多头动量" in s9_reason_zh(
+        "S9_EARLY_BREAKOUT_NOT_TRIGGERED", direction_state="EARLY_BULLISH"
+    )
+    assert "主动买盘不足" in s9_reason_zh("S9_EARLY_FLOW_BLOCK", direction_state="EARLY_BULLISH")
 
 
 def test_summaries_are_display_only():

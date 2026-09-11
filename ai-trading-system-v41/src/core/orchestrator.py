@@ -72,6 +72,8 @@ class Orchestrator:
         self.s9_fee = S9FeeClient()
         self.s9_runtime: Dict[str, Any] = {
             "last_direction": None,
+            "last_direction_event_5m_ts": None,
+            "pending_direction_event": None,
             "cooldown_bars": 0,
             "consecutive_stops": 0,
             "pause_until_epoch": 0.0,
@@ -675,7 +677,34 @@ class Orchestrator:
         )
         payload = dict(self.context.get("s9") or {})
         if payload.get("skipped"):
+            from src.runtime.s9_microstructure_recorder import research_tick
+
+            research_tick(self, skipped=True)
             return []
+        from src.runtime.s9_microstructure_recorder import research_tick
+
+        research_tick(self, skipped=False)
+        diag_payload = dict(payload.get("diagnostics") or {})
+        ts5 = str(diag_payload.get("source_5m_candle_timestamp") or "")
+        if ts5 and ts5 != self.s9_runtime.get("last_direction_event_5m_ts") and not diag_payload.get("s9_direction_repeat"):
+            self.s9_runtime["last_direction_event_5m_ts"] = ts5
+            self.s9_runtime["pending_direction_event"] = {
+                "event_subtype": "DIRECTION",
+                "strategy_id": "S9",
+                "decision": "NO_TRADE" if payload.get("decision") != "CANDIDATE" else "CANDIDATE",
+                "reason_codes": list(payload.get("reason_codes") or []),
+                "s9_direction_state": diag_payload.get("s9_direction_state"),
+                "s9_direction_score": diag_payload.get("s9_direction_score"),
+                "s9_entry_mode": payload.get("s9_entry_mode") or diag_payload.get("s9_entry_mode"),
+                "source_5m_candle_timestamp": ts5,
+                "details": {
+                    "s9_direction_state": diag_payload.get("s9_direction_state"),
+                    "s9_direction_score": diag_payload.get("s9_direction_score"),
+                    "s9_adx14": diag_payload.get("s9_adx14"),
+                    "s9_adx_insufficient": diag_payload.get("s9_adx_insufficient"),
+                    "s9_entry_mode": payload.get("s9_entry_mode") or diag_payload.get("s9_entry_mode"),
+                },
+            }
         reasons = list(payload.get("reason_codes") or extra_block)
         decision = str(payload.get("decision") or "NO_TRADE")
         direction = str(payload.get("direction") or "NONE")
@@ -796,6 +825,7 @@ class Orchestrator:
             self.context["confirmed_intents"] = []
             return {"confirmed": []}
         side = str(cand.get("direction") or "LONG")
+        entry_mode = str(cand.get("s9_entry_mode") or (cand.get("diagnostics") or {}).get("s9_entry_mode") or "TREND_CONTINUATION")
         qty = float(cand.get("authorized_base_quantity") or 0)
         hub = getattr(self, "s9_hub", None)
         book = {}
@@ -835,7 +865,9 @@ class Orchestrator:
         ask = float(book.get("best_ask") or (asks[0][0] if asks else 0.0) or 0.0)
         ct_val = 0.01
         qty_contracts = qty / ct_val if qty else 0.0
-        micro_cfg = (self.config.get("S9_high_frequency_momentum") or {}).get("microstructure") or {}
+        s9_cfg = self.config.get("S9_high_frequency_momentum") or {}
+        micro_cfg = s9_cfg.get("microstructure") or {}
+        early_micro_cfg = s9_cfg.get("early_microstructure") or {}
         micro = evaluate_microstructure(
             side=side,
             bid=bid,
@@ -847,11 +879,13 @@ class Orchestrator:
             now_ts=now_ts,
             book_age_sec=book_age,
             trades_age_sec=trades_age,
-            cfg={"microstructure": micro_cfg},
+            cfg={"microstructure": micro_cfg, "early_microstructure": early_micro_cfg},
             authorized_base_qty=qty_contracts,
+            entry_mode=entry_mode,
         )
         cand["pre_submit_orderbook_snapshot"] = {"bids": bids[:5], "asks": asks[:5]}
-        cand["diagnostics"] = {**(cand.get("diagnostics") or {}), **{k: micro.get(k) for k in micro if k.startswith("s9_")}}
+        extra_diag = {k: micro.get(k) for k in micro if str(k).startswith("s9_") or str(k).startswith("early_")}
+        cand["diagnostics"] = {**(cand.get("diagnostics") or {}), **extra_diag}
         reasons = list(micro.get("reasons") or [])
         fee = self.context.get("okx_fee_bps")
         if fee is None:

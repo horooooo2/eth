@@ -8,8 +8,10 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from src.runtime.strategy_display_zh import (
+    direction_state_zh,
     event_zh,
     reason_zh,
+    s9_reason_zh,
     status_zh,
     strategy_name_zh,
 )
@@ -319,8 +321,21 @@ SYSTEM_HARD_BLOCKERS = {
 }
 
 
-def format_no_trade_message(name: str, sym: str, codes: List[str]) -> str:
-    reasons = [reason_zh(c) for c in codes]
+def format_no_trade_message(
+    name: str,
+    sym: str,
+    codes: List[str],
+    *,
+    direction_state: Any = None,
+    adx_insufficient: bool = False,
+    side: Any = None,
+) -> str:
+    reasons = [
+        s9_reason_zh(c, direction_state=direction_state, adx_insufficient=adx_insufficient, side=side)
+        if str(c).startswith("S9_")
+        else reason_zh(c)
+        for c in codes
+    ]
     reason_block = "原因：\n" + "；\n".join(reasons) if reasons else ""
     if any(code in SYSTEM_HARD_BLOCKERS for code in codes):
         head = "系统尚未具备交易条件"
@@ -345,7 +360,19 @@ def format_user_message(event: Mapping[str, Any]) -> str:
     covered = pick_qty(event, ("covered_contracts", "sz", "owned_contracts"))
 
     if et in {"STRATEGY_NO_TRADE", "S9_NO_TRADE"}:
-        return format_no_trade_message(name, sym, codes)
+        details = _details(event)
+        return format_no_trade_message(
+            name,
+            sym,
+            codes,
+            direction_state=event.get("s9_direction_state") or details.get("s9_direction_state"),
+            adx_insufficient=bool(event.get("s9_adx_insufficient") or details.get("s9_adx_insufficient")),
+            side=event.get("direction") or details.get("direction"),
+        )
+    if et == "S9_DIRECTION":
+        details = _details(event)
+        state = event.get("s9_direction_state") or details.get("s9_direction_state")
+        return direction_state_zh(state)
 
     if et == "ORDER_SUBMITTED":
         return "平仓订单已提交，等待成交" if reduce else "开仓订单已提交，等待成交"

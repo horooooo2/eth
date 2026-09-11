@@ -119,6 +119,20 @@ class EngineStore:
               WHERE event_type = 'STRATEGY_NO_TRADE'
                 AND no_trade_key IS NOT NULL
                 AND no_trade_key != '';
+            CREATE TABLE IF NOT EXISTS s9_microstructure_research (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              strategy_id TEXT NOT NULL,
+              symbol TEXT NOT NULL,
+              closed_1m_timestamp TEXT NOT NULL,
+              direction TEXT NOT NULL,
+              recorded_at TEXT NOT NULL,
+              payload_json TEXT NOT NULL,
+              outcome_json TEXT,
+              outcome_updated_at TEXT,
+              UNIQUE(strategy_id, symbol, closed_1m_timestamp, direction)
+            );
+            CREATE INDEX IF NOT EXISTS idx_s9_msr_recorded
+              ON s9_microstructure_research(recorded_at DESC);
             """
         )
         self._conn.commit()
@@ -461,6 +475,93 @@ class EngineStore:
             "no_trade_key": row["no_trade_key"],
             "source": "python",
         }
+
+    def insert_s9_microstructure_research(
+        self,
+        *,
+        strategy_id: str,
+        symbol: str,
+        closed_1m_timestamp: str,
+        direction: str,
+        recorded_at: str,
+        payload: Dict[str, Any],
+    ) -> bool:
+        cur = self._conn.execute(
+            """
+            INSERT OR IGNORE INTO s9_microstructure_research(
+              strategy_id, symbol, closed_1m_timestamp, direction, recorded_at, payload_json
+            ) VALUES(?,?,?,?,?,?)
+            """,
+            (
+                strategy_id,
+                symbol,
+                closed_1m_timestamp,
+                direction,
+                recorded_at,
+                json.dumps(payload, ensure_ascii=False, default=str),
+            ),
+        )
+        self._conn.commit()
+        return int(cur.rowcount or 0) > 0
+
+    def update_s9_microstructure_outcome(self, row_id: int, outcome: Dict[str, Any], updated_at: str) -> None:
+        self._conn.execute(
+            """
+            UPDATE s9_microstructure_research
+            SET outcome_json=?, outcome_updated_at=?
+            WHERE id=?
+            """,
+            (json.dumps(outcome, ensure_ascii=False, default=str), updated_at, int(row_id)),
+        )
+        self._conn.commit()
+
+    def list_s9_microstructure_research(
+        self,
+        *,
+        since: Optional[str] = None,
+        pending_outcome: bool = False,
+        limit: int = 5000,
+    ) -> List[Dict[str, Any]]:
+        sql = "SELECT * FROM s9_microstructure_research"
+        args: List[Any] = []
+        clauses: List[str] = []
+        if since:
+            clauses.append("recorded_at >= ?")
+            args.append(since)
+        if pending_outcome:
+            clauses.append("(outcome_json IS NULL OR outcome_json = '')")
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY recorded_at ASC LIMIT ?"
+        args.append(int(limit))
+        rows = self._conn.execute(sql, args).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            payload = {}
+            outcome = None
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except Exception:
+                payload = {}
+            try:
+                if row["outcome_json"]:
+                    outcome = json.loads(row["outcome_json"])
+            except Exception:
+                outcome = None
+            out.append(
+                {
+                    "id": row["id"],
+                    "strategy_id": row["strategy_id"],
+                    "symbol": row["symbol"],
+                    "closed_1m_timestamp": row["closed_1m_timestamp"],
+                    "direction": row["direction"],
+                    "recorded_at": row["recorded_at"],
+                    "payload": payload,
+                    "outcome": outcome,
+                    "outcome_updated_at": row["outcome_updated_at"],
+                }
+            )
+        return out
 
     def close(self) -> None:
         self._conn.close()
