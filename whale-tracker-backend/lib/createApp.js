@@ -10,6 +10,9 @@ const { getHlInfoConfig } = require('./hlInfoClient');
 const { getStartedAt, getUptimeMs } = require('./runtime');
 const { pushRequest, pushError, getMonitorSnapshot } = require('./opsMonitor');
 
+/** 仅 POST /api/whales/alert-history 使用的 body 上限（有界，不是无限放大） */
+const ALERT_HISTORY_BODY_LIMIT = process.env.ALERT_HISTORY_BODY_LIMIT || '4mb';
+
 function normalizePrefix(prefix) {
   if (!prefix) return '';
   return `/${String(prefix).replace(/^\/+|\/+$/g, '')}`;
@@ -221,6 +224,15 @@ function createApp(options = {}) {
     : ['/api'];
   const app = express();
   app.use(cors());
+  // 异动历史同步会一次性上传前端本地缓存的全部记录（3000 条 × ~450B ≈ 1.3MB），
+  // 超过全局 1mb 限制。只放宽这一个路由，其余接口仍走 1mb。
+  const alertHistoryJson = express.json({ limit: ALERT_HISTORY_BODY_LIMIT });
+  app.use((req, res, next) => {
+    if (req.method === 'POST' && /\/whales\/alert-history\/?$/.test(String(req.path || ''))) {
+      return alertHistoryJson(req, res, next);
+    }
+    return next();
+  });
   app.use(express.json({ limit: '1mb' }));
   app.use((req, res, next) => {
     if (!String(req.path || '').startsWith('/api') && !String(req.originalUrl || '').includes('/api/')) {
