@@ -8,19 +8,12 @@ const {
   getRawAiKey,
 } = require('../lib/userAiKeys');
 const { verifyDeepseekKey, analyzeWithDeepseek } = require('../lib/deepseekClient');
-const {
-  MAX_PER_USER,
-  appendRuntimeLog,
-  listRuntimeLogs,
-} = require('../lib/whaleAiRuntimeLogs');
 
 const router = express.Router();
-router.use('/trade', require('./whaleAiTrade'));
-router.use('/engine', require('./whaleAiEngine'));
 
 function sendErr(res, err) {
   const status = Number(err.status) || 500;
-  res.status(status).json({ error: err.message || '鲸鱼AI 请求失败' });
+  res.status(status).json({ error: err.message || 'AI 分析请求失败' });
 }
 
 function assertLogin(req, res) {
@@ -113,43 +106,6 @@ router.post('/analyze', async (req, res) => {
       meta: body.meta,
     });
     res.json({ ok: true, source, ...result });
-  } catch (err) {
-    sendErr(res, err);
-  }
-});
-
-/** GET /api/whale-ai/runtime-logs — per-user strategy console logs (max 1000) */
-router.get('/runtime-logs', (req, res) => {
-  if (!assertLogin(req, res)) return;
-  try {
-    const limit = Number(req.query.limit) || MAX_PER_USER;
-    const logs = listRuntimeLogs(req.user.user.id, {
-      limit,
-      channel: req.query.channel,
-    });
-    res.json({ ok: true, limit: MAX_PER_USER, count: logs.length, logs });
-  } catch (err) {
-    sendErr(res, err);
-  }
-});
-
-/** POST /api/whale-ai/runtime-logs */
-router.post('/runtime-logs', (req, res) => {
-  if (!assertLogin(req, res)) return;
-  try {
-    const body = req.body || {};
-    const row = appendRuntimeLog(req.user.user.id, {
-      lvl: body.lvl,
-      msg: body.msg,
-      source: body.source || 'ui',
-      ts: body.ts,
-      channel: body.channel,
-      event_type: body.event_type,
-      strategy_id: body.strategy_id,
-      symbol: body.symbol,
-      reason_code: body.reason_code,
-    });
-    res.json({ ok: true, log: row });
   } catch (err) {
     sendErr(res, err);
   }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue';
-import { whaleAiKeyReady } from '@/stores/whaleAi';
+import { aiKeyReady } from '@/stores/aiKey';
 import AiAnalyzeDialog from '@/components/AiAnalyzeDialog.vue';
 
 const props = defineProps<{
@@ -20,7 +20,7 @@ function onClick(ev: Event) {
 
 <template>
   <button
-    v-if="whaleAiKeyReady"
+    v-if="aiKeyReady"
     type="button"
     class="ai-chip"
     title="智能分析"
@@ -29,7 +29,7 @@ function onClick(ev: Event) {
     分析
   </button>
   <AiAnalyzeDialog
-    v-if="whaleAiKeyReady"
+    v-if="aiKeyReady"
     v-model:visible="open"
     :source="props.source"
     :title="props.title"

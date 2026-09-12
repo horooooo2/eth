@@ -42,15 +42,6 @@ function mountRoutes(app, prefix) {
           return { connected: false };
         }
       })(),
-      v41Engine: (() => {
-        try {
-          const client = require('./v41EngineClient').bridgeStatus();
-          const ws = require('./v41RealtimeBridge').getV41RealtimeBridgeStatus();
-          return { ...client, ws };
-        } catch {
-          return { enabled: false };
-        }
-      })(),
       fillBackfill: (() => {
         try {
           return require('./fillBackfill').getBackfillStatus();
@@ -73,8 +64,8 @@ function mountRoutes(app, prefix) {
   app.use(`${base}/news`, newsRouter);
   app.use(`${base}/markets`, marketsRouter);
   app.use(`${base}/x`, xRouter);
+  // 通用 AI 数据分析（DeepSeek key + analyze），非策略
   app.use(`${base}/whale-ai`, require('../routes/whaleAi'));
-  app.use(`${base}/admin/strategy-configs`, require('../routes/adminStrategyConfigs'));
   app.get(`${base}/data/browse`, (req, res) => {
     try {
       const { loadDbBrowse } = require('./sqliteStore');

@@ -257,23 +257,6 @@ function updateUserPassword(userId, password) {
   return { id, username: user.username };
 }
 
-function canResumeEngine(session) {
-  const user = session?.user;
-  if (!user) return false;
-  const role = String(user.role || 'user').toLowerCase();
-  if (role === 'admin' || role === 'risk_admin') return true;
-  const admins = String(process.env.V41_RESUME_ADMINS || '')
-    .split(',')
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  if (admins.includes(String(user.username || '').toLowerCase())) return true;
-  const ownerId = String(process.env.V41_ENGINE_OWNER_USER_ID || '').trim();
-  if (ownerId && ownerId === String(user.id)) return true;
-  // 若未配置管理员名单与 owner，则仅允许当前会话用户（个人站）
-  if (!admins.length && !ownerId) return true;
-  return false;
-}
-
 module.exports = {
   listUsers,
   createUser,
@@ -286,6 +269,5 @@ module.exports = {
   writeSettings,
   extractBearer,
   requireUser,
-  canResumeEngine,
   SESSION_TTL_MS,
 };

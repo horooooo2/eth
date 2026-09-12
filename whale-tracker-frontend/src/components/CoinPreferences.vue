@@ -4,11 +4,7 @@ import { ElMessage } from 'element-plus';
 import { Close } from '@element-plus/icons-vue';
 import { lookupMarketCoin } from '@/api';
 import { isLoggedIn } from '@/stores/auth';
-import {
-  bindWhaleAiKey,
-  refreshWhaleAiKeyStatus,
-  whaleAiKeyHint,
-} from '@/stores/whaleAi';
+import { aiKeyHint, bindAiKey, refreshAiKeyStatus } from '@/stores/aiKey';
 import {
   MAX_PREFERRED_COINS,
   readWatchedCoins,
@@ -50,7 +46,7 @@ function resetDraft() {
 function openPrefs() {
   resetDraft();
   prefsVisible.value = true;
-  if (isLoggedIn.value) void refreshWhaleAiKeyStatus(true);
+  if (isLoggedIn.value) void refreshAiKeyStatus(true);
 }
 
 function closePrefs() {
@@ -102,7 +98,7 @@ async function submitDeepseekKey() {
   if (savingKeys.value) return false;
   savingKeys.value = true;
   try {
-    const data = await bindWhaleAiKey(apiKey);
+    const data = await bindAiKey(apiKey);
     apiKeyInput.value = '';
     if (data.warn) ElMessage.warning(data.warn);
     else ElMessage.success('DeepSeek 密钥已保存');
@@ -206,7 +202,7 @@ async function confirmPrefs() {
 
         <section class="setting-block">
           <h4 class="block-title">DeepSeek API</h4>
-          <p class="intro">用于新闻与推文智能分析。不配置也可以进入鲸鱼 AI 交易舱。</p>
+          <p class="intro">用于新闻、推文与巨鲸数据的智能分析。不配置不影响其他数据功能。</p>
           <template v-if="isLoggedIn">
             <el-input
               v-model="apiKeyInput"
@@ -217,7 +213,7 @@ async function confirmPrefs() {
               placeholder="sk-…"
             />
             <p class="intro">
-              {{ whaleAiKeyHint ? `当前密钥：${whaleAiKeyHint}` : '尚未配置' }}
+              {{ aiKeyHint ? `当前密钥：${aiKeyHint}` : '尚未配置' }}
             </p>
           </template>
           <p v-else class="intro">登录后可在此配置 DeepSeek 密钥。</p>

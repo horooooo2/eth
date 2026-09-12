@@ -43,11 +43,6 @@ const { getMarkets } = require('./lib/markets');
 const { getHlInfoConfig } = require('./lib/hlInfoClient');
 const { attachRealtimeHub } = require('./lib/realtimeHub');
 const { startRealtimeBridge, syncFromCache, getRealtimeStatus } = require('./lib/realtimeBridge');
-const { startV41RealtimeBridge, getV41RealtimeBridgeStatus } = require('./lib/v41RealtimeBridge');
-const {
-  ensureTable: ensureV41ExecTable,
-  runStartupRecovery: runV41StartupRecovery,
-} = require('./lib/v41ExecutionGateway');
 const { startFillBackfill, getBackfillStatus } = require('./lib/fillBackfill');
 const {
   startPositionBackfill,
@@ -139,30 +134,6 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log('[realtime]', JSON.stringify(getRealtimeStatus()));
   } catch (err) {
     console.warn('[realtime] bridge 启动失败:', err.message);
-  }
-  try {
-    ensureV41ExecTable();
-    runV41StartupRecovery()
-      .then((st) => console.log('[v41-recovery]', JSON.stringify(st)))
-      .catch((err) => console.warn('[v41-recovery] failed', err.message || err));
-    startV41RealtimeBridge();
-    console.log('[v41-bridge]', JSON.stringify(getV41RealtimeBridgeStatus()));
-  } catch (err) {
-    console.warn('[v41-bridge] 启动失败:', err.message);
-  }
-  try {
-    const { startWhaleDataBridge } = require('./lib/v41WhaleDataBridge');
-    startWhaleDataBridge();
-  } catch (err) {
-    console.warn('[v41-whale-bridge] 启动失败:', err.message || err);
-  }
-  // Probe Python last_tick_at on cadence — freshness is NOT last HTTP poll time
-  try {
-    const v41 = require('./lib/v41EngineClient');
-    v41.startEngineProbe();
-    console.log('[v41-probe] started interval=5s', JSON.stringify(v41.bridgeStatus()));
-  } catch (err) {
-    console.warn('[v41-probe] skip:', err.message);
   }
   try {
     startFillBackfill();

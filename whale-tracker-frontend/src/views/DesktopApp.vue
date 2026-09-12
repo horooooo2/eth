@@ -10,7 +10,6 @@ import WhaleResonanceBanner from '@/components/WhaleResonanceBanner.vue';
 import WhaleAlertDock from '@/components/WhaleAlertDock.vue';
 import WhaleList from '@/components/WhaleList.vue';
 import DataModule from '@/components/DataModule.vue';
-import WhaleAiWorkspace from '@/components/WhaleAiWorkspace.vue';
 import { useNewsStore } from '@/stores/news';
 import { useWhaleStore } from '@/stores/whale';
 import {
@@ -22,23 +21,16 @@ import {
   logout as authLogout,
   getAuthUiSettings,
 } from '@/stores/auth';
-import { refreshWhaleAiKeyStatus } from '@/stores/whaleAi';
+import { refreshAiKeyStatus } from '@/stores/aiKey';
 import { useRealtime } from '@/composables/useRealtime';
 import type { RecoQuotes } from '@/utils/recommend';
 import { readFocusCoin } from '@/utils/recoPrefs';
 import { preferredCoinsState } from '@/utils/watchedCoins';
-import { unlockAlertSound, playAlertDing } from '@/utils/alertSound';
+import { unlockAlertSound } from '@/utils/alertSound';
 import type { WhaleAlert } from '@/utils/whaleAlerts';
 import { normalizeStoredAlert } from '@/utils/whaleAlerts';
 import { noteXTweets } from '@/stores/xFeed';
 import type { XFeedTweet } from '@/api';
-import { isWhaleMonitored } from '@/utils/monitoredWhales';
-import {
-  clearHlWorkspaceBadge,
-  formatWorkspaceBadge,
-  hlWorkspaceBadge,
-  noteHlWorkspacePending,
-} from '@/utils/workspaceBadges';
 import type { WhaleProfile, WhaleTrade } from '@/types';
 
 const whaleStore = useWhaleStore();
@@ -72,11 +64,6 @@ async function submitLogin() {
   } finally {
     loginBusy.value = false;
   }
-}
-
-function openWhaleAiWorkspace() {
-  workspace.value = 'whale-ai';
-  void refreshWhaleAiKeyStatus(true);
 }
 
 function onLogout() {
@@ -165,8 +152,6 @@ const secondaryReady = ref(false);
 const bootBusy = ref(true);
 const bootLabel = ref('巨鲸加载中…');
 const bootProgress = ref(0);
-/** 工作区：HL 监控 / 鲸鱼AI */
-const workspace = ref<'hyperliquid' | 'whale-ai'>('hyperliquid');
 
 const {
   status: realtimeStatus,
@@ -180,13 +165,6 @@ const {
     whaleStore.ingestRealtimeAlert(alert);
     // 直接喂给异动列表（不依赖仅 store 序号）
     newsListRef.value?.pushRealtimeAlert?.(alert);
-    if (
-      workspace.value !== 'hyperliquid' &&
-      alert.whaleId &&
-      isWhaleMonitored(alert.whaleId)
-    ) {
-      noteHlWorkspacePending(alert.whaleId);
-    }
   } else if (msg.type === 'whalePatch' && msg.whaleId && msg.patch) {
     whaleStore.ingestRealtimeWhalePatch(msg.whaleId, msg.patch as Partial<WhaleProfile>);
     // 仓位 diff 也可能写出新异动，稍后对齐列表
@@ -195,30 +173,6 @@ const {
     noteXTweets(msg.tweets as unknown as XFeedTweet[]);
   }
 });
-
-watch(workspace, (next) => {
-  if (next === 'hyperliquid') {
-    clearHlWorkspaceBadge();
-  }
-});
-
-/** HL 非实时路径（轮询 diff）在异工作区时也记红点 */
-watch(
-  () => whaleStore.alerts.map((item) => item.id),
-  (ids, prev) => {
-    void ids;
-    if (workspace.value === 'hyperliquid') return;
-    const prevSet = new Set(prev || []);
-    let added = false;
-    for (const alert of whaleStore.alerts) {
-      if (prevSet.has(alert.id)) continue;
-      if (!isWhaleMonitored(alert.whaleId)) continue;
-      noteHlWorkspacePending(alert.whaleId);
-      added = true;
-    }
-    if (added) playAlertDing();
-  },
-);
 
 const pageBusy = computed(() => bootBusy.value);
 const loadProgressText = computed(() => {
@@ -242,7 +196,7 @@ async function startAppSession() {
   if (sessionStarted) return;
   sessionStarted = true;
   void getAuthUiSettings();
-  void refreshWhaleAiKeyStatus(true);
+  void refreshAiKeyStatus(true);
   await loadAll(false);
   whaleStore.startActivityPolling();
   startRealtime();
@@ -288,7 +242,6 @@ onUnmounted(() => {
     class="app-shell"
     :class="{
       busy: pageBusy && isLoggedIn,
-      'theme-ai': workspace === 'whale-ai' && isLoggedIn,
       'login-only': !authBootstrapped || !isLoggedIn,
     }"
     @pointerdown="unlockAlertSound"
@@ -352,10 +305,7 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <WhaleAlertDock
-      :dock-active="workspace === 'hyperliquid'"
-      @focus-whale="onFocusWhaleCard"
-    />
+    <WhaleAlertDock :dock-active="true" @focus-whale="onFocusWhaleCard" />
 
     <aside class="sidebar" aria-label="主导航">
       <div
@@ -372,12 +322,7 @@ onUnmounted(() => {
       >
         <span class="socket-core" />
       </div>
-      <button
-        type="button"
-        class="nav-item"
-        :class="{ active: workspace === 'hyperliquid' }"
-        @click="workspace = 'hyperliquid'"
-      >
+      <div class="nav-item active">
         <span class="nav-mark brand" aria-hidden="true">
           <svg class="brand-logo hl" viewBox="0 0 32 32" fill="none">
             <circle cx="16" cy="16" r="16" fill="#97FCE4" />
@@ -386,29 +331,9 @@ onUnmounted(() => {
               d="M10 9h3.2v5.2H18.8V9H22v14h-3.2v-5.6H13.2V23H10V9z"
             />
           </svg>
-          <span v-if="hlWorkspaceBadge > 0" class="nav-badge">{{
-            formatWorkspaceBadge(hlWorkspaceBadge)
-          }}</span>
         </span>
         <span>巨鲸</span>
-      </button>
-      <button
-        type="button"
-        class="nav-item"
-        :class="{ active: workspace === 'whale-ai' }"
-        @click="openWhaleAiWorkspace"
-      >
-        <span class="nav-mark brand" aria-hidden="true">
-          <svg class="brand-logo ai" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              d="M12 3l1.8 4.8L18.5 9.5l-4.7 1.7L12 16l-1.8-4.8L5.5 9.5l4.7-1.7L12 3zM5 18h14"
-            />
-          </svg>
-        </span>
-        <span>鲸鱼AI</span>
-      </button>
+      </div>
 
       <div class="bottom-nav">
         <FreshModeControl variant="sidebar" :reload-alerts="reloadNewsAlerts" />
@@ -426,7 +351,7 @@ onUnmounted(() => {
     </aside>
 
     <div class="layout">
-      <header v-show="workspace === 'hyperliquid'" class="topbar">
+      <header class="topbar">
         <LiquidationBanner />
         <WhaleResonanceBanner
           :whales="whaleStore.displayWhales"
@@ -439,14 +364,14 @@ onUnmounted(() => {
       </header>
 
       <el-alert
-        v-if="workspace === 'hyperliquid' && (whaleStore.error || newsStore.error)"
+        v-if="whaleStore.error || newsStore.error"
         class="warn"
         type="warning"
         :closable="false"
         :title="whaleStore.error || newsStore.error"
       />
 
-      <div v-show="workspace === 'hyperliquid'" class="whales-shell">
+      <div class="whales-shell">
         <div class="grid">
           <DataModule
             :whales="whaleStore.displayWhales"
@@ -483,8 +408,6 @@ onUnmounted(() => {
           />
         </div>
       </div>
-
-      <WhaleAiWorkspace v-show="workspace === 'whale-ai'" class="ai-workspace" />
     </div>
     </template>
   </div>
@@ -543,61 +466,6 @@ onUnmounted(() => {
   margin-top: 4px;
   min-height: 44px;
   border-radius: 12px !important;
-}
-
-/* ===== 鲸鱼AI 模块主题 ===== */
-.app-shell.theme-ai {
-  --ai-accent: #1f6feb;
-  --ai-bg: #0b0e14;
-  --ai-bg-3: #161f33;
-  --ai-border: #2d333b;
-  --ai-text: #e6edf3;
-  --ai-muted: #8b949e;
-  background: var(--ai-bg);
-  color: var(--ai-text);
-}
-.app-shell.theme-ai .sidebar {
-  background: #0d1117;
-  border-right-color: var(--ai-border);
-}
-.app-shell.theme-ai .sidebar .nav-item {
-  color: var(--ai-muted);
-}
-.app-shell.theme-ai .sidebar .nav-item.active {
-  background: var(--ai-bg-3);
-  color: var(--ai-accent);
-}
-.app-shell.theme-ai .sidebar .nav-item:hover {
-  background: var(--ai-bg-3);
-  color: var(--ai-text);
-}
-.app-shell.theme-ai .sidebar .nav-item.active .nav-mark .brand-logo.ai {
-  color: var(--ai-accent);
-}
-.app-shell.theme-ai .sidebar .bottom-nav {
-  border-top-color: var(--ai-border);
-}
-.app-shell.theme-ai .layout {
-  background: var(--ai-bg);
-  padding: 0;
-  overflow: hidden;
-}
-.app-shell.theme-ai .ai-workspace {
-  flex: 1;
-  min-height: 0;
-}
-.app-shell.theme-ai .sidebar :deep(.fresh-btn.sidebar),
-.app-shell.theme-ai .sidebar :deep(.prefs-trigger.sidebar) {
-  color: var(--ai-muted);
-}
-.app-shell.theme-ai .sidebar :deep(.fresh-btn.sidebar:hover:not(:disabled)),
-.app-shell.theme-ai .sidebar :deep(.prefs-trigger.sidebar:hover) {
-  background: var(--ai-bg-3);
-  color: var(--ai-text);
-}
-.app-shell.theme-ai .sidebar :deep(.fresh-btn.sidebar.on) {
-  background: var(--ai-bg-3);
-  color: var(--ai-accent);
 }
 
 .sidebar {

@@ -1,33 +1,42 @@
----
-description: Production deploy only via existing GitHub Actions; official AlphaExecution is EXECUTE
-alwaysApply: true
----
-
 # Production deploy (CI/CD only)
 
 WhaleTracker 生产只走现有 GitHub Actions：
 
 代码 → 本地测试 → commit → push `main` → `.github/workflows/deploy.yml` → pack/upload → `remote-deploy.sh` → systemd → health
 
-禁止：手工 tar/scp/rsync、新写第二套部署脚本、Cursor 本机 SSH 发布、绕过 Actions 改生产文件、手工复制 backend/frontend/engine。
+禁止：手工 tar/scp/rsync、新写第二套部署脚本、Cursor 本机 SSH 发布、绕过 Actions 改生产文件、手工复制 backend/frontend。
 
 CI 失败只排查：workflow / pack / upload / `remote-deploy.sh` / systemd / health。不要为绕过失败而手工部署。
 
-公网：http://43.160.208.168/#/  health：http://43.160.208.168/api/health
+公网：http://43.160.208.168/#/ health：http://43.160.208.168/api/health
+
+## 当前架构：数据站，无策略交易
+
+Browser → Vue → Node/Express :80 → { Hyperliquid、News、Market APIs、SQLite `whale.db`、DeepSeek（用户自带 AI Key）}
+
+已彻底移除，不要重新引入：
+
+- Python Trading Engine（FastAPI :8711）与 `v41-engine.service`
+- Node 侧 `lib/v41*.js`、`okxTradeClient.js`、`userExchangeKeys.js`、execution gateway、protective stop、recovery/reconciliation
+- `/api/whale-ai/engine/*`、`/api/whale-ai/trade/*`、`/api/admin/strategy-configs`
+- S1–S9 Alpha、TradeIntent / OrderIntent、OKX 自动交易能力
+- 全部 `V41_*` 与 `OKX_API_*` 环境变量
+
+`remote-deploy.sh` 会主动 stop/disable/删除 `v41-engine.service`，并从生产 `.env` 里删除 `V41_*` / `OKX_API_*`。不要再往仓库或生产写这些值。
+
+## 必须保留（属于「数据分析」，不是策略）
+
+`/api/whale-ai/key`、`/api/whale-ai/analyze`、`user_ai_keys` 表、`AiAnalyzeButton.vue`、`AiAnalyzeDialog.vue`、前端 `stores/aiKey.ts`。
+路由名里带 `whale-ai` 不等于策略 —— 不要因为名字删掉它们。
 
 ## 配置不得漂移
 
-不要在生产服务器手工改 `.env`。正式值必须在仓库（`remote-deploy.sh` / `.env.example` / workflow）里，由 Actions 带到生产。不要再加 post-deploy SSH flip。
+不要在生产服务器手工改 `.env`。正式值必须在仓库（`remote-deploy.sh` / `.env.example` / workflow）里，由 Actions 带到生产。不要加 post-deploy SSH flip。
 
-`remote-deploy.sh` 正式写入：
+## 验收
 
-- `V41_ALPHA_EXECUTION=EXECUTE`
-- `V41_ENGINE_EXECUTION_MODE=node_gateway`（legacy）
-- `V41_LIVE_TRADING_ENABLED=false`
-- `V41_QA_LIVE_ENABLED=false`
-- `V41_MARKET_DATA_SOURCE=okx`
-- `V41_ENGINE_AUTOSTART=0`
+`/api/health=200`，且 `/api/whales`、`/api/whales/alert-history`、`/api/whales/trades`、`/api/news`、`/api/news/calendar`、`/api/markets/quotes` 均非 404；`/api/whale-ai/key` 未登录返回 401（不是 404）；`/api/whale-ai/trade/status` 返回 404；8711 无监听。
 
-EXECUTE 只表示订单可进 Node Gateway。账户仍须由登录用户解析为 `OKX_DEMO`（`simulated=true`），否则 Preflight 禁止启动 S1。禁止 OKX_LIVE。
+## 历史数据
 
-workflow success ≠ 可启动。验收：`/api/health=200`、`transport_status=CONNECTED`、`alpha_execution=EXECUTE`、`live_permission=false`、Engine=OFFLINE/PAUSED。登录后还要：`user_id_ready`、`account_environment=OKX_DEMO`、recovery READY、BTC FLAT、pending/algo=0、net/cross、leverage ≤ S1 cap、instrument READY。全部 PASS 后才允许手动 select S1 → start。
+`whale.db` 里的 `v41_execution_records` / `v41_runtime_events` / `whale_ai_runtime_logs` / `user_exchange_keys` 已停止读写，但不要 DROP。`user_ai_keys` 必须保留。

@@ -188,9 +188,8 @@ const libFiles = [
   'lib/newsService.js',
   'lib/whales.js',
   'lib/news.js',
-  'lib/okxTradeClient.js',
-  'lib/userExchangeKeys.js',
-  'lib/hlCopyEngine.js',
+  'lib/deepseekClient.js',
+  'lib/userAiKeys.js',
   'lib/authStore.js',
   'lib/db.js',
   'lib/createApp.js',
@@ -198,9 +197,7 @@ const libFiles = [
   'routes/markets.js',
   'routes/whales.js',
   'routes/news.js',
-  'routes/okx.js',
-  'routes/okxTrade.js',
-  'routes/copyTrade.js',
+  'routes/whaleAi.js',
   'server.js',
 ];
 for (const rel of libFiles) {

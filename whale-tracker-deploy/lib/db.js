@@ -177,19 +177,6 @@ function migrate(database) {
       updated_at INTEGER NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS user_exchange_keys (
-      user_id TEXT NOT NULL,
-      exchange TEXT NOT NULL,
-      api_key TEXT NOT NULL DEFAULT '',
-      api_secret TEXT NOT NULL DEFAULT '',
-      api_passphrase TEXT NOT NULL DEFAULT '',
-      simulated INTEGER NOT NULL DEFAULT 1,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (user_id, exchange)
-    );
-    CREATE INDEX IF NOT EXISTS idx_user_exchange_keys_user ON user_exchange_keys(user_id);
-
     CREATE TABLE IF NOT EXISTS user_ai_keys (
       user_id TEXT NOT NULL,
       provider TEXT NOT NULL,
@@ -198,84 +185,15 @@ function migrate(database) {
       PRIMARY KEY (user_id, provider)
     );
     CREATE INDEX IF NOT EXISTS idx_user_ai_keys_user ON user_ai_keys(user_id);
-
-    CREATE TABLE IF NOT EXISTS v41_execution_records (
-      order_intent_id TEXT PRIMARY KEY,
-      user_id TEXT,
-      client_order_id TEXT,
-      exchange_order_id TEXT,
-      status TEXT NOT NULL,
-      request_json TEXT,
-      response_json TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS whale_ai_runtime_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT NOT NULL,
-      ts INTEGER NOT NULL,
-      lvl TEXT NOT NULL DEFAULT 'info',
-      msg TEXT NOT NULL,
-      source TEXT NOT NULL DEFAULT 'ui'
-    );
-    CREATE INDEX IF NOT EXISTS idx_whale_ai_runtime_logs_user_ts
-      ON whale_ai_runtime_logs(user_id, ts DESC);
-
-    CREATE TABLE IF NOT EXISTS v41_runtime_events (
-      event_id TEXT PRIMARY KEY,
-      occurred_at TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      event_type TEXT NOT NULL,
-      severity TEXT NOT NULL,
-      strategy_id TEXT,
-      symbol TEXT,
-      direction TEXT,
-      decision TEXT,
-      reason_code TEXT,
-      reason_codes_json TEXT,
-      source_closed_candle_timestamp TEXT,
-      trade_intent_id TEXT,
-      order_intent_id TEXT,
-      position_id TEXT,
-      signal_key TEXT,
-      message TEXT,
-      details_json TEXT,
-      reason_signature TEXT,
-      no_trade_key TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_v41_runtime_events_occurred
-      ON v41_runtime_events(occurred_at DESC, event_id DESC);
-    CREATE INDEX IF NOT EXISTS idx_v41_runtime_events_type
-      ON v41_runtime_events(event_type, occurred_at DESC);
   `);
+  // 旧策略表（user_exchange_keys / v41_execution_records / v41_runtime_events /
+  // whale_ai_runtime_logs）不再创建也不再读写；生产库中的历史数据保留不动。
 
   // soft migrations
   try {
     database.exec(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'`);
   } catch {
     // column exists
-  }
-  try {
-    database.exec(
-      `CREATE UNIQUE INDEX IF NOT EXISTS idx_v41_exec_clord ON v41_execution_records(client_order_id) WHERE client_order_id IS NOT NULL AND client_order_id != ''`,
-    );
-  } catch {
-    // ignore
-  }
-  const logCols = [
-    ['channel', "TEXT NOT NULL DEFAULT 'SYSTEM'"],
-    ['event_type', 'TEXT'],
-    ['strategy_id', 'TEXT'],
-    ['symbol', 'TEXT'],
-    ['reason_code', 'TEXT'],
-  ];
-  for (const [col, spec] of logCols) {
-    try {
-      database.exec(`ALTER TABLE whale_ai_runtime_logs ADD COLUMN ${col} ${spec}`);
-    } catch {
-      // column exists
-    }
   }
 }
 
