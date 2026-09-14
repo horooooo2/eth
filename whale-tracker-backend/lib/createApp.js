@@ -66,6 +66,7 @@ function mountRoutes(app, prefix) {
   app.use(`${base}/whales`, whalesRouter);
   app.use(`${base}/news`, newsRouter);
   app.use(`${base}/markets`, marketsRouter);
+  app.use(`${base}/flow`, require('../routes/flow'));
   app.use(`${base}/x`, xRouter);
   // 通用 AI 数据分析（DeepSeek key + analyze），非策略
   app.use(`${base}/whale-ai`, require('../routes/whaleAi'));

@@ -418,8 +418,8 @@ onUnmounted(() => {
   display: flex;
   height: 100vh;
   overflow: hidden;
-  background: #0b0e14;
-  color: #e8edf5;
+  background: var(--bg);
+  color: var(--text);
 }
 .app-shell.login-only {
   display: block;
@@ -438,15 +438,15 @@ onUnmounted(() => {
   box-sizing: border-box;
   padding: 24px;
   background:
-    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(31, 111, 235, 0.25), transparent),
-    #0b0e14;
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(61, 125, 255, 0.22), transparent),
+    var(--bg);
 }
 .login-gate-card {
   width: min(400px, 100%);
   padding: 32px 28px 28px;
   border-radius: 16px;
-  border: 1px solid #1f2937;
-  background: #141a24;
+  border: 1px solid var(--border);
+  background: var(--card);
   box-shadow: 0 24px 48px rgba(0, 0, 0, 0.35);
 }
 .login-gate-title {
@@ -454,12 +454,12 @@ onUnmounted(() => {
   font-size: 22px;
   font-weight: 800;
   letter-spacing: 0.02em;
-  color: #e8edf5;
+  color: var(--text);
 }
 .login-gate-sub {
   margin: 8px 0 24px;
   font-size: 14px;
-  color: #8b9bb5;
+  color: var(--muted);
 }
 .login-gate-submit {
   width: 100%;
@@ -470,8 +470,8 @@ onUnmounted(() => {
 
 .sidebar {
   width: 72px;
-  background: #0f141c;
-  border-right: 1px solid #1a1f2a;
+  background: var(--bg-2);
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -496,8 +496,8 @@ onUnmounted(() => {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #6a7282;
-  box-shadow: 0 0 0 2px color-mix(in srgb, #6a7282 22%, transparent);
+  background: var(--soft);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--soft) 22%, transparent);
   transition: background 0.2s, box-shadow 0.2s;
 }
 .sidebar .socket-dot::before,
@@ -515,11 +515,11 @@ onUnmounted(() => {
   pointer-events: none;
 }
 .sidebar .socket-dot.connected .socket-core {
-  background: #58bd7d;
-  box-shadow: 0 0 6px color-mix(in srgb, #58bd7d 55%, transparent);
+  background: var(--green);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--green) 55%, transparent);
 }
 .sidebar .socket-dot.connected {
-  color: #58bd7d;
+  color: var(--green);
 }
 .sidebar .socket-dot.connected::before,
 .sidebar .socket-dot.connected::after {
@@ -529,11 +529,11 @@ onUnmounted(() => {
   animation-delay: 1.4s;
 }
 .sidebar .socket-dot.connecting .socket-core {
-  background: #f15a24;
-  box-shadow: 0 0 6px color-mix(in srgb, #f15a24 55%, transparent);
+  background: var(--orange);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--orange) 55%, transparent);
 }
 .sidebar .socket-dot.connecting {
-  color: #f15a24;
+  color: var(--orange);
 }
 .sidebar .socket-dot.connecting::before,
 .sidebar .socket-dot.connecting::after {
@@ -543,8 +543,8 @@ onUnmounted(() => {
   animation-delay: 0.9s;
 }
 .sidebar .socket-dot.disconnected .socket-core {
-  background: #6a7282;
-  box-shadow: 0 0 0 2px color-mix(in srgb, #6a7282 22%, transparent);
+  background: var(--soft);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--soft) 22%, transparent);
 }
 @keyframes socket-ripple {
   0% {
@@ -567,7 +567,7 @@ onUnmounted(() => {
   width: 56px;
   height: 56px;
   border-radius: 14px;
-  color: #6a7e9c;
+  color: var(--muted);
   font-size: 10px;
   font-weight: 600;
   font-family: inherit;
@@ -589,7 +589,7 @@ onUnmounted(() => {
   font-size: 10px;
   font-weight: 800;
   letter-spacing: -0.02em;
-  background: #1a222e;
+  background: var(--panel-2);
   color: inherit;
   overflow: hidden;
 }
@@ -607,7 +607,7 @@ onUnmounted(() => {
   height: 14px;
   padding: 0 3px;
   border-radius: 999px;
-  background: #ea5a5a;
+  background: var(--red);
   color: #fff;
   font-size: 9px;
   font-weight: 800;
@@ -615,7 +615,7 @@ onUnmounted(() => {
   text-align: center;
   box-sizing: border-box;
   pointer-events: none;
-  box-shadow: 0 0 0 1px #0f141c;
+  box-shadow: 0 0 0 1px var(--bg-2);
 }
 .sidebar .nav-item .nav-mark .brand-logo {
   width: 22px;
@@ -628,24 +628,24 @@ onUnmounted(() => {
 .sidebar .nav-item .nav-mark .brand-logo.ai {
   width: 20px;
   height: 20px;
-  color: #e8edf5;
+  color: var(--text);
 }
 .sidebar .nav-item .nav-mark.user {
-  background: #1f2a3a;
+  background: var(--panel-3);
   border-radius: 50%;
   font-size: 11px;
 }
 .sidebar .nav-item.active {
-  background: #1f2a3a;
-  color: #fbbf24;
+  background: var(--panel-3);
+  color: var(--yellow);
 }
 .sidebar .nav-item.active .nav-mark.user {
-  background: color-mix(in srgb, #fbbf24 18%, #1f2a3a);
-  color: #fbbf24;
+  background: color-mix(in srgb, var(--yellow) 18%, var(--panel-3));
+  color: var(--yellow);
 }
 .sidebar .nav-item:hover {
-  background: #1a222e;
-  color: #e8edf5;
+  background: var(--panel-2);
+  color: var(--text);
 }
 .sidebar .bottom-nav {
   margin-top: auto;
@@ -653,7 +653,7 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   gap: 4px;
-  border-top: 1px solid #1a1f2a;
+  border-top: 1px solid var(--border);
   padding-top: 16px;
   width: 100%;
 }
@@ -678,7 +678,7 @@ onUnmounted(() => {
   min-width: 0;
   overflow: hidden;
   padding: 16px 24px;
-  background: var(--bg, #0b0e14);
+  background: var(--bg);
   box-sizing: border-box;
   position: relative;
 }
@@ -689,7 +689,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: color-mix(in srgb, #0b0e14 72%, transparent);
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
   backdrop-filter: blur(3px);
   pointer-events: all;
 }
@@ -698,9 +698,9 @@ onUnmounted(() => {
   min-width: 220px;
   padding: 22px 24px;
   border-radius: 14px;
-  border: 1px solid #2a3544;
-  background: #141a24;
-  color: #e8edf5;
+  border: 1px solid var(--border-2);
+  background: var(--card);
+  color: var(--text);
   text-align: center;
   box-shadow: 0 16px 48px #00000066;
 }
@@ -712,33 +712,33 @@ onUnmounted(() => {
 .page-mask-card .mask-label {
   margin: 8px 0 16px;
   font-size: 13px;
-  color: #8b9bb5;
+  color: var(--muted);
   min-height: 1.2em;
 }
 .page-mask-card .bar-track {
   height: 8px;
   border-radius: 999px;
-  background: #1a222e;
+  background: var(--panel-2);
   overflow: hidden;
 }
 .page-mask-card .bar-fill {
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, #2563eb, #60a5fa);
+  background: linear-gradient(90deg, var(--blue), #60a5fa);
   transition: width 0.18s ease;
 }
 .page-mask-card .mask-pct {
   margin: 10px 0 0;
   font-size: 13px;
   font-weight: 700;
-  color: #b0c4de;
+  color: color-mix(in srgb, var(--text) 70%, var(--muted));
   font-variant-numeric: tabular-nums;
 }
 .page-mask-card .dim {
   margin-top: 8px;
   font-size: 12px;
   font-weight: 500;
-  color: #6a7e9c;
+  color: var(--muted);
 }
 .topbar {
   display: grid;
@@ -761,14 +761,14 @@ onUnmounted(() => {
 }
 .login-form :deep(.el-form-item__label) {
   font-weight: 700;
-  color: #8b9bb5;
+  color: var(--muted);
 }
 .login-form :deep(.el-input__wrapper) {
   min-height: 44px;
   padding: 4px 14px;
   border-radius: 12px;
-  background: #10171f;
-  box-shadow: 0 0 0 1px #1f2937 inset;
+  background: var(--bg-2);
+  box-shadow: 0 0 0 1px var(--border) inset;
 }
 .warn {
   margin-bottom: 8px;

@@ -1,14 +1,28 @@
 :root {
-  --bg: #0b0e14;
-  --card: #141a24;
-  --panel: #0f141c;
-  --text: #e8edf5;
-  --muted: #6a7e9c;
-  --soft: #8b9bb5;
-  --accent: #fbbf24;
-  --bear: #f87171;
-  --bull: #4ade80;
-  --border: #1f2937;
+  --bg: #0a0d14;
+  --bg-2: #0e1219;
+  --card: #11161f;
+  --panel: #11161f;
+  --panel-2: #161c28;
+  --panel-3: #1c2433;
+  --text: #e6edf7;
+  --muted: #7a869a;
+  --soft: #545e70;
+  --accent: #f0b90b;
+  --bear: #ea3943;
+  --bull: #16c784;
+  --green: #16c784;
+  --green-2: #0fae72;
+  --red: #ea3943;
+  --red-2: #c92a33;
+  --blue: #3d7dff;
+  --purple: #7b5cff;
+  --cyan: #22d3ee;
+  --yellow: #f0b90b;
+  --orange: #ff8a3d;
+  --pink: #ff4d94;
+  --border: #1e2635;
+  --border-2: #263041;
   --el-font-size-extra-large: 22px;
   --el-font-size-large: 20px;
   --el-font-size-medium: 18px;
@@ -19,13 +33,29 @@
 
 html.light {
   --bg: #f5f7fa;
+  --bg-2: #eef1f6;
   --card: #ffffff;
+  --panel: #ffffff;
+  --panel-2: #f3f5f9;
+  --panel-3: #e8ecf3;
   --text: #2c3e50;
   --muted: #606266;
+  --soft: #909399;
   --accent: #409eff;
   --bear: #f56c6c;
   --bull: #67c23a;
+  --green: #67c23a;
+  --green-2: #529b2e;
+  --red: #f56c6c;
+  --red-2: #c45656;
+  --blue: #409eff;
+  --purple: #7b5cff;
+  --cyan: #22d3ee;
+  --yellow: #e6a23c;
+  --orange: #ff8a3d;
+  --pink: #ff4d94;
   --border: rgba(0, 0, 0, 0.08);
+  --border-2: rgba(0, 0, 0, 0.12);
 }
 
 html {
@@ -110,4 +140,11 @@ a {
 
 .mono {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.up {
+  color: var(--green);
+}
+.down {
+  color: var(--red);
 }

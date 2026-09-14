@@ -3,11 +3,10 @@ import { ref, watch } from 'vue';
 import { fetchCalendar } from '@/api';
 import type { CalendarEvent, WhaleProfile } from '@/types';
 import type { RecoQuotes } from '@/utils/recommend';
-import XFeed from '@/components/XFeed.vue';
+import CoinFundFlow from '@/components/CoinFundFlow.vue';
 import AiAnalyzeButton from '@/components/AiAnalyzeButton.vue';
-import { clearXUnread, xUnread } from '@/stores/xFeed';
 
-type DataTab = 'macro' | 'x';
+type DataTab = 'macro' | 'flow';
 
 const props = defineProps<{
   whales: WhaleProfile[];
@@ -16,7 +15,7 @@ const props = defineProps<{
   selectedName: string;
   updatedAt?: number;
   quotes?: RecoQuotes;
-  /** 巨鲸首屏就绪后再拉 X / 宏观 */
+  /** 巨鲸首屏就绪后再拉资金流向 / 宏观 */
   bootReady?: boolean;
 }>();
 
@@ -24,15 +23,11 @@ const emit = defineEmits<{
   focusWhale: [payload: { id: string; name: string }];
 }>();
 
-const tab = ref<DataTab>('x');
+const tab = ref<DataTab>('flow');
 const macroLoading = ref(false);
 const macroError = ref('');
 const macroEvents = ref<CalendarEvent[]>([]);
 const macroLoaded = ref(false);
-
-watch(tab, (t) => {
-  if (t === 'x') clearXUnread();
-});
 
 function importanceStars(importance: CalendarEvent['importance']) {
   if (importance === 'high') return 3;
@@ -90,12 +85,7 @@ watch(
     <template #header>
       <div class="head">
         <el-radio-group v-model="tab" class="direction-filter" @change="onTabChange">
-          <el-radio-button label="x">
-            <span class="tab-label">
-              动态
-              <i v-if="xUnread && tab !== 'x'" class="unread-dot" aria-hidden="true" />
-            </span>
-          </el-radio-button>
+          <el-radio-button label="flow">资金流向</el-radio-button>
           <el-radio-button label="macro">宏观数据</el-radio-button>
         </el-radio-group>
       </div>
@@ -151,8 +141,8 @@ watch(
         </div>
       </div>
 
-      <div v-show="tab === 'x'" class="tab-panel transfer-panel">
-        <XFeed :limit="40" :boot-ready="bootReady" :active="tab === 'x'" />
+      <div v-show="tab === 'flow'" class="tab-panel transfer-panel">
+        <CoinFundFlow :boot-ready="bootReady" :active="tab === 'flow'" />
       </div>
     </div>
   </el-card>
@@ -216,27 +206,10 @@ watch(
   border-left: 1px solid var(--border);
 }
 .head :deep(.direction-filter .el-radio-button__original-radio:checked + .el-radio-button__inner) {
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 16%, transparent);
   border-color: transparent;
   box-shadow: none !important;
-}
-.tab-label {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-}
-.unread-dot {
-  position: absolute;
-  top: -2px;
-  right: -10px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #e5484d;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--card) 80%, transparent);
 }
 .tab-stack {
   flex: 1;
@@ -293,7 +266,7 @@ watch(
 }
 .stars {
   flex: none;
-  color: #c4a35a;
+  color: var(--yellow);
   letter-spacing: 1px;
   font-size: 14px;
   line-height: 1.4;

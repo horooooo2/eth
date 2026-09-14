@@ -258,11 +258,11 @@ onUnmounted(() => {
 }
 
 .stat.long strong {
-  color: #3dd68c;
+  color: var(--green);
 }
 
 .stat.short strong {
-  color: #f56565;
+  color: var(--red);
 }
 
 .muted {
@@ -329,12 +329,12 @@ onUnmounted(() => {
 }
 
 .period-row .long {
-  color: #3dd68c;
+  color: var(--green);
   font-weight: 700;
 }
 
 .period-row .short {
-  color: #f56565;
+  color: var(--red);
   font-weight: 700;
 }
 

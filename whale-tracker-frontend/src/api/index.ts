@@ -376,6 +376,44 @@ export async function fetchMarkets(refresh = false, coins: string[] = []) {
   return data;
 }
 
+/** DexPaprika 池子交易汇总的币种资金流 */
+export type DexFlowCoinRow = {
+  coin: string;
+  buy: number;
+  sell: number;
+  net: number;
+  changePct: number | null;
+  price?: number | null;
+  count?: number;
+  network?: string;
+  pool?: string;
+  dex?: string;
+  pair?: string;
+  unsupported?: boolean;
+  error?: string;
+  period?: string;
+  source?: string;
+};
+
+export type DexFlowCoinsResponse = {
+  period: string;
+  coins: DexFlowCoinRow[];
+  updatedAt: number | null;
+  accumulating?: boolean;
+  errors?: Array<{ coin: string; error: string }>;
+};
+
+export async function fetchDexFlowCoins(period = '24h', coins: string[] = []) {
+  const { data } = await http.get<DexFlowCoinsResponse>('/flow/coins', {
+    params: {
+      period,
+      coins: coins.length ? coins.join(',') : undefined,
+    },
+    timeout: 15000,
+  });
+  return data;
+}
+
 export type QuotesResponse = Record<string, number> & {
   funding?: Record<string, number>;
   updatedAt?: number;
