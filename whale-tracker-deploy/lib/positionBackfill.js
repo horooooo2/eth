@@ -10,6 +10,7 @@ const {
   fetchCoinNameMap,
 } = require('./hyperliquid');
 const { readConfig } = require('./config');
+const { isRateLimited } = require('./hlInfoClient');
 
 const ENABLED = process.env.POSITION_BACKFILL !== '0';
 const INTERVAL_MS = Math.max(
@@ -20,12 +21,23 @@ const LOOKBACK_MS = Math.max(
   30 * 24 * 60 * 60 * 1000,
   (Number(process.env.POSITION_BACKFILL_DAYS) || 180) * 24 * 60 * 60 * 1000,
 );
+/**
+ * 429 冷却：与 fillBackfill 同一套做法。
+ * 每轮 tick 可能触发多次分页 /info 请求，撞到 Hyperliquid 的每 IP 权重上限后，
+ * 原来会每 8 秒无脑重试一次，既刷不到数据又持续占用共享请求队列。
+ */
+const RATE_LIMIT_PAUSE_MS = Math.max(
+  60_000,
+  Number(process.env.POSITION_BACKFILL_RATE_LIMIT_MS) || 5 * 60 * 1000,
+);
 
 let timer = null;
 let cursor = 0;
 let running = false;
 let lastError = '';
 let doneRounds = 0;
+/** @type {number} 429 冷却截止时间戳；0 表示未限流 */
+let rateLimitedUntil = 0;
 
 function listOpenPositions() {
   const database = getDb();
@@ -43,8 +55,20 @@ function whaleById(id) {
   return (cfg.whales || []).find((w) => w.id === id) || null;
 }
 
+function isPaused() {
+  return rateLimitedUntil > Date.now();
+}
+
+function enterRateLimitPause(err) {
+  rateLimitedUntil = Date.now() + RATE_LIMIT_PAUSE_MS;
+  console.warn(
+    `[position-backfill] Hyperliquid 429，暂停 ${Math.round(RATE_LIMIT_PAUSE_MS / 60000)} 分钟后重试：`,
+    err?.message || err,
+  );
+}
+
 async function tick() {
-  if (running) return;
+  if (running || isPaused()) return;
   running = true;
   try {
     const rows = listOpenPositions();
@@ -84,7 +108,8 @@ async function tick() {
     lastError = '';
   } catch (err) {
     lastError = err.message || String(err);
-    console.warn('[position-backfill]', lastError);
+    if (isRateLimited(err)) enterRateLimitPause(err);
+    else console.warn('[position-backfill]', lastError);
   } finally {
     running = false;
   }
@@ -99,6 +124,9 @@ function getPositionBackfillStatus() {
     doneRounds,
     running,
     lastError,
+    rateLimitPauseMs: RATE_LIMIT_PAUSE_MS,
+    rateLimited: isPaused(),
+    rateLimitedUntil: isPaused() ? rateLimitedUntil : 0,
     openPositions: (() => {
       try {
         return listOpenPositions().length;
