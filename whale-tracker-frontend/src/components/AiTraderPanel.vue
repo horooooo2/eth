@@ -599,9 +599,8 @@ async function importCharacter(ev: Event) {
       return;
     }
     const text = await file.text();
-    const card = JSON.parse(text);
-    // 每人仅保留一个角色：导入即覆盖
-    await postJson('/character/import', { card, force: true });
+    // Prefer raw text so wrappers / BOM / markdown fences are handled server-side
+    await postJson('/character/import', { json_text: text, force: true });
     charStatus.value = '导入成功（已替换为当前唯一角色）';
     charList.value = await fetchJson('/character/list');
     await refreshAll();
@@ -609,6 +608,22 @@ async function importCharacter(ev: Event) {
     charStatus.value = e instanceof Error ? e.message : '导入失败';
   }
   input.value = '';
+}
+
+async function importDefaultCharacter() {
+  try {
+    if (!ownerKey()) {
+      charStatus.value = '请先登录后再导入角色（角色跟随账号）';
+      return;
+    }
+    charStatus.value = '正在导入默认张明…';
+    await postJson('/character/import-default?character_id=zhangming', {});
+    charStatus.value = '已导入默认角色「张明」';
+    charList.value = await fetchJson('/character/list');
+    await refreshAll();
+  } catch (e) {
+    charStatus.value = e instanceof Error ? e.message : '导入默认角色失败';
+  }
 }
 
 async function runKillSwitch() {
@@ -1136,6 +1151,7 @@ onUnmounted(() => {
         <div v-else class="char-empty muted">暂无角色，请先导入角色卡</div>
         <div class="modal-status">{{ charStatus }}</div>
         <div class="modal-actions">
+          <button type="button" class="modal-btn primary" @click="importDefaultCharacter">导入默认张明</button>
           <button type="button" class="modal-btn" @click="exportCharacter">导出当前角色</button>
           <label class="modal-btn file-btn">
             导入角色文件

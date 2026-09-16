@@ -173,7 +173,10 @@ def validate_card(card: dict[str, Any]) -> None:
     card = normalize_card(card)
     missing = [k for k in REQUIRED_FIELDS if k not in card or card[k] in (None, "")]
     if missing:
-        raise CharacterCardError(f"missing required fields: {', '.join(missing)}")
+        keys = ", ".join(sorted(card.keys())[:24]) or "(empty)"
+        raise CharacterCardError(
+            f"missing required fields: {', '.join(missing)} (got keys: {keys})"
+        )
     prompts = card.get("prompts")
     if not isinstance(prompts, dict):
         raise CharacterCardError("prompts must be an object")

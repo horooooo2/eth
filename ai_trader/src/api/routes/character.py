@@ -118,8 +118,8 @@ def character_export(
 def character_import(body: ImportBody, request: Request) -> dict[str, Any]:
     config_dir = Path(request.app.state.config_dir)
     owner = request_owner(request)
-    raw = body.json_text
-    if body.card is not None:
+    raw = (body.json_text or "").strip() or None
+    if not raw and body.card is not None:
         raw = json.dumps(body.card, ensure_ascii=False)
     if not raw:
         raise HTTPException(status_code=400, detail="card or json_text required")
@@ -130,6 +130,25 @@ def character_import(body: ImportBody, request: Request) -> dict[str, Any]:
     except CharacterCardError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "path": str(path)}
+
+
+@router.post("/character/import-default")
+def character_import_default(
+    request: Request,
+    character_id: str = Query("zhangming"),
+) -> dict[str, Any]:
+    """Import shipped default card (no file upload). Prefer this on first setup."""
+    from ...character.importer import import_default_character
+
+    config_dir = Path(request.app.state.config_dir)
+    owner = request_owner(request)
+    try:
+        path = import_default_character(
+            config_dir, character_id=character_id, owner=owner, force=True
+        )
+    except CharacterCardError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "path": str(path), "character_id": character_id}
 
 
 @router.post("/character/import-file")
