@@ -33,7 +33,7 @@ class PromptBuilder:
         )
         self.optional_files = list(
             optional_files
-            or ["user_daily_open.md", "user_daily_close.md"]
+            or ["user_daily_open.md", "user_daily_close.md", "user_news_check.md"]
         )
         self._validate_required()
         self.templates = self._load_all_templates()
@@ -111,6 +111,11 @@ class PromptBuilder:
     def build_daily_close_prompt(self, **kwargs: Any) -> tuple[str, str]:
         system = self.templates.get("system", "")
         user = self.render("user_daily_close", kwargs)
+        return system, user
+
+    def build_news_check_prompt(self, **kwargs: Any) -> tuple[str, str]:
+        system = self.templates.get("system", "")
+        user = self.render("user_news_check", kwargs)
         return system, user
 
     @classmethod

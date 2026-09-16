@@ -16,6 +16,7 @@ TRAIT_BOUNDS: dict[str, tuple[float, float]] = {
     "stubbornness": (0.20, 0.80),
     "stress": (0.00, 1.00),
     "sleep_debt": (0.0, 8.0),
+    "news_awareness": (0.0, 1.0),
 }
 
 TRAIT_BASELINE: dict[str, float] = {
@@ -26,7 +27,19 @@ TRAIT_BASELINE: dict[str, float] = {
     "stubbornness": 0.65,
     "stress": 0.30,
     "sleep_debt": 1.0,
+    "news_awareness": 0.0,
 }
+
+# Traits that decay toward baseline each day (news_awareness resets separately)
+DECAY_TRAIT_KEYS: tuple[str, ...] = (
+    "risk_appetite",
+    "patience",
+    "focus",
+    "self_doubt",
+    "stubbornness",
+    "stress",
+    "sleep_debt",
+)
 
 TRAIT_KEYS: tuple[str, ...] = tuple(TRAIT_BASELINE.keys())
 
@@ -43,7 +56,7 @@ DEFAULT_BASELINE_BOUNDS: dict[str, tuple[float, float]] = {
 
 @dataclass
 class PersonState:
-    """Seven continuous psychological parameters for the trader persona."""
+    """Continuous psychological parameters for the trader persona."""
 
     risk_appetite: float = TRAIT_BASELINE["risk_appetite"]
     patience: float = TRAIT_BASELINE["patience"]
@@ -52,6 +65,7 @@ class PersonState:
     stubbornness: float = TRAIT_BASELINE["stubbornness"]
     stress: float = TRAIT_BASELINE["stress"]
     sleep_debt: float = TRAIT_BASELINE["sleep_debt"]
+    news_awareness: float = TRAIT_BASELINE["news_awareness"]
 
     def to_dict(self) -> dict[str, float]:
         return {f.name: float(getattr(self, f.name)) for f in fields(self)}
@@ -157,12 +171,34 @@ class PersonStateEngine:
 
     def apply_conversation_impact(self, impacts: dict[str, float]) -> None:
         """Apply weak chat impacts directly to state (no event_history)."""
-        for key, delta in (impacts or {}).items():
-            if key not in TRAIT_KEYS:
-                continue
-            current = float(getattr(self.state, key))
-            setattr(self.state, key, current + float(delta))
+        self.apply_delta(impacts)
+
+    def apply_delta(self, impacts: dict[str, float]) -> None:
+        """
+        Generic delta apply for news / chat.
+        Unlike apply_events: does not append event_history.
+        Caller is responsible for psychology_log writes.
+        """
+        self._apply_delta(impacts or {})
         self._clip(warn=True)
+
+    def bump_news_awareness(self, amount: float = 0.3) -> float:
+        """Increase day's news awareness, capped at 1.0."""
+        if self.state is None:
+            return 0.0
+        cur = float(getattr(self.state, "news_awareness", 0.0) or 0.0)
+        self.state.news_awareness = min(1.0, cur + float(amount))
+        self._clip(warn=False)
+        return float(self.state.news_awareness)
+
+    def reset_news_awareness(self) -> None:
+        """Reset daily news awareness to 0."""
+        if self.state is None:
+            return
+        self.state.news_awareness = 0.0
+
+    def reset_news_awareness_daily(self) -> None:
+        self.reset_news_awareness()
 
     def apply_daily_ambient_events(self, today: str) -> list[dict[str, Any]]:
         """Sample and apply ambient friction events for the day."""
@@ -194,7 +230,7 @@ class PersonStateEngine:
 
     def daily_decay(self) -> PersonState:
         """Move each trait toward baseline; stress target includes deadline_pressure."""
-        for key in TRAIT_KEYS:
+        for key in DECAY_TRAIT_KEYS:
             current = float(getattr(self.state, key))
             baseline = float(self.baseline.get(key, TRAIT_BASELINE[key]))
             target = baseline
@@ -202,6 +238,8 @@ class PersonStateEngine:
                 target = baseline + float(self.deadline_pressure)
             updated = current + (target - current) * self.decay_rate
             setattr(self.state, key, updated)
+        # news_awareness is same-day memory of having checked news — reset daily
+        self.reset_news_awareness_daily()
         self._clip(warn=True)
         self.event_history.append({"name": "DAILY_DECAY", "type": "system", "rate": self.decay_rate})
         return self.state

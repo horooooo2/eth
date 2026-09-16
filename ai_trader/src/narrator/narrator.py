@@ -128,6 +128,10 @@ class Narrator:
         system, user = self.prompt_builder.build_daily_close_prompt(**variables)
         return self._generate(system, user, variables, scene="daily_close")
 
+    def narrate_news_check(self, variables: dict[str, Any]) -> NarrativeResult:
+        system, user = self.prompt_builder.build_news_check_prompt(**variables)
+        return self._generate(system, user, variables, scene="news_check")
+
     def _generate(
         self,
         system: str,

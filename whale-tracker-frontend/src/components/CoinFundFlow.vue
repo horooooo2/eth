@@ -26,7 +26,7 @@ const error = ref('');
 const coins = ref<DexFlowCoinRow[]>([]);
 const expanded = ref<string | null>(null);
 const sortMode = ref<'net' | 'in' | 'out'>('net');
-const period = ref<PeriodKey>('24h');
+const period = ref<PeriodKey>('1h');
 const iconFallback = ref<Record<string, number>>({});
 let timer: ReturnType<typeof setInterval> | null = null;
 

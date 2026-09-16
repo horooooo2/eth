@@ -109,6 +109,11 @@ type TimelineEntry = {
   threshold?: number | null;
   position_multiplier?: number | null;
   narrative_thought?: string | null;
+  source?: string | null;
+  direction?: string | null;
+  impact_level?: string | null;
+  key_point?: string | null;
+  event_type?: string | null;
 };
 
 const account = ref<Account | null>(null);
@@ -623,6 +628,8 @@ async function runKillSwitch() {
 function tlTag(type: string) {
   if (type === 'psych') return '💬 心理活动';
   if (type === 'body') return '🏃 身体活动';
+  if (type === 'news') return '📰 新闻浏览';
+  if (type === 'ambient') return '🌫 背景';
   return '📊 交易行为';
 }
 
@@ -1062,6 +1069,14 @@ onUnmounted(() => {
                 <span v-if="e.signal_score != null" class="item"><span class="k">score</span><span class="v">{{ fmt(e.signal_score) }}</span></span>
                 <span v-if="e.threshold != null" class="item"><span class="k">thr</span><span class="v">{{ fmt(e.threshold) }}</span></span>
                 <span v-if="e.mode" class="item"><span class="k">mode</span><span class="v">{{ e.mode }}</span></span>
+              </div>
+              <div v-else-if="e.type === 'news'" class="tl-meta">
+                <span v-if="e.source" class="item"><span class="k">来源</span><span class="v">{{ e.source }}</span></span>
+                <span v-if="e.direction || e.impact_level" class="item">
+                  <span class="k">判断</span>
+                  <span class="v">{{ [e.direction, e.impact_level].filter(Boolean).join(' · ') }}</span>
+                </span>
+                <span v-if="e.key_point" class="item"><span class="k">要点</span><span class="v">{{ e.key_point }}</span></span>
               </div>
               <div v-else-if="e.type === 'body'" class="tl-meta">
                 <span v-if="e.location" class="item"><span class="k">location</span><span class="v">{{ e.location }}</span></span>
@@ -2025,6 +2040,10 @@ onUnmounted(() => {
   background: #f0b90b;
   box-shadow: 0 0 8px #f0b90b66;
 }
+.tl-entry.news .tl-time::after {
+  background: #3fb950;
+  box-shadow: 0 0 8px #3fb95066;
+}
 .tl-content {
   padding: 16px 24px 16px 22px;
   display: flex;
@@ -2044,6 +2063,10 @@ onUnmounted(() => {
 .tl-entry.psych .tl-tag { color: #bc8cff; }
 .tl-entry.body .tl-tag { color: #58a6ff; }
 .tl-entry.trade .tl-tag { color: #f0b90b; }
+.tl-entry.news .tl-tag { color: #3fb950; }
+.tl-entry.news .tl-time::after {
+  background: #3fb950;
+}
 .tl-text {
   font-size: 16px;
   line-height: 1.65;

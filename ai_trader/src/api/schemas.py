@@ -108,7 +108,7 @@ class PositionsResponse(BaseModel):
 
 class TimelineEntry(BaseModel):
     timestamp: str
-    type: Literal["psych", "body", "trade", "ambient"]
+    type: Literal["psych", "body", "trade", "ambient", "news"]
     mood: Optional[str] = None
     mood_label: Optional[str] = None
     text: Optional[str] = None
@@ -125,6 +125,11 @@ class TimelineEntry(BaseModel):
     position_multiplier: Optional[float] = None
     narrative_thought: Optional[str] = None
     name: Optional[str] = None
+    source: Optional[str] = None
+    direction: Optional[str] = None
+    impact_level: Optional[str] = None
+    key_point: Optional[str] = None
+    event_type: Optional[str] = None
 
 
 class TimelineResponse(BaseModel):

@@ -45,6 +45,7 @@ class ChatController:
         position_repo: Any | None = None,
         deadline_manager: Any | None = None,
         behavior_classifier: Any | None = None,
+        news_memory: Any | None = None,
     ) -> None:
         if isinstance(config, (str, Path)):
             path = Path(config)
@@ -64,6 +65,7 @@ class ChatController:
         self.position_repo = position_repo
         self.deadline_manager = deadline_manager
         self.behavior_classifier = behavior_classifier
+        self.news_memory = news_memory
 
     def send(self, user_message: str) -> dict[str, Any]:
         text = (user_message or "").strip()
@@ -86,6 +88,7 @@ class ChatController:
             recent_messages=self.memory.get_recent(),
             user_message=text,
             mood_label=mood_label,
+            news_memory=context.get("news_memory") or None,
         )
 
         try:
@@ -195,11 +198,19 @@ class ChatController:
             except Exception:  # noqa: BLE001
                 pass
 
+        news_summary = ""
+        if self.news_memory is not None and hasattr(self.news_memory, "get_today_summary"):
+            try:
+                news_summary = str(self.news_memory.get_today_summary() or "")
+            except Exception:  # noqa: BLE001
+                news_summary = ""
+
         return {
             "state": state,
             "behavior": behavior,
             "account": account,
             "deadline": deadline,
+            "news_memory": news_summary,
         }
 
     def _handle_ai_question(self, user_message: str, state: dict[str, Any]) -> dict[str, Any]:

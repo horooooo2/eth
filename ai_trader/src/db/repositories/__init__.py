@@ -6,6 +6,8 @@ from .deadline_repo import DeadlineRepo
 from .decision_events_repo import DecisionEventsRepo
 from .decision_repo import DecisionRepo
 from .events_repo import EventsRepo
+from .news_assessments_repo import NewsAssessmentsRepo
+from .news_repo import NewsRepo
 from .positions_repo import PositionsRepo
 from .psychology_repo import PsychologyRepo
 from .traits_repo import TraitsRepo
@@ -23,4 +25,6 @@ __all__ = [
     "AmbientRepo",
     "DeadlineRepo",
     "ConversationRepo",
+    "NewsRepo",
+    "NewsAssessmentsRepo",
 ]

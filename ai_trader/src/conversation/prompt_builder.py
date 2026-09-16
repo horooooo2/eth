@@ -70,6 +70,7 @@ class ConversationPromptBuilder:
         user_message: str,
         *,
         mood_label: str = "平静",
+        news_memory: str | None = None,
     ) -> list[dict[str, str]]:
         system = CONVERSATION_SYSTEM_PROMPT.format(
             mood_label=mood_label or "平静",
@@ -79,6 +80,8 @@ class ConversationPromptBuilder:
             today_pnl=account.get("today_pnl", "—"),
             position_count=account.get("position_count", 0),
         )
+        if news_memory:
+            system = f"{system}\n\n## 你今天看到的新闻\n\n{news_memory}\n"
         history: list[dict[str, str]] = []
         for msg in recent_messages:
             role = str(msg.get("role") or "")

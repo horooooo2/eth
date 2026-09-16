@@ -49,6 +49,7 @@ class NarratorEventBridge:
             "event_calls": 0,
             "daily_open_calls": 0,
             "daily_close_calls": 0,
+            "news_calls": 0,
             "skipped_cooldown": 0,
             "failed": 0,
         }
@@ -278,6 +279,92 @@ class NarratorEventBridge:
         except Exception:
             self.stats["failed"] += 1
             return None
+
+    def on_news_check(
+        self,
+        payload: dict[str, Any],
+        *,
+        state: dict[str, Any] | None = None,
+        behavior: dict[str, Any] | None = None,
+        now: datetime | None = None,
+    ) -> Optional[NarrativeResult]:
+        """
+        Persist a news timeline trail. Assessment/narrative already produced by NewsAssessor;
+        this mainly records body action + audit stats (psych text already in psychology_log).
+        """
+        stamp = now or datetime.now(timezone.utc)
+        assessment = payload.get("assessment")
+        psych: dict[str, Any] = {}
+        body: dict[str, Any] = {}
+        na: dict[str, Any] = {}
+        result: NarrativeResult | None = None
+        if assessment is not None:
+            if hasattr(assessment, "psychology"):
+                psych = dict(getattr(assessment, "psychology") or {})
+                body = dict(getattr(assessment, "body_action") or {})
+                na = dict(getattr(assessment, "news_assessment") or {})
+                result = NarrativeResult(
+                    psychology_text=str(psych.get("text") or ""),
+                    mood=str(psych.get("mood") or "calm"),
+                    mood_label=str(psych.get("mood_label") or "平静"),
+                    body_text=str(body.get("text") or ""),
+                    location=str(body.get("location") or "书房"),
+                    activity=str(body.get("activity") or "看新闻"),
+                    prompt_version="news_check",
+                    source="news",
+                    raw=getattr(assessment, "raw", {}) or {},
+                )
+            elif isinstance(assessment, dict):
+                psych = dict(assessment.get("psychology") or {})
+                body = dict(assessment.get("body_action") or {})
+                na = dict(assessment.get("news_assessment") or {})
+
+        state = state or {}
+        behavior = behavior or {}
+        # Ensure psych row exists (checker may also write; duplicate is acceptable)
+        try:
+            self.psychology_repo.insert(
+                {
+                    "timestamp": payload.get("timestamp") or stamp.isoformat(),
+                    "mood": psych.get("mood") or "calm",
+                    "mood_label": psych.get("mood_label") or "新闻",
+                    "state_snapshot": {
+                        **state,
+                        "primary_mode": behavior.get("primary_mode"),
+                        "entry_type": "news",
+                        "window": payload.get("window"),
+                        "query": payload.get("query"),
+                        "direction": na.get("direction"),
+                        "impact_level": na.get("impact_level"),
+                        "event_type": na.get("event_type")
+                        or getattr(assessment, "event_type", None),
+                        "key_point": na.get("key_point"),
+                        "sources": getattr(payload.get("search_result"), "sources", None)
+                        or [],
+                    },
+                    "narrative_text": psych.get("text") or "",
+                    "prompt_version": "news_check",
+                }
+            )
+        except Exception:  # noqa: BLE001
+            self.stats["failed"] += 1
+            return result
+
+        self.stats["news_calls"] = int(self.stats.get("news_calls") or 0) + 1
+        self.call_log.append(
+            NarratorCall(
+                trigger_type="news_check",
+                template="user_news_check",
+                variables={
+                    "window": payload.get("window"),
+                    "query": payload.get("query"),
+                    "event_type": na.get("event_type"),
+                },
+                cooldown_key=f"news:{payload.get('check_id') or stamp.isoformat()}",
+                result=result,
+            )
+        )
+        return result
 
     def _in_cooldown(
         self,

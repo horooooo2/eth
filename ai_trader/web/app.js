@@ -241,10 +241,21 @@ function renderTimeline(entries) {
           ${e.narrative_thought ? `<div class="hint" style="margin-top:4px">${escapeHtml(e.narrative_thought)}</div>` : ""}</div>`;
       } else if (type === "ambient") {
         body = `<div class="tl-text">🌫 背景<br/>${escapeHtml(e.text || e.name || "")}</div>`;
+      } else if (type === "news") {
+        const judge = [e.direction, e.impact_level].filter(Boolean).join(" · ");
+        body = `<div class="tl-text">${escapeHtml(e.text || "")}</div>
+          <div class="tl-meta muted" style="margin-top:4px">
+            ${e.source ? `来源 ${escapeHtml(e.source)} · ` : ""}${judge ? `判断 ${escapeHtml(judge)}` : ""}
+          </div>`;
       } else {
         body = `<div class="tl-text">${escapeHtml(e.text || "")}</div>`;
       }
-      const mood = type === "ambient" ? "背景" : (e.mood_label || e.mood || e.mode || type);
+      const mood =
+        type === "ambient"
+          ? "背景"
+          : type === "news"
+            ? "📰 新闻浏览"
+            : e.mood_label || e.mood || e.mode || type;
       return `<div class="tl-item ${type}">
         <div class="tl-meta">${escapeHtml(e.timestamp)} · ${escapeHtml(type === "ambient" ? "🌫 背景" : type)} · ${escapeHtml(mood)}</div>
         ${body}

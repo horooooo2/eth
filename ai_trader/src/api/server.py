@@ -32,6 +32,7 @@ from .routes import (
     deadline,
     decisions,
     exchange_config,
+    news,
     positions,
     runtime,
     safety,
@@ -70,8 +71,10 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
     apply_v10_migrations(conn)
     apply_v11_migrations(conn)
     from ..db.migrations_v12 import apply_v12_migrations
+    from ..db.migrations_v13 import apply_v13_migrations
 
     apply_v12_migrations(conn)
+    apply_v13_migrations(conn)
     app.state.db = conn
     app.state.db_path = str(path)
     app.state.project_root = str(ROOT)
@@ -131,6 +134,7 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
     app.include_router(deadline.router, prefix="/api")
     app.include_router(positions.router, prefix="/api")
     app.include_router(timeline.router, prefix="/api")
+    app.include_router(news.router, prefix="/api")
     app.include_router(decisions.router, prefix="/api")
     app.include_router(exchange_config.router, prefix="/api")
     app.include_router(runtime.router, prefix="/api")

@@ -22,6 +22,8 @@ PROMPT_KEYS = (
     "user_event",
     "user_daily_open",
     "user_daily_close",
+    "user_news_check",
+    "user_deadline_evaluation",
 )
 
 
@@ -366,6 +368,7 @@ def materialize_card_configs(
                     "user_daily_open.md",
                     "user_daily_close.md",
                     "user_deadline_evaluation.md",
+                    "user_news_check.md",
                 ],
                 "reload_on_change": False,
             },

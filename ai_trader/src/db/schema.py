@@ -187,6 +187,41 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_conv_timestamp ON conversation_messages(timestamp);
+
+CREATE TABLE IF NOT EXISTS news_checks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    window TEXT,
+    context_tags TEXT,
+    query TEXT,
+    search_answer TEXT,
+    sources TEXT,
+    latency_ms INTEGER,
+    token_usage TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_news_checks_timestamp ON news_checks(timestamp);
+
+CREATE TABLE IF NOT EXISTS news_assessments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    check_id INTEGER,
+    timestamp TEXT NOT NULL,
+    direction TEXT,
+    impact_level TEXT,
+    key_point TEXT,
+    event_type TEXT,
+    confidence REAL,
+    psychology_text TEXT,
+    body_action_text TEXT,
+    impact_applied TEXT,
+    window TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (check_id) REFERENCES news_checks(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_news_assessments_timestamp ON news_assessments(timestamp);
+CREATE INDEX IF NOT EXISTS idx_news_assessments_event_type ON news_assessments(event_type);
 """
 
 
@@ -197,9 +232,13 @@ def init_database(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "decision_log", "prompt_version", "TEXT")
     from .migrations_v10 import apply_v10_migrations
     from .migrations_v11 import apply_v11_migrations
+    from .migrations_v12 import apply_v12_migrations
+    from .migrations_v13 import apply_v13_migrations
 
     apply_v10_migrations(conn)
     apply_v11_migrations(conn)
+    apply_v12_migrations(conn)
+    apply_v13_migrations(conn)
     conn.commit()
 
 

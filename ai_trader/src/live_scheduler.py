@@ -25,6 +25,8 @@ from .db.connection import get_connection
 from .db.migrations_v8 import apply_v8_migrations
 from .db.migrations_v9 import apply_v9_migrations
 from .db.migrations_v10 import apply_v10_migrations
+from .db.migrations_v12 import apply_v12_migrations
+from .db.migrations_v13 import apply_v13_migrations
 from .db.path import get_db_path
 from .db.repositories import (
     AmbientRepo,
@@ -32,6 +34,8 @@ from .db.repositories import (
     DecisionRepo,
     DeadlineRepo,
     EventsRepo,
+    NewsAssessmentsRepo,
+    NewsRepo,
     PositionsRepo,
     PsychologyRepo,
     TraumaRepo,
@@ -102,6 +106,8 @@ class LiveScheduler:
         apply_v8_migrations(self.conn)
         apply_v9_migrations(self.conn)
         apply_v10_migrations(self.conn)
+        apply_v12_migrations(self.conn)
+        apply_v13_migrations(self.conn)
 
         card = resolve_runtime_character(self.config_dir)
         engines = apply_to_engines(card, project_root=ROOT)
@@ -184,6 +190,7 @@ class LiveScheduler:
         self.decision_repo = DecisionRepo(self.conn)
         self.positions_repo = PositionsRepo(self.conn)
         self.events_repo = EventsRepo(self.conn)
+        self._init_news_checker()
 
         self.ws = OKXWebSocket(
             inst_id=inst_id,
@@ -222,6 +229,12 @@ class LiveScheduler:
         risk_thread = threading.Thread(target=self._risk_loop, name="risk-loop", daemon=True)
         risk_thread.start()
 
+        if self.news_checker is not None:
+            news_thread = threading.Thread(
+                target=self._news_check_loop, name="news-check-loop", daemon=True
+            )
+            news_thread.start()
+
         while not self._stop.is_set():
             now = time.time()
             if now - self._last_hb >= 30.0:
@@ -248,6 +261,96 @@ class LiveScheduler:
     def stop(self) -> None:
         self._stop.set()
         self.ws.stop()
+
+    def _init_news_checker(self) -> None:
+        """Build NewsChecker when news_behavior.enabled and API key present."""
+        self.news_checker = None
+        nb = dict(self.card.get("news_behavior") or {})
+        if not nb.get("enabled", True):
+            logger.info("NewsChecker disabled by character config")
+            return
+        api_key = (os.environ.get("DEEPSEEK_API_KEY") or "").strip()
+        if not api_key:
+            logger.info("NewsChecker disabled: DEEPSEEK_API_KEY missing")
+            return
+        try:
+            from .db.migrations_v13 import apply_v13_migrations
+            from .news.assessor import NewsAssessor
+            from .news.checker import NewsChecker
+            from .news.memory import NewsMemory
+            from .news.query_builder import QueryBuilder
+            from .news.search_client import SearchClient
+            from .news.trigger import NewsTrigger
+
+            apply_v13_migrations(self.conn)
+            model = str(nb.get("model") or "deepseek-v4-flash")
+            search_client = SearchClient(api_key, model=model)
+            news_repo = NewsRepo(self.conn)
+            assessments_repo = NewsAssessmentsRepo(self.conn)
+            self.news_checker = NewsChecker(
+                nb,
+                search_client,
+                NewsTrigger(nb),
+                QueryBuilder(nb),
+                NewsAssessor(nb, self.narrator),
+                NewsMemory(assessments_repo, retention_days=int(
+                    ((nb.get("memory_retention") or {}).get("daily_news_summary_days")) or 7
+                )),
+                self.bridge,
+                self.person,
+                {
+                    "news_repo": news_repo,
+                    "news_assessments_repo": assessments_repo,
+                    "psychology_repo": PsychologyRepo(self.conn),
+                },
+                event_impacts=dict(self.card.get("event_impacts") or {}),
+                behavior_classifier=self.classifier,
+            )
+            logger.info("NewsChecker enabled model=%s", model)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("NewsChecker init failed (non-blocking): %s", exc)
+            self.news_checker = None
+
+    def _get_recent_activity(self) -> dict[str, Any]:
+        return {
+            "consecutive_losses": 0,
+            "hours_since_last_trade": 48.0,
+            "days_to_major_macro_event": 99.0,
+            "recent_big_win_within_6h": False,
+            "after_big_move": False,
+        }
+
+    def _news_check_loop(self) -> None:
+        """Every 15 minutes: decide whether Zhang Ming wants to check news."""
+        while not self._stop.is_set():
+            try:
+                if self.news_checker is None:
+                    break
+                opens = []
+                try:
+                    opens = self.positions_repo.list_open() if hasattr(self.positions_repo, "list_open") else []
+                except Exception:  # noqa: BLE001
+                    opens = []
+                portfolio = {
+                    "position_count": len(opens or []),
+                    "positions": opens or [],
+                    "unrealized_pnl_pct": 0.0,
+                }
+                result = self.news_checker.tick(
+                    current_time=datetime.now(timezone.utc).astimezone(),
+                    portfolio=portfolio,
+                    recent_activity=self._get_recent_activity(),
+                )
+                if result:
+                    logger.info(
+                        "News check triggered: window=%s query='%s' event_type=%s",
+                        result.window,
+                        result.query,
+                        result.event_type,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.error("News check failed: %s", exc)
+            self._stop.wait(15 * 60)
 
     def _risk_loop(self) -> None:
         while not self._stop.is_set():

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { fetchDexFlowCoins, type DexFlowCoinRow } from '@/api';
-import { formatUsd, formatSignedUsd } from '@/utils/format';
+import { formatSignedUsd } from '@/utils/format';
 import { preferredCoinFilterOptions, preferredCoinsState } from '@/utils/watchedCoins';
 
 const PERIODS = [

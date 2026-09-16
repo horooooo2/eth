@@ -1,18 +1,9 @@
-"""Step-12 schema: system_status + news autonomy tables."""
+"""Step-13 schema: news_checks + news_assessments."""
 from __future__ import annotations
 
 import sqlite3
 
 DDL = """
-CREATE TABLE IF NOT EXISTS system_status (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    component TEXT NOT NULL,
-    status TEXT NOT NULL,
-    details TEXT,
-    updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_system_status_component ON system_status(component);
-
 CREATE TABLE IF NOT EXISTS news_checks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,
@@ -39,7 +30,6 @@ CREATE TABLE IF NOT EXISTS news_assessments (
     psychology_text TEXT,
     body_action_text TEXT,
     impact_applied TEXT,
-    window TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (check_id) REFERENCES news_checks(id)
 );
@@ -48,9 +38,8 @@ CREATE INDEX IF NOT EXISTS idx_news_assessments_event_type ON news_assessments(e
 """
 
 
-def apply_v12_migrations(conn: sqlite3.Connection) -> None:
+def apply_v13_migrations(conn: sqlite3.Connection) -> None:
     conn.executescript(DDL)
-    # Older DBs may have news_assessments without window column
     cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(news_assessments)").fetchall()}
     if "window" not in cols:
         conn.execute("ALTER TABLE news_assessments ADD COLUMN window TEXT")

@@ -12,8 +12,9 @@ from ..conversation.impact import ImpactClassifier
 from ..conversation.llm import ConversationLLMClient, DynamicLLMClient
 from ..conversation.memory import ConversationMemory
 from ..conversation.prompt_builder import ConversationPromptBuilder
-from ..db.repositories import ConversationRepo, PositionsRepo, TraitsRepo
+from ..db.repositories import ConversationRepo, NewsAssessmentsRepo, PositionsRepo, TraitsRepo
 from ..deadline_hooks import build_deadline_stack
+from ..news.memory import NewsMemory
 from ..person_state import TRAIT_KEYS, PersonStateEngine
 
 
@@ -103,5 +104,6 @@ def build_chat_controller(
         position_repo=PositionsRepo(conn),
         deadline_manager=getattr(state_engine, "deadline_manager", None),
         behavior_classifier=classifier,
+        news_memory=NewsMemory(NewsAssessmentsRepo(conn), retention_days=7),
     )
     return controller, conv_repo, state_engine

@@ -23,6 +23,7 @@ def get_timeline(
     want_body = type in ("all", "body")
     want_trade = type in ("all", "trade")
     want_ambient = type in ("all", "ambient")
+    want_news = type in ("all", "news")
 
     if want_psych:
         rows = conn.execute(
@@ -35,6 +36,32 @@ def get_timeline(
         ).fetchall()
         for r in rows:
             snap = parse_json(r["state_snapshot"], {})
+            if str(snap.get("entry_type") or "") == "news":
+                # news entries rendered separately when want_news
+                if want_news:
+                    sources = snap.get("sources") or []
+                    src_label = "搜索"
+                    if isinstance(sources, list) and sources:
+                        first = sources[0] if isinstance(sources[0], dict) else {}
+                        title = str(first.get("title") or "")[:40]
+                        src_label = f"搜索 + {title}" if title else "搜索"
+                    entries.append(
+                        TimelineEntry(
+                            timestamp=str(r["timestamp"]),
+                            type="news",
+                            mood=r["mood"],
+                            mood_label=r["mood_label"],
+                            text=r["narrative_text"],
+                            mode=str(snap.get("primary_mode") or ""),
+                            prompt_version=r["prompt_version"],
+                            source=src_label,
+                            direction=str(snap.get("direction") or ""),
+                            impact_level=str(snap.get("impact_level") or ""),
+                            key_point=str(snap.get("key_point") or ""),
+                            event_type=str(snap.get("event_type") or snap.get("news_event_type") or ""),
+                        )
+                    )
+                continue
             entries.append(
                 TimelineEntry(
                     timestamp=str(r["timestamp"]),

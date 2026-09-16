@@ -31,6 +31,8 @@ from .db.repositories import (
     DecisionRepo,
     DeadlineRepo,
     EventsRepo,
+    NewsAssessmentsRepo,
+    NewsRepo,
     PositionsRepo,
     PsychologyRepo,
     TraitsRepo,
@@ -314,6 +316,63 @@ def replay_with_narrator(
         narrator, decision_repo, psychology_repo, cooldown_minutes=cooldown
     )
 
+    # Optional news autonomy (mock search in --mock; real only with API key)
+    news_checker = None
+    nb = dict((card or {}).get("news_behavior") or {})
+    if nb.get("enabled", False):
+        try:
+            from .db.migrations_v13 import apply_v13_migrations
+            from .news.assessor import NewsAssessor
+            from .news.checker import NewsChecker
+            from .news.memory import NewsMemory
+            from .news.query_builder import QueryBuilder
+            from .news.search_client import SearchClient, SearchResult
+            from .news.trigger import NewsTrigger
+
+            apply_v13_migrations(conn)
+            assessments_repo = NewsAssessmentsRepo(conn)
+
+            class _MockSearch:
+                def search(self, query: str, max_results: int = 5) -> SearchResult:
+                    return SearchResult(
+                        query=query,
+                        answer="回放模拟：市场消息面平静，无重大突发。",
+                        sources=[{"title": "mock", "url": "", "snippet": ""}],
+                        latency_ms=1,
+                        token_usage={"prompt": 0, "completion": 0},
+                    )
+
+            if use_mock:
+                search_client: Any = _MockSearch()
+            else:
+                api_key = (os.environ.get("DEEPSEEK_API_KEY") or "").strip()
+                search_client = (
+                    SearchClient(api_key, model=str(nb.get("model") or "deepseek-v4-flash"))
+                    if api_key
+                    else None
+                )
+            if search_client is not None:
+                news_checker = NewsChecker(
+                    nb,
+                    search_client,
+                    NewsTrigger(nb, random_seed=7),
+                    QueryBuilder(nb, random_seed=7),
+                    NewsAssessor(nb, narrator),
+                    NewsMemory(assessments_repo),
+                    bridge,
+                    person,
+                    {
+                        "news_repo": NewsRepo(conn),
+                        "psychology_repo": psychology_repo,
+                        "news_assessments_repo": assessments_repo,
+                    },
+                    event_impacts=dict((card or {}).get("event_impacts") or {}),
+                    behavior_classifier=classifier,
+                    enabled=True,
+                )
+        except Exception:
+            news_checker = None
+
     pending_event_ids: list[int] = []
     recent_events: list[str] = []
     decision_count = 0
@@ -372,6 +431,28 @@ def replay_with_narrator(
             "primary_mode": behavior.primary_mode,
             "modifiers": list(behavior.modifiers),
         }
+
+        # Occasional news check driven by bar clock (state/window/probability)
+        if news_checker is not None and i % 60 == 0:
+            try:
+                opens = positions_repo.list_open() if hasattr(positions_repo, "list_open") else []
+                news_checker.tick(
+                    current_time=now,
+                    portfolio={
+                        "position_count": len(opens or []),
+                        "positions": opens or [],
+                        "unrealized_pnl_pct": 0.0,
+                    },
+                    recent_activity={
+                        "consecutive_losses": int(positions.consecutive_stop_losses),
+                        "hours_since_last_trade": 12.0,
+                        "days_to_major_macro_event": 99.0,
+                        "recent_big_win_within_6h": False,
+                        "after_big_move": False,
+                    },
+                )
+            except Exception:
+                pass
 
         # Synthetic day boundary
         if i > 100 and (i - 100) % day_len == 0:
