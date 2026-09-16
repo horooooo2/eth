@@ -185,23 +185,41 @@ else
   nohup node server.js >/tmp/whale-tracker.log 2>&1 &
 fi
 
+# Give Node a moment after restart before probing upstream-backed routes
+sleep 3
+
 echo "==> Node health + data routes"
 ok=0
-for i in $(seq 1 15); do
+for i in $(seq 1 20); do
   sleep 2
   if ! curl -sf --max-time 3 http://127.0.0.1/api/health >/dev/null; then
     echo "node health not ready, attempt $i"
     continue
   fi
   echo "node health 200 (attempt $i)"
+  routes_ok=1
   for route in /api/whales /api/news /api/markets/quotes; do
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "http://127.0.0.1${route}" || true)
+    # markets/quotes may hit upstream APIs — allow longer timeout after cold restart
+    tmax=8
+    if [ "$route" = "/api/markets/quotes" ]; then
+      tmax=25
+    fi
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time "$tmax" "http://127.0.0.1${route}" || true)
     echo "  ${route} => HTTP $code"
-    if [ "$code" = "404" ] || [ "$code" = "000" ]; then
-      echo "ERROR: data route ${route} broken (HTTP $code)"
+    if [ "$code" = "404" ]; then
+      echo "ERROR: data route ${route} is 404"
       exit 8
     fi
+    # 000 = connection reset / timeout while Node is still warming — retry outer loop
+    if [ "$code" = "000" ] || [ "$code" = "502" ] || [ "$code" = "503" ]; then
+      echo "  transient failure on ${route}, will retry"
+      routes_ok=0
+      break
+    fi
   done
+  if [ "$routes_ok" != "1" ]; then
+    continue
+  fi
   # Generic DeepSeek analysis must survive: unauthenticated call is 401, never 404.
   code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 http://127.0.0.1/api/whale-ai/key || true)
   echo "  /api/whale-ai/key => HTTP $code"
