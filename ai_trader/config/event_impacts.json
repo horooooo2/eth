@@ -1,0 +1,106 @@
+{
+  "version": "1.0.0",
+  "atomic_events": {
+    "ARGUMENT_WITH_WIFE": {
+      "risk_appetite": 0.10,
+      "patience": -0.08,
+      "focus": -0.05,
+      "self_doubt": 0.12,
+      "stubbornness": 0.00,
+      "stress": 0.20,
+      "sleep_debt": 1.0
+    },
+    "STOP_LOSS_TRIGGERED": {
+      "risk_appetite": 0.05,
+      "patience": -0.05,
+      "focus": -0.05,
+      "self_doubt": 0.08,
+      "stubbornness": 0.02,
+      "stress": 0.10,
+      "sleep_debt": 0.5
+    },
+    "BIG_WIN": {
+      "risk_appetite": -0.05,
+      "patience": 0.05,
+      "focus": 0.08,
+      "self_doubt": -0.10,
+      "stubbornness": -0.03,
+      "stress": -0.15,
+      "sleep_debt": 0.0
+    },
+    "INTERVIEW_REJECTED": {
+      "risk_appetite": 0.00,
+      "patience": -0.05,
+      "focus": -0.10,
+      "self_doubt": 0.15,
+      "stubbornness": 0.00,
+      "stress": 0.25,
+      "sleep_debt": 1.0
+    },
+    "SLEPT_7_HOURS": {
+      "risk_appetite": -0.05,
+      "patience": 0.08,
+      "focus": 0.12,
+      "self_doubt": -0.08,
+      "stubbornness": -0.02,
+      "stress": -0.10,
+      "sleep_debt": -2.0
+    },
+    "CHILD_SICK": {
+      "risk_appetite": -0.10,
+      "patience": 0.05,
+      "focus": -0.15,
+      "self_doubt": 0.05,
+      "stubbornness": 0.00,
+      "stress": 0.30,
+      "sleep_debt": 1.5
+    },
+    "EX_COLLEAGUE_NEW_CAR": {
+      "risk_appetite": 0.08,
+      "patience": -0.05,
+      "focus": 0.00,
+      "self_doubt": 0.10,
+      "stubbornness": 0.03,
+      "stress": 0.15,
+      "sleep_debt": 0.0
+    },
+    "RENT_DUE": {
+      "risk_appetite": 0.05,
+      "patience": -0.08,
+      "focus": -0.05,
+      "self_doubt": 0.12,
+      "stubbornness": 0.00,
+      "stress": 0.25,
+      "sleep_debt": 0.5
+    }
+  },
+  "compound_events": {
+    "LOSS_STREAK_3": {
+      "risk_appetite": 0.05,
+      "patience": -0.05,
+      "focus": 0.00,
+      "self_doubt": 0.05,
+      "stubbornness": 0.03,
+      "stress": 0.15,
+      "sleep_debt": 0.5
+    },
+    "LOSS_STREAK_5": {
+      "risk_appetite": 0.10,
+      "patience": -0.08,
+      "focus": -0.05,
+      "self_doubt": 0.10,
+      "stubbornness": 0.05,
+      "stress": 0.20,
+      "sleep_debt": 1.0
+    },
+    "TWO_ARGUMENTS_SAME_DAY": {
+      "risk_appetite": 0.05,
+      "patience": -0.05,
+      "focus": -0.03,
+      "self_doubt": 0.05,
+      "stubbornness": 0.02,
+      "stress": 0.10,
+      "sleep_debt": 0.5
+    }
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "version": "0.8.1",
+  "rules": {
+    "BREAKOUT": {
+      "enabled": true,
+      "params": {
+        "lookback_bars": 20,
+        "min_breakout_pct": 0.001
+      }
+    },
+    "PULLBACK": {
+      "enabled": true,
+      "params": {
+        "ema_fast": 20,
+        "ema_slow": 50,
+        "touch_tolerance": 0.003,
+        "recent_bars": 3
+      }
+    },
+    "FLOW": {
+      "enabled": true,
+      "params": {
+        "volume_window": 20,
+        "recent_bars": 3,
+        "volume_ratio_threshold": 1.5
+      }
+    }
+  },
+  "calibration": {
+    "output_range": [0.50, 0.95],
+    "min_samples_for_percentile": 100,
+    "fallback_linear": {
+      "base": 0.50,
+      "scale": 0.45
+    }
+  }
+}

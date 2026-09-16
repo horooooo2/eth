@@ -403,11 +403,12 @@ export type DexFlowCoinsResponse = {
   errors?: Array<{ coin: string; error: string }>;
 };
 
-export async function fetchDexFlowCoins(period = '24h', coins: string[] = []) {
+export async function fetchDexFlowCoins(period = '24h', coins: string[] = [], marketType: 'spot' | 'swap' = 'spot') {
   const { data } = await http.get<DexFlowCoinsResponse>('/flow/coins', {
     params: {
       period,
       coins: coins.length ? coins.join(',') : undefined,
+      marketType,
     },
     timeout: 15000,
   });

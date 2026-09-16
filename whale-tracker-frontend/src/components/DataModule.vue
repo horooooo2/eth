@@ -23,7 +23,7 @@ const emit = defineEmits<{
   focusWhale: [payload: { id: string; name: string }];
 }>();
 
-const tab = ref<DataTab>('flow');
+const tab = ref<DataTab>('macro');
 const macroLoading = ref(false);
 const macroError = ref('');
 const macroEvents = ref<CalendarEvent[]>([]);
@@ -39,11 +39,40 @@ function starText(n: number) {
   return '★'.repeat(n) + '☆'.repeat(Math.max(0, 3 - n));
 }
 
+function escapeHtml(s: string) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** 把「核心...」数据用黄色粗体高亮 */
+function highlightCore(input: string) {
+  const safe = escapeHtml(input || '');
+  return safe.replace(/(核心[^，。；<>]*(?:[，；][^，。；<>]*)*)/g, '<span class="core">$1</span>');
+}
+
 function countdownLabel(event: CalendarEvent) {
-  if (event.isToday || event.daysUntil === 0) return '今天';
-  if (event.isTomorrow || event.daysUntil === 1) return '明天';
-  if (event.daysUntil < 0) return `${Math.abs(event.daysUntil)} 天前`;
-  return `${event.daysUntil} 天后`;
+  const d = event.daysUntil;
+  if (event.isToday || d === 0) return '今天';
+  if (d === -2) return '前天';
+  if (d === -1) return '昨天';
+  if (event.isTomorrow || d === 1) return '明天';
+  if (d === 2) return '后天';
+  if (d < 0) return `${Math.abs(d)} 天前`;
+  return `${d} 天后`;
+}
+
+/** 距离今天 ±2 天以内：主标题直接用「今天/昨天/前天/明天/后天」 */
+function isNearEvent(d: number) {
+  return d >= -2 && d <= 2;
+}
+
+function primaryDateLabel(item: CalendarEvent) {
+  if (isNearEvent(item.daysUntil)) return countdownLabel(item);
+  return item.dateLabel;
+}
+
+function secondaryDateLabel(item: CalendarEvent) {
+  if (isNearEvent(item.daysUntil)) return item.weekday;
+  return `${item.weekday} · ${countdownLabel(item)}`;
 }
 
 async function loadMacro(force = false) {
@@ -53,7 +82,7 @@ async function loadMacro(force = false) {
   try {
     const data = await fetchCalendar(force);
     macroEvents.value = (data.events || [])
-      .filter((item) => item.daysUntil >= 0 && item.daysUntil <= 7)
+      .filter((item) => item.daysUntil >= -7 && item.daysUntil <= 7)
       .filter((item) => item.importance === 'high' || item.importance === 'mid')
       .slice(0, 40);
     macroLoaded.value = true;
@@ -85,8 +114,8 @@ watch(
     <template #header>
       <div class="head">
         <el-radio-group v-model="tab" class="direction-filter" @change="onTabChange">
-          <el-radio-button label="flow">资金流向</el-radio-button>
           <el-radio-button label="macro">宏观数据</el-radio-button>
+          <el-radio-button label="flow">资金流向</el-radio-button>
         </el-radio-group>
       </div>
     </template>
@@ -102,10 +131,10 @@ watch(
         />
         <el-empty v-else-if="!macroEvents.length" description="暂无近期重要事件" />
         <div v-else class="list">
-          <article v-for="item in macroEvents" :key="item.id" class="row macro-row">
+          <article v-for="item in macroEvents" :key="item.id" class="row macro-row" :class="{ 'is-today': item.isToday }">
             <div class="row-time">
-              <strong>{{ item.dateLabel }}</strong>
-              <span>{{ item.weekday }} · {{ countdownLabel(item) }}</span>
+              <strong>{{ primaryDateLabel(item) }}</strong>
+              <span>{{ secondaryDateLabel(item) }}</span>
               <em v-if="item.time">北京时间 {{ item.time }}</em>
               <em v-else-if="item.timeNote">{{ item.timeNote }}</em>
             </div>
@@ -130,11 +159,11 @@ watch(
                   }"
                 />
               </div>
-              <p v-if="item.note" class="note">{{ item.note }}</p>
+              <p v-if="item.note" class="note" v-html="highlightCore(item.note)" />
               <div class="meta">
-                <span v-if="item.previous">前值 {{ item.previous }}</span>
-                <span v-if="item.forecast">预测 {{ item.forecast }}</span>
-                <span v-if="item.actual">公布 {{ item.actual }}</span>
+                <span v-if="item.previous" v-html="`前值 ` + highlightCore(item.previous)" />
+                <span v-if="item.forecast" v-html="`预测 ` + highlightCore(item.forecast)" />
+                <span v-if="item.actual" v-html="`公布 ` + highlightCore(item.actual)" />
               </div>
             </div>
           </article>
@@ -241,6 +270,12 @@ watch(
 .row:last-child {
   border-bottom: none;
 }
+.row.macro-row.is-today {
+  border: 1px solid var(--yellow);
+  border-radius: 8px;
+  margin: 0 -4px;
+  padding: 10px 12px;
+}
 .row-time {
   display: flex;
   flex-wrap: wrap;
@@ -286,6 +321,11 @@ watch(
   font-size: 13px;
   color: var(--muted);
   line-height: 1.5;
+}
+.note :deep(.core),
+.meta :deep(.core) {
+  color: var(--yellow);
+  font-weight: 700;
 }
 .meta {
   display: flex;

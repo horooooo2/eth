@@ -6,10 +6,12 @@ import { coinIconCandidates } from '@/utils/coinIcons';
 import { formatSignedUsd, formatUsd } from '@/utils/format';
 
 const PERIODS = [
+  { key: '5m', label: '5M' },
+  { key: '15m', label: '15M' },
   { key: '1h', label: '1H' },
+  { key: '2h', label: '2H' },
   { key: '4h', label: '4H' },
-  { key: '24h', label: '24H' },
-  { key: '7d', label: '7D' },
+  { key: '6h', label: '6H' },
 ] as const;
 
 type PeriodKey = (typeof PERIODS)[number]['key'];

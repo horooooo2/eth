@@ -1,0 +1,33 @@
+{
+  "version": "1.2.0",
+  "base_threshold": 0.70,
+  "threshold_clamp": [0.50, 0.90],
+  "modifier_adjustments": {
+    "EXHAUSTED": 0.08,
+    "LOW_FOCUS": 0.05,
+    "HIGH_STRESS": 0.03,
+    "HIGH_DOUBT": 0.06
+  },
+  "continuous_adjustments": {
+    "patience_below_0.35": -0.08,
+    "risk_above_0.65": -0.05,
+    "self_doubt_above_0.65": 0.08,
+    "sleep_debt_above_5": 0.05
+  },
+  "position_factors": {
+    "CAUTIOUS": 0.65,
+    "FROZEN": 0.40,
+    "EXHAUSTED": 0.70,
+    "NORMAL": 1.00,
+    "IMPULSIVE": 1.15,
+    "OVERCONFIDENT": 1.20,
+    "REVENGE_TRADING": 1.30
+  },
+  "position_clamp": [0.30, 1.50],
+  "position_tuning": {
+    "risk_component_base": 0.85,
+    "risk_component_scale": 0.30,
+    "fatigue_max_penalty": 0.20,
+    "fatigue_max_sleep_debt": 8.0
+  }
+}

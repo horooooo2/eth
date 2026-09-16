@@ -1,0 +1,39 @@
+{
+  "version": "1.0.0",
+  "constraints": {
+    "max_positions": 3,
+    "max_margin_pct": 0.05,
+    "max_risk_pct": 0.01,
+    "max_notional_pct": 0.15,
+    "max_leverage": 3.0,
+    "daily_loss_limit": -0.03,
+    "max_stop_loss_pct": 0.02
+  },
+  "loss_streak": {
+    "threshold": 3,
+    "pause_minutes": 30
+  },
+  "stop_loss": {
+    "atr_multiplier": 1.5,
+    "min_distance_pct": 0.005,
+    "max_distance_pct": 0.02
+  },
+  "position_sizing": {
+    "base_margin_pct": 0.05,
+    "min_notional_pct": 0.01
+  },
+  "execution": {
+    "taker_fee_rate": 0.0005,
+    "slippage_bps_min": 1.0,
+    "slippage_bps_max": 3.0,
+    "intent_ttl_seconds": 60,
+    "default_leverage": 3.0,
+    "take_profit_rr": 2.0
+  },
+  "account": {
+    "starting_equity": 20000.0
+  },
+  "outcome": {
+    "big_win_equity_pct": 0.005
+  }
+}

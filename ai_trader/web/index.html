@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Trader</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Noto+Serif+SC:wght@500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="top">
+      <div>
+        <p class="eyebrow">AI Trader</p>
+        <h1 id="hero-name">--</h1>
+        <p class="sub" id="hero-sub">未导入角色</p>
+      </div>
+      <div class="top-meta">
+        <div class="header-actions">
+          <button type="button" id="btn-chat" class="chat-entry">💬 对话 <span class="unread-dot" id="chat-unread-dot" style="display:none;"></span></button>
+          <button type="button" id="btn-api-config">🔑 API 配置</button>
+          <button type="button" id="btn-character">👤 角色管理</button>
+          <button type="button" id="btn-kill-switch" class="btn-danger">⛔ 一键平仓</button>
+        </div>
+        <span id="poll-status" class="pill">等待数据…</span>
+        <span id="db-hint" class="muted"></span>
+      </div>
+    </header>
+
+    <section class="grid account-state">
+      <article class="panel" id="panel-account">
+        <div class="panel-head">
+          <h2>账户</h2>
+          <span class="status" data-status="account">加载中…</span>
+        </div>
+        <div id="account-body" class="skeleton">加载账户…</div>
+      </article>
+
+      <article class="panel" id="panel-state">
+        <div class="panel-head">
+          <h2>此刻状态</h2>
+          <span class="status" data-status="state">加载中…</span>
+        </div>
+        <div id="state-body" class="skeleton">加载状态…</div>
+      </article>
+    </section>
+
+    <section class="grid character-positions">
+      <article class="panel" id="panel-character">
+        <div class="panel-head">
+          <h2>性格画像</h2>
+          <span class="status" data-status="character">加载中…</span>
+        </div>
+        <div id="character-body" class="skeleton">加载性格…</div>
+      </article>
+
+      <article class="panel" id="panel-positions">
+        <div class="panel-head">
+          <h2>持仓</h2>
+          <span class="status" data-status="positions">加载中…</span>
+        </div>
+        <div class="tabs">
+          <button type="button" class="tab active" data-tab="current">当前</button>
+          <button type="button" class="tab" data-tab="history">历史</button>
+        </div>
+        <div id="positions-summary" class="summary-row muted"></div>
+        <div id="positions-current" class="tab-pane active skeleton">加载持仓…</div>
+        <div id="positions-history" class="tab-pane skeleton" hidden>加载历史…</div>
+      </article>
+    </section>
+
+    <section class="panel" id="panel-timeline">
+      <div class="panel-head">
+        <h2>心理与行为时间线</h2>
+        <span class="status" data-status="timeline">加载中…</span>
+      </div>
+      <div class="filters">
+        <button type="button" class="chip active" data-type="all">全部</button>
+        <button type="button" class="chip" data-type="psych">心理</button>
+        <button type="button" class="chip" data-type="body">身体</button>
+        <button type="button" class="chip" data-type="trade">交易</button>
+        <button type="button" class="chip" data-type="ambient">背景</button>
+      </div>
+      <div id="timeline-body" class="timeline skeleton">加载时间线…</div>
+    </section>
+
+    <footer class="foot">
+      <span>每 5 秒轮询 · 只读投影数据库</span>
+      <a href="/api/health" target="_blank" rel="noreferrer">/api/health</a>
+    </footer>
+  </div>
+  <script src="/components/api_config_modal.js"></script>
+  <script src="/components/character_modal.js"></script>
+  <script src="/components/chat_modal.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

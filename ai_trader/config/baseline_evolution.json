@@ -1,0 +1,53 @@
+{
+  "version": "1.0.0",
+  "enabled": true,
+  "evolution": {
+    "window_days": 14,
+    "min_gap_threshold": 0.03,
+    "max_daily_step": 0.01,
+    "step_ratio": 0.15,
+    "run_time": "23:59"
+  },
+  "trauma_events": {
+    "big_loss": {
+      "condition": {"field": "daily_pnl_pct", "op": "<", "value": -0.10},
+      "impacts": {
+        "risk_appetite": -0.05,
+        "self_doubt": 0.05
+      },
+      "description": "单日亏损超过账户 10%"
+    },
+    "loss_streak_7": {
+      "condition": {"field": "consecutive_losses", "op": ">=", "value": 7},
+      "impacts": {
+        "patience": -0.05,
+        "stubbornness": 0.03
+      },
+      "description": "连续 7 次止损"
+    },
+    "big_drawdown": {
+      "condition": {"field": "drawdown_from_peak", "op": ">", "value": 0.25},
+      "impacts": {
+        "stress": 0.10,
+        "focus": -0.05
+      },
+      "description": "账户从高点回撤超过 25%"
+    },
+    "win_streak_30d": {
+      "condition": {"field": "days_profitable_streak", "op": ">=", "value": 30},
+      "impacts": {
+        "self_doubt": -0.05,
+        "risk_appetite": 0.03
+      },
+      "description": "连续 30 天盈利"
+    },
+    "loss_streak_30d": {
+      "condition": {"field": "days_losing_streak", "op": ">=", "value": 30},
+      "impacts": {
+        "self_doubt": 0.08,
+        "stress": 0.08
+      },
+      "description": "连续 30 天亏损"
+    }
+  }
+}

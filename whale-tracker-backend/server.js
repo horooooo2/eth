@@ -37,6 +37,7 @@ loadEnvFile(path.join(__dirname, '.env'));
 
 const express = require('express');
 const { createApp } = require('./lib/createApp');
+const { createAiTraderProxy } = require('./lib/aiTraderProxy');
 const { refreshWhalesShard, isProgressiveLoading } = require('./lib/whales');
 const { refreshNews } = require('./lib/newsService');
 const { getMarkets } = require('./lib/markets');
@@ -49,9 +50,13 @@ const {
   getPositionBackfillStatus,
 } = require('./lib/positionBackfill');
 const { startXFeedPolling, getStatus: getXFeedStatus } = require('./lib/xFeedPoller');
-const { startDexFlowPolling, getDexFlowStatus } = require('./lib/dexpaprikaFlow');
+const { start: startOnchainFlow, getStatus: getOnchainFlowStatus } = require('./lib/onchainFlow');
+const { start: startCexFlow } = require('./lib/cexMarketFlow');
+const { start: startCoinankFlow } = require('./lib/coinankFlow');
 
 const app = createApp({ prefixes: ['/api'] });
+/** Frontend calls /ai-api/*; Vite proxies in dev — production needs this. */
+app.use('/ai-api', createAiTraderProxy());
 const PORT = Number(process.env.PORT) || 80;
 /**
  * 定时分片刷新间隔（毫秒）。
@@ -78,6 +83,7 @@ if (fs.existsSync(publicDir)) {
   );
   app.get('*', (req, res, next) => {
     if (req.path.startsWith('/api')) return next();
+    if (req.path.startsWith('/ai-api')) return next();
     if (req.path === '/realtime') return next();
     // 保留 public 下独立 html（如 data.html）
     if (req.path.endsWith('.html')) {
@@ -155,10 +161,20 @@ server.listen(PORT, '0.0.0.0', () => {
     console.warn('[x-poll] 启动失败:', err.message);
   }
   try {
-    startDexFlowPolling();
-    console.log('[dex-flow]', JSON.stringify(getDexFlowStatus()));
+    startCexFlow();
   } catch (err) {
-    console.warn('[dex-flow] 启动失败:', err.message);
+    console.warn('[cex-flow] 启动失败:', err.message);
+  }
+  try {
+    startCoinankFlow();
+  } catch (err) {
+    console.warn('[coinank] 启动失败:', err.message);
+  }
+  try {
+    startOnchainFlow();
+    console.log('[onchain-flow]', JSON.stringify(getOnchainFlowStatus()));
+  } catch (err) {
+    console.warn('[onchain-flow] 启动失败:', err.message);
   }
   refreshAll('启动预热');
   setInterval(() => refreshAll('定时刷新'), REFRESH_MS);

@@ -14,6 +14,7 @@ const FILES = [
   'package.json',
   'package-lock.json',
   'lib/createApp.js',
+  'lib/aiTraderProxy.js',
   'lib/db.js',
   'lib/authStore.js',
   'lib/realtimeBridge.js',
