@@ -1,0 +1,22 @@
+[Unit]
+Description=AI Trader FastAPI (Zhang Ming sidecar)
+Documentation=http://127.0.0.1:8000/api/health
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/ai_trader
+Environment=PYTHONUNBUFFERED=1
+Environment=AI_TRADER_DB=/root/ai_trader/data/trader.db
+EnvironmentFile=-/root/ai_trader/.env
+ExecStartPre=/bin/mkdir -p /root/ai_trader/data /root/ai_trader/logs
+ExecStart=/root/ai_trader/.venv/bin/uvicorn src.api.server:app --host 127.0.0.1 --port 8000 --workers 1
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+# Bind loopback only — Node proxies /ai-api → 127.0.0.1:8000
+[Install]
+WantedBy=multi-user.target
