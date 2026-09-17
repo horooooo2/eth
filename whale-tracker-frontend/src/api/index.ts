@@ -736,6 +736,337 @@ export async function analyzeWithWhaleAi(body: {
   return data;
 }
 
+export type MarketBriefStructured = {
+  short_term?: {
+    bias?: string;
+    direction?: string;
+    confidence?: string;
+    reason?: string;
+    summary?: string;
+  };
+  mid_long_term?: { bias?: string; direction?: string; reason?: string; summary?: string };
+  technical?: { hourly?: string; daily?: string };
+  derivatives?: { funding?: string; liquidations?: string; taker?: string; details?: string };
+  whales?: { site?: string; external?: string; details?: string };
+  news_analysis?: { sentiment?: string; details?: string };
+  market_sentiment?: {
+    long_short_ratio?: string;
+    funding_rate?: string;
+    liquidations?: string;
+    details?: string;
+  };
+  key_evidence?: string[];
+  risks_and_invalidation?: string[];
+  disclaimer?: string;
+};
+
+export type MarketBriefResponse = {
+  ok: boolean;
+  coin: string;
+  analysis: string;
+  structured?: MarketBriefStructured | null;
+  analysisResult?: MarketBriefStructured | null;
+  analysisId?: string;
+  contextSnapshotId?: string;
+  version?: string;
+  contextDiff?: { changed?: boolean; summary?: string; changes?: unknown[] } | null;
+  capability?: unknown;
+  contextText?: string;
+  model?: string;
+  usage?: unknown;
+  parseMode?: string;
+  contextSummary?: {
+    price: number | null;
+    fundingPct: number | null;
+    newsCount: number;
+    webNewsCount?: number;
+    newsMode?: string;
+    macroCount: number;
+    whaleLong: number;
+    whaleShort: number;
+    exchangeLongPct?: number | null;
+    exchangeShortPct?: number | null;
+    hasTech?: boolean;
+    hasLiq?: boolean;
+    liqTotalUsd?: number | null;
+    alertCount: number;
+    hasDefi: boolean;
+    equityLike?: boolean;
+    status?: Record<string, string> | null;
+    hasExternalCrowd?: boolean;
+    sources: string[];
+    asOf: number;
+    cached?: boolean;
+  };
+};
+
+export async function fetchMarketBriefAnalysis(analysisId: string) {
+  const { data } = await http.get<MarketBriefResponse & { status?: string; error?: string }>(
+    `/whale-ai/market-brief-analysis/${encodeURIComponent(analysisId)}`,
+    { timeout: 20000 },
+  );
+  return data;
+}
+
+export async function fetchMarketBrief(coin: string) {
+  const { data } = await http.post<MarketBriefResponse>(
+    '/whale-ai/market-brief',
+    { coin },
+    { timeout: 130_000 },
+  );
+  return data;
+}
+
+function authToken() {
+  try {
+    return localStorage.getItem('whale-tracker-auth-token') || '';
+  } catch {
+    return '';
+  }
+}
+
+/** 解析 SSE 块（event + data） */
+function parseSseChunk(chunk: string): { event: string; data: string } | null {
+  const lines = chunk.split(/\r?\n/);
+  let event = 'message';
+  const dataLines: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith('event:')) event = line.slice(6).trim();
+    else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+  }
+  if (!dataLines.length) return null;
+  return { event, data: dataLines.join('\n') };
+}
+
+export type MarketBriefStreamHandlers = {
+  onStatus?: (payload: {
+    stage?: string;
+    message?: string;
+    analysisId?: string;
+    contextSnapshotId?: string;
+  }) => void;
+  onMeta?: (payload: {
+    coin: string;
+    contextText?: string;
+    contextSummary?: MarketBriefResponse['contextSummary'];
+    equityLike?: boolean;
+    analysisId?: string;
+    contextSnapshotId?: string;
+    version?: string;
+    contextDiff?: MarketBriefResponse['contextDiff'];
+  }) => void;
+  onDelta?: (text: string) => void;
+  onDone?: (payload: MarketBriefResponse) => void;
+  onError?: (message: string) => void;
+  signal?: AbortSignal;
+  forceRefresh?: boolean;
+  analysisId?: string;
+};
+
+/** POST SSE 流式诊币 */
+export async function streamMarketBrief(
+  coin: string,
+  handlers: MarketBriefStreamHandlers & { forceRefresh?: boolean; analysisId?: string } = {},
+) {
+  const res = await fetch('/api/whale-ai/market-brief-stream', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+      ...(authToken() ? { Authorization: `Bearer ${authToken()}` } : {}),
+    },
+    body: JSON.stringify({
+      coin,
+      forceRefresh: Boolean(handlers.forceRefresh),
+      analysisId: handlers.analysisId || undefined,
+    }),
+    signal: handlers.signal,
+  });
+
+  if (!res.ok) {
+    let msg = `流式诊币失败 HTTP ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j?.error) msg = String(j.error);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error('浏览器不支持流式响应');
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finished = false;
+
+  const handleEvent = (event: string, rawData: string) => {
+    let data: any = rawData;
+    try {
+      data = JSON.parse(rawData);
+    } catch {
+      /* keep string */
+    }
+    if (event === 'status') handlers.onStatus?.(data);
+    else if (event === 'meta') handlers.onMeta?.(data);
+    else if (event === 'delta') handlers.onDelta?.(String(data?.text || ''));
+    else if (event === 'done') {
+      finished = true;
+      handlers.onDone?.(data as MarketBriefResponse);
+    } else if (event === 'error') {
+      const msg = String(data?.error || '流式诊币失败');
+      handlers.onError?.(msg);
+      throw new Error(msg);
+    }
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split(/\n\n/);
+      buffer = chunks.pop() || '';
+      for (const chunk of chunks) {
+        const parsed = parseSseChunk(chunk);
+        if (!parsed) continue;
+        handleEvent(parsed.event, parsed.data);
+      }
+    }
+    if (buffer.trim()) {
+      const parsed = parseSseChunk(buffer);
+      if (parsed) handleEvent(parsed.event, parsed.data);
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (!finished) {
+    throw new Error('流式连接已结束，但未收到完整结果');
+  }
+}
+
+export type MarketChatMessage = { role: 'user' | 'assistant'; content: string };
+
+export async function chatMarketBrief(body: {
+  coin: string;
+  message: string;
+  analysis?: string;
+  contextText?: string;
+  messages?: MarketChatMessage[];
+}) {
+  const { data } = await http.post<{
+    ok: boolean;
+    coin: string;
+    reply: string;
+    model?: string;
+    usage?: unknown;
+  }>('/whale-ai/market-chat', body, { timeout: 100_000 });
+  return data;
+}
+
+export type MarketChatStreamHandlers = {
+  onStatus?: (payload: { stage?: string; message?: string }) => void;
+  onDelta?: (text: string) => void;
+  onDone?: (payload: { ok?: boolean; coin?: string; reply?: string; model?: string }) => void;
+  onError?: (message: string) => void;
+  signal?: AbortSignal;
+};
+
+/** POST SSE 流式诊币追问 */
+export async function streamChatMarketBrief(
+  body: {
+    coin: string;
+    message: string;
+    analysis?: string;
+    contextText?: string;
+    messages?: MarketChatMessage[];
+  },
+  handlers: MarketChatStreamHandlers = {},
+) {
+  const res = await fetch('/api/whale-ai/market-chat-stream', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+      ...(authToken() ? { Authorization: `Bearer ${authToken()}` } : {}),
+    },
+    body: JSON.stringify(body),
+    signal: handlers.signal,
+  });
+
+  if (!res.ok) {
+    let msg = `流式对话失败 HTTP ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j?.error) msg = String(j.error);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error('浏览器不支持流式响应');
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finished = false;
+
+  const handleEvent = (event: string, rawData: string) => {
+    let data: any = rawData;
+    try {
+      data = JSON.parse(rawData);
+    } catch {
+      /* keep string */
+    }
+    if (event === 'status') handlers.onStatus?.(data);
+    else if (event === 'delta') handlers.onDelta?.(String(data?.text || ''));
+    else if (event === 'done') {
+      finished = true;
+      handlers.onDone?.(data);
+    } else if (event === 'error') {
+      const msg = String(data?.error || '流式对话失败');
+      handlers.onError?.(msg);
+      throw new Error(msg);
+    }
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split(/\n\n/);
+      buffer = chunks.pop() || '';
+      for (const chunk of chunks) {
+        const parsed = parseSseChunk(chunk);
+        if (!parsed) continue;
+        handleEvent(parsed.event, parsed.data);
+      }
+    }
+    if (buffer.trim()) {
+      const parsed = parseSseChunk(buffer);
+      if (parsed) handleEvent(parsed.event, parsed.data);
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (!finished) {
+    throw new Error('流式连接已结束，但未收到完整回复');
+  }
+}
+
 export async function deleteAuthUser(id: string) {
   const { data } = await http.delete<{
     ok?: boolean;

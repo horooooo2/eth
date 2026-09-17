@@ -1,0 +1,1699 @@
+<script setup lang="ts">
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
+import { ElMessage } from 'element-plus';
+import {
+  streamChatMarketBrief,
+  fetchMarketBriefAnalysis,
+  streamMarketBrief,
+  type MarketBriefResponse,
+  type MarketBriefStructured,
+  type MarketChatMessage,
+} from '@/api';
+import { preferredCoinsState, normalizeCoinId } from '@/utils/watchedCoins';
+import {
+  briefHistoryState,
+  pushBriefHistory,
+  updateBriefHistoryMessages,
+  removeBriefHistory,
+  clearBriefHistory,
+  formatBriefTime,
+  isBriefHistoryFresh,
+  type MarketBriefHistoryItem,
+} from '@/utils/briefHistory';
+import { aiKeyReady } from '@/stores/aiKey';
+import { formatPrice } from '@/utils/format';
+
+type BiasTag = 'buy' | 'sell' | 'wait';
+type Phase = 'pick' | 'loading' | 'streaming' | 'result';
+
+type ParsedSection = {
+  key: string;
+  title: string;
+  body: string;
+  tag: BiasTag | null;
+  tagLabel: string;
+};
+
+const LOADING_STEPS = [
+  '正在读取 K 线指标与爆仓数据…',
+  '解析站外大户与主动买卖…',
+  '检索新闻与跨市场基准…',
+  'DeepSeek 即将开始流式生成…',
+];
+
+const REANALYZE_RE =
+  /重新分析|再分析|重新诊币|刷新分析|更新分析|重新生成|再生成|重新解读|再解读|重新跑|再跑一遍/;
+
+const open = ref(false);
+const phase = ref<Phase>('pick');
+const coin = ref(preferredCoinsState.value[0] || 'BTC');
+const customCoin = ref('');
+const loading = ref(false);
+const chatBusy = ref(false);
+const error = ref('');
+const result = ref<MarketBriefResponse | null>(null);
+const streamDraft = ref('');
+const statusMessage = ref('');
+const chatInput = ref('');
+const chatMessages = ref<MarketChatMessage[]>([]);
+const loadingStepIdx = ref(0);
+const chatListRef = ref<HTMLElement | null>(null);
+const streamScrollRef = ref<HTMLElement | null>(null);
+
+let reqSeq = 0;
+let stepTimer: ReturnType<typeof setInterval> | null = null;
+let abortCtrl: AbortController | null = null;
+let chatAbortCtrl: AbortController | null = null;
+
+const preferredCoins = computed(() => preferredCoinsState.value);
+const historyList = computed(() => briefHistoryState.value);
+
+function ensureCoin() {
+  const list = preferredCoinsState.value;
+  if (!list.length) {
+    if (!coin.value) coin.value = 'BTC';
+    return;
+  }
+  if (!coin.value) coin.value = list[0];
+}
+
+watch(preferredCoinsState, () => ensureCoin(), { immediate: true });
+
+function selectPreferred(id: string) {
+  coin.value = id;
+  customCoin.value = '';
+}
+
+function applyCustomCoin() {
+  const id = normalizeCoinId(customCoin.value);
+  if (!id || id.length < 2) {
+    ElMessage.warning('请输入有效币种代码，如 SOL');
+    return;
+  }
+  coin.value = id;
+  customCoin.value = id;
+}
+
+function detectBias(text: string): { tag: BiasTag; label: string } | null {
+  const t = String(text || '');
+  if (/偏多|看多|逢低买|买入|做多|上行/.test(t) && !/偏空|看空|卖出|做空/.test(t.slice(0, 80))) {
+    if (/观望|等待|回调做多/.test(t.slice(0, 120))) return { tag: 'wait', label: '观望 / 回调做多' };
+    return { tag: 'buy', label: '偏多' };
+  }
+  if (/偏空|看空|卖出|做空|下行/.test(t)) return { tag: 'sell', label: '偏空' };
+  if (/观望|震荡|中性/.test(t)) return { tag: 'wait', label: '观望 / 震荡' };
+  return null;
+}
+
+function parseSections(analysis: string): ParsedSection[] {
+  const raw = String(analysis || '').trim();
+  if (!raw) return [];
+  const parts = raw.split(/^##\s+/m).filter(Boolean);
+  const mapped: ParsedSection[] = [];
+  for (const part of parts) {
+    const nl = part.indexOf('\n');
+    const title = (nl >= 0 ? part.slice(0, nl) : part).trim();
+    const body = (nl >= 0 ? part.slice(nl + 1) : '').trim();
+    if (!title) continue;
+    const bias = detectBias(`${title}\n${body}`);
+    let key = 'other';
+    if (/短期/.test(title)) key = 'short';
+    else if (/中长期|中长/.test(title)) key = 'mid';
+    else if (/技术/.test(title)) key = 'tech';
+    else if (/新闻/.test(title)) key = 'news';
+    else if (/情绪|多空/.test(title)) key = 'sentiment';
+    else if (/证据|依据/.test(title)) key = 'evidence';
+    else if (/风险|失效/.test(title)) key = 'risk';
+    mapped.push({
+      key,
+      title,
+      body,
+      tag: bias?.tag || null,
+      tagLabel: bias?.label || '',
+    });
+  }
+  if (!mapped.length) {
+    return [{ key: 'other', title: '分析结果', body: raw, tag: null, tagLabel: '' }];
+  }
+  return mapped;
+}
+
+const sections = computed(() => parseSections(result.value?.analysis || ''));
+
+const structured = computed<MarketBriefStructured | null>(() => {
+  const s = result.value?.analysisResult || result.value?.structured;
+  if (!s || typeof s !== 'object') return null;
+  if (!s.short_term && !s.mid_long_term && !s.technical) return null;
+  return s;
+});
+
+const sentiment = computed(() => {
+  const st = structured.value?.short_term;
+  if (st?.bias || st?.direction || st?.confidence) {
+    const biasText = st.direction || st.bias || '';
+    const tag = /偏多|看多/.test(biasText)
+      ? 'buy'
+      : /偏空|看空|承压/.test(biasText)
+        ? 'sell'
+        : 'wait';
+    const tone = tag === 'buy' ? 'bull' : tag === 'sell' ? 'bear' : 'neutral';
+    const emoji = tag === 'buy' ? '🟢' : tag === 'sell' ? '🔴' : '🟡';
+    const level = (/低|中|高/.exec(st.confidence || '')?.[0] || '') as '' | '低' | '中' | '高';
+    return {
+      label: `${emoji} 市场情绪：${biasText || '待解读'}`,
+      tone,
+      confidence: level ? `AI 信心：${level}` : st.confidence ? `AI 信心：${st.confidence}` : 'AI 信心：见正文',
+      confidenceLevel: level,
+    };
+  }
+  const short = sections.value.find((s) => s.key === 'short');
+  const mid = sections.value.find((s) => s.key === 'mid');
+  const bias = short?.tag
+    ? { tag: short.tag, label: short.tagLabel }
+    : mid?.tag
+      ? { tag: mid.tag, label: mid.tagLabel }
+      : detectBias(result.value?.analysis || '');
+  if (!bias) {
+    return {
+      label: '市场情绪：待解读',
+      tone: 'neutral' as const,
+      confidence: '—',
+      confidenceLevel: '' as '' | '低' | '中' | '高',
+    };
+  }
+  const tone = bias.tag === 'buy' ? 'bull' : bias.tag === 'sell' ? 'bear' : 'neutral';
+  const emoji = bias.tag === 'buy' ? '🟢' : bias.tag === 'sell' ? '🔴' : '🟡';
+  const confMatch = String(result.value?.analysis || '').match(/信心[：:]\s*(低|中|高)/);
+  const level = (confMatch?.[1] || '') as '' | '低' | '中' | '高';
+  return {
+    label: `${emoji} 市场情绪：${bias.label}`,
+    tone,
+    confidence: level ? `AI 信心：${level}` : 'AI 信心：见正文',
+    confidenceLevel: level,
+  };
+});
+
+function biasFromResult(data: MarketBriefResponse) {
+  const st = data.analysisResult?.short_term || data.structured?.short_term;
+  if (st?.direction || st?.bias) {
+    return { bias: st.direction || st.bias, confidence: st.confidence };
+  }
+  const m = String(data.analysis || '').match(/方向倾向[：:]\s*([^\s｜|]+)(?:\s*[｜|]\s*信心[：:]\s*(低|中|高))?/);
+  const conf = String(data.analysis || '').match(/信心[：:]\s*(低|中|高)/);
+  return {
+    bias: m?.[1] || '',
+    confidence: m?.[2] || conf?.[1] || '',
+  };
+}
+
+function saveHistory(data: MarketBriefResponse, messages: MarketChatMessage[] = []) {
+  if (!data?.analysis) return;
+  const { bias, confidence } = biasFromResult(data);
+  const bits: string[] = [];
+  const s = data.contextSummary;
+  if (s?.price != null) bits.push(`现价 ${formatPrice(s.price)}`);
+  if (bias) bits.push(bias);
+  if (confidence) bits.push(`信心${confidence}`);
+  pushBriefHistory({
+    coin: data.coin,
+    at: Date.now(),
+    bias,
+    confidence,
+    analysis: data.analysis,
+    structured: data.analysisResult || data.structured || null,
+    summaryBits: bits,
+    analysisId: data.analysisId,
+    contextSnapshotId: data.contextSnapshotId,
+    version: data.version,
+    contextDiffSummary: data.contextDiff?.summary,
+    // 新诊币默认清空旧聊天；若显式传入则保留
+    messages,
+  });
+}
+
+function persistChatMessages() {
+  const c = result.value?.coin || coin.value;
+  if (!c) return;
+  updateBriefHistoryMessages(c, chatMessages.value);
+}
+
+function openHistory(item: MarketBriefHistoryItem) {
+  coin.value = item.coin;
+  customCoin.value = '';
+  streamDraft.value = '';
+  error.value = '';
+
+  if (!isBriefHistoryFresh(item)) {
+    chatMessages.value = [];
+    ElMessage.info(`${item.coin} 历史已超过 1 小时，正在重新分析…`);
+    phase.value = 'loading';
+    void runBrief();
+    return;
+  }
+
+  chatMessages.value = Array.isArray(item.messages) ? [...item.messages] : [];
+  result.value = {
+    ok: true,
+    coin: item.coin,
+    analysis: item.analysis,
+    structured: item.structured || null,
+    analysisResult: item.structured || null,
+    analysisId: item.analysisId,
+    contextSnapshotId: item.contextSnapshotId,
+    version: item.version,
+    contextDiff: item.contextDiffSummary
+      ? { changed: true, summary: item.contextDiffSummary }
+      : null,
+    contextText: '',
+    contextSummary: undefined,
+  };
+  phase.value = 'result';
+  void scrollChat();
+}
+
+function shortTermBias(st?: MarketBriefStructured['short_term'] | MarketBriefStructured['mid_long_term']) {
+  return st?.direction || st?.bias || '';
+}
+
+function shortTermBody(st?: MarketBriefStructured['short_term'] | MarketBriefStructured['mid_long_term']) {
+  return st?.summary || st?.reason || '';
+}
+
+function deleteHistory(id: string, ev: Event) {
+  ev.stopPropagation();
+  removeBriefHistory(id);
+}
+
+function biasClass(bias?: string) {
+  const t = String(bias || '');
+  if (/偏多|看多|利好/.test(t)) return 'tone-buy';
+  if (/偏空|看空|承压|利空/.test(t)) return 'tone-sell';
+  return 'tone-wait';
+}
+
+const summaryBits = computed(() => {
+  const bits: string[] = [];
+  if (result.value?.version) bits.push(result.value.version);
+  if (result.value?.contextDiff?.summary) bits.push(result.value.contextDiff.summary);
+  const s = result.value?.contextSummary;
+  if (!s) return bits;
+  if (s.price != null) bits.push(`现价 ${formatPrice(s.price)}`);
+  if (s.fundingPct != null) bits.push(`费率 ${s.fundingPct}%`);
+  if (s.hasTech) bits.push('含技术面');
+  if (s.hasLiq) bits.push(`爆仓 $${Math.round(s.liqTotalUsd || 0)}`);
+  bits.push(`站内新闻 ${s.newsCount}`);
+  if (s.webNewsCount) bits.push(`网络新闻 ${s.webNewsCount}`);
+  bits.push(`巨鲸 多${s.whaleLong}/空${s.whaleShort}`);
+  if (s.exchangeLongPct != null && s.exchangeShortPct != null) {
+    bits.push(`账户多/空 ${s.exchangeLongPct}%/${s.exchangeShortPct}%`);
+  }
+  bits.push(`异动 ${s.alertCount}`);
+  if (s.hasDefi) bits.push('含链上沉淀');
+  if (s.equityLike) bits.push('公司类标的');
+  if (s.cached) bits.push('缓存命中');
+  return bits;
+});
+
+function startLoadingSteps() {
+  stopLoadingSteps();
+  loadingStepIdx.value = 0;
+  stepTimer = setInterval(() => {
+    loadingStepIdx.value = (loadingStepIdx.value + 1) % LOADING_STEPS.length;
+  }, 1200);
+}
+
+function stopLoadingSteps() {
+  if (stepTimer) {
+    clearInterval(stepTimer);
+    stepTimer = null;
+  }
+}
+
+function openModal() {
+  open.value = true;
+  if (!result.value) {
+    phase.value = 'pick';
+    error.value = '';
+  } else {
+    phase.value = 'result';
+  }
+}
+
+function closeModal() {
+  open.value = false;
+  chatAbortCtrl?.abort();
+  chatAbortCtrl = null;
+  chatBusy.value = false;
+  if (loading.value) {
+    reqSeq += 1;
+    loading.value = false;
+    stopLoadingSteps();
+    abortCtrl?.abort();
+    abortCtrl = null;
+    phase.value = result.value ? 'result' : 'pick';
+  }
+}
+
+async function runBrief(opts: { forceRefresh?: boolean } = {}) {
+  if (!aiKeyReady.value) {
+    ElMessage.warning('请先在侧栏「币种偏好」中配置 DeepSeek API Key');
+    return;
+  }
+  if (customCoin.value.trim()) applyCustomCoin();
+  const target = normalizeCoinId(coin.value);
+  if (!target) {
+    ElMessage.warning('请选择或输入币种');
+    return;
+  }
+  coin.value = target;
+
+  const seq = ++reqSeq;
+  abortCtrl?.abort();
+  abortCtrl = new AbortController();
+  loading.value = true;
+  error.value = '';
+  result.value = null;
+  streamDraft.value = '';
+  statusMessage.value = '正在准备数据…';
+  chatMessages.value = [];
+  phase.value = 'loading';
+  startLoadingSteps();
+  let liveAnalysisId = '';
+
+  try {
+    await streamMarketBrief(target, {
+      signal: abortCtrl.signal,
+      forceRefresh: Boolean(opts.forceRefresh),
+      onStatus: (s) => {
+        if (seq !== reqSeq) return;
+        if (s.message) statusMessage.value = s.message;
+        if ((s as { analysisId?: string }).analysisId) {
+          liveAnalysisId = String((s as { analysisId?: string }).analysisId);
+        }
+      },
+      onMeta: (meta) => {
+        if (seq !== reqSeq) return;
+        if ((meta as { analysisId?: string }).analysisId) {
+          liveAnalysisId = String((meta as { analysisId?: string }).analysisId);
+        }
+        result.value = {
+          ok: true,
+          coin: meta.coin || target,
+          analysis: '',
+          structured: null,
+          analysisResult: null,
+          analysisId: liveAnalysisId || undefined,
+          contextSnapshotId: (meta as { contextSnapshotId?: string }).contextSnapshotId,
+          version: (meta as { version?: string }).version,
+          contextDiff: (meta as { contextDiff?: MarketBriefResponse['contextDiff'] }).contextDiff,
+          contextSummary: meta.contextSummary,
+        };
+        stopLoadingSteps();
+        phase.value = 'streaming';
+        statusMessage.value = 'DeepSeek 正在撰写…';
+      },
+      onDelta: (text) => {
+        if (seq !== reqSeq || !text) return;
+        streamDraft.value += text;
+        if (result.value) {
+          result.value = {
+            ...result.value,
+            analysis: streamDraft.value,
+            structured: null,
+            analysisResult: null,
+          };
+        }
+        phase.value = 'streaming';
+        nextTick(() => {
+          const el = streamScrollRef.value;
+          if (el) el.scrollTop = el.scrollHeight;
+        });
+      },
+      onDone: (data) => {
+        if (seq !== reqSeq) return;
+        const unified = {
+          ...data,
+          structured: data.analysisResult || data.structured || null,
+          analysisResult: data.analysisResult || data.structured || null,
+        };
+        result.value = unified;
+        streamDraft.value = unified.analysis || streamDraft.value;
+        phase.value = 'result';
+        statusMessage.value = '';
+        if (!unified.analysis) error.value = '未返回分析结果';
+        else saveHistory(unified);
+      },
+    });
+  } catch (err) {
+    if (seq !== reqSeq) return;
+    if ((err as Error)?.name === 'AbortError') return;
+    // 断线：按 analysisId 查询，不自动重跑 DeepSeek
+    if (liveAnalysisId) {
+      try {
+        const recovered = await fetchMarketBriefAnalysis(liveAnalysisId);
+        if (recovered?.status === 'done' && (recovered.analysis || recovered.analysisResult)) {
+          const unified = {
+            ...recovered,
+            ok: true,
+            analysis: recovered.analysis || '',
+            structured: recovered.analysisResult || recovered.structured || null,
+            analysisResult: recovered.analysisResult || recovered.structured || null,
+          } as MarketBriefResponse;
+          result.value = unified;
+          phase.value = 'result';
+          saveHistory(unified);
+          return;
+        }
+        if (recovered?.status === 'failed') {
+          error.value = recovered.error || '上次分析失败，请手动重新分析';
+          phase.value = 'pick';
+          return;
+        }
+      } catch {
+        /* fallthrough */
+      }
+    }
+    error.value = err instanceof Error ? err.message : '生成建议失败';
+    if (streamDraft.value && result.value) {
+      result.value = {
+        ...result.value,
+        analysis: streamDraft.value,
+      };
+      phase.value = 'result';
+    } else {
+      phase.value = 'pick';
+    }
+  } finally {
+    if (seq === reqSeq) {
+      loading.value = false;
+      stopLoadingSteps();
+      abortCtrl = null;
+    }
+  }
+}
+
+async function scrollChat() {
+  await nextTick();
+  const el = chatListRef.value;
+  if (el) el.scrollTop = el.scrollHeight;
+}
+
+async function sendChat() {
+  const text = chatInput.value.trim();
+  if (!text || chatBusy.value || loading.value || !result.value) return;
+  if (!aiKeyReady.value) {
+    ElMessage.warning('请先配置 DeepSeek API Key');
+    return;
+  }
+  if (REANALYZE_RE.test(text)) {
+    chatInput.value = '';
+    ElMessage.info('正在重新拉取关键数据并生成新版本分析…');
+    await runBrief({ forceRefresh: true });
+    return;
+  }
+  chatInput.value = '';
+  chatMessages.value.push({ role: 'user', content: text });
+  chatMessages.value.push({ role: 'assistant', content: '' });
+  const assistantIdx = chatMessages.value.length - 1;
+  await scrollChat();
+  chatBusy.value = true;
+  chatAbortCtrl?.abort();
+  chatAbortCtrl = new AbortController();
+  const history = chatMessages.value.slice(0, -2);
+  try {
+    await streamChatMarketBrief(
+      {
+        coin: result.value.coin,
+        message: text,
+        analysis: result.value.analysis,
+        contextText: result.value.contextText,
+        messages: history,
+      },
+      {
+        signal: chatAbortCtrl.signal,
+        onDelta: (chunk) => {
+          const cur = chatMessages.value[assistantIdx];
+          if (!cur || cur.role !== 'assistant') return;
+          chatMessages.value[assistantIdx] = {
+            role: 'assistant',
+            content: (cur.content || '') + chunk,
+          };
+          void scrollChat();
+        },
+        onDone: (data) => {
+          const finalText = String(data.reply || chatMessages.value[assistantIdx]?.content || '').trim();
+          chatMessages.value[assistantIdx] = {
+            role: 'assistant',
+            content: finalText || '（无回复）',
+          };
+          persistChatMessages();
+          void scrollChat();
+        },
+      },
+    );
+    persistChatMessages();
+  } catch (err) {
+    if ((err as Error)?.name === 'AbortError') return;
+    chatMessages.value.splice(assistantIdx, 1);
+    chatMessages.value.pop();
+    chatInput.value = text;
+    ElMessage.error(err instanceof Error ? err.message : '对话失败');
+  } finally {
+    chatBusy.value = false;
+    chatAbortCtrl = null;
+  }
+}
+
+function backToPick() {
+  phase.value = 'pick';
+  error.value = '';
+  chatAbortCtrl?.abort();
+  chatAbortCtrl = null;
+}
+
+onUnmounted(() => {
+  stopLoadingSteps();
+  abortCtrl?.abort();
+  chatAbortCtrl?.abort();
+});
+</script>
+
+<template>
+  <div class="ai-launcher">
+    <button type="button" class="ai-fab" title="AI 深度诊币" @click="openModal">
+      <span class="ai-spark" aria-hidden="true">✨</span>
+      AI 深度诊币
+    </button>
+
+    <Teleport to="body">
+      <div v-if="open" class="overlay" @click.self="closeModal">
+        <div class="modal" role="dialog" aria-modal="true" aria-label="AI 深度诊币">
+          <header class="modal-header">
+            <div class="modal-title-row">
+              <div class="modal-title">
+                <span class="ai-spark">✨</span>
+                DeepSeek 智能投研
+                <em v-if="phase !== 'pick'">· {{ coin }}</em>
+              </div>
+              <div v-if="phase !== 'pick'" class="header-actions">
+                <button
+                  type="button"
+                  class="ghost-btn ghost-sm"
+                  :disabled="loading || chatBusy || phase === 'streaming'"
+                  @click="() => runBrief({ forceRefresh: true })"
+                >
+                  重新分析
+                </button>
+                <button type="button" class="ghost-btn ghost-sm" :disabled="loading || chatBusy" @click="backToPick">
+                  换币种
+                </button>
+              </div>
+            </div>
+            <button type="button" class="close-btn" aria-label="关闭" @click="closeModal">×</button>
+          </header>
+
+          <!-- 选币 -->
+          <div v-if="phase === 'pick'" class="modal-body pick-body">
+            <p class="intro">选择偏好币种，或输入自定义代码后开始诊币。</p>
+
+            <div class="block">
+              <div class="block-label">偏好币种</div>
+              <div class="chip-row">
+                <button
+                  v-for="id in preferredCoins"
+                  :key="id"
+                  type="button"
+                  class="coin-chip"
+                  :class="{ active: coin === id && !customCoin }"
+                  @click="selectPreferred(id)"
+                >
+                  {{ id }}
+                </button>
+                <span v-if="!preferredCoins.length" class="muted">暂无偏好，可在下方自定义</span>
+              </div>
+            </div>
+
+            <div class="block">
+              <div class="block-label">自定义币种</div>
+              <div class="custom-row">
+                <input
+                  v-model="customCoin"
+                  class="custom-input"
+                  placeholder="例如 SOL / HYPE / ARB"
+                  maxlength="16"
+                  @keydown.enter.prevent="applyCustomCoin"
+                />
+                <button type="button" class="ghost-btn" @click="applyCustomCoin">使用</button>
+              </div>
+              <p v-if="customCoin && normalizeCoinId(customCoin) === coin" class="muted tiny">
+                当前将分析：{{ coin }}
+              </p>
+            </div>
+
+            <el-alert
+              v-if="error"
+              type="error"
+              :closable="false"
+              :title="error"
+              class="err"
+            />
+            <el-alert
+              v-if="!aiKeyReady"
+              type="warning"
+              :closable="false"
+              title="未配置 DeepSeek Key，请先到侧栏「币种偏好」绑定"
+              class="err"
+            />
+
+            <button type="button" class="primary-btn" :disabled="loading" @click="() => runBrief()">
+              开始诊币 · {{ coin || '—' }}
+            </button>
+
+            <div v-if="historyList.length" class="block history-block">
+              <div class="history-head">
+                <div class="block-label">历史诊币</div>
+                <button type="button" class="ghost-btn ghost-sm" @click="clearBriefHistory">清空</button>
+              </div>
+              <div class="history-list">
+                <button
+                  v-for="item in historyList"
+                  :key="item.id"
+                  type="button"
+                  class="history-item"
+                  @click="openHistory(item)"
+                >
+                  <div class="history-main">
+                    <span class="history-coin">{{ item.coin }}</span>
+                    <span v-if="item.version" class="history-conf">{{ item.version }}</span>
+                    <span v-if="!isBriefHistoryFresh(item)" class="history-expired">已过期</span>
+                    <span v-if="item.bias" class="history-bias">{{ item.bias }}</span>
+                    <span v-if="item.confidence" class="history-conf">信心{{ item.confidence }}</span>
+                    <span v-if="item.messages?.length" class="history-conf">聊{{ item.messages.length }}</span>
+                  </div>
+                  <div class="history-meta">
+                    <span>{{ formatBriefTime(item.at) }}</span>
+                    <span
+                      class="history-del"
+                      title="删除"
+                      @click="deleteHistory(item.id, $event)"
+                    >×</span>
+                  </div>
+                  <div v-if="item.contextDiffSummary" class="history-diff">{{ item.contextDiffSummary }}</div>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 加载：仅数据打包阶段 -->
+          <div v-else-if="phase === 'loading'" class="modal-body loading-state">
+            <div class="spinner" />
+            <div class="loading-step">{{ statusMessage || LOADING_STEPS[loadingStepIdx] }}</div>
+            <p class="loading-sub">正在汇总站内与站外数据…</p>
+          </div>
+
+          <!-- 结果 + 流式打字 + 对话 -->
+          <div v-else class="modal-body result-layout">
+            <div ref="streamScrollRef" class="result-scroll">
+              <div v-if="phase === 'streaming'" class="stream-banner">
+                <span class="stream-dot" />
+                {{ statusMessage || 'DeepSeek 正在撰写…' }}
+              </div>
+
+              <div v-if="phase === 'result'" class="sentiment-box" :class="sentiment.tone">
+                <div class="sentiment-text">{{ sentiment.label }}</div>
+                <div
+                  class="confidence"
+                  :class="{
+                    'conf-low': sentiment.confidenceLevel === '低',
+                    'conf-mid': sentiment.confidenceLevel === '中',
+                    'conf-high': sentiment.confidenceLevel === '高',
+                  }"
+                >
+                  {{ sentiment.confidence }}
+                </div>
+              </div>
+
+              <div v-if="summaryBits.length" class="meta">
+                <span v-for="bit in summaryBits" :key="bit" class="chip">{{ bit }}</span>
+              </div>
+
+              <!-- 流式草稿：边生成边显示 -->
+              <div v-if="phase === 'streaming'" class="stream-draft coin-analysis">
+                <div class="coin-desc">{{ streamDraft || '…' }}<span class="caret">▍</span></div>
+              </div>
+
+              <!-- JSON 卡片优先（完成后） -->
+              <template v-else-if="structured">
+                <section class="analysis-section">
+                  <div class="section-title">⚡ 短期看法</div>
+                  <div class="coin-analysis" :class="biasClass(shortTermBias(structured.short_term))">
+                    <div class="coin-header">
+                      <span
+                        class="tag"
+                        :class="biasClass(shortTermBias(structured.short_term)) === 'tone-buy' ? 'tag-buy' : biasClass(shortTermBias(structured.short_term)) === 'tone-sell' ? 'tag-sell' : 'tag-wait'"
+                      >
+                        {{ shortTermBias(structured.short_term) || '观望' }}
+                      </span>
+                    </div>
+                    <div class="coin-desc">{{ shortTermBody(structured.short_term) }}</div>
+                  </div>
+                </section>
+
+                <section class="analysis-section">
+                  <div class="section-title">🔭 中长期看法</div>
+                  <div class="coin-analysis" :class="biasClass(shortTermBias(structured.mid_long_term))">
+                    <div v-if="shortTermBias(structured.mid_long_term)" class="coin-header">
+                      <span
+                        class="tag"
+                        :class="biasClass(shortTermBias(structured.mid_long_term)) === 'tone-buy' ? 'tag-buy' : biasClass(shortTermBias(structured.mid_long_term)) === 'tone-sell' ? 'tag-sell' : 'tag-wait'"
+                      >
+                        {{ shortTermBias(structured.mid_long_term) }}
+                      </span>
+                    </div>
+                    <div class="coin-desc">{{ shortTermBody(structured.mid_long_term) }}</div>
+                  </div>
+                </section>
+
+                <section class="analysis-section">
+                  <div class="section-title">📈 技术分析</div>
+                  <div class="coin-analysis">
+                    <div class="coin-desc">
+                      <p v-if="structured.technical?.hourly"><strong>小时线：</strong>{{ structured.technical.hourly }}</p>
+                      <p v-if="structured.technical?.daily"><strong>日线：</strong>{{ structured.technical.daily }}</p>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="analysis-section">
+                  <div class="section-title">📰 新闻分析</div>
+                  <div class="coin-analysis" :class="biasClass(structured.news_analysis?.sentiment)">
+                    <div v-if="structured.news_analysis?.sentiment" class="coin-header">
+                      <span class="tag tag-wait">{{ structured.news_analysis.sentiment }}</span>
+                    </div>
+                    <div class="coin-desc">{{ structured.news_analysis?.details }}</div>
+                  </div>
+                </section>
+
+                <section class="analysis-section">
+                  <div class="section-title">🌊 市场情绪</div>
+                  <div class="coin-analysis">
+                    <div class="coin-desc">
+                      <p v-if="structured.market_sentiment?.long_short_ratio">
+                        多空：{{ structured.market_sentiment.long_short_ratio }}
+                      </p>
+                      <p v-if="structured.market_sentiment?.funding_rate">
+                        费率：{{ structured.market_sentiment.funding_rate }}
+                      </p>
+                      <p v-if="structured.market_sentiment?.liquidations">
+                        爆仓：{{ structured.market_sentiment.liquidations }}
+                      </p>
+                      <p v-if="structured.market_sentiment?.details">
+                        {{ structured.market_sentiment.details }}
+                      </p>
+                    </div>
+                  </div>
+                </section>
+
+                <section v-if="structured.key_evidence?.length" class="analysis-section">
+                  <div class="section-title">📎 关键证据</div>
+                  <div class="coin-analysis">
+                    <ul class="bullet-list">
+                      <li v-for="(e, i) in structured.key_evidence" :key="i">{{ e }}</li>
+                    </ul>
+                  </div>
+                </section>
+
+                <section v-if="structured.risks_and_invalidation?.length" class="analysis-section">
+                  <div class="section-title risk">⚠️ 风险与失效条件</div>
+                  <div class="coin-analysis risk">
+                    <ul class="bullet-list">
+                      <li v-for="(e, i) in structured.risks_and_invalidation" :key="i">{{ e }}</li>
+                    </ul>
+                  </div>
+                </section>
+              </template>
+
+              <!-- Markdown 回退 -->
+              <template v-else>
+                <section
+                  v-for="sec in sections"
+                  :key="sec.key + sec.title"
+                  class="analysis-section"
+                >
+                  <div class="section-title" :class="{ risk: sec.key === 'risk' }">
+                    <template v-if="sec.key === 'short'">⚡</template>
+                    <template v-else-if="sec.key === 'mid'">🔭</template>
+                    <template v-else-if="sec.key === 'tech'">📈</template>
+                    <template v-else-if="sec.key === 'news'">📰</template>
+                    <template v-else-if="sec.key === 'sentiment'">🌊</template>
+                    <template v-else-if="sec.key === 'evidence'">📎</template>
+                    <template v-else-if="sec.key === 'risk'">⚠️</template>
+                    {{ sec.title }}
+                  </div>
+                  <div
+                    class="coin-analysis"
+                    :class="[
+                      sec.key,
+                      sec.tag === 'buy' ? 'tone-buy' : sec.tag === 'sell' ? 'tone-sell' : sec.tag === 'wait' ? 'tone-wait' : '',
+                    ]"
+                  >
+                    <div
+                      v-if="sec.tagLabel && (sec.key === 'short' || sec.key === 'mid')"
+                      class="coin-header"
+                    >
+                      <span
+                        class="tag"
+                        :class="sec.tag === 'buy' ? 'tag-buy' : sec.tag === 'sell' ? 'tag-sell' : 'tag-wait'"
+                      >
+                        {{ sec.tagLabel }}
+                      </span>
+                    </div>
+                    <div class="coin-desc">{{ sec.body }}</div>
+                  </div>
+                </section>
+              </template>
+
+              <div class="disclaimer">
+                {{
+                  structured?.disclaimer ||
+                  '以上分析由 DeepSeek 基于站内数据与网络检索生成，仅供研究参考，不构成投资建议。'
+                }}
+              </div>
+            </div>
+
+            <div v-if="phase === 'result'" class="chat-panel">
+              <div class="chat-toolbar">
+                <div class="chat-label">与 AI 继续探讨</div>
+              </div>
+              <div ref="chatListRef" class="chat-list">
+                <div v-if="!chatMessages.length" class="chat-empty">
+                  例如：这个止损合理吗？也可点顶部「重新分析」刷新简报。
+                </div>
+                <div
+                  v-for="(m, idx) in chatMessages"
+                  :key="idx"
+                  class="chat-bubble"
+                  :class="[m.role, { pending: chatBusy && idx === chatMessages.length - 1 && m.role === 'assistant' && !m.content }]"
+                >
+                  <template v-if="m.content">{{ m.content }}</template>
+                  <template v-else-if="chatBusy && m.role === 'assistant'">思考中…</template>
+                </div>
+              </div>
+              <div class="chat-input-row">
+                <input
+                  v-model="chatInput"
+                  class="chat-input"
+                  placeholder="输入问题，或说「重新分析」"
+                  :disabled="chatBusy || loading"
+                  maxlength="500"
+                  @keydown.enter.prevent="sendChat"
+                />
+                <button
+                  type="button"
+                  class="send-btn"
+                  :disabled="chatBusy || loading || !chatInput.trim()"
+                  @click="sendChat"
+                >
+                  发送
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+  </div>
+</template>
+
+<style scoped>
+.ai-launcher {
+  position: relative;
+  z-index: 2;
+  flex: none;
+}
+
+.ai-fab {
+  height: 36px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 999px;
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 750;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  background: linear-gradient(135deg, #6366f1, #a855f7, #ec4899);
+  box-shadow: 0 0 12px rgba(99, 102, 241, 0.4);
+  animation: ai-pulse 2s infinite;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.ai-fab:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 0 18px rgba(99, 102, 241, 0.55);
+}
+
+.ai-spark {
+  font-size: 13px;
+  line-height: 1;
+}
+
+@keyframes ai-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(99, 102, 241, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(99, 102, 241, 0);
+  }
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: rgba(0, 0, 0, 0.58);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px 16px;
+  box-sizing: border-box;
+}
+
+.modal {
+  width: min(960px, 100%);
+  max-height: min(92vh, 920px);
+  background: var(--card, #15191e);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: modal-in 0.28s ease;
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.modal-header {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  background: linear-gradient(to right, rgba(99, 102, 241, 0.14), transparent);
+  flex-shrink: 0;
+}
+
+.modal-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.modal-title {
+  font-size: 16px;
+  font-weight: 750;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  min-width: 0;
+}
+
+.modal-title em {
+  font-style: normal;
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.close-btn:hover {
+  color: var(--text);
+}
+
+.modal-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.pick-body {
+  padding: 18px 20px 20px;
+  gap: 16px;
+}
+
+.intro {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.block-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--soft);
+  margin-bottom: 8px;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.coin-chip {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.coin-chip.active {
+  border-color: transparent;
+  color: #fff;
+  background: linear-gradient(135deg, #6366f1, #a855f7);
+}
+
+.custom-row {
+  display: flex;
+  gap: 8px;
+}
+
+.custom-input,
+.chat-input {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-2, #0b0e11);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.custom-input:focus,
+.chat-input:focus {
+  border-color: color-mix(in srgb, #6366f1 60%, var(--border));
+}
+
+.ghost-btn {
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.ghost-btn:hover:not(:disabled) {
+  background: var(--panel-2);
+}
+
+.primary-btn,
+.send-btn {
+  height: 40px;
+  border: none;
+  border-radius: 10px;
+  color: #fff;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 750;
+  cursor: pointer;
+  background: linear-gradient(135deg, #6366f1, #a855f7, #ec4899);
+}
+
+.primary-btn {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.history-block {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.history-head .block-label {
+  margin-bottom: 0;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.history-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.history-item:hover {
+  border-color: color-mix(in srgb, #6366f1 45%, var(--border));
+}
+
+.history-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.history-coin {
+  font-weight: 800;
+  font-size: 13px;
+}
+
+.history-bias,
+.history-conf {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.history-expired {
+  font-size: 11px;
+  color: #f59e0b;
+  white-space: nowrap;
+}
+
+.history-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  font-size: 11px;
+  color: var(--soft);
+}
+
+.history-diff {
+  flex: 1 0 100%;
+  width: 100%;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.35;
+  text-align: left;
+}
+
+.history-del {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--muted);
+}
+
+.history-del:hover {
+  color: var(--red, #f6465d);
+  background: rgba(246, 70, 93, 0.12);
+}
+
+.primary-btn:disabled,
+.send-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tiny {
+  margin: 6px 0 0;
+}
+
+.err {
+  margin-top: 4px;
+}
+
+.loading-state {
+  align-items: center;
+  justify-content: center;
+  min-height: 320px;
+  gap: 14px;
+  color: var(--muted);
+  text-align: center;
+  padding: 24px;
+}
+
+.spinner {
+  width: 42px;
+  height: 42px;
+  border: 3px solid rgba(99, 102, 241, 0.25);
+  border-radius: 50%;
+  border-top-color: #6366f1;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loading-step {
+  font-size: 14px;
+  color: var(--text);
+  font-weight: 650;
+}
+
+.loading-sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--soft);
+}
+
+.result-layout {
+  min-height: 0;
+}
+
+.result-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 18px 10px;
+}
+
+.stream-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, #6366f1 35%, var(--border));
+  background: color-mix(in srgb, #6366f1 10%, var(--panel-2));
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.stream-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #a855f7;
+  box-shadow: 0 0 0 0 rgba(168, 85, 247, 0.5);
+  animation: stream-pulse 1.2s ease infinite;
+}
+
+@keyframes stream-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(168, 85, 247, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(168, 85, 247, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(168, 85, 247, 0);
+  }
+}
+
+.stream-draft {
+  min-height: 180px;
+  border-left-color: #a855f7;
+}
+
+.caret {
+  display: inline-block;
+  margin-left: 2px;
+  color: #a855f7;
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.sentiment-box {
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+}
+
+.sentiment-box.bull {
+  background: rgba(14, 203, 129, 0.1);
+  border-color: rgba(14, 203, 129, 0.3);
+}
+
+.sentiment-box.bear {
+  background: rgba(246, 70, 93, 0.1);
+  border-color: rgba(246, 70, 93, 0.3);
+}
+
+.sentiment-box.neutral {
+  background: rgba(132, 142, 156, 0.1);
+  border-color: rgba(132, 142, 156, 0.25);
+}
+
+.sentiment-text {
+  font-weight: 750;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.sentiment-box.bull .sentiment-text {
+  color: var(--green, #0ecb81);
+}
+
+.sentiment-box.bear .sentiment-text {
+  color: var(--red, #f6465d);
+}
+
+.confidence {
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
+.confidence.conf-low {
+  color: #f59e0b;
+  text-shadow: 0 0 12px rgba(245, 158, 11, 0.35);
+}
+
+.confidence.conf-mid {
+  color: #38bdf8;
+}
+
+.confidence.conf-high {
+  color: #0ecb81;
+  text-shadow: 0 0 12px rgba(14, 203, 129, 0.3);
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.analysis-section {
+  margin-bottom: 16px;
+}
+
+.section-title {
+  font-size: 13px;
+  color: #a855f7;
+  font-weight: 750;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.section-title.risk {
+  color: var(--red, #f6465d);
+}
+
+.coin-analysis {
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 12px;
+  border-left: 3px solid #6366f1;
+}
+
+.coin-analysis.tone-buy {
+  border-left-color: var(--green, #0ecb81);
+}
+
+.coin-analysis.tone-sell {
+  border-left-color: var(--red, #f6465d);
+}
+
+.coin-analysis.tone-wait {
+  border-left-color: #a855f7;
+}
+
+.coin-analysis.risk {
+  background: rgba(246, 70, 93, 0.08);
+  border: 1px solid rgba(246, 70, 93, 0.28);
+  border-left-width: 3px;
+}
+
+.coin-header {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  font-weight: 750;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.tag {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.tag-buy {
+  background: rgba(14, 203, 129, 0.18);
+  color: var(--green, #0ecb81);
+}
+
+.tag-sell {
+  background: rgba(246, 70, 93, 0.18);
+  color: var(--red, #f6465d);
+}
+
+.tag-wait {
+  background: rgba(132, 142, 156, 0.18);
+  color: var(--muted);
+}
+
+.coin-desc {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.coin-desc p {
+  margin: 0 0 8px;
+}
+
+.coin-desc p:last-child {
+  margin-bottom: 0;
+}
+
+.bullet-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.bullet-list li + li {
+  margin-top: 4px;
+}
+
+.coin-analysis.risk .coin-desc {
+  color: #ffb3c1;
+}
+
+.disclaimer {
+  margin: 4px 0 10px;
+  font-size: 12px;
+  color: var(--soft);
+  text-align: center;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.chat-panel {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--card) 88%, #6366f1 6%);
+  padding: 10px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: min(42vh, 420px);
+  min-height: 280px;
+}
+
+.chat-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.chat-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--soft);
+}
+
+.ghost-sm {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  border-radius: 8px;
+}
+
+.chat-list {
+  flex: 1;
+  min-height: 160px;
+  max-height: none;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 2px;
+}
+
+.chat-empty {
+  font-size: 12px;
+  color: var(--soft);
+  padding: 8px 2px;
+}
+
+.chat-bubble {
+  max-width: 92%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-bubble.user {
+  align-self: flex-end;
+  background: color-mix(in srgb, #6366f1 35%, var(--panel));
+  color: var(--text);
+}
+
+.chat-bubble.assistant {
+  align-self: flex-start;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.chat-bubble.pending {
+  opacity: 0.75;
+  font-style: italic;
+}
+
+.chat-input-row {
+  display: flex;
+  gap: 8px;
+}
+
+.send-btn {
+  flex: 0 0 auto;
+  width: 72px;
+  height: 36px;
+}
+
+@media (max-width: 640px) {
+  .modal {
+    max-height: 94vh;
+    width: 100%;
+  }
+  .chat-panel {
+    max-height: 220px;
+  }
+}
+</style>

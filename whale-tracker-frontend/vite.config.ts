@@ -22,6 +22,9 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: apiTarget,
           changeOrigin: true,
+          /** SSE 诊币流可能超过默认代理超时 */
+          timeout: 0,
+          proxyTimeout: 0,
         },
         '/poly-fed': {
           target: apiTarget,

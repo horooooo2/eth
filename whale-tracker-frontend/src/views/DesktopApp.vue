@@ -5,7 +5,7 @@ import { fetchQuotes, fetchPagedAlertHistory, fetchPagedTrades, fetchCalendar } 
 import CoinPreferences from '@/components/CoinPreferences.vue';
 import FreshModeControl from '@/components/FreshModeControl.vue';
 import NewsList from '@/components/NewsList.vue';
-import FundFlowBanner from '@/components/FundFlowBanner.vue';
+import MarketBriefBanner from '@/components/MarketBriefBanner.vue';
 import WhaleResonanceBanner from '@/components/WhaleResonanceBanner.vue';
 import WhaleAlertDock from '@/components/WhaleAlertDock.vue';
 import WhaleList from '@/components/WhaleList.vue';
@@ -352,7 +352,6 @@ onUnmounted(() => {
 
     <div class="layout">
       <header class="topbar">
-        <FundFlowBanner />
         <WhaleResonanceBanner
           :whales="whaleStore.displayWhales"
           :activity="whaleStore.activity"
@@ -361,6 +360,7 @@ onUnmounted(() => {
           :ready="whaleStore.displayWhales.length > 0"
           @focus-whale="onFocusWhaleCard"
         />
+        <MarketBriefBanner />
       </header>
 
       <el-alert
@@ -743,19 +743,22 @@ onUnmounted(() => {
 }
 .topbar {
   display: grid;
-  grid-template-columns: 1fr 2fr;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   margin-bottom: 12px;
   min-width: 0;
   min-height: 44px;
 }
-.topbar .liq-wrap,
-.topbar .notice-wrap {
-  justify-self: stretch;
+.topbar :deep(.notice-wrap),
+.topbar :deep(.liq-wrap) {
   width: 100%;
   max-width: 100%;
   min-width: 0;
+}
+.topbar :deep(.ai-launcher) {
+  position: static;
+  flex: none;
 }
 .login-form :deep(.el-form-item) {
   margin-bottom: 18px;
