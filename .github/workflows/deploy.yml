@@ -45,17 +45,6 @@ jobs:
             --exclude='./.env.*' \
             .
           tar -C whale-tracker-deploy/public -czf .deploy-pack/public.tgz .
-          tar -C ai_trader -czf .deploy-pack/ai_trader.tgz \
-            --exclude='./.venv' \
-            --exclude='./data' \
-            --exclude='./logs' \
-            --exclude='./.env' \
-            --exclude='./.git' \
-            --exclude='./__pycache__' \
-            --exclude='./.pytest_cache' \
-            --exclude='./reports' \
-            --exclude='*.pyc' \
-            .
           cp whale-tracker-backend/scripts/remote-deploy.sh .deploy-pack/remote-deploy.sh
           chmod +x .deploy-pack/remote-deploy.sh
 
@@ -65,7 +54,6 @@ jobs:
 
           test -f .deploy-pack/code.tgz || { echo "ERROR: missing local code.tgz"; exit 31; }
           test -f .deploy-pack/public.tgz || { echo "ERROR: missing local public.tgz"; exit 32; }
-          test -f .deploy-pack/ai_trader.tgz || { echo "ERROR: missing local ai_trader.tgz"; exit 33; }
           test -f .deploy-pack/remote-deploy.sh || { echo "ERROR: missing local remote-deploy.sh"; exit 34; }
           test -s .deploy-pack/remote-deploy.sh || { echo "ERROR: empty remote-deploy.sh"; exit 36; }
           echo "LOCAL PACK OK"
@@ -77,7 +65,7 @@ jobs:
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           # Explicit files — avoid glob/strip nesting under /tmp/whale-deploy-pack/.deploy-pack/
-          source: ".deploy-pack/code.tgz,.deploy-pack/public.tgz,.deploy-pack/ai_trader.tgz,.deploy-pack/remote-deploy.sh"
+          source: ".deploy-pack/code.tgz,.deploy-pack/public.tgz,.deploy-pack/remote-deploy.sh"
           target: "/tmp/whale-deploy-pack"
           strip_components: 1
           overwrite: true
@@ -122,11 +110,6 @@ jobs:
             if [ ! -f "$PACK/public.tgz" ]; then
               echo "ERROR: missing public.tgz"
               exit 24
-            fi
-
-            if [ ! -f "$PACK/ai_trader.tgz" ]; then
-              echo "ERROR: missing ai_trader.tgz"
-              exit 25
             fi
 
             echo "REMOTE PACK OK"

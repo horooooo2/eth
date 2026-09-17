@@ -115,7 +115,7 @@ watch(
       <div class="head">
         <el-radio-group v-model="tab" class="direction-filter" @change="onTabChange">
           <el-radio-button label="macro">宏观数据</el-radio-button>
-          <el-radio-button label="flow">资金流向</el-radio-button>
+          <el-radio-button label="flow">协议沉淀</el-radio-button>
         </el-radio-group>
       </div>
     </template>

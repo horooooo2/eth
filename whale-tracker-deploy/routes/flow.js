@@ -2,6 +2,7 @@ const express = require('express');
 const cex = require('../lib/cexMarketFlow');
 const onchain = require('../lib/onchainFlow');
 const coinank = require('../lib/coinankFlow');
+const defillama = require('../lib/defillamaMacro');
 
 const router = express.Router();
 
@@ -23,14 +24,14 @@ function normalizePeriod(raw) {
 }
 
 /**
- * GET /api/flow/coins?period=1h&coins=BTC,ETH,SOL
+ * GET /api/flow/coins?period=1h&coins=BTC,ETH,SOL&marketType=spot|swap
  *
  * 优先级：
- *   1. CoinAnk SPOT 的官方 net 字段（主源）
- *   2. Binance/OKX/Bybit WS 聚合（fallback + buy/sell/price 参考）
+ *   1. CoinAnk 对应市场的官方 net 字段（主源）
+ *   2. Binance/OKX/Bybit WS 聚合（同市场类型的 taker 净流入 fallback）
  *
  * net 直接用 CoinAnk 的，不用 buy-sell 重算；
- * buy/sell/price 从 WS 取（仅供前端展示，不影响 net）。
+ * buy/sell/price 从同市场类型的 WS 取（仅供前端展示，不影响 net）。
  */
 router.get('/coins', (req, res) => {
   try {
@@ -38,8 +39,8 @@ router.get('/coins', (req, res) => {
     const coins = parseCoins(req.query);
     const marketType = String(req.query.marketType || 'spot').toLowerCase() === 'swap' ? 'swap' : 'spot';
 
-    // 1. WS 聚合（buy/sell/price/fallback）
-    const wsData = cex.getFlowCoins(period, coins);
+    // 1. WS 聚合（同 marketType 的 buy/sell/price/fallback）
+    const wsData = cex.getFlowCoins(period, coins, marketType);
     const wsMap = {};
     for (const row of (wsData.coins || [])) wsMap[row.coin] = row;
 
@@ -57,7 +58,7 @@ router.get('/coins', (req, res) => {
       const net = hasCoinank ? Math.round(coinankNet[coin]) : Math.round(ws.net || 0);
       const source = hasCoinank
         ? (coinankStatus.stale ? `coinank-${marketType}-stale` : `coinank-${marketType}`)
-        : 'cex-ws';
+        : (ws.source || `cex-ws-${marketType}`);
       return {
         coin,
         buy: Math.round(ws.buy || 0),
@@ -78,8 +79,8 @@ router.get('/coins', (req, res) => {
       marketType,
       coins: rows,
       updatedAt: Date.now(),
-      accumulating: !rows.length,
-      primary: hasCoinankAny(rows) ? `coinank-${marketType}` : 'cex-ws',
+      accumulating: !rows.length || !!wsData.accumulating,
+      primary: hasCoinankAny(rows) ? `coinank-${marketType}` : `cex-ws-${marketType}`,
     });
   } catch (err) {
     console.error('[GET /api/flow/coins]', err);
@@ -103,9 +104,26 @@ router.get('/dex', (req, res) => {
   }
 });
 
+/** GET /api/flow/defillama?coins=BTC,ETH,SOL — 按偏好币种聚合的协议沉淀 */
+router.get('/defillama', async (req, res) => {
+  try {
+    const snap = await defillama.getSnapshot(req.query.coins);
+    res.json(snap);
+  } catch (err) {
+    console.error('[GET /api/flow/defillama]', err);
+    res.status(500).json({
+      ok: false,
+      error: err.message || 'DeFiLlama 读取失败',
+      overview: null,
+      coins: [],
+    });
+  }
+});
+
 /** GET /api/flow/status */
 router.get('/status', (_req, res) => {
   res.json({
+    defillama: defillama.getStatus(),
     coinank: coinank.getStatus(),
     cex: cex.getStatus(),
     dex: onchain.getStatus(),

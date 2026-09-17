@@ -10,7 +10,6 @@ import WhaleResonanceBanner from '@/components/WhaleResonanceBanner.vue';
 import WhaleAlertDock from '@/components/WhaleAlertDock.vue';
 import WhaleList from '@/components/WhaleList.vue';
 import DataModule from '@/components/DataModule.vue';
-import AiTraderPanel from '@/components/AiTraderPanel.vue';
 import { useNewsStore } from '@/stores/news';
 import { useWhaleStore } from '@/stores/whale';
 import {
@@ -36,9 +35,6 @@ import type { WhaleProfile, WhaleTrade } from '@/types';
 
 const whaleStore = useWhaleStore();
 const newsStore = useNewsStore();
-
-type MainNav = 'hyperliquid' | 'ai-trader';
-const mainNav = ref<MainNav>('hyperliquid');
 
 const whaleListRef = ref<InstanceType<typeof WhaleList> | null>(null);
 const newsListRef = ref<InstanceType<typeof NewsList> | null>(null);
@@ -309,7 +305,7 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <WhaleAlertDock v-if="mainNav === 'hyperliquid'" :dock-active="true" @focus-whale="onFocusWhaleCard" />
+    <WhaleAlertDock :dock-active="true" @focus-whale="onFocusWhaleCard" />
 
     <aside class="sidebar" aria-label="主导航">
       <div
@@ -326,13 +322,7 @@ onUnmounted(() => {
       >
         <span class="socket-core" />
       </div>
-      <button
-        type="button"
-        class="nav-item"
-        :class="{ active: mainNav === 'hyperliquid' }"
-        title="Hyperliquid"
-        @click="mainNav = 'hyperliquid'"
-      >
+      <button type="button" class="nav-item active" title="Hyperliquid">
         <span class="nav-mark brand" aria-hidden="true">
           <svg class="brand-logo hl" viewBox="0 0 32 32" fill="none">
             <circle cx="16" cy="16" r="16" fill="#97FCE4" />
@@ -343,24 +333,6 @@ onUnmounted(() => {
           </svg>
         </span>
         <span>Hyperliquid</span>
-      </button>
-      <button
-        type="button"
-        class="nav-item"
-        :class="{ active: mainNav === 'ai-trader' }"
-        title="AI Trader"
-        @click="mainNav = 'ai-trader'"
-      >
-        <span class="nav-mark brand" aria-hidden="true">
-          <svg class="brand-logo ai" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <rect x="3" y="3" width="18" height="18" rx="5" stroke="currentColor" stroke-width="1.6" />
-            <path
-              d="M8 15.5V8.5h2.1c1.35 0 2.2.7 2.2 1.85 0 .78-.4 1.35-1.05 1.62L13.5 15.5h-1.7l-1.9-3.05H9.7V15.5H8zm1.7-4.35h.4c.55 0 .9-.28.9-.72s-.35-.73-.9-.73h-.4v1.45zM14.2 15.5l1.55-7h1.75l1.55 7h-1.65l-.28-1.35h-1.98l-.28 1.35H14.2zm2.05-2.7.55-2.55h.05l.55 2.55h-1.15z"
-              fill="currentColor"
-            />
-          </svg>
-        </span>
-        <span>AI Trader</span>
       </button>
 
       <div class="bottom-nav">
@@ -378,9 +350,7 @@ onUnmounted(() => {
       </div>
     </aside>
 
-    <AiTraderPanel v-if="mainNav === 'ai-trader'" />
-
-    <div v-else class="layout">
+    <div class="layout">
       <header class="topbar">
         <FundFlowBanner />
         <WhaleResonanceBanner
@@ -660,11 +630,6 @@ onUnmounted(() => {
 }
 .sidebar .nav-item .nav-mark .brand-logo.hl {
   border-radius: 50%;
-}
-.sidebar .nav-item .nav-mark .brand-logo.ai {
-  width: 20px;
-  height: 20px;
-  color: var(--text);
 }
 .sidebar .nav-item .nav-mark.user {
   background: var(--panel-3);

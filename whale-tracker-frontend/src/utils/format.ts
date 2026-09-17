@@ -22,11 +22,12 @@ export function formatUsd(value: number | null | undefined) {
   const n = Number(value);
   const sign = n < 0 ? '-' : '';
   const abs = Math.abs(n);
+  // U+2060 word joiner：避免「亿/万」与数字被拆到两行
   if (abs >= YI) {
-    return `${sign}$${formatYiNumber(abs)}亿`;
+    return `${sign}$${formatYiNumber(abs)}\u2060亿`;
   }
   if (abs >= WAN) {
-    return `${sign}$${formatWanNumber(abs)}万`;
+    return `${sign}$${formatWanNumber(abs)}\u2060万`;
   }
   return `${sign}$${abs.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }

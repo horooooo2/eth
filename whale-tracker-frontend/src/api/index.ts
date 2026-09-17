@@ -415,6 +415,60 @@ export async function fetchDexFlowCoins(period = '1h', coins: string[] = [], mar
   return data;
 }
 
+export type DefillamaOverview = {
+  totalTvl: number;
+  tvlChange1dPct: number | null;
+  tvlAsOf: number | null;
+  dexVolume24h: number;
+  dexChange1dPct: number | null;
+  stableMcap: number;
+  preferredTvl?: number;
+  preferredDexVolume24h?: number;
+  preferredStableMcap?: number;
+};
+
+export type DefillamaProtocolRow = {
+  name: string;
+  slug: string;
+  category: string;
+  tvl: number;
+  change1dPct: number | null;
+  symbol: string | null;
+};
+
+export type DefillamaCoinRow = {
+  coin: string;
+  chain: string | null;
+  unsupported?: boolean;
+  chainTvl: number;
+  tvlChange1dPct: number | null;
+  dexVolume24h: number;
+  dexChange1dPct: number | null;
+  stableMcap: number;
+  protocols: DefillamaProtocolRow[];
+};
+
+export type DefillamaMacroResponse = {
+  ok: boolean;
+  accumulating?: boolean;
+  stale?: boolean;
+  error?: string | null;
+  overview: DefillamaOverview | null;
+  coins: DefillamaCoinRow[];
+  updatedAt: number | null;
+  source?: string;
+};
+
+export async function fetchDefillamaMacro(coins: string[] = []) {
+  const { data } = await http.get<DefillamaMacroResponse>('/flow/defillama', {
+    params: {
+      coins: coins.length ? coins.join(',') : undefined,
+    },
+    timeout: 25000,
+  });
+  return data;
+}
+
 export type QuotesResponse = Record<string, number> & {
   funding?: Record<string, number>;
   updatedAt?: number;

@@ -37,7 +37,6 @@ loadEnvFile(path.join(__dirname, '.env'));
 
 const express = require('express');
 const { createApp } = require('./lib/createApp');
-const { createAiTraderProxy } = require('./lib/aiTraderProxy');
 const { refreshWhalesShard, isProgressiveLoading } = require('./lib/whales');
 const { refreshNews } = require('./lib/newsService');
 const { getMarkets } = require('./lib/markets');
@@ -53,10 +52,9 @@ const { startXFeedPolling, getStatus: getXFeedStatus } = require('./lib/xFeedPol
 const { start: startOnchainFlow, getStatus: getOnchainFlowStatus } = require('./lib/onchainFlow');
 const { start: startCexFlow } = require('./lib/cexMarketFlow');
 const { start: startCoinankFlow } = require('./lib/coinankFlow');
+const { start: startDefillamaMacro } = require('./lib/defillamaMacro');
 
 const app = createApp({ prefixes: ['/api'] });
-/** Frontend calls /ai-api/*; Vite proxies in dev — production needs this. */
-app.use('/ai-api', createAiTraderProxy());
 const PORT = Number(process.env.PORT) || 80;
 /**
  * 定时分片刷新间隔（毫秒）。
@@ -83,7 +81,9 @@ if (fs.existsSync(publicDir)) {
   );
   app.get('*', (req, res, next) => {
     if (req.path.startsWith('/api')) return next();
-    if (req.path.startsWith('/ai-api')) return next();
+    if (req.path.startsWith('/ai-api')) {
+      return res.status(404).json({ detail: 'AI Trader removed' });
+    }
     if (req.path === '/realtime') return next();
     // 保留 public 下独立 html（如 data.html）
     if (req.path.endsWith('.html')) {
@@ -169,6 +169,11 @@ server.listen(PORT, '0.0.0.0', () => {
     startCoinankFlow();
   } catch (err) {
     console.warn('[coinank] 启动失败:', err.message);
+  }
+  try {
+    startDefillamaMacro();
+  } catch (err) {
+    console.warn('[defillama] 启动失败:', err.message);
   }
   try {
     startOnchainFlow();

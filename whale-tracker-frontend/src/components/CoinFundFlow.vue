@@ -1,20 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { fetchDexFlowCoins, type DexFlowCoinRow } from '@/api';
+import { fetchDefillamaMacro, type DefillamaCoinRow } from '@/api';
 import { preferredCoinsState } from '@/utils/watchedCoins';
 import { coinIconCandidates } from '@/utils/coinIcons';
-import { formatSignedUsd, formatUsd } from '@/utils/format';
-
-const PERIODS = [
-  { key: '5m', label: '5M' },
-  { key: '15m', label: '15M' },
-  { key: '1h', label: '1H' },
-  { key: '2h', label: '2H' },
-  { key: '4h', label: '4H' },
-  { key: '6h', label: '6H' },
-] as const;
-
-type PeriodKey = (typeof PERIODS)[number]['key'];
+import { formatUsd } from '@/utils/format';
 
 const props = defineProps<{
   bootReady?: boolean;
@@ -23,31 +12,31 @@ const props = defineProps<{
 
 const loading = ref(false);
 const error = ref('');
-const coins = ref<DexFlowCoinRow[]>([]);
+const rows = ref<DefillamaCoinRow[]>([]);
+const overview = ref<{
+  totalTvl: number;
+  tvlChange1dPct: number | null;
+  preferredTvl?: number;
+  preferredDexVolume24h?: number;
+  preferredStableMcap?: number;
+  dexVolume24h?: number;
+  stableMcap?: number;
+} | null>(null);
+const stale = ref(false);
 const expanded = ref<string | null>(null);
-const sortMode = ref<'net' | 'in' | 'out'>('net');
-const period = ref<PeriodKey>('1h');
 const iconFallback = ref<Record<string, number>>({});
 let timer: ReturnType<typeof setInterval> | null = null;
+let reqSeq = 0;
 
 const TOKEN_COLORS: Record<string, string> = {
   BTC: '#f7931a',
   ETH: '#627eea',
   SOL: '#14f195',
   HYPE: '#22d3ee',
+  BNB: '#f3ba2f',
 };
 
-const rows = computed(() => {
-  const list = [...coins.value];
-  if (sortMode.value === 'in') return list.sort((a, b) => b.buy - a.buy);
-  if (sortMode.value === 'out') return list.sort((a, b) => b.sell - a.sell);
-  return list.sort((a, b) => Math.abs(b.net) - Math.abs(a.net));
-});
-
-const maxAbsNet = computed(() => {
-  const vals = rows.value.map((c) => Math.abs(Number(c.net) || 0));
-  return Math.max(...vals, 1);
-});
+const maxTvl = computed(() => Math.max(...rows.value.map((r) => r.chainTvl || 0), 1));
 
 function tokenColor(sym: string) {
   return TOKEN_COLORS[sym] || 'var(--blue)';
@@ -62,11 +51,7 @@ function iconSrc(sym: string) {
 function onIconError(sym: string) {
   const cands = coinIconCandidates(sym);
   const next = (iconFallback.value[sym] || 0) + 1;
-  if (next < cands.length) {
-    iconFallback.value = { ...iconFallback.value, [sym]: next };
-  } else {
-    iconFallback.value = { ...iconFallback.value, [sym]: cands.length };
-  }
+  iconFallback.value = { ...iconFallback.value, [sym]: Math.min(next, cands.length) };
 }
 
 function showLetter(sym: string) {
@@ -74,43 +59,51 @@ function showLetter(sym: string) {
   return (iconFallback.value[sym] || 0) >= cands.length || !cands.length;
 }
 
-function priceLabel(price: number | null | undefined) {
-  if (price == null || !Number.isFinite(price) || price <= 0) return '--';
-  if (price < 1) return `$${price.toPrecision(4)}`;
-  if (price < 100) return `$${price.toFixed(2)}`;
-  return `$${price.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+function barPct(tvl: number) {
+  if (!tvl || tvl <= 0) return 0;
+  return Math.max(4, (tvl / maxTvl.value) * 100);
 }
 
-function barPct(coin: DexFlowCoinRow) {
-  const net = Math.abs(Number(coin.net) || 0);
-  if (net <= 0) return 0;
-  return Math.max(2, (net / maxAbsNet.value) * 50);
+function changeClass(pct: number | null | undefined) {
+  if (pct == null || !Number.isFinite(pct)) return 'muted';
+  if (pct > 0) return 'up';
+  if (pct < 0) return 'down';
+  return 'muted';
 }
 
-function toggle(sym: string) {
-  expanded.value = expanded.value === sym ? null : sym;
+function formatPct(pct: number | null | undefined) {
+  if (pct == null || !Number.isFinite(pct)) return '--';
+  const sign = pct > 0 ? '+' : '';
+  return `${sign}${pct.toFixed(1)}%`;
 }
 
-function setPeriod(key: PeriodKey) {
-  if (period.value === key) return;
-  period.value = key;
-  void load(true);
+function toggle(coin: string) {
+  expanded.value = expanded.value === coin ? null : coin;
 }
 
 async function load(force = false) {
   if (!props.bootReady) return;
   if (loading.value && !force) return;
+  const seq = ++reqSeq;
   loading.value = true;
   error.value = '';
   try {
-    const data = await fetchDexFlowCoins(period.value, preferredCoinsState.value);
-    coins.value = data.coins || [];
+    const coins = preferredCoinsState.value.length ? preferredCoinsState.value : ['BTC', 'ETH'];
+    const next = await fetchDefillamaMacro(coins);
+    if (seq !== reqSeq) return;
+    rows.value = next.coins || [];
+    overview.value = next.overview;
+    stale.value = !!next.stale;
+    if (!next.ok && !next.overview) {
+      error.value = next.error || 'DeFiLlama 数据尚未就绪';
+    }
   } catch (err) {
-    if (!coins.value.length) {
-      error.value = err instanceof Error ? err.message : '资金流向加载失败';
+    if (seq !== reqSeq) return;
+    if (!rows.value.length) {
+      error.value = err instanceof Error ? err.message : '协议沉淀加载失败';
     }
   } finally {
-    loading.value = false;
+    if (seq === reqSeq) loading.value = false;
   }
 }
 
@@ -118,7 +111,7 @@ function startPoll() {
   if (timer) return;
   timer = setInterval(() => {
     if (props.active !== false) void load(false);
-  }, 60_000);
+  }, 120_000);
 }
 
 function stopPoll() {
@@ -165,25 +158,28 @@ onUnmounted(() => stopPoll());
 
 <template>
   <div class="flow">
-    <div class="toolbar">
-      <div class="seg sort">
-        <button type="button" :class="{ active: sortMode === 'net' }" @click="sortMode = 'net'">净流入</button>
-        <button type="button" :class="{ active: sortMode === 'in' }" @click="sortMode = 'in'">流入</button>
-        <button type="button" :class="{ active: sortMode === 'out' }" @click="sortMode = 'out'">流出</button>
+    <div v-if="overview" class="summary">
+      <div class="card">
+        <div class="lab">偏好链 TVL</div>
+        <div class="val">{{ formatUsd(overview.preferredTvl || 0) }}</div>
+        <div class="chg muted">全网 {{ formatUsd(overview.totalTvl) }}</div>
       </div>
-      <div class="seg period">
-        <button
-          v-for="p in PERIODS"
-          :key="p.key"
-          type="button"
-          :class="{ active: period === p.key }"
-          @click="setPeriod(p.key)"
-        >
-          {{ p.label }}
-        </button>
+      <div class="card">
+        <div class="lab">偏好链 DEX 24h</div>
+        <div class="val">{{ formatUsd(overview.preferredDexVolume24h || 0) }}</div>
+        <div class="chg muted">全网 {{ formatUsd(overview.dexVolume24h || 0) }}</div>
+      </div>
+      <div class="card">
+        <div class="lab">偏好链稳定币</div>
+        <div class="val">{{ formatUsd(overview.preferredStableMcap || 0) }}</div>
+        <div class="chg muted">链上流通</div>
       </div>
     </div>
-    <div class="source-hint">DexPaprika 池子成交 · {{ period.toUpperCase() }}</div>
+
+    <div class="source-hint">
+      DeFiLlama · 按偏好币种对应公链聚合
+      <span v-if="stale" class="stale">缓存延迟</span>
+    </div>
 
     <el-skeleton v-if="loading && !rows.length" :rows="6" animated class="pad" />
     <el-alert
@@ -193,91 +189,98 @@ onUnmounted(() => stopPoll());
       :title="error"
       class="pad"
     />
-    <el-empty v-else-if="!rows.length" description="暂无币种资金流向" class="pad" />
+    <el-empty v-else-if="!rows.length" description="暂无偏好币种沉淀数据" class="pad" />
 
     <div v-else class="list">
-      <div v-for="coin in rows" :key="coin.coin" class="block">
+      <div v-for="row in rows" :key="row.coin" class="block">
         <button
           type="button"
           class="row"
-          :class="{ expanded: expanded === coin.coin }"
-          @click="toggle(coin.coin)"
+          :class="{ expanded: expanded === row.coin, unsupported: row.unsupported }"
+          @click="toggle(row.coin)"
         >
           <div class="token">
             <span class="icon-wrap">
               <img
-                v-if="!showLetter(coin.coin)"
+                v-if="!showLetter(row.coin)"
                 class="icon-img"
-                :src="iconSrc(coin.coin)"
-                :alt="coin.coin"
-                @error="onIconError(coin.coin)"
+                :src="iconSrc(row.coin)"
+                :alt="row.coin"
+                @error="onIconError(row.coin)"
               />
               <span
                 v-else
                 class="icon-fallback"
-                :style="{ background: tokenColor(coin.coin) }"
+                :style="{ background: tokenColor(row.coin) }"
               >
-                {{ coin.coin.slice(0, 1) }}
+                {{ row.coin.slice(0, 1) }}
               </span>
             </span>
             <span class="names">
-              <b>{{ coin.coin }}</b>
-              <em>{{ priceLabel(coin.price) }}</em>
+              <b>{{ row.coin }}</b>
+              <em>{{ row.chain || '未映射公链' }}</em>
             </span>
           </div>
 
           <div class="bar-wrap" aria-hidden="true">
             <div class="track">
-              <div
-                v-if="(coin.net || 0) !== 0"
-                class="fill"
-                :class="(coin.net || 0) >= 0 ? 'pos' : 'neg'"
-                :style="{ width: `${barPct(coin)}%` }"
-              />
-              <div class="center" />
+              <div class="fill" :style="{ width: `${barPct(row.chainTvl || 0)}%` }" />
             </div>
           </div>
 
-          <div class="net" :class="(coin.net || 0) >= 0 ? 'up' : 'down'">
-            {{ formatSignedUsd(coin.net || 0) }}
-          </div>
-          <div
-            class="chg"
-            :class="coin.changePct == null ? 'muted' : coin.changePct >= 0 ? 'up' : 'down'"
-          >
-            <template v-if="coin.changePct == null">--</template>
-            <template v-else>{{ coin.changePct >= 0 ? '↑' : '↓' }}{{ Math.abs(coin.changePct).toFixed(1) }}%</template>
+          <div class="net">{{ formatUsd(row.chainTvl || 0) }}</div>
+          <div class="chg" :class="changeClass(row.tvlChange1dPct)">
+            {{ formatPct(row.tvlChange1dPct) }}
           </div>
         </button>
 
-        <div v-if="expanded === coin.coin" class="detail">
-          <div v-if="coin.unsupported" class="lab">该币种暂未配置 Dex 池子</div>
-          <div v-else class="grid">
-            <div>
-              <div class="lab">流入（买入）</div>
-              <div class="val up">{{ formatUsd(coin.buy || 0) }}</div>
+        <div v-if="expanded === row.coin" class="detail">
+          <div v-if="row.unsupported" class="lab">该币种暂未映射到 DeFiLlama 公链</div>
+          <template v-else>
+            <div class="grid">
+              <div>
+                <div class="lab">公链 TVL</div>
+                <div class="val">{{ formatUsd(row.chainTvl || 0) }}</div>
+              </div>
+              <div>
+                <div class="lab">TVL 1D</div>
+                <div class="val" :class="changeClass(row.tvlChange1dPct)">
+                  {{ formatPct(row.tvlChange1dPct) }}
+                </div>
+              </div>
+              <div>
+                <div class="lab">DEX 24h</div>
+                <div class="val">{{ formatUsd(row.dexVolume24h || 0) }}</div>
+              </div>
+              <div>
+                <div class="lab">DEX 1D</div>
+                <div class="val" :class="changeClass(row.dexChange1dPct)">
+                  {{ formatPct(row.dexChange1dPct) }}
+                </div>
+              </div>
+              <div>
+                <div class="lab">链上稳定币</div>
+                <div class="val">{{ formatUsd(row.stableMcap || 0) }}</div>
+              </div>
+              <div>
+                <div class="lab">公链</div>
+                <div class="val">{{ row.chain }}</div>
+              </div>
             </div>
-            <div>
-              <div class="lab">流出（卖出）</div>
-              <div class="val down">{{ formatUsd(coin.sell || 0) }}</div>
+            <div v-if="row.protocols?.length" class="proto">
+              <div class="lab">相关协议（按该链 TVL）</div>
+              <div v-for="p in row.protocols" :key="p.slug || p.name" class="proto-row">
+                <span class="proto-name">
+                  <b>{{ p.name }}</b>
+                  <em>{{ p.category }}</em>
+                </span>
+                <span class="proto-tvl">{{ formatUsd(p.tvl) }}</span>
+                <span class="proto-chg" :class="changeClass(p.change1dPct)">
+                  {{ formatPct(p.change1dPct) }}
+                </span>
+              </div>
             </div>
-            <div>
-              <div class="lab">成交笔数</div>
-              <div class="val">{{ coin.count || 0 }}</div>
-            </div>
-            <div>
-              <div class="lab">池子</div>
-              <div class="val mono">{{ coin.pair || '--' }}</div>
-            </div>
-            <div>
-              <div class="lab">DEX</div>
-              <div class="val">{{ coin.dex || '--' }}</div>
-            </div>
-            <div>
-              <div class="lab">网络</div>
-              <div class="val">{{ coin.network || '--' }}</div>
-            </div>
-          </div>
+          </template>
         </div>
       </div>
     </div>
@@ -291,45 +294,50 @@ onUnmounted(() => stopPoll());
   display: flex;
   flex-direction: column;
 }
-.toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(max-content, 1fr));
   gap: 8px;
   padding: 10px 12px 6px;
   flex-shrink: 0;
-  flex-wrap: wrap;
+  overflow-x: auto;
+}
+.card {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+}
+.card .lab {
+  color: var(--soft);
+  font-size: 10.5px;
+  margin-bottom: 4px;
+  white-space: nowrap;
+}
+.card .val {
+  font-size: 13px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  white-space: nowrap;
+}
+.card .chg {
+  margin-top: 3px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .source-hint {
-  padding: 0 12px 8px;
+  padding: 4px 12px 8px;
   font-size: 11px;
   color: var(--soft);
   border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
-.seg {
-  display: inline-flex;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 2px;
-  gap: 1px;
-}
-.seg button {
-  background: transparent;
-  border: none;
-  color: var(--muted);
-  font-size: 11px;
-  padding: 4px 8px;
-  border-radius: 5px;
-  cursor: pointer;
-  font-family: inherit;
-}
-.seg button:hover {
-  color: var(--text);
-}
-.seg button.active {
-  background: var(--panel-3);
-  color: #fff;
+.stale {
+  color: var(--orange, #f59e0b);
 }
 .pad {
   padding: 16px 12px;
@@ -368,15 +376,18 @@ onUnmounted(() => stopPoll());
 }
 .row.expanded {
   background: var(--panel-2);
-  border-color: color-mix(in srgb, var(--purple) 40%, var(--border));
+  border-color: color-mix(in srgb, var(--blue) 40%, var(--border));
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
+}
+.row.unsupported {
+  opacity: 0.72;
 }
 .token {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 96px;
+  width: 108px;
   flex-shrink: 0;
 }
 .icon-wrap {
@@ -415,6 +426,9 @@ onUnmounted(() => stopPoll());
   font-style: normal;
   font-size: 10px;
   color: var(--soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .bar-wrap {
   flex: 1;
@@ -425,39 +439,16 @@ onUnmounted(() => stopPoll());
   min-width: 40px;
 }
 .track {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
   width: 100%;
   height: 4px;
   background: var(--panel-3);
   border-radius: 2px;
+  overflow: hidden;
 }
 .fill {
-  position: absolute;
-  top: 0;
   height: 100%;
   border-radius: 2px;
-}
-.fill.pos {
-  left: 50%;
-  background: linear-gradient(90deg, var(--green-2), var(--green));
-  box-shadow: 0 0 8px rgba(22, 199, 132, 0.35);
-}
-.fill.neg {
-  right: 50%;
-  background: linear-gradient(90deg, var(--red), var(--red-2));
-  box-shadow: 0 0 8px rgba(234, 57, 67, 0.35);
-}
-.center {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: 1px;
-  height: 12px;
-  background: var(--border-2);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--blue) 55%, transparent), var(--blue));
 }
 .net {
   width: 88px;
@@ -474,8 +465,17 @@ onUnmounted(() => stopPoll());
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
-.chg.muted {
+.chg.muted,
+.muted {
   color: var(--soft);
+}
+.chg.up,
+.up {
+  color: var(--green);
+}
+.chg.down,
+.down {
+  color: var(--red);
 }
 .detail {
   padding: 10px 12px 12px;
@@ -501,9 +501,50 @@ onUnmounted(() => stopPoll());
   font-size: 12.5px;
   font-variant-numeric: tabular-nums;
 }
-.val.mono {
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11.5px;
-  font-weight: 500;
+.proto {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.proto-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.proto-name {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+.proto-name b {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.proto-name em {
+  font-style: normal;
+  font-size: 10px;
+  color: var(--soft);
+}
+.proto-tvl {
+  width: 78px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.proto-chg {
+  width: 52px;
+  text-align: right;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 </style>

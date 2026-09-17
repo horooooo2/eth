@@ -10,21 +10,20 @@ CI 失败只排查：workflow / pack / upload / `remote-deploy.sh` / systemd / h
 
 公网：http://43.160.208.168/#/ health：http://43.160.208.168/api/health
 
-## 当前架构：数据站 + AI Trader 叙事 sidecar（无策略自动交易）
+## 当前架构：数据站（无策略自动交易）
 
 Browser → Vue → Node/Express :80 → { Hyperliquid、News、Market APIs、SQLite `whale.db`、DeepSeek（用户自带 AI Key）}
-                         └─ `/ai-api` → `AI_TRADER_URL`（默认 `http://127.0.0.1:8000`）→ `ai-trader.service`（FastAPI / 张明）
 
 已彻底移除，不要重新引入：
 
-- Python Trading Engine（FastAPI :8711）与 `v41-engine.service`（≠ `ai-trader.service` :8000）
+- AI Trader sidecar（FastAPI :8000）、`ai-trader.service`、`/ai-api` 代理、`AI_TRADER_URL`、`ai_trader/` 目录
+- Python Trading Engine（FastAPI :8711）与 `v41-engine.service`
 - Node 侧 `lib/v41*.js`、`okxTradeClient.js`、`userExchangeKeys.js`、execution gateway、protective stop、recovery/reconciliation
 - `/api/whale-ai/engine/*`、`/api/whale-ai/trade/*`、`/api/admin/strategy-configs`
 - S1–S9 Alpha、TradeIntent / OrderIntent、OKX 自动交易能力
 - 全部 `V41_*` 与 `OKX_API_*` 环境变量
 
-`remote-deploy.sh` 会主动 stop/disable/删除 `v41-engine.service`，并从生产 `.env` 里删除 `V41_*` / `OKX_API_*`。不要再往仓库或生产写这些值。
-部署包含 `ai_trader.tgz`；脚本安装/重启 `ai-trader.service`，并验收 `/ai-api/health=200`。
+`remote-deploy.sh` 会主动 stop/disable/删除 `v41-engine.service` 与 `ai-trader.service`，并从生产 `.env` 里删除 `V41_*` / `OKX_API_*` / `AI_TRADER_*`。不要再往仓库或生产写这些值。
 
 ## 必须保留（属于「数据分析」，不是策略）
 
@@ -37,7 +36,7 @@ Browser → Vue → Node/Express :80 → { Hyperliquid、News、Market APIs、SQ
 
 ## 验收
 
-`/api/health=200`，且 `/api/whales`、`/api/whales/alert-history`、`/api/whales/trades`、`/api/news`、`/api/news/calendar`、`/api/markets/quotes` 均非 404；`/api/whale-ai/key` 未登录返回 401（不是 404）；`/api/whale-ai/trade/status` 返回 404；8711 无监听；`/ai-api/health=200`（`ai-trader.service` 在跑）。
+`/api/health=200`，且 `/api/whales`、`/api/whales/alert-history`、`/api/whales/trades`、`/api/news`、`/api/news/calendar`、`/api/markets/quotes` 均非 404；`/api/whale-ai/key` 未登录返回 401（不是 404）；`/api/whale-ai/trade/status` 返回 404；8711 / 8000 无监听；`/ai-api/health` 返回 404。
 
 ## 历史数据
 
