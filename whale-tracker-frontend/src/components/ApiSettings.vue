@@ -58,7 +58,7 @@ async function save() {
     let didSomething = false;
     if (deepseekInput.value.trim()) {
       const r = await bindAiKey(deepseekInput.value.trim());
-      if (!r.ok) throw new Error(r.error || 'DeepSeek 保存失败');
+      if (!r.ok) throw new Error(r.warn || 'DeepSeek 保存失败');
       ElMessage.success('DeepSeek 密钥已保存');
       deepseekInput.value = '';
       didSomething = true;

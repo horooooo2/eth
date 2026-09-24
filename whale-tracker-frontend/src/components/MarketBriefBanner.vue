@@ -225,7 +225,7 @@ const activeTechLabel = computed(() => {
 const personalStance = computed(() => structured.value?.personal_stance || null);
 
 const stanceBasis = computed(() => {
-  const raw = personalStance.value?.basis;
+  const raw: unknown = personalStance.value?.basis;
   if (Array.isArray(raw) && raw.length) {
     return raw.map((s) => String(s || '').trim()).filter(Boolean);
   }
@@ -620,7 +620,7 @@ function closeModal() {
   }
 }
 
-async function runBrief(opts: { forceRefresh?: boolean; forceTradeDecision?: boolean } = {}) {
+async function runBrief() {
   if (!aiKeyReady.value) {
     ElMessage.warning('请先在侧栏「API 设置」中配置 DeepSeek API Key');
     return;
@@ -775,7 +775,7 @@ async function sendChat() {
   if (REANALYZE_RE.test(text)) {
     chatInput.value = '';
     ElMessage.info('正在重新拉取关键数据并生成新版本分析…');
-    await runBrief({ forceRefresh: true });
+    await runBrief();
     return;
   }
   chatInput.value = '';
@@ -867,7 +867,7 @@ onUnmounted(() => {
                   type="button"
                   class="ghost-btn ghost-sm"
                   :disabled="loading || chatBusy || phase === 'streaming'"
-                  @click="() => runBrief({ forceRefresh: true })"
+                  @click="() => runBrief()"
                 >
                   重新分析
                 </button>
