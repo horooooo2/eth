@@ -40,14 +40,23 @@ function starText(n: number) {
 }
 
 function macroAiContent(item: CalendarEvent) {
+  const released =
+    typeof item.daysUntil === 'number' &&
+    (item.daysUntil < 0 || (item.daysUntil === 0 && Boolean(item.time)));
+  const actualLine = item.actual
+    ? `实际：${item.actual}`
+    : released
+      ? '实际：公布窗口已过，源站尚未回填（系统将尝试新闻补齐）'
+      : '实际：待公布';
   const lines = [
     item.note || item.title,
     '',
     '【数据读数】',
     item.previous ? `前值：${item.previous}` : '',
     item.forecast ? `预测：${item.forecast}` : '',
-    item.actual ? `公布：${item.actual}` : '',
+    actualLine,
     item.importance ? `重要性：${item.importance}` : '',
+    item.time || item.timeNote ? `公布时间：${item.dateLabel || ''} ${item.time || item.timeNote || ''}` : '',
   ].filter((l) => l !== undefined && l !== null);
   return lines.filter((l, i, arr) => !(l === '' && arr[i - 1] === '')).join('\n');
 }
@@ -181,7 +190,8 @@ watch(
               <div class="meta">
                 <span v-if="item.previous" v-html="`前值 ` + highlightCore(item.previous)" />
                 <span v-if="item.forecast" v-html="`预测 ` + highlightCore(item.forecast)" />
-                <span v-if="item.actual" v-html="`公布 ` + highlightCore(item.actual)" />
+                <span v-if="item.actual" v-html="`实际 ` + highlightCore(item.actual)" />
+                <span v-else-if="item.daysUntil < 0 || item.isToday" class="muted">实际待回填</span>
               </div>
             </div>
           </article>

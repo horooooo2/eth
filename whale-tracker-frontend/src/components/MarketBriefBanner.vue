@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   streamChatMarketBrief,
   fetchMarketBriefAnalysis,
   streamMarketBrief,
+  streamOkxStanceOrder,
   type MarketBriefResponse,
   type MarketBriefStructured,
   type MarketChatMessage,
+  type OkxStanceOrderStage,
 } from '@/api';
 import { preferredCoinsState, normalizeCoinId } from '@/utils/watchedCoins';
 import {
@@ -222,6 +224,33 @@ const activeTechLabel = computed(() => {
 
 const personalStance = computed(() => structured.value?.personal_stance || null);
 
+const stanceBasis = computed(() => {
+  const raw = personalStance.value?.basis;
+  if (Array.isArray(raw) && raw.length) {
+    return raw.map((s) => String(s || '').trim()).filter(Boolean);
+  }
+  if (typeof raw === 'string' && raw.trim()) {
+    return raw
+      .split(/[+＋、,，/|｜]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  // 旧结果兜底：按已有模块文案推断
+  const s = structured.value;
+  const items: string[] = [];
+  if (s?.market_sentiment?.details || s?.market_sentiment?.funding_rate || s?.market_sentiment?.long_short_ratio) {
+    items.push('市场情绪');
+  }
+  if (s?.news_analysis?.details || s?.news_analysis?.sentiment) items.push('新闻内容');
+  if (s?.technical?.hourly) items.push('小时线走势');
+  else if (s?.technical?.m5) items.push('5分钟走势');
+  if (s?.technical?.daily) items.push('日线走势');
+  if (s?.whales?.site || s?.whales?.external || s?.whales?.details) items.push('巨鲸仓位');
+  if (s?.derivatives?.funding) items.push('资金费率');
+  if (s?.derivatives?.liquidations) items.push('爆仓数据');
+  return items.length ? items : ['市场情绪', '新闻内容', '小时线走势'];
+});
+
 const stanceCards = computed(() => {
   const ps = personalStance.value;
   return [
@@ -281,10 +310,153 @@ function isWaitAction(action?: string) {
   return !action || /观望/.test(action);
 }
 
-async function requestOpenOrder() {
-  ElMessage.info('正在按开单模式重新分析（必须给出做多或做空）…');
-  analysisTab.value = 'stance';
-  await runBrief({ forceRefresh: true, forceTradeDecision: true });
+const orderDialogVisible = ref(false);
+const orderAmount = ref('10');
+const orderSubmitting = ref(false);
+const orderProgressVisible = ref(false);
+const orderProgress = ref(0);
+const orderProgressError = ref('');
+const orderProgressDone = ref(false);
+const orderProgressSteps = ref<
+  { id: string; label: string; status: 'pending' | 'running' | 'done' | 'error'; detail?: string }[]
+>([]);
+const orderTarget = ref<{
+  id: string;
+  header: string;
+  leg: NonNullable<MarketBriefStructured['personal_stance']>['ultra_short'];
+} | null>(null);
+
+const ORDER_STEP_DEFS = [
+  { id: 'price', label: '获取当前最新价格' },
+  { id: 'limit', label: '按多空方向挂限价单（Maker）' },
+  { id: 'sltp', label: '设置止损 / 止盈' },
+  { id: 'done', label: '提交完成' },
+] as const;
+
+function resetOrderProgress() {
+  orderProgress.value = 0;
+  orderProgressError.value = '';
+  orderProgressDone.value = false;
+  orderProgressSteps.value = ORDER_STEP_DEFS.map((s) => ({
+    id: s.id,
+    label: s.label,
+    status: 'pending' as const,
+  }));
+}
+
+function applyOrderStage(stage: OkxStanceOrderStage) {
+  if (typeof stage.progress === 'number') {
+    orderProgress.value = Math.max(orderProgress.value, Math.min(100, stage.progress));
+  }
+  const mapId = stage.id === 'init' ? 'price' : stage.id;
+  const idx = orderProgressSteps.value.findIndex((s) => s.id === mapId);
+  if (idx < 0) return;
+  for (let i = 0; i < idx; i++) {
+    if (orderProgressSteps.value[i].status !== 'done') {
+      orderProgressSteps.value[i] = { ...orderProgressSteps.value[i], status: 'done' };
+    }
+  }
+  const cur = orderProgressSteps.value[idx];
+  const nextStatus =
+    stage.status === 'done' || stage.id === 'done'
+      ? 'done'
+      : stage.status === 'error'
+        ? 'error'
+        : 'running';
+  orderProgressSteps.value[idx] = {
+    ...cur,
+    status: nextStatus,
+    detail: stage.message || cur.detail,
+  };
+}
+
+function openOrderDialog(card: {
+  id: string;
+  header: string;
+  leg: NonNullable<MarketBriefStructured['personal_stance']>['ultra_short'];
+}) {
+  if (isWaitAction(card.leg?.action)) {
+    ElMessage.warning('当前仍为观望，请点顶部「重新分析」生成做多/做空方案');
+    return;
+  }
+  if (card.leg?.entry == null || card.leg?.stop == null || card.leg?.take_profit == null) {
+    ElMessage.warning('缺少开仓/止损/止盈价，请先刷新该周期建议');
+    return;
+  }
+  orderTarget.value = card;
+  orderAmount.value = '10';
+  orderDialogVisible.value = true;
+}
+
+async function confirmStanceOrder() {
+  const card = orderTarget.value;
+  const coin = result.value?.coin;
+  if (!card?.leg || !coin) return;
+  const amount = Number(orderAmount.value);
+  if (!(amount > 0) || amount > 100) {
+    ElMessage.warning('请输入 0~100 的 USDT 金额');
+    return;
+  }
+  const isLong = /做多|^long$|^buy$/i.test(String(card.leg.action));
+  try {
+    await ElMessageBox.confirm(
+      `将以限价 Maker 挂单（非市价），降低手续费。\n币种 ${coin} · ${card.leg.action}\n参考开仓 ${fmtStancePrice(card.leg.entry)} · 杠杆 ${card.leg.leverage ?? '—'}x\n止损 ${fmtStancePrice(card.leg.stop)} · 止盈 ${fmtStancePrice(card.leg.take_profit)}\n保证金 ${amount} USDT\n挂单逻辑：先取最新价，再${isLong ? '低于现价挂买单' : '高于现价挂卖单'}，并附带止损止盈。`,
+      '确认挂单开仓',
+      { type: 'warning', confirmButtonText: '开始挂单', cancelButtonText: '取消' },
+    );
+  } catch {
+    return;
+  }
+
+  orderDialogVisible.value = false;
+  resetOrderProgress();
+  orderProgressVisible.value = true;
+  orderSubmitting.value = true;
+
+  try {
+    await streamOkxStanceOrder(
+      {
+        coin,
+        action: String(card.leg.action),
+        entry: Number(card.leg.entry),
+        stop: Number(card.leg.stop),
+        takeProfit: Number(card.leg.take_profit),
+        leverage: Number(card.leg.leverage) || 5,
+        amountUsd: amount,
+      },
+      {
+        onStage: applyOrderStage,
+        onDone: (data) => {
+          orderProgress.value = 100;
+          orderProgressDone.value = true;
+          orderProgressSteps.value = orderProgressSteps.value.map((s) =>
+            s.status === 'error' ? s : { ...s, status: 'done' as const },
+          );
+          const ordId = String(data.order?.ordId || '');
+          const px = data.plan && typeof data.plan.entry === 'number' ? data.plan.entry : '';
+          ElMessage.success(
+            (data.simulated ? '模拟盘挂单成功' : '挂单成功') +
+              (ordId ? ` ${ordId}` : '') +
+              (px ? ` · 限价 ${px}` : ''),
+          );
+        },
+        onError: (message) => {
+          orderProgressError.value = message;
+          const running = orderProgressSteps.value.find((s) => s.status === 'running');
+          if (running) {
+            running.status = 'error';
+            running.detail = message;
+          }
+        },
+      },
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : '挂单失败';
+    orderProgressError.value = msg;
+    ElMessage.error(msg);
+  } finally {
+    orderSubmitting.value = false;
+  }
 }
 
 function biasFromResult(data: MarketBriefResponse) {
@@ -450,7 +622,7 @@ function closeModal() {
 
 async function runBrief(opts: { forceRefresh?: boolean; forceTradeDecision?: boolean } = {}) {
   if (!aiKeyReady.value) {
-    ElMessage.warning('请先在侧栏「币种偏好」中配置 DeepSeek API Key');
+    ElMessage.warning('请先在侧栏「API 设置」中配置 DeepSeek API Key');
     return;
   }
   if (customCoin.value.trim()) applyCustomCoin();
@@ -468,7 +640,7 @@ async function runBrief(opts: { forceRefresh?: boolean; forceTradeDecision?: boo
   error.value = '';
   result.value = null;
   streamDraft.value = '';
-  statusMessage.value = opts.forceTradeDecision ? '开单模式：正在准备数据…' : '正在准备数据…';
+  statusMessage.value = '正在准备数据（强制开单）…';
   chatMessages.value = [];
   phase.value = 'loading';
   startLoadingSteps();
@@ -477,8 +649,8 @@ async function runBrief(opts: { forceRefresh?: boolean; forceTradeDecision?: boo
   try {
     await streamMarketBrief(target, {
       signal: abortCtrl.signal,
-      forceRefresh: Boolean(opts.forceRefresh) || Boolean(opts.forceTradeDecision),
-      forceTradeDecision: Boolean(opts.forceTradeDecision),
+      forceRefresh: true,
+      forceTradeDecision: true,
       onStatus: (s) => {
         if (seq !== reqSeq) return;
         if (s.message) statusMessage.value = s.message;
@@ -985,20 +1157,24 @@ onUnmounted(() => {
                     <div v-show="analysisTab === 'stance'" class="tab-pane stance-section">
                       <div class="stance-row">
                         <div v-for="card in stanceCards" :key="card.id" class="stance-card-col">
-                          <div class="stance-card-header">{{ card.header }}</div>
+                          <div class="stance-card-header">
+                            <span>{{ card.header }}</span>
+                            <div class="stance-card-actions">
+                              <button
+                                type="button"
+                                class="stance-icon-btn"
+                                title="限价挂单开仓"
+                                :disabled="loading || chatBusy"
+                                @click="openOrderDialog(card)"
+                              >
+                                $
+                              </button>
+                            </div>
+                          </div>
                           <div class="stance-action-row">
                             <span class="action-badge" :class="stanceActionClass(card.leg?.action)">
                               {{ card.leg?.action || '观望' }}
                             </span>
-                            <button
-                              v-if="isWaitAction(card.leg?.action)"
-                              type="button"
-                              class="open-order-btn"
-                              :disabled="loading || chatBusy"
-                              @click="requestOpenOrder"
-                            >
-                              开单
-                            </button>
                           </div>
                           <div class="sl-tp-info">
                             <span class="muted">开仓</span>
@@ -1023,7 +1199,15 @@ onUnmounted(() => {
                           />
                         </div>
                       </div>
-                      <div class="stance-disclaimer">个人研究视角，非投资建议</div>
+                      <div class="stance-basis">
+                        <span class="stance-basis-label">分析依据</span>
+                        <div class="stance-basis-chips">
+                          <template v-for="(item, idx) in stanceBasis" :key="item">
+                            <span v-if="idx > 0" class="stance-basis-plus">+</span>
+                            <span class="stance-basis-chip">{{ item }}</span>
+                          </template>
+                        </div>
+                      </div>
                     </div>
                   </template>
 
@@ -1108,6 +1292,89 @@ onUnmounted(() => {
         </div>
       </div>
     </Teleport>
+
+    <el-dialog
+      v-model="orderDialogVisible"
+      title="按 AI 建议挂单开仓"
+      width="420px"
+      append-to-body
+      destroy-on-close
+    >
+      <div v-if="orderTarget?.leg" class="order-dlg-body">
+        <p>
+          {{ result?.coin }} · <strong>{{ orderTarget.leg.action }}</strong> ·
+          {{ orderTarget.header }}
+        </p>
+        <p class="order-meta">
+          参考开仓 {{ fmtStancePrice(orderTarget.leg.entry) }} · 杠杆
+          {{ orderTarget.leg.leverage != null ? `${orderTarget.leg.leverage}x` : '—' }}
+        </p>
+        <p class="order-meta">
+          止损 {{ fmtStancePrice(orderTarget.leg.stop) }} · 止盈
+          {{ fmtStancePrice(orderTarget.leg.take_profit) }}
+        </p>
+        <label class="order-amount-label">保证金金额（USDT，最大 100）</label>
+        <el-input v-model="orderAmount" type="number" min="1" max="100" step="1" />
+        <p class="order-hint">
+          使用限价 Maker 挂单（非市价）：先取最新价，做多低于现价 / 做空高于现价挂单，并附带 AI
+          止损止盈。需先在侧栏「API 设置」配置 OKX 密钥。
+        </p>
+      </div>
+      <template #footer>
+        <button type="button" class="dlg-btn ghost" @click="orderDialogVisible = false">取消</button>
+        <button
+          type="button"
+          class="dlg-btn primary"
+          :disabled="orderSubmitting"
+          @click="confirmStanceOrder"
+        >
+          {{ orderSubmitting ? '挂单中…' : '确认挂单' }}
+        </button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="orderProgressVisible"
+      title="挂单进度"
+      width="440px"
+      append-to-body
+      :close-on-click-modal="!orderSubmitting"
+      :close-on-press-escape="!orderSubmitting"
+      :show-close="!orderSubmitting"
+    >
+      <div class="order-progress-body">
+        <div class="order-progress-bar-track">
+          <div class="order-progress-bar-fill" :style="{ width: `${orderProgress}%` }" />
+        </div>
+        <p class="order-progress-pct">{{ Math.round(orderProgress) }}%</p>
+        <ul class="order-progress-steps">
+          <li
+            v-for="step in orderProgressSteps"
+            :key="step.id"
+            class="order-progress-step"
+            :class="step.status"
+          >
+            <span class="step-dot" />
+            <div class="step-text">
+              <strong>{{ step.label }}</strong>
+              <span v-if="step.detail" class="step-detail">{{ step.detail }}</span>
+            </div>
+          </li>
+        </ul>
+        <p v-if="orderProgressError" class="order-progress-error">{{ orderProgressError }}</p>
+        <p v-else-if="orderProgressDone" class="order-progress-ok">挂单已提交，等待成交。</p>
+      </div>
+      <template #footer>
+        <button
+          type="button"
+          class="dlg-btn primary"
+          :disabled="orderSubmitting"
+          @click="orderProgressVisible = false"
+        >
+          {{ orderSubmitting ? '进行中…' : '关闭' }}
+        </button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -1738,6 +2005,39 @@ onUnmounted(() => {
   color: #888;
   margin-bottom: 8px;
   font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.stance-card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.stance-icon-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid #3a3a3a;
+  background: #2a2a2a;
+  color: #c8d0da;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.stance-icon-btn:hover:not(:disabled) {
+  border-color: #3b82f6;
+  color: #93c5fd;
+}
+.stance-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .stance-action-row {
@@ -1772,20 +2072,129 @@ onUnmounted(() => {
 }
 
 .open-order-btn {
-  height: 28px;
-  padding: 0 12px;
-  border-radius: 6px;
-  border: none;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 750;
-  cursor: pointer;
-  color: #111;
-  background: linear-gradient(135deg, #f39c12, #f1c40f);
+  display: none;
 }
 
-.open-order-btn:disabled {
-  opacity: 0.55;
+.order-dlg-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: var(--text, #e6edf3);
+  font-size: 14px;
+}
+.order-meta {
+  margin: 0;
+  color: var(--muted, #8b949e);
+  font-size: 13px;
+}
+.order-amount-label {
+  font-size: 13px;
+  color: var(--muted, #8b949e);
+}
+.order-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted, #8b949e);
+  line-height: 1.45;
+}
+.order-progress-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  color: var(--text, #e6edf3);
+}
+.order-progress-bar-track {
+  height: 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border, #30363d) 80%, transparent);
+  overflow: hidden;
+}
+.order-progress-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #0ecb81, #6366f1);
+  transition: width 0.35s ease;
+}
+.order-progress-pct {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted, #8b949e);
+}
+.order-progress-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.order-progress-step {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 13px;
+}
+.order-progress-step .step-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 4px;
+  border-radius: 50%;
+  flex: none;
+  background: #484f58;
+}
+.order-progress-step.running .step-dot {
+  background: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+}
+.order-progress-step.done .step-dot {
+  background: #0ecb81;
+}
+.order-progress-step.error .step-dot {
+  background: #f6465d;
+}
+.order-progress-step .step-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.order-progress-step .step-detail {
+  color: var(--muted, #8b949e);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.order-progress-error {
+  margin: 0;
+  color: #f6465d;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.order-progress-ok {
+  margin: 0;
+  color: #0ecb81;
+  font-size: 13px;
+}
+.dlg-btn {
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-left: 8px;
+}
+.dlg-btn.ghost {
+  border: 1px solid #2d333b;
+  background: transparent;
+  color: #8b9bb4;
+}
+.dlg-btn.primary {
+  border: 0;
+  background: #1f6feb;
+  color: #fff;
+}
+.dlg-btn:disabled {
+  opacity: 0.6;
   cursor: not-allowed;
 }
 
@@ -1823,11 +2232,41 @@ onUnmounted(() => {
   overflow-wrap: anywhere;
 }
 
-.stance-disclaimer {
+.stance-basis {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, #6366f1 35%, var(--border, #30363d));
+  background: color-mix(in srgb, #6366f1 8%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.stance-basis-label {
   font-size: 12px;
-  color: #555;
-  text-align: center;
-  margin-top: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #a5b4fc;
+}
+.stance-basis-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.stance-basis-chip {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e6edf3;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, #6366f1 18%, transparent);
+  border: 1px solid color-mix(in srgb, #6366f1 40%, transparent);
+}
+.stance-basis-plus {
+  color: #8b949e;
+  font-weight: 700;
+  font-size: 14px;
 }
 
 @media (max-width: 900px) {

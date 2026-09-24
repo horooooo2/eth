@@ -13,6 +13,7 @@ const {
   streamAnalyzeWithDeepseek,
   analyzeMarketBrief,
   streamAnalyzeMarketBrief,
+  analyzeStanceLeg,
   chatMarketBrief,
   streamChatMarketBrief,
 } = require('../lib/deepseekClient');
@@ -389,7 +390,7 @@ router.post('/market-brief', async (req, res) => {
     const body = req.body || {};
     const coin = normalizeCoin(body.coin) || 'BTC';
     const forceRefresh = Boolean(body.forceRefresh);
-    const forceTradeDecision = Boolean(body.forceTradeDecision);
+    const forceTradeDecision = true;
     const userId = req.user.user.id;
     const pipe = await runBriefPipeline({
       apiKey: cred.apiKey,
@@ -479,6 +480,75 @@ router.get('/market-brief-versions', (req, res) => {
   res.json({ ok: true, coin, versions: list });
 });
 
+/** POST /api/whale-ai/market-brief-stance — 仅刷新某一档仓位建议 */
+router.post('/market-brief-stance', async (req, res) => {
+  if (!assertLogin(req, res)) return;
+  try {
+    const cred = getRawAiKey(req.user.user.id, DEFAULT_PROVIDER);
+    if (!cred?.apiKey) {
+      const err = new Error('请先配置 DeepSeek API Key');
+      err.status = 400;
+      throw err;
+    }
+    const body = req.body || {};
+    const coin = normalizeCoin(body.coin) || 'BTC';
+    const horizon = String(body.horizon || '').trim();
+    if (!['ultra_short', 'short', 'mid_long'].includes(horizon)) {
+      const err = new Error('horizon 须为 ultra_short / short / mid_long');
+      err.status = 400;
+      throw err;
+    }
+    const userId = req.user.user.id;
+    let contextText = String(body.contextText || '').trim();
+    let equityLike = Boolean(body.equityLike);
+    if (!contextText) {
+      const ctx = await buildMarketBriefContext(coin, { forceRefresh: false });
+      contextText = contextToPrompt(ctx);
+      equityLike = Boolean(ctx.equityLike);
+    }
+    const existingAnalysis = String(body.analysis || '').trim();
+    const refreshed = await analyzeStanceLeg(cred.apiKey, {
+      coin,
+      horizon,
+      contextText,
+      equityLike,
+      existingAnalysis,
+    });
+
+    // 若带 analysisId，合并写回该次分析的 personal_stance
+    const analysisId = String(body.analysisId || '').trim();
+    let analysisResult = null;
+    if (analysisId) {
+      const row = getAnalysis(analysisId);
+      if (row && row.result && typeof row.result === 'object') {
+        const next = { ...row.result };
+        const ps = { ...(next.personal_stance || {}) };
+        ps[horizon] = refreshed.leg;
+        next.personal_stance = ps;
+        const { analysisResultToMarkdown } = require('../lib/analysisResult');
+        updateAnalysis(analysisId, {
+          result: next,
+          analysisMarkdown: analysisResultToMarkdown(next),
+          model: refreshed.model,
+        });
+        analysisResult = next;
+      }
+    }
+
+    res.json({
+      ok: true,
+      coin,
+      horizon,
+      leg: refreshed.leg,
+      analysisResult,
+      model: refreshed.model,
+      usage: refreshed.usage,
+    });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
 /** POST /api/whale-ai/market-brief-stream  — SSE；body: { coin, forceRefresh?, analysisId? } */
 router.post('/market-brief-stream', async (req, res) => {
   if (!assertLogin(req, res)) return;
@@ -491,7 +561,7 @@ router.post('/market-brief-stream', async (req, res) => {
   const body = req.body || {};
   const coin = normalizeCoin(body.coin) || 'BTC';
   const forceRefresh = Boolean(body.forceRefresh);
-  const forceTradeDecision = Boolean(body.forceTradeDecision);
+  const forceTradeDecision = true;
   const resumeId = String(body.analysisId || '').trim();
   const userId = req.user.user.id;
 

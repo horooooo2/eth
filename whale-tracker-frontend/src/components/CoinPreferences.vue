@@ -3,8 +3,6 @@ import { ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Close } from '@element-plus/icons-vue';
 import { lookupMarketCoin } from '@/api';
-import { isLoggedIn } from '@/stores/auth';
-import { aiKeyHint, bindAiKey, refreshAiKeyStatus } from '@/stores/aiKey';
 import {
   MAX_PREFERRED_COINS,
   readWatchedCoins,
@@ -24,8 +22,6 @@ const saving = ref(false);
 const prefAddSymbol = ref('');
 const prefAddLoading = ref(false);
 const draftCoins = ref<string[]>([]);
-const apiKeyInput = ref('');
-const savingKeys = ref(false);
 
 function normalizeInput(raw: string) {
   return raw
@@ -40,13 +36,11 @@ function normalizeInput(raw: string) {
 function resetDraft() {
   draftCoins.value = [...readWatchedCoins()];
   prefAddSymbol.value = '';
-  apiKeyInput.value = '';
 }
 
 function openPrefs() {
   resetDraft();
   prefsVisible.value = true;
-  if (isLoggedIn.value) void refreshAiKeyStatus(true);
 }
 
 function closePrefs() {
@@ -89,28 +83,6 @@ function removeDraftCoin(id: string) {
   draftCoins.value = draftCoins.value.filter((item) => item !== id);
 }
 
-async function submitDeepseekKey() {
-  const apiKey = apiKeyInput.value.trim();
-  if (!apiKey) {
-    ElMessage.warning('请填写 DeepSeek 密钥');
-    return false;
-  }
-  if (savingKeys.value) return false;
-  savingKeys.value = true;
-  try {
-    const data = await bindAiKey(apiKey);
-    apiKeyInput.value = '';
-    if (data.warn) ElMessage.warning(data.warn);
-    else ElMessage.success('DeepSeek 密钥已保存');
-    return true;
-  } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '保存失败');
-    return false;
-  } finally {
-    savingKeys.value = false;
-  }
-}
-
 async function confirmPrefs() {
   if (saving.value) return;
   if (!draftCoins.value.length) {
@@ -119,10 +91,6 @@ async function confirmPrefs() {
   }
   saving.value = true;
   try {
-    if (apiKeyInput.value.trim()) {
-      const ok = await submitDeepseekKey();
-      if (!ok) return;
-    }
     writePreferredCoins(draftCoins.value);
     prefsVisible.value = false;
     emit('change');
@@ -199,32 +167,13 @@ async function confirmPrefs() {
             </button>
           </div>
         </section>
-
-        <section class="setting-block">
-          <h4 class="block-title">DeepSeek API</h4>
-          <p class="intro">用于新闻、推文与巨鲸数据的智能分析。不配置不影响其他数据功能。</p>
-          <template v-if="isLoggedIn">
-            <el-input
-              v-model="apiKeyInput"
-              type="password"
-              show-password
-              size="large"
-              autocomplete="new-password"
-              placeholder="sk-…"
-            />
-            <p class="intro">
-              {{ aiKeyHint ? `当前密钥：${aiKeyHint}` : '尚未配置' }}
-            </p>
-          </template>
-          <p v-else class="intro">登录后可在此配置 DeepSeek 密钥。</p>
-        </section>
       </div>
 
       <template #footer>
         <div class="dialog-footer">
           <button type="button" class="dlg-btn ghost" @click="closePrefs">取消</button>
-          <button type="button" class="dlg-btn primary" :disabled="saving || savingKeys" @click="confirmPrefs">
-            {{ saving || savingKeys ? '…' : '确认' }}
+          <button type="button" class="dlg-btn primary" :disabled="saving" @click="confirmPrefs">
+            {{ saving ? '…' : '确认' }}
           </button>
         </div>
       </template>

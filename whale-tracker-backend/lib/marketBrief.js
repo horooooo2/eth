@@ -1173,9 +1173,11 @@ async function buildMarketBriefContext(coinInput, opts = {}) {
       'macro',
       MODULE_TTL_MS.macro,
       async () => {
-        const calendar = await withTimeout(getCalendar(false).catch(() => ({ events: [] })), 8000, {
-          events: [],
-        });
+        const calendar = await withTimeout(
+          getCalendar(forceRefresh).catch(() => ({ events: [] })),
+          12000,
+          { events: [] },
+        );
         const events = Array.isArray(calendar?.events) ? calendar.events : [];
         const macro = events
           .filter((e) => {
@@ -1187,15 +1189,18 @@ async function buildMarketBriefContext(coinInput, opts = {}) {
           .map((e) => ({
             title: clip(e.title, 100),
             dateLabel: e.dateLabel || e.date || '',
+            time: e.time || e.timeNote || '',
             daysUntil: e.daysUntil,
             importance: e.importance,
-            note: clip(e.note, 120),
+            note: clip(e.note, 160),
             previous: e.previous || '',
             forecast: e.forecast || '',
+            actual: e.actual || '',
+            released: Number(e.daysUntil) < 0 || (Number(e.daysUntil) === 0 && Boolean(e.actual)),
           }));
         return { macro, _status: macro.length ? 'ok' : 'empty' };
       },
-      false,
+      true,
     ),
     loadOrFetch(
       'tvl',
@@ -1405,7 +1410,7 @@ function contextToPrompt(ctx) {
     derivatives: 1200,
     whales: 1400,
     news: 1800,
-    macro: 900,
+    macro: 1400,
     tvl: 500,
     capability: 500,
     footer: 400,
@@ -1495,14 +1500,28 @@ function contextToPrompt(ctx) {
   if (bm.equityIndex?.shanghai) bmLines.push(`- 上证：${bm.equityIndex.shanghai.changePct}%`);
   if (bm.usdcny) bmLines.push(`- USDCNY：${bm.usdcny.last}`);
 
+  const fmtMacro = (e) => {
+    const bits = [
+      e.dateLabel || '',
+      e.time ? `${e.time}` : '',
+      e.title || '',
+      e.forecast ? `预期${e.forecast}` : '',
+      e.previous ? `前值${e.previous}` : '',
+      e.actual ? `实际${e.actual}` : Number(e.daysUntil) <= 0 ? '实际暂未入库' : '待公布',
+      e.importance ? `重要性${e.importance}` : '',
+    ].filter(Boolean);
+    return `- ${bits.join(' · ')}`;
+  };
+
   const macro = budgetClip(
     [
-      '【宏观 / 基准】',
+      '【宏观 / 基准 · 含预期/前值/实际，供定价与开仓判断】',
       ...(bmLines.length ? bmLines : ['- 基准 unavailable']),
-      ...((ctx.macro || []).slice(0, 5).map((e) => `- ${e.dateLabel} ${e.title}`) || ['- 日历暂无']),
+      ...((ctx.macro || []).slice(0, 6).map(fmtMacro) || ['- 日历暂无']),
+      '解读要求：若实际已出，比较实际 vs 预期/前值判断超预期或不及预期；若未公布，用预期+市场定价（是否已提前计价）做情景；警惕「利空出尽是利好 / 利好出尽是利空」。',
       `marketSensitivity: ${ctx.marketSensitivity?.status || 'unavailable'}`,
     ].join('\n'),
-    BUDGET.macro,
+    Math.max(BUDGET.macro, 1400),
   );
 
   const tvl = ctx.defi

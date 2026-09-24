@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { fetchQuotes, fetchPagedAlertHistory, fetchPagedTrades, fetchCalendar } from '@/api';
 import CoinPreferences from '@/components/CoinPreferences.vue';
+import ApiSettings from '@/components/ApiSettings.vue';
 import FreshModeControl from '@/components/FreshModeControl.vue';
 import NewsList from '@/components/NewsList.vue';
 import MarketBriefBanner from '@/components/MarketBriefBanner.vue';
@@ -338,6 +339,7 @@ onUnmounted(() => {
       <div class="bottom-nav">
         <FreshModeControl variant="sidebar" :reload-alerts="reloadNewsAlerts" />
         <CoinPreferences variant="sidebar" />
+        <ApiSettings variant="sidebar" />
         <button
           type="button"
           class="nav-item account"

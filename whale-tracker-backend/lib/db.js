@@ -185,9 +185,21 @@ function migrate(database) {
       PRIMARY KEY (user_id, provider)
     );
     CREATE INDEX IF NOT EXISTS idx_user_ai_keys_user ON user_ai_keys(user_id);
+
+    CREATE TABLE IF NOT EXISTS user_exchange_keys (
+      user_id TEXT NOT NULL,
+      exchange TEXT NOT NULL,
+      api_key TEXT NOT NULL DEFAULT '',
+      api_secret TEXT NOT NULL DEFAULT '',
+      api_passphrase TEXT NOT NULL DEFAULT '',
+      simulated INTEGER NOT NULL DEFAULT 1,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, exchange)
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_exchange_keys_user ON user_exchange_keys(user_id);
   `);
-  // 旧策略表（user_exchange_keys / v41_execution_records / v41_runtime_events /
-  // whale_ai_runtime_logs）不再创建也不再读写；生产库中的历史数据保留不动。
+  // 旧策略表（v41_* / whale_ai_runtime_logs）不再创建；user_ai_keys / user_exchange_keys 继续使用。
 
   // soft migrations
   try {

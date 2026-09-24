@@ -18,7 +18,7 @@ const open = ref(false);
 function onClick(ev: Event) {
   ev.stopPropagation();
   if (!aiKeyReady.value) {
-    ElMessage.warning('请先在侧栏「币种偏好」中配置 DeepSeek API Key');
+                ElMessage.warning('请先在侧栏「API 设置」中配置 DeepSeek API Key');
     return;
   }
   open.value = true;

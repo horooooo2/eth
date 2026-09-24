@@ -858,6 +858,8 @@ export type MarketBriefStructured = {
   };
   personal_stance?: {
     headline?: string;
+    /** 开单依据维度，如 市场情绪 / 新闻内容 / 小时线走势 */
+    basis?: string[];
     ultra_short?: {
       action?: string;
       entry?: number | null;
@@ -1337,5 +1339,205 @@ export async function refreshXWatchNow() {
 export async function fetchApiHealth() {
   const { data } = await http.get<Record<string, unknown>>('/health');
   return data;
+}
+
+/* ===== 仓位建议单档刷新 ===== */
+export async function refreshMarketBriefStance(body: {
+  coin: string;
+  horizon: 'ultra_short' | 'short' | 'mid_long';
+  analysisId?: string;
+  analysis?: string;
+  contextText?: string;
+  equityLike?: boolean;
+}) {
+  const { data } = await http.post<{
+    ok: boolean;
+    coin: string;
+    horizon: string;
+    leg: MarketBriefStructured['personal_stance'] extends infer P
+      ? P extends { ultra_short?: infer L }
+        ? L
+        : never
+      : never;
+    analysisResult?: MarketBriefStructured | null;
+    model?: string;
+  }>('/whale-ai/market-brief-stance', body, { timeout: 90_000 });
+  return data;
+}
+
+/* ===== OKX 密钥 / 下单 ===== */
+export type OkxExchangeKeysDto = {
+  okx: {
+    exchange: 'okx';
+    configured: boolean;
+    enabled: boolean;
+    simulated: boolean;
+    apiKeyHint: string;
+    hasSecret: boolean;
+    hasPassphrase: boolean;
+    updatedAt: number;
+    ready: boolean;
+    status?: string;
+  };
+  binance?: Record<string, unknown>;
+};
+
+export async function fetchOkxKeys() {
+  const { data } = await http.get<OkxExchangeKeysDto>('/okx/keys');
+  return data;
+}
+
+export async function saveOkxKeys(body: {
+  apiKey?: string;
+  apiSecret?: string;
+  apiPassphrase?: string;
+  simulated?: boolean;
+  enabled?: boolean;
+  flagsOnly?: boolean;
+}) {
+  const { data } = await http.put<{ ok: boolean } & OkxExchangeKeysDto>('/okx/keys/okx', body);
+  return data;
+}
+
+export async function deleteOkxKeys() {
+  const { data } = await http.delete<{ ok: boolean } & OkxExchangeKeysDto>('/okx/keys/okx');
+  return data;
+}
+
+export async function fetchOkxTradeStatus() {
+  const { data } = await http.get<{
+    configured: boolean;
+    simulated: boolean;
+    base: string;
+    source?: string;
+  }>('/okx/trade/status');
+  return data;
+}
+
+export async function placeOkxStanceOrder(body: {
+  coin: string;
+  action: string;
+  entry: number;
+  stop: number;
+  takeProfit: number;
+  leverage: number;
+  amountUsd: number;
+}) {
+  const { data } = await http.post<{
+    ok: boolean;
+    order?: Record<string, unknown> | null;
+    plan?: Record<string, unknown>;
+    simulated?: boolean;
+    error?: string;
+  }>('/okx/trade/stance-order', body, { timeout: 90_000 });
+  return data;
+}
+
+export type OkxStanceOrderStage = {
+  id: string;
+  status: 'running' | 'done' | string;
+  progress?: number;
+  message: string;
+  last?: number;
+  limitPx?: number;
+  stop?: number;
+  takeProfit?: number;
+  orderId?: string | null;
+  plan?: Record<string, unknown>;
+};
+
+export type OkxStanceOrderResult = {
+  ok: boolean;
+  order?: Record<string, unknown> | null;
+  plan?: Record<string, unknown>;
+  simulated?: boolean;
+  error?: string;
+};
+
+/** SSE 挂单：取价 → 限价 Maker → 止损止盈 */
+export async function streamOkxStanceOrder(
+  body: {
+    coin: string;
+    action: string;
+    entry: number;
+    stop: number;
+    takeProfit: number;
+    leverage: number;
+    amountUsd: number;
+  },
+  handlers: {
+    onStage?: (stage: OkxStanceOrderStage) => void;
+    onDone?: (data: OkxStanceOrderResult) => void;
+    onError?: (message: string) => void;
+  } = {},
+  signal?: AbortSignal,
+) {
+  const res = await fetch('/api/okx/trade/stance-order-stream', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+      ...(authToken() ? { Authorization: `Bearer ${authToken()}` } : {}),
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    let msg = `挂单失败 HTTP ${res.status}`;
+    try {
+      const j = (await res.json()) as { error?: string };
+      if (j?.error) msg = j.error;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
+  if (!res.body) throw new Error('浏览器不支持流式响应');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  let settled = false;
+
+  const dispatchBlock = (block: string) => {
+    const lines = block.split('\n');
+    let event = 'message';
+    const dataLines: string[] = [];
+    for (const line of lines) {
+      if (line.startsWith('event:')) event = line.slice(6).trim();
+      else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+    }
+    if (!dataLines.length) return;
+    let data: unknown;
+    try {
+      data = JSON.parse(dataLines.join('\n'));
+    } catch {
+      return;
+    }
+    if (event === 'stage') {
+      handlers.onStage?.(data as OkxStanceOrderStage);
+    } else if (event === 'done') {
+      settled = true;
+      handlers.onDone?.(data as OkxStanceOrderResult);
+    } else if (event === 'error') {
+      settled = true;
+      const err = (data as { error?: string })?.error || '挂单失败';
+      handlers.onError?.(err);
+      throw new Error(err);
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split('\n\n');
+    buffer = parts.pop() || '';
+    for (const part of parts) {
+      if (part.trim()) dispatchBlock(part);
+    }
+  }
+  if (buffer.trim()) dispatchBlock(buffer);
+  if (!settled) throw new Error('挂单流意外结束');
 }
 

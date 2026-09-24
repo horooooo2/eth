@@ -68,6 +68,24 @@ function normalizeStanceLeg(raw) {
   };
 }
 
+/** 仓位建议禁止观望：按短线方向兜底为做多/做空 */
+function coerceForcedStance(result) {
+  if (!result?.personal_stance) return result;
+  const dir = String(result.short_term?.direction || '');
+  const fallback = /偏空|承压|空/.test(dir) && !/偏多|多/.test(dir) ? '做空' : '做多';
+  for (const key of ['ultra_short', 'short', 'mid_long']) {
+    const leg = result.personal_stance[key];
+    if (!leg) continue;
+    if (!leg.action || leg.action === '观望') {
+      leg.action = fallback;
+      if (!leg.note) {
+        leg.note = `强制开单：按短线「${dir || '中性'}」倾向选择${fallback}（需自设风控）。`;
+      }
+    }
+  }
+  return result;
+}
+
 function extractJsonObject(text) {
   const raw = String(text || '').trim();
   if (!raw) return null;
@@ -104,6 +122,40 @@ function extractJsonObject(text) {
   return null;
 }
 
+function normalizeBasis(raw) {
+  const ALLOWED = [
+    '市场情绪',
+    '新闻内容',
+    '宏观日历',
+    '小时线走势',
+    '5分钟走势',
+    '日线走势',
+    '巨鲸仓位',
+    '资金费率',
+    '爆仓数据',
+    '主动买卖',
+    'TVL',
+  ];
+  let items = [];
+  if (Array.isArray(raw)) {
+    items = raw.map((x) => asStr(x, 24));
+  } else if (typeof raw === 'string' && raw.trim()) {
+    items = raw
+      .split(/[+＋、,，/|｜\n]+/)
+      .map((x) => x.trim())
+      .filter(Boolean);
+  }
+  const out = [];
+  for (const s of items) {
+    if (!s) continue;
+    const hit = ALLOWED.find((a) => s === a || s.includes(a) || a.includes(s));
+    const label = hit || s.replace(/分析依据|依据|策略/g, '').trim();
+    if (label && label.length <= 12 && !out.includes(label)) out.push(label);
+    if (out.length >= 6) break;
+  }
+  return out;
+}
+
 function emptyResult() {
   return {
     short_term: { direction: '观望', confidence: '低', summary: '数据不足，暂无法给出明确方向。' },
@@ -117,6 +169,7 @@ function emptyResult() {
     risks_and_invalidation: [],
     personal_stance: {
       headline: '仓位建议',
+      basis: ['市场情绪', '新闻内容', '小时线走势'],
       ultra_short: { action: '观望', entry: null, leverage: null, stop: null, take_profit: null, note: '' },
       short: { action: '观望', entry: null, leverage: null, stop: null, take_profit: null, note: '' },
       mid_long: { action: '观望', entry: null, leverage: null, stop: null, take_profit: null, note: '' },
@@ -183,6 +236,23 @@ function normalizeAnalysisResult(raw) {
     risks_and_invalidation: asArr(raw.risks_and_invalidation),
     personal_stance: {
       headline: asStr(stance.headline || stance.title, 40) || '仓位建议',
+      basis: (() => {
+        const fromAi = normalizeBasis(
+          stance.basis || stance.strategy || stance.analysis_basis || stance.analysisBasis,
+        );
+        if (fromAi.length) return fromAi;
+        // 按结果内容推断依据维度
+        const inferred = [];
+        if (asStr(sent.details || sent.long_short_ratio || sent.funding_rate, 20)) inferred.push('市场情绪');
+        if (asStr(news.details || news.sentiment, 20)) inferred.push('新闻内容');
+        if (asStr(tech.hourly, 20)) inferred.push('小时线走势');
+        else if (asStr(tech.m5 || tech.minute5, 20)) inferred.push('5分钟走势');
+        if (asStr(tech.daily, 20)) inferred.push('日线走势');
+        if (asStr(wh.site || wh.external || wh.details, 20)) inferred.push('巨鲸仓位');
+        if (asStr(der.funding || sent.funding_rate, 20)) inferred.push('资金费率');
+        if (asStr(der.liquidations || sent.liquidations, 20)) inferred.push('爆仓数据');
+        return inferred.length ? inferred.slice(0, 6) : ['市场情绪', '新闻内容', '小时线走势'];
+      })(),
       ultra_short: normalizeStanceLeg(
         stance.ultra_short || stance.m5 || stance.scalp || stance.ultraShort,
       ),
@@ -196,6 +266,8 @@ function normalizeAnalysisResult(raw) {
   result.short_term.reason = result.short_term.summary;
   result.mid_long_term.bias = result.mid_long_term.direction;
   result.mid_long_term.reason = result.mid_long_term.summary;
+
+  coerceForcedStance(result);
 
   const ok = errors.length === 0 || (summary && direction);
   return { ok, result, errors };
@@ -256,8 +328,9 @@ function analysisResultToMarkdown(result) {
     r.market_sentiment.liquidations ? `爆仓：${r.market_sentiment.liquidations}` : '',
     r.market_sentiment.details || '',
     '',
-    '## 仓位建议（个人研究视角）',
+    '## 仓位建议',
     ps?.headline || '仓位建议',
+    Array.isArray(ps?.basis) && ps.basis.length ? `分析依据：${ps.basis.join(' + ')}` : '',
     fmtStanceLeg('超短线(5m)', ps?.ultra_short),
     fmtStanceLeg('短期', ps?.short),
     fmtStanceLeg('中长期', ps?.mid_long),
@@ -291,6 +364,7 @@ module.exports = {
   emptyResult,
   extractJsonObject,
   normalizeAnalysisResult,
+  normalizeStanceLeg,
   parseAnalysisResult,
   analysisResultToMarkdown,
   markdownFallbackToResult,
