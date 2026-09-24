@@ -13,6 +13,7 @@ const {
   withTradeCredentials,
 } = require('../lib/okxTradeClient');
 const { getOkxCredentialsForUser, patchOkxFlags } = require('../lib/userExchangeKeys');
+const { recordAiOrder, buildAccountPreview } = require('../lib/okxAiLedger');
 
 const router = express.Router();
 
@@ -49,6 +50,15 @@ function userCredsOrThrow(req) {
 async function withUserTrade(req, fn) {
   const creds = userCredsOrThrow(req);
   return withTradeCredentials(creds, fn);
+}
+
+
+function rememberAiOrder(req, result) {
+  try {
+    recordAiOrder(req.user.user.id, req.body || {}, result);
+  } catch (err) {
+    console.warn('[okx-ai] record failed', err && err.message);
+  }
 }
 
 /** GET /api/okx/trade/status */
@@ -126,6 +136,7 @@ router.post('/stance-order', async (req, res) => {
   try {
     const creds = userCredsOrThrow(req);
     const result = await withUserTrade(req, () => placeStanceOrder(req.body || {}));
+    rememberAiOrder(req, result);
     res.json({ ok: true, ...getTradeStatus(creds), ...result });
   } catch (err) {
     sendErr(res, err);
@@ -163,6 +174,7 @@ router.post('/stance-order-stream', async (req, res) => {
         onStage: (stage) => writeEvent('stage', stage),
       }),
     );
+    rememberAiOrder(req, result);
     writeEvent('done', { ok: true, ...getTradeStatus(creds), ...result });
   } catch (err) {
     writeEvent('error', {
@@ -172,6 +184,18 @@ router.post('/stance-order-stream', async (req, res) => {
     });
   } finally {
     if (!res.writableEnded) res.end();
+  }
+});
+
+/** GET /api/okx/trade/ai-book — 仅 AI 开单的仓位与挂单 */
+router.get('/ai-book', async (req, res) => {
+  if (!assertLogin(req, res)) return;
+  try {
+    const creds = userCredsOrThrow(req);
+    const book = await withUserTrade(req, () => buildAccountPreview(req.user.user.id));
+    res.json({ ok: true, ...getTradeStatus(creds), ...book });
+  } catch (err) {
+    sendErr(res, err);
   }
 });
 

@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
-import { fetchCalendar } from '@/api';
+import { fetchCalendar, fetchOkxKeys } from '@/api';
 import type { CalendarEvent, WhaleProfile } from '@/types';
 import type { RecoQuotes } from '@/utils/recommend';
-import CoinFundFlow from '@/components/CoinFundFlow.vue';
+import OkxAccountPanel from '@/components/OkxAccountPanel.vue';
 import AiAnalyzeButton from '@/components/AiAnalyzeButton.vue';
 
 type DataTab = 'macro' | 'flow';
@@ -24,6 +24,19 @@ const emit = defineEmits<{
 }>();
 
 const tab = ref<DataTab>('macro');
+const accountExchange = ref<'binance' | 'okx'>('binance');
+const accountKeys = ref<{ binance: boolean; okx: boolean }>({ binance: false, okx: false });
+const accountKeysError = ref('');
+async function loadAccountKeys() {
+  try {
+    const keys = await fetchOkxKeys();
+    accountKeys.value = { binance: Boolean(keys.binance?.ready), okx: Boolean(keys.okx?.ready) };
+    accountKeysError.value = '';
+  } catch (err) {
+    accountKeysError.value = err instanceof Error ? err.message : '读取 API 配置失败';
+  }
+}
+watch(tab, (next) => { if (next === 'flow') void loadAccountKeys(); });
 const macroLoading = ref(false);
 const macroError = ref('');
 const macroEvents = ref<CalendarEvent[]>([]);
@@ -150,7 +163,7 @@ watch(
       <div class="head">
         <el-radio-group v-model="tab" class="direction-filter" @change="onTabChange">
           <el-radio-button label="macro">宏观数据</el-radio-button>
-          <el-radio-button label="flow">协议沉淀</el-radio-button>
+          <el-radio-button label="flow">交易账户</el-radio-button>
         </el-radio-group>
       </div>
     </template>
@@ -199,13 +212,21 @@ watch(
       </div>
 
       <div v-show="tab === 'flow'" class="tab-panel transfer-panel">
-        <CoinFundFlow :boot-ready="bootReady" :active="tab === 'flow'" />
+        <div class="account-exchange-tabs">
+          <button v-for="item in (['binance', 'okx'] as const)" :key="item" type="button" :class="{ selected: accountExchange === item }" @click="accountExchange = item; loadAccountKeys()">{{ item === 'binance' ? '币安' : 'OKX' }}</button>
+        </div>
+        <el-alert v-if="accountKeysError" type="warning" :closable="false" :title="accountKeysError" />
+        <el-alert v-else-if="!accountKeys[accountExchange]" type="info" :closable="false" :title="`请先在左下角「API 设置」配置${accountExchange === 'binance' ? '币安' : ' OKX'} API 密钥`" />
+        <OkxAccountPanel v-else :exchange="accountExchange" :boot-ready="bootReady" :active="tab === 'flow'" />
       </div>
     </div>
   </el-card>
 </template>
 
 <style scoped>
+.account-exchange-tabs { display: flex; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+.account-exchange-tabs button { border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); border-radius: 6px; padding: 6px 18px; cursor: pointer; }
+.account-exchange-tabs button.selected { color: var(--text); border-color: var(--accent); }
 .panel {
   height: 100%;
   min-height: 0;

@@ -11,6 +11,7 @@ import WhaleResonanceBanner from '@/components/WhaleResonanceBanner.vue';
 import WhaleAlertDock from '@/components/WhaleAlertDock.vue';
 import WhaleList from '@/components/WhaleList.vue';
 import DataModule from '@/components/DataModule.vue';
+import TradFiBoard from '@/components/TradFiBoard.vue';
 import { useNewsStore } from '@/stores/news';
 import { useWhaleStore } from '@/stores/whale';
 import {
@@ -27,6 +28,7 @@ import { useRealtime } from '@/composables/useRealtime';
 import type { RecoQuotes } from '@/utils/recommend';
 import { readFocusCoin } from '@/utils/recoPrefs';
 import { preferredCoinsState } from '@/utils/watchedCoins';
+import { coinIconCandidates } from '@/utils/coinIcons';
 import { unlockAlertSound } from '@/utils/alertSound';
 import type { WhaleAlert } from '@/utils/whaleAlerts';
 import { normalizeStoredAlert } from '@/utils/whaleAlerts';
@@ -36,7 +38,15 @@ import type { WhaleProfile, WhaleTrade } from '@/types';
 
 const whaleStore = useWhaleStore();
 const newsStore = useNewsStore();
+const brandIcons = coinIconCandidates('BTC');
+const brandIconIdx = ref(0);
+const brandIcon = computed(() => brandIcons[brandIconIdx.value] || '');
 
+function onBrandIconError() {
+  if (brandIconIdx.value < brandIcons.length - 1) brandIconIdx.value += 1;
+}
+
+const sideTab = ref<'virtual' | 'tradfi'>('virtual');
 const whaleListRef = ref<InstanceType<typeof WhaleList> | null>(null);
 const newsListRef = ref<InstanceType<typeof NewsList> | null>(null);
 const quotes = ref<RecoQuotes>({});
@@ -323,22 +333,39 @@ onUnmounted(() => {
       >
         <span class="socket-core" />
       </div>
-      <button type="button" class="nav-item active" title="Hyperliquid">
+      <button
+        type="button"
+        class="nav-item"
+        :class="{ active: sideTab === 'virtual' }"
+        title="Virtual"
+        @click="sideTab = 'virtual'"
+      >
         <span class="nav-mark brand" aria-hidden="true">
-          <svg class="brand-logo hl" viewBox="0 0 32 32" fill="none">
-            <circle cx="16" cy="16" r="16" fill="#97FCE4" />
-            <path
-              fill="#0B0E14"
-              d="M10 9h3.2v5.2H18.8V9H22v14h-3.2v-5.6H13.2V23H10V9z"
-            />
+          <img class="brand-logo hl" :src="brandIcon" alt="" @error="onBrandIconError" />
+        </span>
+        <span>Virtual</span>
+      </button>
+      <button
+        type="button"
+        class="nav-item"
+        :class="{ active: sideTab === 'tradfi' }"
+        title="TradFi"
+        @click="sideTab = 'tradfi'"
+      >
+        <span class="nav-mark fi" aria-hidden="true">
+          <svg class="fi-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 10 12 4l9 6" />
+            <path d="M5 10.5V18M9.5 10.5V18M14.5 10.5V18M19 10.5V18" />
+            <path d="M3 18.5h18" />
+            <path d="M2 21h20" />
           </svg>
         </span>
-        <span>Hyperliquid</span>
+        <span>TradFi</span>
       </button>
 
       <div class="bottom-nav">
         <FreshModeControl variant="sidebar" :reload-alerts="reloadNewsAlerts" />
-        <CoinPreferences variant="sidebar" />
+        <CoinPreferences variant="sidebar" :active-market="sideTab" />
         <ApiSettings variant="sidebar" />
         <button
           type="button"
@@ -352,7 +379,8 @@ onUnmounted(() => {
       </div>
     </aside>
 
-    <div class="layout">
+    <div class="layout" :class="{ 'is-tradfi': sideTab === 'tradfi' }">
+      <div v-show="sideTab === 'virtual'" class="virtual-view">
       <header class="topbar">
         <div class="topbar-spacer" aria-hidden="true" />
         <WhaleResonanceBanner
@@ -413,6 +441,8 @@ onUnmounted(() => {
           />
         </div>
       </div>
+      </div>
+      <TradFiBoard v-show="sideTab === 'tradfi'" class="tradfi-host" :active="sideTab === 'tradfi'" />
     </div>
     </template>
   </div>
@@ -635,6 +665,16 @@ onUnmounted(() => {
 }
 .sidebar .nav-item .nav-mark .brand-logo.hl {
   border-radius: 50%;
+  object-fit: cover;
+}
+.sidebar .nav-item .nav-mark.fi {
+  background: transparent;
+  color: inherit;
+}
+.sidebar .nav-item .fi-icon {
+  width: 22px;
+  height: 22px;
+  display: block;
 }
 .sidebar .nav-item .nav-mark.user {
   background: var(--panel-3);
@@ -683,10 +723,24 @@ onUnmounted(() => {
   max-width: 100%;
   min-width: 0;
   overflow: hidden;
-  padding: 16px 24px;
+  padding: 0;
   background: var(--bg);
   box-sizing: border-box;
   position: relative;
+}
+.virtual-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 16px 24px;
+  box-sizing: border-box;
+}
+.tradfi-host {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 .page-mask {
   position: fixed;

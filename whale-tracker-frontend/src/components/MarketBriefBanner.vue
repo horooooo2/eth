@@ -6,6 +6,8 @@ import {
   fetchMarketBriefAnalysis,
   streamMarketBrief,
   streamOkxStanceOrder,
+  fetchOkxKeys,
+  placeBinanceStanceOrder,
   type MarketBriefResponse,
   type MarketBriefStructured,
   type MarketChatMessage,
@@ -312,6 +314,9 @@ function isWaitAction(action?: string) {
 
 const orderDialogVisible = ref(false);
 const orderAmount = ref('10');
+const availableOrderExchanges = ref<Array<'binance' | 'okx'>>([]);
+const selectedOrderExchange = ref<'binance' | 'okx'>('binance');
+const orderExchangeSimulation = ref<{ binance: boolean; okx: boolean }>({ binance: true, okx: true });
 const orderSubmitting = ref(false);
 const orderProgressVisible = ref(false);
 const orderProgress = ref(0);
@@ -370,7 +375,7 @@ function applyOrderStage(stage: OkxStanceOrderStage) {
   };
 }
 
-function openOrderDialog(card: {
+async function openOrderDialog(card: {
   id: string;
   header: string;
   leg: NonNullable<MarketBriefStructured['personal_stance']>['ultra_short'];
@@ -385,6 +390,18 @@ function openOrderDialog(card: {
   }
   orderTarget.value = card;
   orderAmount.value = '10';
+  try {
+    const keys = await fetchOkxKeys();
+    availableOrderExchanges.value = ([
+      ...(keys.binance?.ready ? ['binance' as const] : []),
+      ...(keys.okx?.ready ? ['okx' as const] : []),
+    ]);
+    orderExchangeSimulation.value = { binance: Boolean(keys.binance?.simulated), okx: Boolean(keys.okx?.simulated) };
+    selectedOrderExchange.value = availableOrderExchanges.value[0] || 'binance';
+  } catch (err) {
+    availableOrderExchanges.value = [];
+    ElMessage.warning(err instanceof Error ? err.message : '读取交易所配置失败');
+  }
   orderDialogVisible.value = true;
 }
 
@@ -393,6 +410,10 @@ async function confirmStanceOrder() {
   const coin = result.value?.coin;
   if (!card?.leg || !coin) return;
   const amount = Number(orderAmount.value);
+  if (!availableOrderExchanges.value.includes(selectedOrderExchange.value)) {
+    ElMessage.warning('请先在左下角「API 设置」配置币安或 OKX API 密钥');
+    return;
+  }
   if (!(amount > 0) || amount > 100) {
     ElMessage.warning('请输入 0~100 的 USDT 金额');
     return;
@@ -400,7 +421,7 @@ async function confirmStanceOrder() {
   const isLong = /做多|^long$|^buy$/i.test(String(card.leg.action));
   try {
     await ElMessageBox.confirm(
-      `将以限价 Maker 挂单（非市价），降低手续费。\n币种 ${coin} · ${card.leg.action}\n参考开仓 ${fmtStancePrice(card.leg.entry)} · 杠杆 ${card.leg.leverage ?? '—'}x\n止损 ${fmtStancePrice(card.leg.stop)} · 止盈 ${fmtStancePrice(card.leg.take_profit)}\n保证金 ${amount} USDT\n挂单逻辑：先取最新价，再${isLong ? '低于现价挂买单' : '高于现价挂卖单'}，并附带止损止盈。`,
+      `交易所 ${selectedOrderExchange.value === 'binance' ? '币安' : 'OKX'} · ${orderExchangeSimulation.value[selectedOrderExchange.value] ? '演示盘' : '实盘'}\n将以限价 Maker 挂单（非市价）。\n币种 ${coin} · ${card.leg.action}\n参考开仓 ${fmtStancePrice(card.leg.entry)} · 杠杆 ${card.leg.leverage ?? '—'}x\n止损 ${fmtStancePrice(card.leg.stop)} · 止盈 ${fmtStancePrice(card.leg.take_profit)}\n保证金 ${amount} USDT\n挂单逻辑：先取最新价，再${isLong ? '低于现价挂买单' : '高于现价挂卖单'}，并附带止损止盈。`,
       '确认挂单开仓',
       { type: 'warning', confirmButtonText: '开始挂单', cancelButtonText: '取消' },
     );
@@ -414,16 +435,26 @@ async function confirmStanceOrder() {
   orderSubmitting.value = true;
 
   try {
+    const payload = {
+      coin,
+      action: String(card.leg.action),
+      entry: Number(card.leg.entry),
+      stop: Number(card.leg.stop),
+      takeProfit: Number(card.leg.take_profit),
+      leverage: Number(card.leg.leverage) || 5,
+      amountUsd: amount,
+    };
+    if (selectedOrderExchange.value === 'binance') {
+      applyOrderStage({ id: 'price', status: 'running', progress: 15, message: '读取币安行情与合约规则…' });
+      const data = await placeBinanceStanceOrder(payload);
+      orderProgress.value = 100;
+      orderProgressDone.value = true;
+      orderProgressSteps.value = orderProgressSteps.value.map((step) => ({ ...step, status: 'done' as const }));
+      ElMessage.success(`${data.simulated ? '币安演示盘' : '币安实盘'}挂单成功 ${String(data.order?.orderId || '')}`);
+      return;
+    }
     await streamOkxStanceOrder(
-      {
-        coin,
-        action: String(card.leg.action),
-        entry: Number(card.leg.entry),
-        stop: Number(card.leg.stop),
-        takeProfit: Number(card.leg.take_profit),
-        leverage: Number(card.leg.leverage) || 5,
-        amountUsd: amount,
-      },
+      payload,
       {
         onStage: applyOrderStage,
         onDone: (data) => {
@@ -1315,9 +1346,12 @@ onUnmounted(() => {
         </p>
         <label class="order-amount-label">保证金金额（USDT，最大 100）</label>
         <el-input v-model="orderAmount" type="number" min="1" max="100" step="1" />
+        <div v-if="availableOrderExchanges.length" class="order-exchange-picker">
+          <button v-for="exchange in availableOrderExchanges" :key="exchange" type="button" :class="{ selected: selectedOrderExchange === exchange }" @click="selectedOrderExchange = exchange">{{ exchange === 'binance' ? '币安' : 'OKX' }}</button>
+        </div>
+        <el-alert v-else type="info" :closable="false" title="请先在左下角「API 设置」配置币安或 OKX API 密钥" />
         <p class="order-hint">
-          使用限价 Maker 挂单（非市价）：先取最新价，做多低于现价 / 做空高于现价挂单，并附带 AI
-          止损止盈。需先在侧栏「API 设置」配置 OKX 密钥。
+          使用限价 Maker 挂单：先取最新价，做多低于现价 / 做空高于现价挂单，并附带 AI 止损止盈。
         </p>
       </div>
       <template #footer>
@@ -1325,7 +1359,7 @@ onUnmounted(() => {
         <button
           type="button"
           class="dlg-btn primary"
-          :disabled="orderSubmitting"
+          :disabled="orderSubmitting || !availableOrderExchanges.length"
           @click="confirmStanceOrder"
         >
           {{ orderSubmitting ? '挂单中…' : '确认挂单' }}
@@ -2091,6 +2125,9 @@ onUnmounted(() => {
   font-size: 13px;
   color: var(--muted, #8b949e);
 }
+.order-exchange-picker { display: flex; gap: 8px; }
+.order-exchange-picker button { border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); border-radius: 6px; padding: 6px 16px; cursor: pointer; }
+.order-exchange-picker button.selected { color: var(--text); border-color: var(--accent); }
 .order-hint {
   margin: 0;
   font-size: 12px;

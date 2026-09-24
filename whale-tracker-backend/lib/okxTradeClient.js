@@ -670,6 +670,7 @@ async function placeStanceOrder(input, opts = {}) {
     takeProfit,
   });
 
+  const clOrdId = String(input.clOrdId || makeAiClOrdId()).replace(/[^A-Za-z0-9]/g, '').slice(0, 32);
   const result = await placeOrder({
     instId,
     side,
@@ -680,6 +681,7 @@ async function placeStanceOrder(input, opts = {}) {
     sz,
     lever: leverage,
     setLeverage: '1',
+    clOrdId,
     attachAlgoOrds: [
       {
         tpTriggerPx: String(takeProfit),
@@ -709,6 +711,7 @@ async function placeStanceOrder(input, opts = {}) {
     offsetBps,
     ordType: wantPostOnly ? 'post_only' : 'limit',
     limitReason,
+    clOrdId,
   };
 
   emitStage(onStage, {
@@ -716,11 +719,34 @@ async function placeStanceOrder(input, opts = {}) {
     status: 'done',
     progress: 100,
     message: '挂单已提交（限价 Maker + 止损止盈）',
-    orderId: result?.order?.ordId || null,
+    orderId: result?.result?.ordId || result?.order?.ordId || null,
     plan,
   });
 
-  return { ...result, plan, simulated: isSimulated() };
+  return { order: result.result || result.order || null, raw: result.raw, plan, simulated: isSimulated() };
+}
+
+function makeAiClOrdId() {
+  const raw = 'wtai' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  return raw.replace(/[^A-Za-z0-9]/g, '').slice(0, 32);
+}
+
+async function getOrder({ instId, ordId, clOrdId }) {
+  const path = '/api/v5/trade/order' + qs({ instId, ordId, clOrdId });
+  const data = await okxPrivate('GET', path);
+  return (data.data && data.data[0]) || null;
+}
+
+async function getFillsHistory(instType = 'SWAP', limit = 100) {
+  const path = '/api/v5/trade/fills-history' + qs({ instType, limit });
+  const data = await okxPrivate('GET', path);
+  return data.data || [];
+}
+
+async function getPositionsHistory(instType = 'SWAP', limit = 100) {
+  const path = '/api/v5/account/positions-history' + qs({ instType, limit });
+  const data = await okxPrivate('GET', path);
+  return data.data || [];
 }
 
 module.exports = {
@@ -737,6 +763,9 @@ module.exports = {
   setLeverage,
   placeOrder,
   placeStanceOrder,
+  getOrder,
+  getFillsHistory,
+  getPositionsHistory,
   getSwapInstrument,
   getSwapTicker,
   cancelOrder,

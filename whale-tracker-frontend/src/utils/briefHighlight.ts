@@ -48,29 +48,22 @@ export function directionToneClass(dir?: string) {
   return 'tone-wait';
 }
 
-/** 行内：金额/涨跌着色（分析弹窗用） */
+function markKey(text: string) {
+  return `<strong class="text-key">${text}</strong>`;
+}
+
+/** 行内：关键数字和方向用同一强调，其余保持灰色正文 */
 function analyzeInlineHtml(raw: string): string {
   let s = escapeHtml(raw);
-  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  // 带符号的百分比 / 盈亏金额
+  s = s.replace(/\*\*([^*]+)\*\*/g, (_m, inner: string) => markKey(inner));
   s = s.replace(
     /([+\-]?\s*\$?\s*\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*[万亿]?%?|\+\d+(?:\.\d+)?%|-\d+(?:\.\d+)?%)/g,
-    (m) => {
-      const t = m.replace(/\s+/g, '');
-      if (/^[+\-]/.test(t) || /[+\-]/.test(t.slice(0, 2))) {
-        if (t.includes('-') && !t.startsWith('+')) {
-          return `<span class="text-red">${m}</span>`;
-        }
-        if (t.includes('+')) return `<span class="text-green">${m}</span>`;
-      }
-      if (/\$|万|亿/.test(t)) return `<span class="text-blue">${m}</span>`;
-      return `<span class="data-badge">${m}</span>`;
-    },
+    (m) => markKey(m),
   );
   s = s
-    .replace(BULL_RE, '<span class="text-green">$1</span>')
-    .replace(BEAR_RE, '<span class="text-red">$1</span>')
-    .replace(NEUTRAL_RE, '<span class="text-yellow">$1</span>');
+    .replace(BULL_RE, (m) => markKey(m))
+    .replace(BEAR_RE, (m) => markKey(m))
+    .replace(NEUTRAL_RE, (m) => markKey(m));
   return s;
 }
 

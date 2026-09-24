@@ -66,11 +66,13 @@ function mountRoutes(app, prefix) {
   app.use(`${base}/whales`, whalesRouter);
   app.use(`${base}/news`, newsRouter);
   app.use(`${base}/markets`, marketsRouter);
+  app.use(`${base}/tradfi`, require('../routes/tradfi'));
   app.use(`${base}/flow`, require('../routes/flow'));
   app.use(`${base}/x`, xRouter);
   // 通用 AI 数据分析（DeepSeek key + analyze），非策略
   app.use(`${base}/whale-ai`, require('../routes/whaleAi'));
   app.use(`${base}/okx/trade`, require('../routes/okxTrade'));
+  app.use(`${base}/binance/trade`, require('../routes/binanceTrade'));
   app.use(`${base}/okx/keys`, require('../routes/okxKeys'));
   app.get(`${base}/data/browse`, (req, res) => {
     try {

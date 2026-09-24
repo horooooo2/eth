@@ -1,5 +1,5 @@
 const express = require('express');
-const { getMarkets, getQuotes, getLiquidations, lookupCoin } = require('../lib/markets');
+const { getMarkets, getQuotes, getLiquidations, lookupCoin, searchCoins } = require('../lib/markets');
 const { fetchWhaleAlerts } = require('../lib/onchain');
 
 const router = express.Router();
@@ -48,6 +48,14 @@ router.get('/whale-alerts', async (req, res) => {
   } catch (err) {
     console.error('[GET /api/markets/whale-alerts]', err);
     res.status(502).json({ error: err.message || '巨鲸异动获取失败', alerts: [] });
+  }
+});
+
+router.get('/search', async (req, res) => {
+  try {
+    res.json({ items: await searchCoins(req.query.q) });
+  } catch (err) {
+    res.status(502).json({ error: err.message || '币种搜索失败' });
   }
 });
 

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Close } from '@element-plus/icons-vue';
-import { lookupMarketCoin } from '@/api';
+import { fetchTradFiCatalog, lookupMarketCoin, searchMarketCoins, type TradFiMarketSymbol } from '@/api';
+import { tradfiWatch, writeTradFiWatch } from '@/utils/tradfiWatch';
 import {
   MAX_PREFERRED_COINS,
   readWatchedCoins,
@@ -11,6 +12,7 @@ import {
 
 const props = defineProps<{
   variant?: 'default' | 'sidebar';
+  activeMarket?: 'virtual' | 'tradfi';
 }>();
 
 const emit = defineEmits<{
@@ -22,6 +24,28 @@ const saving = ref(false);
 const prefAddSymbol = ref('');
 const prefAddLoading = ref(false);
 const draftCoins = ref<string[]>([]);
+const activeTab = ref<'virtual' | 'tradfi'>('virtual');
+const draftTradfi = ref<string[]>([]);
+const tradfiCatalog = ref<TradFiMarketSymbol[]>([]);
+const tradfiLoading = ref(false);
+const tradfiPick = ref('');
+const tradfiAddable = computed(() => tradfiCatalog.value.filter((item) => !draftTradfi.value.includes(item.symbol)));
+type CoinSuggestion = { value: string; id: string };
+
+async function queryCoinSuggestions(query: string, done: (items: CoinSuggestion[]) => void) {
+  if (!query.trim()) { done([]); return; }
+  try {
+    const items = await searchMarketCoins(query.trim());
+    done(items.filter((item) => !draftCoins.value.includes(item.id))
+      .map((item) => ({ id: item.id, value: item.name === item.id ? item.id : `${item.id} · ${item.name}` })));
+  } catch {
+    done([]);
+  }
+}
+
+function selectCoinSuggestion(item: CoinSuggestion) {
+  prefAddSymbol.value = item.id;
+}
 
 function normalizeInput(raw: string) {
   return raw
@@ -35,12 +59,46 @@ function normalizeInput(raw: string) {
 
 function resetDraft() {
   draftCoins.value = [...readWatchedCoins()];
+  draftTradfi.value = [...tradfiWatch.value];
   prefAddSymbol.value = '';
+  tradfiPick.value = '';
 }
 
 function openPrefs() {
   resetDraft();
+  activeTab.value = props.activeMarket || 'virtual';
   prefsVisible.value = true;
+  void loadTradfiCatalog();
+}
+
+async function loadTradfiCatalog() {
+  tradfiLoading.value = true;
+  try {
+    tradfiCatalog.value = (await fetchTradFiCatalog()).symbols;
+  } catch (err) {
+    ElMessage.warning(err instanceof Error ? err.message : 'TradFi 合约清单获取失败');
+  } finally {
+    tradfiLoading.value = false;
+  }
+}
+
+function addTradfi() {
+  const symbol = tradfiPick.value;
+  if (!tradfiAddable.value.some((item) => item.symbol === symbol)) return;
+  if (draftTradfi.value.length >= 30) {
+    ElMessage.warning('最多添加 30 个 TradFi 标的');
+    return;
+  }
+  draftTradfi.value = [...draftTradfi.value, symbol];
+  tradfiPick.value = '';
+}
+
+function removeTradfi(symbol: string) {
+  if (draftTradfi.value.length <= 1) {
+    ElMessage.warning('至少保留 1 个 TradFi 标的');
+    return;
+  }
+  draftTradfi.value = draftTradfi.value.filter((item) => item !== symbol);
 }
 
 function closePrefs() {
@@ -92,6 +150,7 @@ async function confirmPrefs() {
   saving.value = true;
   try {
     writePreferredCoins(draftCoins.value);
+    writeTradFiWatch(draftTradfi.value);
     prefsVisible.value = false;
     emit('change');
   } finally {
@@ -132,8 +191,12 @@ async function confirmPrefs() {
       @close="resetDraft"
     >
       <div class="dialog-body">
-        <section class="setting-block">
-          <h4 class="block-title">币种偏好</h4>
+        <div class="market-tabs" role="tablist" aria-label="币种类型">
+          <button type="button" role="tab" :aria-selected="activeTab === 'virtual'" :class="{ active: activeTab === 'virtual' }" @click="activeTab = 'virtual'">虚拟币币种</button>
+          <button type="button" role="tab" :aria-selected="activeTab === 'tradfi'" :class="{ active: activeTab === 'tradfi' }" @click="activeTab = 'tradfi'">TradFi 标的</button>
+        </div>
+        <section v-if="activeTab === 'virtual'" class="setting-block" role="tabpanel">
+          <h4 class="block-title">虚拟币币种偏好</h4>
           <p class="intro">
             全站分析与异动记录的币种筛选，均按此列表执行。至少保留 1 个币种。
           </p>
@@ -155,16 +218,36 @@ async function confirmPrefs() {
           </div>
 
           <div class="pref-add">
-            <el-input
+            <el-autocomplete
               v-model="prefAddSymbol"
               size="large"
-              placeholder="输入币种代码，例如 ZEC、SOL"
+              placeholder="搜索代码或名称，例如 SOL、比特币"
               maxlength="16"
+              :fetch-suggestions="queryCoinSuggestions"
+              :debounce="250"
+              clearable
+              @select="selectCoinSuggestion"
               @keyup.enter="submitPrefAdd"
             />
             <button type="button" class="dlg-btn primary" :disabled="prefAddLoading" @click="submitPrefAdd">
               {{ prefAddLoading ? '…' : '添加' }}
             </button>
+          </div>
+        </section>
+        <section v-else class="setting-block" role="tabpanel">
+          <h4 class="block-title">TradFi 自选标的</h4>
+          <p class="intro">只影响 TradFi 页面，与虚拟币币种列表分开。至少保留 1 个标的。</p>
+          <div class="coin-grid">
+            <div v-for="symbol in draftTradfi" :key="symbol" class="coin-chip">
+              <span class="coin-label">{{ symbol }}</span>
+              <button type="button" class="chip-remove" :disabled="draftTradfi.length <= 1" :aria-label="`移除 ${symbol}`" @click="removeTradfi(symbol)"><el-icon><Close /></el-icon></button>
+            </div>
+          </div>
+          <div class="pref-add">
+            <el-select v-model="tradfiPick" class="tradfi-select" filterable clearable :loading="tradfiLoading" :disabled="tradfiLoading || !tradfiAddable.length" placeholder="搜索代码或名称，例如 XAU、黄金" aria-label="搜索 TradFi 标的">
+              <el-option v-for="item in tradfiAddable" :key="item.symbol" :value="item.symbol" :label="`${item.symbol} · ${item.name}`" />
+            </el-select>
+            <button type="button" class="dlg-btn primary" :disabled="!tradfiPick" @click="addTradfi">添加</button>
           </div>
         </section>
       </div>
@@ -240,6 +323,9 @@ async function confirmPrefs() {
   flex-direction: column;
   gap: 18px;
 }
+.market-tabs { display: flex; gap: 6px; border-bottom: 1px solid #2a3548; }
+.market-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: #8b9bb4; padding: 8px 13px; font: inherit; font-size: 13px; cursor: pointer; }
+.market-tabs button.active { border-bottom-color: #3d7eff; color: #e8edf5; font-weight: 700; }
 .setting-block {
   display: flex;
   flex-direction: column;
@@ -307,10 +393,11 @@ async function confirmPrefs() {
   gap: 8px;
   align-items: center;
 }
-.pref-add :deep(.el-input) {
+.pref-add :deep(.el-input), .pref-add :deep(.el-autocomplete), .pref-add :deep(.el-select) {
   flex: 1 1 auto;
   min-width: 0;
 }
+.tradfi-select { flex: 1 1 auto; min-width: 0; }
 .pref-add .dlg-btn {
   flex: 0 0 auto;
   white-space: nowrap;

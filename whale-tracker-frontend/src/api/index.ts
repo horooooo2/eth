@@ -18,6 +18,121 @@ const http = axios.create({
   timeout: 20000,
 });
 
+export type TradFiMarketSymbol = {
+  symbol: string;
+  baseAsset: string;
+  quoteAsset: string;
+  name: string;
+  category: string;
+  status: string;
+};
+
+export type TradFiQuote = {
+  symbol: string;
+  lastPrice: string | null;
+  priceChangePercent: string | null;
+  closeTime: number | null;
+  source: string;
+  stale: boolean;
+  error?: string;
+};
+
+export async function fetchTradFiCatalog() {
+  const { data } = await http.get<{ symbols: TradFiMarketSymbol[]; updatedAt: string; stale: boolean; source: string }>('/tradfi/catalog');
+  return data;
+}
+
+export async function fetchTradFiQuotes(symbols: string[]) {
+  const { data } = await http.get<{ quotes: TradFiQuote[]; invalidSymbols: string[]; updatedAt: string; source: string }>('/tradfi/quotes', {
+    params: { symbols: symbols.join(',') },
+  });
+  return data;
+}
+
+export type TradFiIntelResponse = {
+  symbol: string;
+  news: {
+    items: Array<{ title: string; category: string; publishedAt: string | null; source: string; url: string; summary: string }>;
+    source: string | null;
+    updatedAt: string | null;
+    stale: boolean;
+    error?: string;
+  };
+  fundamentals: {
+    rows: Array<{ label: string; value: string; asOf: string | null; sourceUrl: string | null }>;
+    source: string | null;
+    sourceUrl: string | null;
+    asOf: string | null;
+    note: string;
+    status: string;
+    updatedAt: string | null;
+    stale: boolean;
+    error?: string;
+  };
+  events: {
+    items: Array<{ title: string; date: string; time: string | null; forecast: string | null; previous: string | null; actual: string | null; source: string }>;
+    source: string | null;
+    updatedAt: string | null;
+    stale: boolean;
+    error?: string;
+  };
+};
+
+export async function fetchTradFiIntel(symbol: string) {
+  const { data } = await http.get<TradFiIntelResponse>('/tradfi/intel', { params: { symbol } });
+  return data;
+}
+
+export type TradFiWhaleRow = {
+  id: string;
+  type: '成交' | '持仓' | '挂单';
+  address: string;
+  name: string;
+  dex: string;
+  coin: string;
+  time: number | null;
+  direction: string;
+  price: number | null;
+  size: number | null;
+  notionalUsd: number | null;
+  unrealizedPnlUsd: number | null;
+  leverage: number | null;
+  source: string;
+};
+
+export type TradFiWhaleResponse = {
+  symbol: string;
+  selectedMarket: { dex: string; coin: string; dayNotionalVolume: number; markPrice: number | null } | null;
+  markets: Array<{ dex: string; coin: string; dayNotionalVolume: number; markPrice: number | null }>;
+  rows: TradFiWhaleRow[];
+  fillCount: number;
+  scannedAddresses: number;
+  configuredAddresses: number;
+  failedRequests: number;
+  successfulRequests?: number;
+  coverageNote: string;
+  updatedAt: string;
+  stale: boolean;
+  binance: { accountRatio: number | null; positionRatio: number | null; asOf: number | null; period: string; source: string; unavailable: boolean };
+};
+
+export async function fetchTradFiWhales(symbol: string, dex = '', addresses: string[] = []) {
+  const { data } = await http.get<TradFiWhaleResponse>('/tradfi/whales', {
+    params: { symbol, dex: dex || undefined, addresses: addresses.length ? addresses.join(',') : undefined },
+    timeout: 45_000,
+  });
+  return data;
+}
+
+export type TradFiAllWhaleResponse = Pick<TradFiWhaleResponse,
+  'rows' | 'fillCount' | 'scannedAddresses' | 'configuredAddresses' | 'failedRequests' | 'successfulRequests' | 'coverageNote' | 'updatedAt' | 'stale'
+> & { markets: number };
+
+export async function fetchAllTradFiWhales() {
+  const { data } = await http.get<TradFiAllWhaleResponse>('/tradfi/whales/all', { timeout: 45_000 });
+  return data;
+}
+
 http.interceptors.request.use((config) => {
   try {
     const token = localStorage.getItem('whale-tracker-auth-token');
@@ -533,6 +648,14 @@ export async function lookupMarketCoin(symbol: string) {
     },
   );
   return data;
+}
+
+export async function searchMarketCoins(query: string) {
+  const { data } = await http.get<{ items: Array<{ id: string; symbol: string; name: string }> }>('/markets/search', {
+    params: { q: query },
+    timeout: 15000,
+  });
+  return data.items;
 }
 
 export async function fetchConfig() {
@@ -1379,7 +1502,10 @@ export type OkxExchangeKeysDto = {
     ready: boolean;
     status?: string;
   };
-  binance?: Record<string, unknown>;
+  binance?: {
+    exchange: 'binance'; configured: boolean; enabled: boolean; simulated: boolean;
+    apiKeyHint: string; ready: boolean; status?: string;
+  };
 };
 
 export async function fetchOkxKeys() {
@@ -1401,6 +1527,98 @@ export async function saveOkxKeys(body: {
 
 export async function deleteOkxKeys() {
   const { data } = await http.delete<{ ok: boolean } & OkxExchangeKeysDto>('/okx/keys/okx');
+  return data;
+}
+
+export async function saveBinanceKeys(body: { apiKey?: string; apiSecret?: string; simulated?: boolean; enabled?: boolean; flagsOnly?: boolean }) {
+  const { data } = await http.put<{ ok: boolean } & OkxExchangeKeysDto>('/okx/keys/binance', body);
+  return data;
+}
+
+export async function deleteBinanceKeys() {
+  const { data } = await http.delete<{ ok: boolean } & OkxExchangeKeysDto>('/okx/keys/binance');
+  return data;
+}
+
+export type TradfiOrderInput = { symbol: string; side: 'BUY' | 'SELL'; type: 'LIMIT' | 'MARKET'; marginUsdt: number; leverage: number; price?: number };
+export type TradfiOrderPlan = TradfiOrderInput & { quantity: string; price: string | null; referencePrice: number; estimatedNotional: number; testnet: boolean | null };
+
+export async function previewTradfiOrder(body: TradfiOrderInput) {
+  const { data } = await http.post<{ ok: boolean; configured: boolean; plan: TradfiOrderPlan }>('/tradfi/order/preview', body, { timeout: 20000 });
+  return data;
+}
+
+export async function submitTradfiOrder(body: TradfiOrderInput, plan: TradfiOrderPlan, testOnly = false) {
+  const { data } = await http.post<{ ok: boolean; testOnly: boolean; simulated: boolean; plan: TradfiOrderPlan; leverage: number | null; order: Record<string, unknown> }>(
+    testOnly ? '/tradfi/order/test' : '/tradfi/order', {
+      ...body, confirm: true, expectedQuantity: plan.quantity,
+      expectedPrice: plan.price, expectedReferencePrice: plan.referencePrice, expectedTestnet: plan.testnet,
+    }, { timeout: 45000 },
+  );
+  return data;
+}
+
+export type OkxAiOrderRecord = {
+  kind?: 'position' | 'pending';
+  ordId: string;
+  clOrdId: string;
+  instId: string;
+  coin: string;
+  side: string;
+  posSide: string;
+  px: number | null;
+  avgPx: number | null;
+  sz: string;
+  amountUsd: number | null;
+  leverage: number | null;
+  state: string;
+  createdAt: number;
+  simulated: boolean;
+  source: 'ai' | 'okx' | 'binance';
+  realizedPnl: number | null;
+  openUpl: number | null;
+};
+
+export type OkxAiBook = {
+  ok: boolean;
+  configured?: boolean;
+  simulated?: boolean;
+  scope: 'ai-only' | 'all';
+  balance: {
+    totalEq: number | null;
+    usdtEq: number | null;
+    availBal: number | null;
+  };
+  openPnl: number;
+  historyPnl: number | null;
+  records: OkxAiOrderRecord[];
+};
+
+export async function fetchOkxAiBook() {
+  const { data } = await http.get<OkxAiBook>('/okx/trade/ai-book', { timeout: 30_000 });
+  return data;
+}
+
+export async function fetchBinanceAccountBook() {
+  const { data } = await http.get<OkxAiBook>('/binance/trade/ai-book', { timeout: 30_000 });
+  return data;
+}
+
+export async function cancelBinanceOrder(body: { symbol: string; orderId: string }) {
+  const { data } = await http.post<{ ok: boolean }>('/binance/trade/cancel', body);
+  return data;
+}
+
+export async function placeBinanceStanceOrder(body: {
+  coin: string; action: string; entry: number; stop: number; takeProfit: number;
+  leverage: number; amountUsd: number;
+}) {
+  const { data } = await http.post<OkxStanceOrderResult>('/binance/trade/stance-order', body, { timeout: 90_000 });
+  return data;
+}
+
+export async function cancelOkxOrder(body: { instId: string; ordId?: string; clOrdId?: string }) {
+  const { data } = await http.post<{ ok: boolean }>('/okx/trade/cancel', body);
   return data;
 }
 

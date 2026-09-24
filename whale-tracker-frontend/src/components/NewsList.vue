@@ -662,7 +662,8 @@ function alertFundingWarn(row: {
         </div>
       </div>
       <el-empty v-if="!alertLoading && !filteredAlerts.length" :description="alertEmptyText()" />
-      <div v-else class="news" v-loading="alertLoading">
+      <div v-else class="news-scroll" v-loading="alertLoading">
+        <div class="news">
         <button
           v-for="row in pagedAlerts"
           :key="row.alert.id"
@@ -729,6 +730,7 @@ function alertFundingWarn(row: {
             <span class="abs-time">{{ formatTimeShort(row.view.eventTime) }}</span>
           </div>
         </button>
+        </div>
       </div>
       <div v-if="alertTotal > 0" class="alert-pager">
         <button
@@ -1288,6 +1290,18 @@ function alertFundingWarn(row: {
   margin: 0;
   flex: 0 0 auto;
   white-space: nowrap;
+}
+.news-scroll {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.news-scroll :deep(.el-loading-mask) {
+  position: absolute;
+  inset: 0;
 }
 .news {
   flex: 1;

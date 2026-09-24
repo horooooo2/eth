@@ -4,6 +4,7 @@ const {
   listExchangeKeys,
   upsertExchangeKeys,
   patchOkxFlags,
+  patchBinanceFlags,
   deleteExchangeKeys,
 } = require('../lib/userExchangeKeys');
 
@@ -34,14 +35,12 @@ router.put('/:exchange', (req, res) => {
   try {
     const exchange = String(req.params.exchange || '').toLowerCase();
     const body = req.body || {};
-    const hasKeys = Boolean(
-      String(body.apiKey || body.api_key || '').trim() &&
-        String(body.apiSecret || body.api_secret || '').trim() &&
-        String(body.apiPassphrase || body.api_passphrase || '').trim(),
-    );
+    const hasKeys = Boolean(String(body.apiKey || body.api_key || '').trim()
+      && String(body.apiSecret || body.api_secret || '').trim()
+      && (exchange === 'binance' || String(body.apiPassphrase || body.api_passphrase || '').trim()));
     const data =
       !hasKeys && (body.flagsOnly || body.simulated != null || body.enabled != null)
-        ? patchOkxFlags(req.user.user.id, body)
+        ? exchange === 'binance' ? patchBinanceFlags(req.user.user.id, body) : patchOkxFlags(req.user.user.id, body)
         : upsertExchangeKeys(req.user.user.id, exchange, body);
     res.json({ ok: true, ...data });
   } catch (err) {

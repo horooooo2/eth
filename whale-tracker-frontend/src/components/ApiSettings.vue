@@ -3,13 +3,14 @@ import { ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { isLoggedIn } from '@/stores/auth';
 import { aiKeyHint, bindAiKey, refreshAiKeyStatus } from '@/stores/aiKey';
-import { deleteOkxKeys, fetchOkxKeys, saveOkxKeys } from '@/api';
+import { deleteBinanceKeys, deleteOkxKeys, fetchOkxKeys, saveBinanceKeys, saveOkxKeys } from '@/api';
 
 defineProps<{
   variant?: 'default' | 'sidebar';
 }>();
 
 const visible = ref(false);
+const activeApiTab = ref<'deepseek' | 'okx' | 'binance'>('deepseek');
 const saving = ref(false);
 const deepseekInput = ref('');
 const okxKey = ref('');
@@ -18,6 +19,11 @@ const okxPass = ref('');
 const okxSimulated = ref(true);
 const okxHint = ref('');
 const okxReady = ref(false);
+const binanceKey = ref('');
+const binanceSecret = ref('');
+const binanceSimulated = ref(true);
+const binanceHint = ref('');
+const binanceReady = ref(false);
 
 async function loadOkx() {
   if (!isLoggedIn.value) return;
@@ -26,17 +32,25 @@ async function loadOkx() {
     okxHint.value = data.okx?.apiKeyHint || '';
     okxReady.value = Boolean(data.okx?.ready);
     okxSimulated.value = data.okx?.simulated !== false;
+    binanceHint.value = data.binance?.apiKeyHint || '';
+    binanceReady.value = Boolean(data.binance?.ready);
+    binanceSimulated.value = data.binance?.simulated !== false;
   } catch {
     okxHint.value = '';
     okxReady.value = false;
+    binanceHint.value = '';
+    binanceReady.value = false;
   }
 }
 
 async function open() {
+  activeApiTab.value = 'deepseek';
   deepseekInput.value = '';
   okxKey.value = '';
   okxSecret.value = '';
   okxPass.value = '';
+  binanceKey.value = '';
+  binanceSecret.value = '';
   visible.value = true;
   if (isLoggedIn.value) {
     void refreshAiKeyStatus(true);
@@ -56,7 +70,7 @@ async function save() {
   saving.value = true;
   try {
     let didSomething = false;
-    if (deepseekInput.value.trim()) {
+    if (activeApiTab.value === 'deepseek' && deepseekInput.value.trim()) {
       const r = await bindAiKey(deepseekInput.value.trim());
       if (!r.ok) throw new Error(r.warn || 'DeepSeek 保存失败');
       ElMessage.success('DeepSeek 密钥已保存');
@@ -66,7 +80,7 @@ async function save() {
     const fillingKeys = Boolean(
       okxKey.value.trim() || okxSecret.value.trim() || okxPass.value.trim(),
     );
-    if (fillingKeys) {
+    if (activeApiTab.value === 'okx' && fillingKeys) {
       if (!okxKey.value.trim() || !okxSecret.value.trim() || !okxPass.value.trim()) {
         throw new Error('OKX 请同时填写 Key / Secret / Passphrase');
       }
@@ -94,7 +108,7 @@ async function save() {
       okxPass.value = '';
       await loadOkx();
       didSomething = true;
-    } else if (okxReady.value) {
+    } else if (activeApiTab.value === 'okx' && okxReady.value) {
       await saveOkxKeys({
         flagsOnly: true,
         simulated: okxSimulated.value,
@@ -105,6 +119,23 @@ async function save() {
       );
       await loadOkx();
       didSomething = true;
+    }
+    if (activeApiTab.value === 'binance') {
+      const fillingBinance = Boolean(binanceKey.value.trim() || binanceSecret.value.trim());
+      if (fillingBinance) {
+        if (!binanceKey.value.trim() || !binanceSecret.value.trim()) throw new Error('币安请同时填写 API Key 和 Secret');
+        await saveBinanceKeys({ apiKey: binanceKey.value.trim(), apiSecret: binanceSecret.value.trim(), simulated: binanceSimulated.value, enabled: true });
+        binanceKey.value = '';
+        binanceSecret.value = '';
+        await loadOkx();
+        ElMessage.success(binanceSimulated.value ? '币安演示盘密钥已保存' : '币安实盘密钥已保存');
+        didSomething = true;
+      } else if (binanceReady.value) {
+        await saveBinanceKeys({ flagsOnly: true, simulated: binanceSimulated.value, enabled: true });
+        await loadOkx();
+        ElMessage.success(binanceSimulated.value ? '已切换为演示盘' : '已切换为实盘');
+        didSomething = true;
+      }
     }
     if (!didSomething) ElMessage.info('没有需要保存的更改');
     else visible.value = false;
@@ -121,6 +152,16 @@ async function clearOkx() {
     okxHint.value = '';
     okxReady.value = false;
     ElMessage.success('已清除 OKX 密钥');
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '清除失败');
+  }
+}
+async function clearBinance() {
+  try {
+    await deleteBinanceKeys();
+    binanceHint.value = '';
+    binanceReady.value = false;
+    ElMessage.success('已清除币安密钥');
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '清除失败');
   }
@@ -162,7 +203,12 @@ async function clearOkx() {
       @closed="close"
     >
       <div class="dialog-body">
-        <section class="setting-block">
+        <div class="api-tabs" role="tablist" aria-label="API 类型">
+          <button type="button" role="tab" :aria-selected="activeApiTab === 'deepseek'" :class="{ active: activeApiTab === 'deepseek' }" @click="activeApiTab = 'deepseek'">DeepSeek API</button>
+          <button type="button" role="tab" :aria-selected="activeApiTab === 'okx'" :class="{ active: activeApiTab === 'okx' }" @click="activeApiTab = 'okx'">OKX API</button>
+          <button type="button" role="tab" :aria-selected="activeApiTab === 'binance'" :class="{ active: activeApiTab === 'binance' }" @click="activeApiTab = 'binance'">币安 API</button>
+        </div>
+        <section v-if="activeApiTab === 'deepseek'" class="setting-block" role="tabpanel">
           <h4 class="block-title">DeepSeek API</h4>
           <p class="intro">用于诊币、新闻、巨鲸智能分析。不配置不影响其他数据功能。</p>
           <template v-if="isLoggedIn">
@@ -179,7 +225,7 @@ async function clearOkx() {
           <p v-else class="intro">登录后可配置。</p>
         </section>
 
-        <section class="setting-block">
+        <section v-else-if="activeApiTab === 'okx'" class="setting-block" role="tabpanel">
           <h4 class="block-title">OKX 下单 API</h4>
           <p class="intro">
             用于仓位建议限价挂单（Maker，最大 100 USDT）。<br />
@@ -219,6 +265,18 @@ async function clearOkx() {
               }}
             </p>
             <button v-if="okxHint" type="button" class="link-btn" @click="clearOkx">清除 OKX 密钥</button>
+          </template>
+          <p v-else class="intro">登录后可配置。</p>
+        </section>
+        <section v-else class="setting-block" role="tabpanel">
+          <h4 class="block-title">币安 API</h4>
+          <p class="intro">用于 TradFi U 本位永续合约下单。演示盘与实盘密钥分别创建，切换环境时请同时更换密钥。实盘交易前需在币安完成合约及 TradFi 协议开通。</p>
+          <template v-if="isLoggedIn">
+            <el-input v-model="binanceKey" size="large" placeholder="API Key（留空则不修改）" autocomplete="off" />
+            <el-input v-model="binanceSecret" type="password" show-password size="large" placeholder="Secret Key" autocomplete="new-password" />
+            <label class="sim-row"><input v-model="binanceSimulated" type="checkbox" />使用币安演示盘（实盘 Key 请勿勾选）</label>
+            <p class="intro">{{ binanceReady ? `已配置：${binanceHint}（${binanceSimulated ? '演示盘' : '实盘'}）` : '尚未配置' }}</p>
+            <button v-if="binanceHint" type="button" class="link-btn" @click="clearBinance">清除币安密钥</button>
           </template>
           <p v-else class="intro">登录后可配置。</p>
         </section>
@@ -282,6 +340,10 @@ async function clearOkx() {
   flex-direction: column;
   gap: 20px;
 }
+
+.api-tabs { display: flex; gap: 4px; border-bottom: 1px solid #2d333b; }
+.api-tabs button { flex: 1; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #8b9bb4; padding: 8px 4px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.api-tabs button.active { border-bottom-color: #1f6feb; color: #e8edf5; font-weight: 700; }
 .setting-block {
   display: flex;
   flex-direction: column;
