@@ -124,6 +124,9 @@ async function save() {
       const fillingBinance = Boolean(binanceKey.value.trim() || binanceSecret.value.trim());
       if (fillingBinance) {
         if (!binanceKey.value.trim() || !binanceSecret.value.trim()) throw new Error('币安请同时填写 API Key 和 Secret');
+        if (binanceSecret.value.trim().length !== 64) {
+          ElMessage.warning(`币安 Secret 当前 ${binanceSecret.value.trim().length} 位，一般应为 64 位，请完整复制后再保存`);
+        }
         await saveBinanceKeys({ apiKey: binanceKey.value.trim(), apiSecret: binanceSecret.value.trim(), simulated: binanceSimulated.value, enabled: true });
         binanceKey.value = '';
         binanceSecret.value = '';

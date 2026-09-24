@@ -6,6 +6,7 @@ const tradePath = require.resolve('../lib/binanceCryptoTrade');
 const original = require.cache[clientPath];
 const calls = [];
 let failAt = '';
+let failId = '';
 require.cache[clientPath] = {
   id: clientPath, filename: clientPath, loaded: true,
   exports: {
@@ -18,7 +19,7 @@ require.cache[clientPath] = {
     stepped: (value, step, mode = 'floor') => (mode === 'ceil' ? Math.ceil(value / Number(step) - 1e-9) : Math.floor(value / Number(step) + 1e-9)) * Number(step) + '',
     signedRequest: async (_creds, method, path, params) => {
       calls.push({ method, path, params });
-      if (path === failAt) throw Error('rejected');
+      if (path === failAt && (!failId || String(params?.clientAlgoId || '').endsWith(failId))) throw Error('rejected');
       if (path.endsWith('/positionSide/dual')) return { dualSidePosition: false };
       if (path.endsWith('/positionRisk')) return [{ positionSide: 'BOTH', positionAmt: '0' }];
       if (path.endsWith('/algoOrder')) return { algoId: calls.length };
@@ -47,12 +48,19 @@ test('places protections and a real GTX entry, and cleans up on rejection', asyn
   const result = await placeStance({ simulated: true }, input);
   assert.equal(result.order.orderId, 123);
   assert.deepEqual(calls.filter((c) => c.method === 'POST').map((c) => c.path), [
-    '/fapi/v1/leverage', '/fapi/v1/algoOrder', '/fapi/v1/algoOrder', '/fapi/v1/order',
+    '/fapi/v1/leverage', '/fapi/v1/order', '/fapi/v1/algoOrder', '/fapi/v1/algoOrder',
   ]);
-  assert.equal(calls.at(-1).params.timeInForce, 'GTX');
+  assert.equal(calls.find((c) => c.path === '/fapi/v1/order' && c.method === 'POST').params.timeInForce, 'GTX');
+  const stop = calls.find((c) => c.params?.type === 'STOP_MARKET');
+  assert.equal(stop.params.quantity, result.plan.quantity);
+  assert.equal(stop.params.reduceOnly, 'true');
+  assert.equal(stop.params.closePosition, undefined);
   calls.length = 0;
-  failAt = '/fapi/v1/order';
+  failAt = '/fapi/v1/algoOrder';
+  failId = '_t';
   await assert.rejects(() => placeStance({ simulated: true }, input), /rejected/);
-  assert.equal(calls.filter((c) => c.method === 'DELETE' && c.path === '/fapi/v1/algoOrder').length, 2);
+  assert.equal(calls.filter((c) => c.method === 'DELETE' && c.path === '/fapi/v1/order').length, 1);
+  assert.equal(calls.filter((c) => c.method === 'DELETE' && c.path === '/fapi/v1/algoOrder').length, 1);
   failAt = '';
+  failId = '';
 });

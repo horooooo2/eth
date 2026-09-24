@@ -58,24 +58,34 @@ async function placeStance(creds, input) {
   await signedRequest(creds, 'POST', '/fapi/v1/leverage', { symbol: plan.symbol, leverage: String(plan.leverage) });
   const opposite = plan.side === 'BUY' ? 'SELL' : 'BUY';
   const groupId = crypto.randomUUID().replace(/-/g, '').slice(0, 22);
-  const base = { algoType: 'CONDITIONAL', symbol: plan.symbol, side: opposite, positionSide, closePosition: 'true', workingType: 'CONTRACT_PRICE' };
+  // closePosition uses TIF GTE, which Binance rejects until a position already exists.
+  // A resting maker entry has no position yet, so protections are sized and reduce-only.
+  const base = {
+    algoType: 'CONDITIONAL', symbol: plan.symbol, side: opposite, positionSide,
+    quantity: plan.quantity, workingType: 'CONTRACT_PRICE',
+  };
+  if (!hedge) base.reduceOnly = 'true';
   const protection = [];
   let order;
   try {
-    // Stop orders are registered first; a rejected protection never leaves a fresh entry order.
-    protection.push(await signedRequest(creds, 'POST', '/fapi/v1/algoOrder', { ...base, type: 'STOP_MARKET', triggerPrice: plan.stopPrice, clientAlgoId: `wtai_${groupId}_s` }));
-    protection.push(await signedRequest(creds, 'POST', '/fapi/v1/algoOrder', { ...base, type: 'TAKE_PROFIT_MARKET', triggerPrice: plan.takePrice, clientAlgoId: `wtai_${groupId}_t` }));
     order = await signedRequest(creds, 'POST', '/fapi/v1/order', {
       symbol: plan.symbol, side: plan.side, positionSide, type: 'LIMIT', timeInForce: 'GTX',
       price: plan.price, quantity: plan.quantity,
       newClientOrderId: `wtai_${groupId}_e`,
     });
+    protection.push(await signedRequest(creds, 'POST', '/fapi/v1/algoOrder', { ...base, type: 'STOP_MARKET', triggerPrice: plan.stopPrice, clientAlgoId: `wtai_${groupId}_s` }));
+    protection.push(await signedRequest(creds, 'POST', '/fapi/v1/algoOrder', { ...base, type: 'TAKE_PROFIT_MARKET', triggerPrice: plan.takePrice, clientAlgoId: `wtai_${groupId}_t` }));
   } catch (err) {
-    const cleanup = await Promise.allSettled(protection.map((p) => signedRequest(creds, 'DELETE', '/fapi/v1/algoOrder', { algoId: String(p.algoId) })));
-    if (cleanup.some((item) => item.status === 'rejected')) {
-      const failure = invalid(`开仓未完成，部分止损止盈条件单清理失败；请立即在币安检查 ${plan.symbol} 条件单。原错误：${err.message}`);
-      failure.status = 502;
-      throw failure;
+    const jobs = [];
+    if (order?.orderId) jobs.push(signedRequest(creds, 'DELETE', '/fapi/v1/order', { symbol: plan.symbol, orderId: String(order.orderId) }));
+    for (const item of protection) jobs.push(signedRequest(creds, 'DELETE', '/fapi/v1/algoOrder', { algoId: String(item.algoId) }));
+    if (jobs.length) {
+      const cleanup = await Promise.allSettled(jobs);
+      if (cleanup.some((item) => item.status === 'rejected')) {
+        const failure = invalid(`开仓未完成，挂单或止损止盈清理失败；请立即在币安检查 ${plan.symbol}。原错误：${err.message}`);
+        failure.status = 502;
+        throw failure;
+      }
     }
     throw err;
   }

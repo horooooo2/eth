@@ -13,10 +13,17 @@ function invalid(message) {
   return err;
 }
 
-function exchangeError(err) {
-  const next = new Error(String(err.response?.data?.msg || err.message || '币安请求失败'));
+function exchangeError(err, creds) {
+  const code = err.response?.data?.code;
+  let message = String(err.response?.data?.msg || err.message || '币安请求失败');
+  if (Number(code) === -1022 || /signature for this request is not valid/i.test(message)) {
+    const len = String(creds?.secret || '').length;
+    const env = creds?.simulated ? '演示盘' : '实盘';
+    message += ` —— 当前按【${env}】签名。已保存的 Secret 长度为 ${len} 位，币安 Secret 一般是 64 位。请到币安 API 管理里重新完整复制 Secret，不要用 API Key 或备注代替。`;
+  }
+  const next = new Error(message);
   next.status = Number(err.response?.status) || 502;
-  next.code = err.response?.data?.code;
+  next.code = code;
   return next;
 }
 
@@ -38,7 +45,7 @@ async function signedRequest(creds, method, path, params = {}) {
       headers: { 'X-MBX-APIKEY': creds.apiKey, 'Content-Type': 'application/x-www-form-urlencoded' },
     });
     return response.data;
-  } catch (err) { throw exchangeError(err); }
+  } catch (err) { throw exchangeError(err, creds); }
 }
 
 async function symbolRules(symbol) {
