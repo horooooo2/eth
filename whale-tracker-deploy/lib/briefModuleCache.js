@@ -9,7 +9,7 @@ const MODULE_TTL_MS = {
   whales: 2 * 60 * 1000,
   technical: 3 * 60 * 1000,
   news: 15 * 60 * 1000,
-  macro: 30 * 60 * 1000,
+  macro: 5 * 60 * 1000,
   tvl: 30 * 60 * 1000,
 };
 

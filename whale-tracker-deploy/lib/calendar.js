@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { fetchFfRows, mergeCalendarEvents, normalizeFfRows } = require('./calendarFeed');
+const { fetchFfRows, mergeCalendarEvents, normalizeFfRows, enrichMissingActuals } = require('./calendarFeed');
 
 const bundledCalendar = require('../config/calendar.json');
 const CALENDAR_FILE = path.join(
@@ -99,11 +99,12 @@ async function getCalendar(force = false) {
   }
 
   const merged = mergeCalendarEvents(localEvents, apiEvents);
+  const events = await enrichMissingActuals(enrichEvents(merged, today, until, since));
   return {
     today,
     until,
     since,
-    events: enrichEvents(merged, today, until, since),
+    events,
     sources: {
       local: localEvents.length,
       api: apiEvents.length,

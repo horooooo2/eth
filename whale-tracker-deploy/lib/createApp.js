@@ -70,6 +70,8 @@ function mountRoutes(app, prefix) {
   app.use(`${base}/x`, xRouter);
   // 通用 AI 数据分析（DeepSeek key + analyze），非策略
   app.use(`${base}/whale-ai`, require('../routes/whaleAi'));
+  app.use(`${base}/okx/trade`, require('../routes/okxTrade'));
+  app.use(`${base}/okx/keys`, require('../routes/okxKeys'));
   app.get(`${base}/data/browse`, (req, res) => {
     try {
       const { loadDbBrowse } = require('./sqliteStore');

@@ -3,7 +3,9 @@ const { readCache, writeCache } = require('./cache');
 
 const FF_URL = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json';
 const CACHE_KEY = 'calendar-ff';
-const CACHE_MS = 4 * 60 * 60 * 1000;
+/** 默认 20 分钟；公布窗口内缺实际值时会强制刷新 */
+const CACHE_MS = 20 * 60 * 1000;
+const CACHE_MS_STALE_ACTUAL = 3 * 60 * 1000;
 
 const client = axios.create({
   timeout: 15000,
@@ -144,6 +146,7 @@ function buildFfNote(row, title) {
   const bits = [];
   if (row.forecast) bits.push(`预期 ${row.forecast}`);
   if (row.previous) bits.push(`前值 ${row.previous}`);
+  if (row.actual) bits.push(`实际 ${row.actual}`);
   const impact = cryptoImpactHint(title);
   if (!bits.length) return impact;
   return `${bits.join(' · ')}；${impact}`;
@@ -169,8 +172,24 @@ function eventsRoughlyMatch(a, b) {
 function readFfCache() {
   const cached = readCache(CACHE_KEY);
   if (!cached?.data?.rows) return null;
-  const fresh = Date.now() - (cached.updatedAt || 0) < CACHE_MS;
-  return { rows: cached.data.rows, fresh, updatedAt: cached.updatedAt, source: cached.data.source || 'ForexFactory' };
+  const age = Date.now() - (cached.updatedAt || 0);
+  const rows = cached.data.rows || [];
+  // 已过公布时间但仍无 actual 的美国中高重要性事件 → 缩短缓存，尽快拿到实际值
+  const needFaster = rows.some((row) => {
+    if (!row || row.country !== 'USD') return false;
+    if (!/high|medium/i.test(row.impact || '')) return false;
+    if (String(row.actual || '').trim()) return false;
+    const ts = Date.parse(row.date);
+    return Number.isFinite(ts) && Date.now() >= ts + 90_000;
+  });
+  const ttl = needFaster ? CACHE_MS_STALE_ACTUAL : CACHE_MS;
+  const fresh = age < ttl;
+  return {
+    rows,
+    fresh,
+    updatedAt: cached.updatedAt,
+    source: cached.data.source || 'ForexFactory',
+  };
 }
 
 async function fetchFfRows(force = false) {
@@ -299,6 +318,147 @@ function mergeFfMacroEvents(baseEvents, rows, { since } = {}) {
   return events.sort((a, b) => String(a.sortKey).localeCompare(String(b.sortKey)));
 }
 
+function eventReleasedShanghai(event, nowMs = Date.now()) {
+  const date = String(event?.date || '').trim();
+  if (!date) return false;
+  const time = String(event.time || '20:30').trim() || '20:30';
+  const hm = /^\d{1,2}:\d{2}$/.test(time) ? time : '20:30';
+  const ts = Date.parse(`${date}T${hm}:00+08:00`);
+  return Number.isFinite(ts) && nowMs >= ts + 60_000;
+}
+
+function httpGetText(url, timeoutMs = 12000) {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('https') ? require('https') : require('http');
+    const req = mod.get(
+      url,
+      {
+        headers: {
+          Accept: 'application/rss+xml, application/xml, text/xml, */*',
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        },
+        timeout: timeoutMs,
+      },
+      (res) => {
+        if (res.statusCode && res.statusCode >= 400) {
+          res.resume();
+          reject(new Error(`HTTP ${res.statusCode}`));
+          return;
+        }
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => {
+          data += c;
+          if (data.length > 800_000) {
+            req.destroy();
+            reject(new Error('response too large'));
+          }
+        });
+        res.on('end', () => resolve(data));
+      },
+    );
+    req.on('error', reject);
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error('timeout'));
+    });
+  });
+}
+
+function extractRssTitles(xml) {
+  const titles = [];
+  const re = /<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/gi;
+  let m;
+  while ((m = re.exec(String(xml || ''))) && titles.length < 40) {
+    const t = String(m[1] || '')
+      .replace(/&amp;/g, '&')
+      .replace(/&#39;/g, "'")
+      .replace(/&quot;/g, '"')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (t && !/Google News/i.test(t)) titles.push(t);
+  }
+  return titles;
+}
+
+function parseClaimsActual(text) {
+  const blob = String(text || '');
+  const patterns = [
+    /(?:initial\s+)?(?:jobless\s+)?claims[^\d]{0,48}(\d{1,3}),(\d{3})\b/i,
+    /\b(\d{1,3}),(\d{3})\s+(?:initial\s+)?(?:jobless\s+)?claims\b/i,
+    /(?:initial\s+)?(?:jobless\s+)?claims[^\d]{0,48}(\d{2,3})\s*K\b/i,
+    /\b(\d{2,3})K\s+(?:initial\s+)?(?:jobless\s+)?claims\b/i,
+    /(?:jobless claims|initial claims|初请失业金)[^\d]{0,40}?(\d{1,3})(?:,(\d{3})|K)\b/i,
+    /初请[^0-9]{0,24}(\d{2,3})\s*(?:K|千)?/i,
+  ];
+  for (const p of patterns) {
+    const m = blob.match(p);
+    if (!m) continue;
+    if (m[2]) {
+      const n = Number(`${m[1]}${m[2]}`);
+      if (Number.isFinite(n) && n >= 100000 && n <= 600000) return `${Math.round(n / 1000)}K`;
+    }
+    const k = Number(m[1]);
+    if (Number.isFinite(k) && k >= 100 && k <= 600) return `${k}K`;
+  }
+  if (/claims|jobless|初请/i.test(blob)) {
+    const m3 = blob.match(/\b(\d{1,3}),(\d{3})\b/);
+    if (m3) {
+      const n = Number(`${m3[1]}${m3[2]}`);
+      if (n >= 100000 && n <= 600000) return `${Math.round(n / 1000)}K`;
+    }
+  }
+  return '';
+}
+
+async function fetchClaimsActualFromNews() {
+  const url =
+    'https://news.google.com/rss/search?q=%22jobless+claims%22+OR+%22initial+claims%22+OR+%22%E5%88%9D%E8%AF%B7%E5%A4%B1%E4%B8%9A%E9%87%91%22&hl=en-US&gl=US&ceid=US:en';
+  try {
+    const xml = await httpGetText(url, 12000);
+    const titles = extractRssTitles(xml);
+    const actual = parseClaimsActual(titles.join('\n'));
+    if (actual) {
+      console.log('[calendar] enriched claims actual from news:', actual);
+      return actual;
+    }
+  } catch (err) {
+    console.warn('[calendar] claims news enrich failed:', err.message || err);
+  }
+  return '';
+}
+
+/**
+ * ForexFactory NFS 常滞后不填 actual；公布后从新闻标题补齐关键数据。
+ */
+async function enrichMissingActuals(events) {
+  const list = Array.isArray(events) ? events : [];
+  const needClaims = list.some(
+    (e) =>
+      e &&
+      !String(e.actual || '').trim() &&
+      eventReleasedShanghai(e) &&
+      /初请|Claims|Jobless/i.test(String(e.title || '')),
+  );
+  let claimsActual = '';
+  if (needClaims) claimsActual = await fetchClaimsActualFromNews();
+
+  return list.map((e) => {
+    if (!e || String(e.actual || '').trim()) return e;
+    if (!eventReleasedShanghai(e)) return e;
+    if (claimsActual && /初请|Claims|Jobless/i.test(String(e.title || ''))) {
+      const next = { ...e, actual: claimsActual, actualSource: 'news' };
+      next.note = buildFfNote(
+        { forecast: next.forecast, previous: next.previous, actual: claimsActual },
+        next.title,
+      );
+      return next;
+    }
+    return e;
+  });
+}
+
 module.exports = {
   fetchFfRows,
   normalizeFfRows,
@@ -309,4 +469,7 @@ module.exports = {
   eventSeverity,
   shanghaiParts,
   shiftYmd,
+  enrichMissingActuals,
+  eventReleasedShanghai,
+  parseClaimsActual,
 };

@@ -10,12 +10,14 @@ const {
 const {
   verifyDeepseekKey,
   analyzeWithDeepseek,
+  streamAnalyzeWithDeepseek,
   analyzeMarketBrief,
   streamAnalyzeMarketBrief,
+  analyzeStanceLeg,
   chatMarketBrief,
   streamChatMarketBrief,
 } = require('../lib/deepseekClient');
-const { buildMarketBriefContext, contextToPrompt, normalizeCoin } = require('../lib/marketBrief');
+const { buildMarketBriefContext, contextToPrompt, buildAnalyzeMarketSnippet, normalizeCoin } = require('../lib/marketBrief');
 
 const router = express.Router();
 
@@ -88,6 +90,28 @@ router.delete('/key', (req, res) => {
   }
 });
 
+function resolveAnalyzeCoin(body = {}) {
+  const meta = body.meta && typeof body.meta === 'object' ? body.meta : {};
+  const raw = body.coin || meta.coin || meta.symbol || '';
+  return normalizeCoin(raw) || 'BTC';
+}
+
+async function enrichAnalyzeMeta(source, body) {
+  const meta =
+    body.meta && typeof body.meta === 'object' ? { ...body.meta } : body.meta ? { raw: body.meta } : {};
+  if (source === 'whale') return { meta, coin: null };
+  const coin = resolveAnalyzeCoin(body);
+  try {
+    const ctx = await buildMarketBriefContext(coin, { forceRefresh: false });
+    meta.marketContext = buildAnalyzeMarketSnippet(ctx);
+    meta.coin = coin;
+  } catch (err) {
+    meta.marketContext = `市场上下文暂不可用：${err.message || 'unknown'}`;
+    meta.coin = coin;
+  }
+  return { meta, coin };
+}
+
 /** POST /api/whale-ai/analyze */
 router.post('/analyze', async (req, res) => {
   if (!assertLogin(req, res)) return;
@@ -108,15 +132,106 @@ router.post('/analyze', async (req, res) => {
       err.status = 400;
       throw err;
     }
+    const { meta } = await enrichAnalyzeMeta(source, body);
     const result = await analyzeWithDeepseek(cred.apiKey, {
       source,
       title,
       content,
-      meta: body.meta,
+      meta,
     });
     res.json({ ok: true, source, ...result });
   } catch (err) {
     sendErr(res, err);
+  }
+});
+
+/** POST /api/whale-ai/analyze-stream — SSE 流式分析（新闻 / 宏观 / 巨鲸） */
+router.post('/analyze-stream', async (req, res) => {
+  if (!assertLogin(req, res)) return;
+
+  const cred = getRawAiKey(req.user.user.id, DEFAULT_PROVIDER);
+  if (!cred?.apiKey) {
+    return res.status(400).json({ error: '请先配置 DeepSeek API Key' });
+  }
+
+  const body = req.body || {};
+  const source =
+    body.source === 'macro' ? 'macro' : body.source === 'whale' ? 'whale' : 'x';
+  const title = String(body.title || '').trim();
+  const content = String(body.content || '').trim();
+  if (!title && !content) {
+    return res.status(400).json({ error: '缺少待分析内容' });
+  }
+
+  const abort = new AbortController();
+  const onClientGone = () => {
+    if (!res.writableEnded) abort.abort();
+  };
+  res.on('close', onClientGone);
+
+  initSse(res);
+  if (source !== 'whale') {
+    sseWrite(res, 'status', { stage: 'market', message: '正在拉取短线压力与资金流向…' });
+  } else {
+    sseWrite(res, 'status', { stage: 'analyze', message: 'DeepSeek 正在分析…' });
+  }
+
+  try {
+    const { meta, coin } = await enrichAnalyzeMeta(source, body);
+    if (abort.signal.aborted || res.writableEnded) return;
+    if (source !== 'whale') {
+      sseWrite(res, 'status', {
+        stage: 'analyze',
+        message: coin ? `DeepSeek 正在分析（${coin}）…` : 'DeepSeek 正在分析…',
+      });
+    }
+    const result = await streamAnalyzeWithDeepseek(
+      cred.apiKey,
+      {
+        source,
+        title,
+        content,
+        meta,
+      },
+      {
+        signal: abort.signal,
+        onDelta: (text) => {
+          if (abort.signal.aborted || res.writableEnded) return;
+          sseWrite(res, 'delta', { text });
+        },
+      },
+    );
+    if (abort.signal.aborted || res.writableEnded) return;
+    sseWrite(res, 'done', {
+      ok: true,
+      source,
+      coin: coin || undefined,
+      analysis: result.analysis,
+      model: result.model,
+      usage: result.usage,
+    });
+    res.end();
+  } catch (err) {
+    if (abort.signal.aborted) {
+      try {
+        if (!res.writableEnded) res.end();
+      } catch (_) {
+        /* ignore */
+      }
+      return;
+    }
+    try {
+      if (!res.headersSent) {
+        sendErr(res, err);
+        return;
+      }
+      sseWrite(res, 'error', { error: err.message || '分析失败' });
+      res.end();
+    } catch (_) {
+      if (!res.headersSent) sendErr(res, err);
+    }
+  } finally {
+    res.removeListener('close', onClientGone);
   }
 });
 
@@ -275,7 +390,7 @@ router.post('/market-brief', async (req, res) => {
     const body = req.body || {};
     const coin = normalizeCoin(body.coin) || 'BTC';
     const forceRefresh = Boolean(body.forceRefresh);
-    const forceTradeDecision = Boolean(body.forceTradeDecision);
+    const forceTradeDecision = true;
     const userId = req.user.user.id;
     const pipe = await runBriefPipeline({
       apiKey: cred.apiKey,
@@ -365,6 +480,75 @@ router.get('/market-brief-versions', (req, res) => {
   res.json({ ok: true, coin, versions: list });
 });
 
+/** POST /api/whale-ai/market-brief-stance — 仅刷新某一档仓位建议 */
+router.post('/market-brief-stance', async (req, res) => {
+  if (!assertLogin(req, res)) return;
+  try {
+    const cred = getRawAiKey(req.user.user.id, DEFAULT_PROVIDER);
+    if (!cred?.apiKey) {
+      const err = new Error('请先配置 DeepSeek API Key');
+      err.status = 400;
+      throw err;
+    }
+    const body = req.body || {};
+    const coin = normalizeCoin(body.coin) || 'BTC';
+    const horizon = String(body.horizon || '').trim();
+    if (!['ultra_short', 'short', 'mid_long'].includes(horizon)) {
+      const err = new Error('horizon 须为 ultra_short / short / mid_long');
+      err.status = 400;
+      throw err;
+    }
+    const userId = req.user.user.id;
+    let contextText = String(body.contextText || '').trim();
+    let equityLike = Boolean(body.equityLike);
+    if (!contextText) {
+      const ctx = await buildMarketBriefContext(coin, { forceRefresh: false });
+      contextText = contextToPrompt(ctx);
+      equityLike = Boolean(ctx.equityLike);
+    }
+    const existingAnalysis = String(body.analysis || '').trim();
+    const refreshed = await analyzeStanceLeg(cred.apiKey, {
+      coin,
+      horizon,
+      contextText,
+      equityLike,
+      existingAnalysis,
+    });
+
+    // 若带 analysisId，合并写回该次分析的 personal_stance
+    const analysisId = String(body.analysisId || '').trim();
+    let analysisResult = null;
+    if (analysisId) {
+      const row = getAnalysis(analysisId);
+      if (row && row.result && typeof row.result === 'object') {
+        const next = { ...row.result };
+        const ps = { ...(next.personal_stance || {}) };
+        ps[horizon] = refreshed.leg;
+        next.personal_stance = ps;
+        const { analysisResultToMarkdown } = require('../lib/analysisResult');
+        updateAnalysis(analysisId, {
+          result: next,
+          analysisMarkdown: analysisResultToMarkdown(next),
+          model: refreshed.model,
+        });
+        analysisResult = next;
+      }
+    }
+
+    res.json({
+      ok: true,
+      coin,
+      horizon,
+      leg: refreshed.leg,
+      analysisResult,
+      model: refreshed.model,
+      usage: refreshed.usage,
+    });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
 /** POST /api/whale-ai/market-brief-stream  — SSE；body: { coin, forceRefresh?, analysisId? } */
 router.post('/market-brief-stream', async (req, res) => {
   if (!assertLogin(req, res)) return;
@@ -377,7 +561,7 @@ router.post('/market-brief-stream', async (req, res) => {
   const body = req.body || {};
   const coin = normalizeCoin(body.coin) || 'BTC';
   const forceRefresh = Boolean(body.forceRefresh);
-  const forceTradeDecision = Boolean(body.forceTradeDecision);
+  const forceTradeDecision = true;
   const resumeId = String(body.analysisId || '').trim();
   const userId = req.user.user.id;
 

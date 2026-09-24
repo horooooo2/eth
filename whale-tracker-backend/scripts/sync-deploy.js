@@ -50,6 +50,8 @@ const FILES = [
   'lib/analysisCapability.js',
   'lib/briefAnalysisStore.js',
   'lib/userAiKeys.js',
+  'lib/userExchangeKeys.js',
+  'lib/okxTradeClient.js',
   'lib/dexpaprikaFlow.js',
   'lib/onchainFlow.js',
   'lib/cexMarketFlow.js',
@@ -63,6 +65,8 @@ const FILES = [
   'routes/flow.js',
   'routes/x.js',
   'routes/whaleAi.js',
+  'routes/okxTrade.js',
+  'routes/okxKeys.js',
   'scripts/remote-deploy.sh',
 ];
 

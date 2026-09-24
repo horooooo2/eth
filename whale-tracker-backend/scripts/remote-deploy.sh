@@ -63,8 +63,6 @@ echo "==> drop retired strategy / AI Trader modules from $DEPLOY"
 rm -f "$DEPLOY"/lib/v41*.js \
       "$DEPLOY"/lib/s9Capabilities.js \
       "$DEPLOY"/lib/s9ReadinessOverlay.js \
-      "$DEPLOY"/lib/okxTradeClient.js \
-      "$DEPLOY"/lib/userExchangeKeys.js \
       "$DEPLOY"/lib/whaleAiRuntimeLogs.js \
       "$DEPLOY"/lib/strategyDisplayZh.js \
       "$DEPLOY"/lib/eventLogDisplay.js \
@@ -105,7 +103,7 @@ echo "==> non-secret ENV (node)"
 grep -E '^(PORT|SQLITE_PATH|FILL_BACKFILL|REFRESH_INTERVAL)=' "$DEPLOY/.env" | sed 's/\r$//' || true
 
 echo "==> assert strategy / AI Trader modules are gone"
-for dead in lib/v41EngineClient.js lib/v41ExecutionGateway.js lib/okxTradeClient.js \
+for dead in lib/v41EngineClient.js lib/v41ExecutionGateway.js \
             lib/aiTraderProxy.js \
             routes/whaleAiEngine.js routes/whaleAiTrade.js; do
   if [ -f "$DEPLOY/$dead" ]; then

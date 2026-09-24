@@ -62,49 +62,119 @@ function clip(text, max = 4000) {
   return `${s.slice(0, max)}…`;
 }
 
-async function analyzeWithDeepseek(apiKey, { source, title, content, meta } = {}) {
+function buildAnalyzeMessages({ source, title, content, meta } = {}) {
   const src = source === 'macro' ? 'macro' : source === 'whale' ? 'whale' : 'x';
   const label =
     src === 'macro' ? '宏观数据事件' : src === 'whale' ? '巨鲸持仓与行为数据' : 'X（Twitter）动态';
-  const metaText =
-    meta && typeof meta === 'object'
-      ? clip(JSON.stringify(meta, null, 0), 2000)
-      : clip(meta, 2000);
+  const metaObj = meta && typeof meta === 'object' ? meta : null;
+  const metaForJson = metaObj
+    ? Object.fromEntries(Object.entries(metaObj).filter(([k]) => k !== 'marketContext'))
+    : null;
+  const metaText = metaForJson
+    ? clip(JSON.stringify(metaForJson, null, 0), 2000)
+    : clip(meta, 2000);
+
+  const statsHint =
+    metaObj && (metaObj.statsLine || metaObj.volumeLine)
+      ? [
+          '【必须引用的账户业绩/成交数据】',
+          metaObj.volumeLine ? `成交活跃度：${metaObj.volumeLine}` : '',
+          metaObj.statsLine ? `盈亏与胜率：${metaObj.statsLine}` : '',
+          '分析「方向倾向」时务必点名引用上述月盈亏、累计、胜率、笔数等数字，并提醒统计口径可能仅覆盖已平仓、未计入浮亏。',
+        ]
+          .filter(Boolean)
+          .join('\n')
+      : '';
 
   const taskHint =
     src === 'whale'
       ? [
           '请分析该巨鲸当前持仓结构与潜在交易含义。',
-          '输出要求：用中文；分点说明（仓位结构、方向倾向、风险点、可观察信号、不建议跟单的情况）；简洁专业，勿编造未见数据；不构成投资建议。',
-        ].join('')
-      : `请分析以下${label}对加密市场（尤其 BTC/ETH）的潜在影响。输出要求：用中文；分点说明（要点、方向倾向、信心、关注点）；简洁专业，勿编造事实。`;
+          '输出要求（严格 Markdown）：',
+          '1) 用中文，简洁专业；勿编造未见数据；不构成投资建议。',
+          '2) 必须按下列标题分节（标题原样）：',
+          '## 一、仓位结构',
+          '## 二、方向倾向',
+          '## 三、风险点',
+          '## 四、可观察信号',
+          '## 五、巨鲸可靠度',
+          '3) 每节用 `- ` 列表；关键数字、金额、百分比、强平价用 **加粗**。',
+          '4) 「方向倾向」必须结合【账户指标】里的月盈亏、累计盈亏、胜率、成交笔数展开讨论。',
+          '5) 「巨鲸可靠度」必须引用参考等级（高/中/待观察/低）、胜率、笔数、最大回撤，并说明是否值得跟单观察；若疑似扛单或样本不足要明确降权。',
+        ].join('\n')
+      : [
+          `请分析以下${label}对加密市场（尤其 BTC/ETH）的潜在影响。`,
+          '输出要求（严格 Markdown）：',
+          '1) 用中文，简洁专业；勿编造事实。若附加信息含实际值，必须引用实际 vs 预期/前值，禁止写「实际值暂缺」。',
+          '2) 必须按下列标题分节：',
+          '## 一、要点摘要',
+          '## 二、方向倾向',
+          '## 三、信心与关注点',
+          '## 四、风险提示',
+          '## 五、走向预判',
+          '3) 每节用 `- ` 列表；关键数字、百分比用 **加粗**。',
+          '4) 「走向预判」必须综合：事件预测/公布相对前值的超预期或不及预期、对加密货币影响方向、【市场上下文】中的短期 K 线压力位/支撑位、资金费率、爆仓与主动买卖（资金流向）、大户多空；并判断市场是否已提前计价（利空出尽/利好出尽）；给出短线偏向（偏多/震荡/偏空）与关键价位观察点；上下文缺失时直说，禁止编造。',
+        ].join('\n');
+
+  const reliabilityHint =
+    src === 'whale' && metaObj && (metaObj.referenceLabel || metaObj.referenceTier)
+      ? [
+          '【巨鲸可靠度输入】',
+          metaObj.referenceLabel
+            ? `参考等级：${metaObj.referenceLabel}${metaObj.referenceShort ? `（${metaObj.referenceShort}）` : ''}`
+            : '',
+          metaObj.reliabilityLine ? `统计摘要：${metaObj.reliabilityLine}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n')
+      : '';
+
+  const marketHint =
+    src !== 'whale' && metaObj?.marketContext
+      ? ['【市场上下文 · 供走向预判引用】', clip(String(metaObj.marketContext), 2800)].join('\n')
+      : '';
 
   const userPrompt = [
     taskHint,
+    '',
+    statsHint,
+    reliabilityHint,
+    marketHint,
     '',
     `标题：${clip(title, 300) || '（无）'}`,
     `内容：${clip(content, 6000) || '（无）'}`,
     metaText ? `附加信息：${metaText}` : '',
   ]
-    .filter(Boolean)
+    .filter((line) => line !== undefined && line !== null)
     .join('\n');
 
   const system =
     src === 'whale'
-      ? '你是加密衍生品巨鲸仓位分析助手。只基于给定持仓与统计材料推断，不确定时明确说明；不下单指令。'
-      : '你是加密市场宏观与舆情分析助手。只基于给定材料做推断，不确定时明确说明。';
+      ? '你是加密衍生品巨鲸仓位分析助手。只基于给定持仓与统计材料推断，不确定时明确说明；必须引用账户业绩与可靠度指标；不下单指令。'
+      : '你是加密市场宏观与舆情分析助手。只基于给定材料与市场上下文做推断，不确定时明确说明；走向预判需结合预测数值、K线压力与资金流向。';
+
+  return {
+    src,
+    system,
+    userPrompt,
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: userPrompt },
+    ],
+  };
+}
+
+async function analyzeWithDeepseek(apiKey, { source, title, content, meta } = {}) {
+  const { messages } = buildAnalyzeMessages({ source, title, content, meta });
 
   const data = await deepseekFetch(apiKey, '/chat/completions', {
     method: 'POST',
     timeoutMs: 90_000,
     body: {
       model: DEFAULT_MODEL,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: userPrompt },
-      ],
+      messages,
       temperature: 0.4,
-      max_tokens: 1400,
+      max_tokens: 1600,
     },
   });
 
@@ -118,6 +188,137 @@ async function analyzeWithDeepseek(apiKey, { source, title, content, meta } = {}
     analysis,
     model: data?.model || DEFAULT_MODEL,
     usage: data?.usage || null,
+  };
+}
+
+/** 流式通用分析（新闻 / 宏观 / 巨鲸） */
+async function streamAnalyzeWithDeepseek(
+  apiKey,
+  { source, title, content, meta } = {},
+  { onDelta, signal } = {},
+) {
+  const key = String(apiKey || '').trim();
+  if (!key) {
+    const err = new Error('缺少 DeepSeek API Key');
+    err.status = 400;
+    throw err;
+  }
+
+  const { messages } = buildAnalyzeMessages({ source, title, content, meta });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 90_000);
+  const onAbort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  }
+
+  let res;
+  try {
+    res = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+      },
+      body: JSON.stringify({
+        model: DEFAULT_MODEL,
+        messages,
+        temperature: 0.4,
+        max_tokens: 1600,
+        stream: true,
+      }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onAbort);
+    if (err.name === 'AbortError') {
+      const e = new Error('DeepSeek 请求已取消或超时');
+      e.status = 504;
+      throw e;
+    }
+    throw err;
+  }
+
+  if (!res.ok) {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onAbort);
+    const text = await res.text().catch(() => '');
+    let msg = text.slice(0, 200) || `HTTP ${res.status}`;
+    try {
+      const j = JSON.parse(text);
+      msg = j?.error?.message || j?.message || msg;
+    } catch (_) {
+      /* ignore */
+    }
+    const err = new Error(msg);
+    err.status = res.status >= 400 && res.status < 600 ? res.status : 502;
+    throw err;
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onAbort);
+    const err = new Error('DeepSeek 未返回流式响应');
+    err.status = 502;
+    throw err;
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let raw = '';
+  let model = DEFAULT_MODEL;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n');
+      buffer = parts.pop() || '';
+      for (const line of parts) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith(':')) continue;
+        if (!trimmed.startsWith('data:')) continue;
+        const payload = trimmed.slice(5).trim();
+        if (payload === '[DONE]') continue;
+        let json;
+        try {
+          json = JSON.parse(payload);
+        } catch {
+          continue;
+        }
+        if (json?.model) model = json.model;
+        const delta = json?.choices?.[0]?.delta?.content;
+        if (typeof delta === 'string' && delta) {
+          raw += delta;
+          if (typeof onDelta === 'function') onDelta(delta);
+        }
+      }
+    }
+  } finally {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onAbort);
+    try {
+      reader.releaseLock();
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  const analysis = String(raw || '').trim();
+  if (!analysis) {
+    const err = new Error('DeepSeek 未返回有效分析内容');
+    err.status = 502;
+    throw err;
+  }
+  return {
+    analysis,
+    model,
+    usage: null,
   };
 }
 
@@ -151,15 +352,20 @@ function buildMarketBriefMessages({
     ? `分析能力：shortTerm=${capability.shortTerm?.status}；newsDriven=${capability.newsDriven?.status}；whaleAnalysis=${capability.whaleAnalysis?.status}。unavailable 的能力请在对应字段说明数据不足，不要硬编。`
     : '';
 
-  const tradeModeHint = forceTradeDecision
-    ? [
-        '【强制开单模式】用户点击了「开单」：',
-        '- personal_stance 三档 action 只能是「做多」或「做空」，禁止「观望」。',
-        '- 每档必须给出 entry（建议开仓价）、leverage（整数倍数如 5/10/20）、stop、take_profit。',
-        '- note 用开单口吻，例如：「目前偏震荡，可在 xxx 附近开 10x 做多，目标平仓 xxx；若走势不符及时在 xxx 止损」。',
-        '- 方向必须二选一，并结合现价、支撑压力、费率与动量解释为何选该边与该倍数。',
-      ].join('\n')
-    : '';
+  const tradeModeHint = [
+    '【强制开单模式 · 永久生效】',
+    '- personal_stance 三档 action 只能是「做多」或「做空」，禁止「观望」。',
+    '- 每档必须给出 entry（建议开仓价）、leverage（整数如 5/10/20）、stop、take_profit。',
+    '- note 用开单口吻，并写明依据（宏观定价、仓位/费率、K线位置）。',
+    '',
+    '【智能定价与市场心理 · 必须结合】',
+    '1) 综合最新新闻、宏观日历（预期/前值/实际）、站内巨鲸仓位、资金费率、爆仓与主动买卖再定方向。',
+    '2) 事件交易要区分「尚未公布」与「已公布」：',
+    '   - 未公布：用预期 vs 前值 + 盘面是否已提前计价；假设现在距公布还有一段时间，评估波动窗口。',
+    '   - 已公布：用实际 vs 预期判断超预期/不及预期，但不要机械跟字面利多利空。',
+    '3) 常见反身性：若市场普遍预期利空并已大跌，数据兑现后可能「利空出尽」反弹；若普遍预期利好并已大涨，兑现后可能高开低走。开仓方向要写清是「顺预期冲击」还是「逆向博弈已计价」。',
+    '4) 超短线更看公布前后波动与盘口；中长期更看趋势与政策路径，但仍禁止观望。',
+  ].join('\n');
 
   const userPrompt = [
     `请基于下列上下文给出 ${symbol} 交易研究简报。`,
@@ -180,19 +386,19 @@ function buildMarketBriefMessages({
     '  "market_sentiment": { "long_short_ratio": "...", "funding_rate": "...", "liquidations": "...", "details": "..." },',
     '  "personal_stance": {',
     '    "headline": "仓位建议",',
-    '    "ultra_short": { "action": "做多|做空|观望", "entry": 数字或null, "leverage": 数字或null, "stop": 数字或null, "take_profit": 数字或null, "note": "..." },',
-    '    "short": { "action": "...", "entry": null, "leverage": null, "stop": null, "take_profit": null, "note": "..." },',
-    '    "mid_long": { "action": "...", "entry": null, "leverage": null, "stop": null, "take_profit": null, "note": "..." }',
+    '    "basis": ["市场情绪", "新闻内容", "小时线走势"],',
+    '    "ultra_short": { "action": "做多|做空", "entry": 数字, "leverage": 数字, "stop": 数字, "take_profit": 数字, "note": "..." },',
+    '    "short": { "action": "做多|做空", "entry": 数字, "leverage": 数字, "stop": 数字, "take_profit": 数字, "note": "..." },',
+    '    "mid_long": { "action": "做多|做空", "entry": 数字, "leverage": 数字, "stop": 数字, "take_profit": 数字, "note": "..." }',
     '  },',
     '  "key_evidence": ["..."],',
     '  "risks_and_invalidation": ["..."],',
     '  "disclaimer": "以上内容仅供研究参考，不构成投资建议。"',
     '}',
     '4) short_term.direction / confidence / summary 必填。',
-    forceTradeDecision
-      ? '5) 强制开单：三档必须做多或做空，并给出 entry/leverage/stop/take_profit 与开单说明。'
-      : '5) personal_stance 为仓位建议：含 ultra_short/short/mid_long；可观望；价位优先用图示价位。',
-    '6) technical.m5 / hourly / daily 分别写对应周期，不要混写；disclaimer 不可省略。',
+    '5) 强制开单：三档必须做多或做空，并给出 entry/leverage/stop/take_profit；禁止观望与 null 价位。',
+    '6) personal_stance.basis 必填：3~6 个短标签，表示本次开单依据维度（如「市场情绪」「新闻内容」「小时线走势」「宏观日历」「巨鲸仓位」「资金费率」），不要写长句或免责声明。',
+    '7) technical.m5 / hourly / daily 分别写对应周期，不要混写；disclaimer 不可省略。',
     '',
     '—— 上下文开始 ——',
     String(contextText || ''),
@@ -671,11 +877,89 @@ async function streamChatMarketBrief(
   };
 }
 
+const HORIZON_LABELS = {
+  ultra_short: '超短线(5分钟)',
+  short: '短期',
+  mid_long: '中长期',
+};
+
+/**
+ * 仅刷新仓位建议某一档（不重跑整份诊币）
+ */
+async function analyzeStanceLeg(
+  apiKey,
+  { coin, horizon, contextText, equityLike = false, existingAnalysis = '' } = {},
+) {
+  const key = String(horizon || '').trim();
+  if (!HORIZON_LABELS[key]) {
+    const err = new Error('无效的仓位周期');
+    err.status = 400;
+    throw err;
+  }
+  const symbol = String(coin || 'BTC').toUpperCase();
+  const label = HORIZON_LABELS[key];
+  const system = equityLike
+    ? '你是衍生品与公司研究助手。只输出指定周期的仓位建议 JSON。'
+    : '你是加密衍生品研究助手。只输出指定周期的仓位建议 JSON。';
+  const userPrompt = [
+    `请仅更新 ${symbol} 的「${label}」仓位建议。`,
+    '硬性要求：',
+    '1) 只输出一个 JSON 对象，不要 Markdown：',
+    '{ "action": "做多|做空", "entry": 数字, "leverage": 整数, "stop": 数字, "take_profit": 数字, "note": "..." }',
+    '2) action 只能做多或做空，禁止观望；必须给出 entry、leverage、stop、take_profit。',
+    '3) 结合新闻/宏观（预期·前值·实际）、巨鲸仓位与费率；考虑是否已提前计价（利空出尽/利好出尽）。',
+    '4) 只用给定材料，勿编造未见数据。',
+    '',
+    '—— 现有简报（可参考） ——',
+    clip(existingAnalysis, 2500) || '（无）',
+    '',
+    '—— 最新上下文 ——',
+    clip(contextText, 5000) || '（无）',
+  ].join('\n');
+
+  const data = await deepseekFetch(apiKey, '/chat/completions', {
+    method: 'POST',
+    timeoutMs: 60_000,
+    body: {
+      model: DEFAULT_MODEL,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0.35,
+      max_tokens: 600,
+    },
+  });
+
+  const raw = String(data?.choices?.[0]?.message?.content || '').trim();
+  if (!raw) {
+    const err = new Error('DeepSeek 未返回仓位建议');
+    err.status = 502;
+    throw err;
+  }
+  const { extractJsonObject, normalizeStanceLeg } = require('./analysisResult');
+  const parsed = extractJsonObject(raw) || {};
+  const leg = normalizeStanceLeg(parsed);
+  if (!leg.action || leg.action === '观望') {
+    leg.action = '做多';
+    if (!leg.note) leg.note = '强制开单：模型未给出方向时默认做多，请结合盘面自检。';
+  }
+  return {
+    horizon: key,
+    leg,
+    model: data?.model || DEFAULT_MODEL,
+    usage: data?.usage || null,
+    raw,
+  };
+}
+
 module.exports = {
   verifyDeepseekKey,
   analyzeWithDeepseek,
+  streamAnalyzeWithDeepseek,
   analyzeMarketBrief,
   streamAnalyzeMarketBrief,
+  analyzeStanceLeg,
   chatMarketBrief,
   streamChatMarketBrief,
   DEFAULT_MODEL,
