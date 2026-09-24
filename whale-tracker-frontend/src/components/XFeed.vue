@@ -4,6 +4,7 @@ import { ArrowDown, ArrowUp } from '@element-plus/icons-vue';
 import { fetchXFeed, type XFeedAccount, type XFeedTweet } from '@/api';
 import { clearXUnread, consumeXSocketTweets, xSocketTweets } from '@/stores/xFeed';
 import AiAnalyzeButton from '@/components/AiAnalyzeButton.vue';
+import { preferredCoinsState } from '@/utils/watchedCoins';
 
 const COLLAPSE_MAX = 200;
 
@@ -169,6 +170,7 @@ function aiMeta(item: XFeedTweet) {
     likes: item.likes,
     retweets: item.retweets,
     views: item.views,
+    coin: preferredCoinsState.value[0] || 'BTC',
   };
 }
 

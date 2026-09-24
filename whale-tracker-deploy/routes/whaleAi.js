@@ -99,7 +99,8 @@ router.post('/analyze', async (req, res) => {
       throw err;
     }
     const body = req.body || {};
-    const source = body.source === 'macro' ? 'macro' : 'x';
+    const source =
+      body.source === 'macro' ? 'macro' : body.source === 'whale' ? 'whale' : 'x';
     const title = String(body.title || '').trim();
     const content = String(body.content || '').trim();
     if (!title && !content) {
@@ -161,6 +162,11 @@ function buildContextSummary(context) {
     sources: context.sources,
     asOf: context.asOf,
     forceRefresh: Boolean(context.forceRefresh),
+    charts: {
+      m5: context.tech?.m5?.chart || null,
+      hour: context.tech?.hour?.chart || null,
+      day: context.tech?.day?.chart || null,
+    },
   };
 }
 
@@ -269,6 +275,7 @@ router.post('/market-brief', async (req, res) => {
     const body = req.body || {};
     const coin = normalizeCoin(body.coin) || 'BTC';
     const forceRefresh = Boolean(body.forceRefresh);
+    const forceTradeDecision = Boolean(body.forceTradeDecision);
     const userId = req.user.user.id;
     const pipe = await runBriefPipeline({
       apiKey: cred.apiKey,
@@ -281,6 +288,7 @@ router.post('/market-brief', async (req, res) => {
       contextText: pipe.contextText,
       equityLike: Boolean(pipe.context.equityLike),
       capability: pipe.context.capability,
+      forceTradeDecision,
     });
     const saved = persistDone({
       analysisId: pipe.analysisId,
@@ -369,6 +377,7 @@ router.post('/market-brief-stream', async (req, res) => {
   const body = req.body || {};
   const coin = normalizeCoin(body.coin) || 'BTC';
   const forceRefresh = Boolean(body.forceRefresh);
+  const forceTradeDecision = Boolean(body.forceTradeDecision);
   const resumeId = String(body.analysisId || '').trim();
   const userId = req.user.user.id;
 
@@ -484,6 +493,7 @@ router.post('/market-brief-stream', async (req, res) => {
         contextText: pipe.contextText,
         equityLike: Boolean(pipe.context.equityLike),
         capability: pipe.context.capability,
+        forceTradeDecision,
       },
       {
         signal: abort.signal,

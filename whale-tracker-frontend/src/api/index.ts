@@ -721,7 +721,7 @@ export async function deleteWhaleAiKey() {
 }
 
 export async function analyzeWithWhaleAi(body: {
-  source: 'x' | 'macro';
+  source: 'x' | 'macro' | 'whale';
   title?: string;
   content?: string;
   meta?: Record<string, unknown> | string;
@@ -736,6 +736,107 @@ export async function analyzeWithWhaleAi(body: {
   return data;
 }
 
+export type AnalyzeStreamHandlers = {
+  onStatus?: (payload: { stage?: string; message?: string }) => void;
+  onDelta?: (text: string) => void;
+  onDone?: (payload: {
+    ok?: boolean;
+    source?: string;
+    analysis?: string;
+    model?: string;
+  }) => void;
+  onError?: (message: string) => void;
+  signal?: AbortSignal;
+};
+
+/** POST SSE 流式分析（新闻 / 宏观 / 巨鲸） */
+export async function streamAnalyzeWithWhaleAi(
+  body: {
+    source: 'x' | 'macro' | 'whale';
+    title?: string;
+    content?: string;
+    meta?: Record<string, unknown> | string;
+  },
+  handlers: AnalyzeStreamHandlers = {},
+) {
+  const res = await fetch('/api/whale-ai/analyze-stream', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+      ...(authToken() ? { Authorization: `Bearer ${authToken()}` } : {}),
+    },
+    body: JSON.stringify(body),
+    signal: handlers.signal,
+  });
+
+  if (!res.ok) {
+    let msg = `流式分析失败 HTTP ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j?.error) msg = String(j.error);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error('浏览器不支持流式响应');
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finished = false;
+
+  const handleEvent = (event: string, rawData: string) => {
+    let data: any = rawData;
+    try {
+      data = JSON.parse(rawData);
+    } catch {
+      /* keep string */
+    }
+    if (event === 'status') handlers.onStatus?.(data);
+    else if (event === 'delta') handlers.onDelta?.(String(data?.text || ''));
+    else if (event === 'done') {
+      finished = true;
+      handlers.onDone?.(data);
+    } else if (event === 'error') {
+      const msg = String(data?.error || '流式分析失败');
+      handlers.onError?.(msg);
+      throw new Error(msg);
+    }
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split(/\n\n/);
+      buffer = chunks.pop() || '';
+      for (const chunk of chunks) {
+        const parsed = parseSseChunk(chunk);
+        if (!parsed) continue;
+        handleEvent(parsed.event, parsed.data);
+      }
+    }
+    if (buffer.trim()) {
+      const parsed = parseSseChunk(buffer);
+      if (parsed) handleEvent(parsed.event, parsed.data);
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (!finished) {
+    throw new Error('流式连接已结束，但未收到完整结果');
+  }
+}
+
 export type MarketBriefStructured = {
   short_term?: {
     bias?: string;
@@ -745,7 +846,7 @@ export type MarketBriefStructured = {
     summary?: string;
   };
   mid_long_term?: { bias?: string; direction?: string; reason?: string; summary?: string };
-  technical?: { hourly?: string; daily?: string };
+  technical?: { m5?: string; hourly?: string; daily?: string };
   derivatives?: { funding?: string; liquidations?: string; taker?: string; details?: string };
   whales?: { site?: string; external?: string; details?: string };
   news_analysis?: { sentiment?: string; details?: string };
@@ -754,6 +855,33 @@ export type MarketBriefStructured = {
     funding_rate?: string;
     liquidations?: string;
     details?: string;
+  };
+  personal_stance?: {
+    headline?: string;
+    ultra_short?: {
+      action?: string;
+      entry?: number | null;
+      leverage?: number | null;
+      stop?: number | null;
+      take_profit?: number | null;
+      note?: string;
+    };
+    short?: {
+      action?: string;
+      entry?: number | null;
+      leverage?: number | null;
+      stop?: number | null;
+      take_profit?: number | null;
+      note?: string;
+    };
+    mid_long?: {
+      action?: string;
+      entry?: number | null;
+      leverage?: number | null;
+      stop?: number | null;
+      take_profit?: number | null;
+      note?: string;
+    };
   };
   key_evidence?: string[];
   risks_and_invalidation?: string[];
@@ -797,6 +925,11 @@ export type MarketBriefResponse = {
     sources: string[];
     asOf: number;
     cached?: boolean;
+    charts?: {
+      m5?: { candles: { t: number; o: number; h: number; l: number; c: number }[]; levels?: { key: string; price: number; label: string }[] } | null;
+      hour?: { candles: { t: number; o: number; h: number; l: number; c: number }[]; levels?: { key: string; price: number; label: string }[] } | null;
+      day?: { candles: { t: number; o: number; h: number; l: number; c: number }[]; levels?: { key: string; price: number; label: string }[] } | null;
+    } | null;
   };
 };
 
@@ -866,7 +999,11 @@ export type MarketBriefStreamHandlers = {
 /** POST SSE 流式诊币 */
 export async function streamMarketBrief(
   coin: string,
-  handlers: MarketBriefStreamHandlers & { forceRefresh?: boolean; analysisId?: string } = {},
+  handlers: MarketBriefStreamHandlers & {
+    forceRefresh?: boolean;
+    forceTradeDecision?: boolean;
+    analysisId?: string;
+  } = {},
 ) {
   const res = await fetch('/api/whale-ai/market-brief-stream', {
     method: 'POST',
@@ -878,6 +1015,7 @@ export async function streamMarketBrief(
     body: JSON.stringify({
       coin,
       forceRefresh: Boolean(handlers.forceRefresh),
+      forceTradeDecision: Boolean(handlers.forceTradeDecision),
       analysisId: handlers.analysisId || undefined,
     }),
     signal: handlers.signal,

@@ -4,6 +4,7 @@
 
 const DIRECTIONS = new Set(['偏多', '震荡', '偏空', '观望', '承压', '中性']);
 const CONF = new Set(['低', '中', '高']);
+const ACTIONS = new Set(['做多', '做空', '观望']);
 
 function asStr(v, max = 2000) {
   const s = String(v == null ? '' : v).trim();
@@ -34,6 +35,39 @@ function normalizeConfidence(v) {
   return '中';
 }
 
+function normalizeAction(v) {
+  const s = asStr(v, 12);
+  if (ACTIONS.has(s)) return s;
+  if (/做多|开多|偏多|看多|多/.test(s) && !/空/.test(s)) return '做多';
+  if (/做空|开空|偏空|看空/.test(s)) return '做空';
+  return '观望';
+}
+
+function normalizePrice(v) {
+  if (v == null || v === '') return null;
+  const n = Number(String(v).replace(/,/g, '').replace(/[^\d.eE+-]/g, ''));
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
+function normalizeLeverage(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 1) return null;
+  return Math.min(125, Math.round(n));
+}
+
+function normalizeStanceLeg(raw) {
+  const o = raw && typeof raw === 'object' ? raw : {};
+  return {
+    action: normalizeAction(o.action || o.side || o.bias),
+    entry: normalizePrice(o.entry ?? o.open ?? o.entry_price),
+    leverage: normalizeLeverage(o.leverage ?? o.lev ?? o.x),
+    stop: normalizePrice(o.stop ?? o.stop_loss ?? o.sl),
+    take_profit: normalizePrice(o.take_profit ?? o.tp ?? o.target),
+    note: asStr(o.note || o.rationale || o.reason || o.open_plan, 600),
+  };
+}
+
 function extractJsonObject(text) {
   const raw = String(text || '').trim();
   if (!raw) return null;
@@ -50,7 +84,6 @@ function extractJsonObject(text) {
       /* continue */
     }
   }
-  // clean common trailing commas / BOM
   const cleaned = raw
     .replace(/^\uFEFF/, '')
     .replace(/,\s*([}\]])/g, '$1');
@@ -75,13 +108,19 @@ function emptyResult() {
   return {
     short_term: { direction: '观望', confidence: '低', summary: '数据不足，暂无法给出明确方向。' },
     mid_long_term: { direction: '观望', summary: '' },
-    technical: { hourly: '', daily: '' },
+    technical: { m5: '', hourly: '', daily: '' },
     derivatives: { funding: '', liquidations: '', taker: '', details: '' },
     whales: { site: '', external: '', details: '' },
     news_analysis: { sentiment: '中性', details: '' },
     market_sentiment: { long_short_ratio: '', funding_rate: '', liquidations: '', details: '' },
     key_evidence: [],
     risks_and_invalidation: [],
+    personal_stance: {
+      headline: '仓位建议',
+      ultra_short: { action: '观望', entry: null, leverage: null, stop: null, take_profit: null, note: '' },
+      short: { action: '观望', entry: null, leverage: null, stop: null, take_profit: null, note: '' },
+      mid_long: { action: '观望', entry: null, leverage: null, stop: null, take_profit: null, note: '' },
+    },
     disclaimer: '以上内容仅供研究参考，不构成投资建议。',
   };
 }
@@ -106,6 +145,7 @@ function normalizeAnalysisResult(raw) {
   const wh = raw.whales || {};
   const news = raw.news_analysis || {};
   const sent = raw.market_sentiment || {};
+  const stance = raw.personal_stance || raw.personalStance || {};
 
   const result = {
     short_term: { direction, confidence, summary: summary || '（无摘要）' },
@@ -114,6 +154,7 @@ function normalizeAnalysisResult(raw) {
       summary: asStr(mid.summary || mid.reason, 1200),
     },
     technical: {
+      m5: asStr(tech.m5 || tech.minute5 || tech.ultra_short, 800),
       hourly: asStr(tech.hourly, 800),
       daily: asStr(tech.daily, 800),
     },
@@ -140,10 +181,17 @@ function normalizeAnalysisResult(raw) {
     },
     key_evidence: asArr(raw.key_evidence),
     risks_and_invalidation: asArr(raw.risks_and_invalidation),
+    personal_stance: {
+      headline: asStr(stance.headline || stance.title, 40) || '仓位建议',
+      ultra_short: normalizeStanceLeg(
+        stance.ultra_short || stance.m5 || stance.scalp || stance.ultraShort,
+      ),
+      short: normalizeStanceLeg(stance.short || stance.short_term || stance.shortTerm),
+      mid_long: normalizeStanceLeg(stance.mid_long || stance.mid_long_term || stance.midLong),
+    },
     disclaimer: asStr(raw.disclaimer, 200) || base.disclaimer,
   };
 
-  // 前端兼容旧 structured 形态
   result.short_term.bias = result.short_term.direction;
   result.short_term.reason = result.short_term.summary;
   result.mid_long_term.bias = result.mid_long_term.direction;
@@ -159,8 +207,20 @@ function parseAnalysisResult(text) {
   return { ...normalizeAnalysisResult(json), raw: text };
 }
 
+function fmtStanceLeg(label, leg) {
+  if (!leg) return '';
+  const parts = [`${label}：我会${leg.action || '观望'}`];
+  if (leg.entry != null) parts.push(`开仓 ${leg.entry}`);
+  if (leg.leverage != null) parts.push(`${leg.leverage}x`);
+  if (leg.stop != null) parts.push(`止损 ${leg.stop}`);
+  if (leg.take_profit != null) parts.push(`止盈 ${leg.take_profit}`);
+  if (leg.note) parts.push(leg.note);
+  return parts.join('｜');
+}
+
 function analysisResultToMarkdown(result) {
   const r = result || emptyResult();
+  const ps = r.personal_stance;
   return [
     '## 短期看法（数小时～2天）',
     `方向倾向：${r.short_term.direction}｜信心：${r.short_term.confidence}`,
@@ -170,7 +230,8 @@ function analysisResultToMarkdown(result) {
     `方向倾向：${r.mid_long_term.direction}`,
     r.mid_long_term.summary || '',
     '',
-    '## 技术分析（小时线与日线）',
+    '## 技术分析（5分钟 / 小时 / 日线）',
+    r.technical.m5 ? `5分钟：${r.technical.m5}` : '',
     r.technical.hourly ? `小时线：${r.technical.hourly}` : '',
     r.technical.daily ? `日线：${r.technical.daily}` : '',
     '',
@@ -194,6 +255,12 @@ function analysisResultToMarkdown(result) {
     r.market_sentiment.funding_rate ? `费率：${r.market_sentiment.funding_rate}` : '',
     r.market_sentiment.liquidations ? `爆仓：${r.market_sentiment.liquidations}` : '',
     r.market_sentiment.details || '',
+    '',
+    '## 仓位建议（个人研究视角）',
+    ps?.headline || '仓位建议',
+    fmtStanceLeg('超短线(5m)', ps?.ultra_short),
+    fmtStanceLeg('短期', ps?.short),
+    fmtStanceLeg('中长期', ps?.mid_long),
     '',
     '## 关键证据',
     ...r.key_evidence.map((e) => `- ${e}`),

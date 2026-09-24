@@ -10,12 +10,13 @@ const {
 const {
   verifyDeepseekKey,
   analyzeWithDeepseek,
+  streamAnalyzeWithDeepseek,
   analyzeMarketBrief,
   streamAnalyzeMarketBrief,
   chatMarketBrief,
   streamChatMarketBrief,
 } = require('../lib/deepseekClient');
-const { buildMarketBriefContext, contextToPrompt, normalizeCoin } = require('../lib/marketBrief');
+const { buildMarketBriefContext, contextToPrompt, buildAnalyzeMarketSnippet, normalizeCoin } = require('../lib/marketBrief');
 
 const router = express.Router();
 
@@ -88,6 +89,28 @@ router.delete('/key', (req, res) => {
   }
 });
 
+function resolveAnalyzeCoin(body = {}) {
+  const meta = body.meta && typeof body.meta === 'object' ? body.meta : {};
+  const raw = body.coin || meta.coin || meta.symbol || '';
+  return normalizeCoin(raw) || 'BTC';
+}
+
+async function enrichAnalyzeMeta(source, body) {
+  const meta =
+    body.meta && typeof body.meta === 'object' ? { ...body.meta } : body.meta ? { raw: body.meta } : {};
+  if (source === 'whale') return { meta, coin: null };
+  const coin = resolveAnalyzeCoin(body);
+  try {
+    const ctx = await buildMarketBriefContext(coin, { forceRefresh: false });
+    meta.marketContext = buildAnalyzeMarketSnippet(ctx);
+    meta.coin = coin;
+  } catch (err) {
+    meta.marketContext = `市场上下文暂不可用：${err.message || 'unknown'}`;
+    meta.coin = coin;
+  }
+  return { meta, coin };
+}
+
 /** POST /api/whale-ai/analyze */
 router.post('/analyze', async (req, res) => {
   if (!assertLogin(req, res)) return;
@@ -99,7 +122,8 @@ router.post('/analyze', async (req, res) => {
       throw err;
     }
     const body = req.body || {};
-    const source = body.source === 'macro' ? 'macro' : 'x';
+    const source =
+      body.source === 'macro' ? 'macro' : body.source === 'whale' ? 'whale' : 'x';
     const title = String(body.title || '').trim();
     const content = String(body.content || '').trim();
     if (!title && !content) {
@@ -107,15 +131,106 @@ router.post('/analyze', async (req, res) => {
       err.status = 400;
       throw err;
     }
+    const { meta } = await enrichAnalyzeMeta(source, body);
     const result = await analyzeWithDeepseek(cred.apiKey, {
       source,
       title,
       content,
-      meta: body.meta,
+      meta,
     });
     res.json({ ok: true, source, ...result });
   } catch (err) {
     sendErr(res, err);
+  }
+});
+
+/** POST /api/whale-ai/analyze-stream — SSE 流式分析（新闻 / 宏观 / 巨鲸） */
+router.post('/analyze-stream', async (req, res) => {
+  if (!assertLogin(req, res)) return;
+
+  const cred = getRawAiKey(req.user.user.id, DEFAULT_PROVIDER);
+  if (!cred?.apiKey) {
+    return res.status(400).json({ error: '请先配置 DeepSeek API Key' });
+  }
+
+  const body = req.body || {};
+  const source =
+    body.source === 'macro' ? 'macro' : body.source === 'whale' ? 'whale' : 'x';
+  const title = String(body.title || '').trim();
+  const content = String(body.content || '').trim();
+  if (!title && !content) {
+    return res.status(400).json({ error: '缺少待分析内容' });
+  }
+
+  const abort = new AbortController();
+  const onClientGone = () => {
+    if (!res.writableEnded) abort.abort();
+  };
+  res.on('close', onClientGone);
+
+  initSse(res);
+  if (source !== 'whale') {
+    sseWrite(res, 'status', { stage: 'market', message: '正在拉取短线压力与资金流向…' });
+  } else {
+    sseWrite(res, 'status', { stage: 'analyze', message: 'DeepSeek 正在分析…' });
+  }
+
+  try {
+    const { meta, coin } = await enrichAnalyzeMeta(source, body);
+    if (abort.signal.aborted || res.writableEnded) return;
+    if (source !== 'whale') {
+      sseWrite(res, 'status', {
+        stage: 'analyze',
+        message: coin ? `DeepSeek 正在分析（${coin}）…` : 'DeepSeek 正在分析…',
+      });
+    }
+    const result = await streamAnalyzeWithDeepseek(
+      cred.apiKey,
+      {
+        source,
+        title,
+        content,
+        meta,
+      },
+      {
+        signal: abort.signal,
+        onDelta: (text) => {
+          if (abort.signal.aborted || res.writableEnded) return;
+          sseWrite(res, 'delta', { text });
+        },
+      },
+    );
+    if (abort.signal.aborted || res.writableEnded) return;
+    sseWrite(res, 'done', {
+      ok: true,
+      source,
+      coin: coin || undefined,
+      analysis: result.analysis,
+      model: result.model,
+      usage: result.usage,
+    });
+    res.end();
+  } catch (err) {
+    if (abort.signal.aborted) {
+      try {
+        if (!res.writableEnded) res.end();
+      } catch (_) {
+        /* ignore */
+      }
+      return;
+    }
+    try {
+      if (!res.headersSent) {
+        sendErr(res, err);
+        return;
+      }
+      sseWrite(res, 'error', { error: err.message || '分析失败' });
+      res.end();
+    } catch (_) {
+      if (!res.headersSent) sendErr(res, err);
+    }
+  } finally {
+    res.removeListener('close', onClientGone);
   }
 });
 
@@ -161,6 +276,11 @@ function buildContextSummary(context) {
     sources: context.sources,
     asOf: context.asOf,
     forceRefresh: Boolean(context.forceRefresh),
+    charts: {
+      m5: context.tech?.m5?.chart || null,
+      hour: context.tech?.hour?.chart || null,
+      day: context.tech?.day?.chart || null,
+    },
   };
 }
 
@@ -269,6 +389,7 @@ router.post('/market-brief', async (req, res) => {
     const body = req.body || {};
     const coin = normalizeCoin(body.coin) || 'BTC';
     const forceRefresh = Boolean(body.forceRefresh);
+    const forceTradeDecision = Boolean(body.forceTradeDecision);
     const userId = req.user.user.id;
     const pipe = await runBriefPipeline({
       apiKey: cred.apiKey,
@@ -281,6 +402,7 @@ router.post('/market-brief', async (req, res) => {
       contextText: pipe.contextText,
       equityLike: Boolean(pipe.context.equityLike),
       capability: pipe.context.capability,
+      forceTradeDecision,
     });
     const saved = persistDone({
       analysisId: pipe.analysisId,
@@ -369,6 +491,7 @@ router.post('/market-brief-stream', async (req, res) => {
   const body = req.body || {};
   const coin = normalizeCoin(body.coin) || 'BTC';
   const forceRefresh = Boolean(body.forceRefresh);
+  const forceTradeDecision = Boolean(body.forceTradeDecision);
   const resumeId = String(body.analysisId || '').trim();
   const userId = req.user.user.id;
 
@@ -484,6 +607,7 @@ router.post('/market-brief-stream', async (req, res) => {
         contextText: pipe.contextText,
         equityLike: Boolean(pipe.context.equityLike),
         capability: pipe.context.capability,
+        forceTradeDecision,
       },
       {
         signal: abort.signal,

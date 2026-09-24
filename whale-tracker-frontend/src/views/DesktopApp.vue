@@ -352,6 +352,7 @@ onUnmounted(() => {
 
     <div class="layout">
       <header class="topbar">
+        <div class="topbar-spacer" aria-hidden="true" />
         <WhaleResonanceBanner
           :whales="whaleStore.displayWhales"
           :activity="whaleStore.activity"
@@ -360,7 +361,9 @@ onUnmounted(() => {
           :ready="whaleStore.displayWhales.length > 0"
           @focus-whale="onFocusWhaleCard"
         />
-        <MarketBriefBanner />
+        <div class="topbar-right">
+          <MarketBriefBanner />
+        </div>
       </header>
 
       <el-alert
@@ -742,13 +745,31 @@ onUnmounted(() => {
   color: var(--muted);
 }
 .topbar {
+  /* 与下方 .grid 三列对齐：共振信号落在巨鲸列正上方 */
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns:
+    minmax(120px, calc((100% - 24px) * 0.25 - 80px))
+    minmax(0, calc((100% - 24px) * 0.5))
+    minmax(200px, calc((100% - 24px) * 0.25 + 80px));
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   margin-bottom: 12px;
   min-width: 0;
   min-height: 44px;
+}
+.topbar-spacer {
+  min-width: 0;
+}
+.topbar-right {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  min-width: 0;
+}
+.topbar :deep(.resonance-wrap) {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 .topbar :deep(.notice-wrap),
 .topbar :deep(.liq-wrap) {

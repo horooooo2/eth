@@ -39,6 +39,32 @@ function starText(n: number) {
   return '★'.repeat(n) + '☆'.repeat(Math.max(0, 3 - n));
 }
 
+function macroAiContent(item: CalendarEvent) {
+  const lines = [
+    item.note || item.title,
+    '',
+    '【数据读数】',
+    item.previous ? `前值：${item.previous}` : '',
+    item.forecast ? `预测：${item.forecast}` : '',
+    item.actual ? `公布：${item.actual}` : '',
+    item.importance ? `重要性：${item.importance}` : '',
+  ].filter((l) => l !== undefined && l !== null);
+  return lines.filter((l, i, arr) => !(l === '' && arr[i - 1] === '')).join('\n');
+}
+
+function macroAiMeta(item: CalendarEvent) {
+  return {
+    dateLabel: item.dateLabel,
+    weekday: item.weekday,
+    time: item.time || item.timeNote || '',
+    importance: item.importance,
+    previous: item.previous,
+    forecast: item.forecast,
+    actual: item.actual,
+    coin: 'BTC',
+  };
+}
+
 function escapeHtml(s: string) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -147,16 +173,8 @@ watch(
                 <AiAnalyzeButton
                   source="macro"
                   :title="item.title"
-                  :content="item.note || item.title"
-                  :meta="{
-                    dateLabel: item.dateLabel,
-                    weekday: item.weekday,
-                    time: item.time || item.timeNote || '',
-                    importance: item.importance,
-                    previous: item.previous,
-                    forecast: item.forecast,
-                    actual: item.actual,
-                  }"
+                  :content="macroAiContent(item)"
+                  :meta="macroAiMeta(item)"
                 />
               </div>
               <p v-if="item.note" class="note" v-html="highlightCore(item.note)" />

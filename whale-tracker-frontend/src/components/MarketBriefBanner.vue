@@ -22,6 +22,8 @@ import {
 } from '@/utils/briefHistory';
 import { aiKeyReady } from '@/stores/aiKey';
 import { formatPrice } from '@/utils/format';
+import { highlightBriefHtml, highlightNumbersHtml } from '@/utils/briefHighlight';
+import BriefKlineChart from '@/components/BriefKlineChart.vue';
 
 type BiasTag = 'buy' | 'sell' | 'wait';
 type Phase = 'pick' | 'loading' | 'streaming' | 'result';
@@ -59,6 +61,8 @@ const chatMessages = ref<MarketChatMessage[]>([]);
 const loadingStepIdx = ref(0);
 const chatListRef = ref<HTMLElement | null>(null);
 const streamScrollRef = ref<HTMLElement | null>(null);
+const analysisTab = ref('short');
+const techTf = ref<'5m' | '1h' | '1d'>('1d');
 
 let reqSeq = 0;
 let stepTimer: ReturnType<typeof setInterval> | null = null;
@@ -192,6 +196,96 @@ const sentiment = computed(() => {
     confidenceLevel: level,
   };
 });
+
+const chartPacks = computed(() => {
+  const c = result.value?.contextSummary?.charts;
+  return {
+    m5: c?.m5 || null,
+    hour: c?.hour || null,
+    day: c?.day || null,
+  };
+});
+
+const activeTechText = computed(() => {
+  const t = structured.value?.technical;
+  if (!t) return '';
+  if (techTf.value === '5m') return t.m5 || '';
+  if (techTf.value === '1h') return t.hourly || '';
+  return t.daily || '';
+});
+
+const activeTechLabel = computed(() => {
+  if (techTf.value === '5m') return '5分钟';
+  if (techTf.value === '1h') return '小时线';
+  return '日线';
+});
+
+const personalStance = computed(() => structured.value?.personal_stance || null);
+
+const stanceCards = computed(() => {
+  const ps = personalStance.value;
+  return [
+    { id: 'ultra_short', header: '超短线 (5分钟)', leg: ps?.ultra_short },
+    { id: 'short', header: '短期', leg: ps?.short },
+    { id: 'mid_long', header: '中长期', leg: ps?.mid_long },
+  ];
+});
+
+type AnalysisTab = { id: string; label: string };
+
+const analysisTabs = computed<AnalysisTab[]>(() => {
+  const s = structured.value;
+  if (s) {
+    const tabs: AnalysisTab[] = [
+      { id: 'short', label: '短期看法' },
+      { id: 'mid', label: '中长期' },
+      { id: 'tech', label: '技术分析' },
+      { id: 'news', label: '新闻分析' },
+      { id: 'sentiment', label: '市场情绪' },
+    ];
+    if (s.key_evidence?.length) tabs.push({ id: 'evidence', label: '关键证据' });
+    if (s.risks_and_invalidation?.length) tabs.push({ id: 'risk', label: '风险失效' });
+    tabs.push({ id: 'stance', label: '仓位建议' });
+    return tabs;
+  }
+  return sections.value.map((sec) => ({
+    id: sec.key,
+    label: sec.title.replace(/^[\u{1F300}-\u{1FAFF}\u2600-\u27BF]\s*/u, '') || sec.title,
+  }));
+});
+
+watch(
+  analysisTabs,
+  (tabs) => {
+    if (!tabs.length) return;
+    if (!tabs.some((t) => t.id === analysisTab.value)) {
+      analysisTab.value = tabs[0].id;
+    }
+  },
+  { immediate: true },
+);
+
+function stanceActionClass(action?: string) {
+  const t = String(action || '');
+  if (/做多/.test(t)) return 'long';
+  if (/做空/.test(t)) return 'short';
+  return 'wait';
+}
+
+function fmtStancePrice(v: number | null | undefined) {
+  if (v == null || !Number.isFinite(Number(v))) return '—';
+  return formatPrice(Number(v));
+}
+
+function isWaitAction(action?: string) {
+  return !action || /观望/.test(action);
+}
+
+async function requestOpenOrder() {
+  ElMessage.info('正在按开单模式重新分析（必须给出做多或做空）…');
+  analysisTab.value = 'stance';
+  await runBrief({ forceRefresh: true, forceTradeDecision: true });
+}
 
 function biasFromResult(data: MarketBriefResponse) {
   const st = data.analysisResult?.short_term || data.structured?.short_term;
@@ -354,7 +448,7 @@ function closeModal() {
   }
 }
 
-async function runBrief(opts: { forceRefresh?: boolean } = {}) {
+async function runBrief(opts: { forceRefresh?: boolean; forceTradeDecision?: boolean } = {}) {
   if (!aiKeyReady.value) {
     ElMessage.warning('请先在侧栏「币种偏好」中配置 DeepSeek API Key');
     return;
@@ -374,7 +468,7 @@ async function runBrief(opts: { forceRefresh?: boolean } = {}) {
   error.value = '';
   result.value = null;
   streamDraft.value = '';
-  statusMessage.value = '正在准备数据…';
+  statusMessage.value = opts.forceTradeDecision ? '开单模式：正在准备数据…' : '正在准备数据…';
   chatMessages.value = [];
   phase.value = 'loading';
   startLoadingSteps();
@@ -383,7 +477,8 @@ async function runBrief(opts: { forceRefresh?: boolean } = {}) {
   try {
     await streamMarketBrief(target, {
       signal: abortCtrl.signal,
-      forceRefresh: Boolean(opts.forceRefresh),
+      forceRefresh: Boolean(opts.forceRefresh) || Boolean(opts.forceTradeDecision),
+      forceTradeDecision: Boolean(opts.forceTradeDecision),
       onStatus: (s) => {
         if (seq !== reqSeq) return;
         if (s.message) statusMessage.value = s.message;
@@ -713,165 +808,256 @@ onUnmounted(() => {
 
           <!-- 结果 + 流式打字 + 对话 -->
           <div v-else class="modal-body result-layout">
+            <div
+              v-if="phase === 'result' || phase === 'streaming'"
+              class="sentiment-sticky"
+              :class="sentiment.tone"
+            >
+              <div class="sticky-main">
+                <span class="sticky-coin">{{ coin }}</span>
+                <span v-if="result?.version" class="sticky-ver">{{ result.version }}</span>
+                <span class="sentiment-text" v-html="highlightBriefHtml(sentiment.label)" />
+              </div>
+              <div
+                class="confidence"
+                :class="{
+                  'conf-low': sentiment.confidenceLevel === '低',
+                  'conf-mid': sentiment.confidenceLevel === '中',
+                  'conf-high': sentiment.confidenceLevel === '高',
+                }"
+              >
+                {{ phase === 'streaming' ? '生成中…' : sentiment.confidence }}
+              </div>
+            </div>
+
             <div ref="streamScrollRef" class="result-scroll">
               <div v-if="phase === 'streaming'" class="stream-banner">
                 <span class="stream-dot" />
                 {{ statusMessage || 'DeepSeek 正在撰写…' }}
               </div>
 
-              <div v-if="phase === 'result'" class="sentiment-box" :class="sentiment.tone">
-                <div class="sentiment-text">{{ sentiment.label }}</div>
-                <div
-                  class="confidence"
-                  :class="{
-                    'conf-low': sentiment.confidenceLevel === '低',
-                    'conf-mid': sentiment.confidenceLevel === '中',
-                    'conf-high': sentiment.confidenceLevel === '高',
-                  }"
-                >
-                  {{ sentiment.confidence }}
-                </div>
-              </div>
-
               <div v-if="summaryBits.length" class="meta">
-                <span v-for="bit in summaryBits" :key="bit" class="chip">{{ bit }}</span>
+                <span
+                  v-for="bit in summaryBits"
+                  :key="bit"
+                  class="chip"
+                  v-html="highlightNumbersHtml(bit)"
+                />
               </div>
 
               <!-- 流式草稿：边生成边显示 -->
               <div v-if="phase === 'streaming'" class="stream-draft coin-analysis">
-                <div class="coin-desc">{{ streamDraft || '…' }}<span class="caret">▍</span></div>
+                <div class="coin-desc" v-html="highlightBriefHtml(streamDraft || '…')" />
+                <span class="caret">▍</span>
               </div>
 
-              <!-- JSON 卡片优先（完成后） -->
-              <template v-else-if="structured">
-                <section class="analysis-section">
-                  <div class="section-title">⚡ 短期看法</div>
-                  <div class="coin-analysis" :class="biasClass(shortTermBias(structured.short_term))">
-                    <div class="coin-header">
-                      <span
-                        class="tag"
-                        :class="biasClass(shortTermBias(structured.short_term)) === 'tone-buy' ? 'tag-buy' : biasClass(shortTermBias(structured.short_term)) === 'tone-sell' ? 'tag-sell' : 'tag-wait'"
-                      >
-                        {{ shortTermBias(structured.short_term) || '观望' }}
-                      </span>
-                    </div>
-                    <div class="coin-desc">{{ shortTermBody(structured.short_term) }}</div>
-                  </div>
-                </section>
-
-                <section class="analysis-section">
-                  <div class="section-title">🔭 中长期看法</div>
-                  <div class="coin-analysis" :class="biasClass(shortTermBias(structured.mid_long_term))">
-                    <div v-if="shortTermBias(structured.mid_long_term)" class="coin-header">
-                      <span
-                        class="tag"
-                        :class="biasClass(shortTermBias(structured.mid_long_term)) === 'tone-buy' ? 'tag-buy' : biasClass(shortTermBias(structured.mid_long_term)) === 'tone-sell' ? 'tag-sell' : 'tag-wait'"
-                      >
-                        {{ shortTermBias(structured.mid_long_term) }}
-                      </span>
-                    </div>
-                    <div class="coin-desc">{{ shortTermBody(structured.mid_long_term) }}</div>
-                  </div>
-                </section>
-
-                <section class="analysis-section">
-                  <div class="section-title">📈 技术分析</div>
-                  <div class="coin-analysis">
-                    <div class="coin-desc">
-                      <p v-if="structured.technical?.hourly"><strong>小时线：</strong>{{ structured.technical.hourly }}</p>
-                      <p v-if="structured.technical?.daily"><strong>日线：</strong>{{ structured.technical.daily }}</p>
-                    </div>
-                  </div>
-                </section>
-
-                <section class="analysis-section">
-                  <div class="section-title">📰 新闻分析</div>
-                  <div class="coin-analysis" :class="biasClass(structured.news_analysis?.sentiment)">
-                    <div v-if="structured.news_analysis?.sentiment" class="coin-header">
-                      <span class="tag tag-wait">{{ structured.news_analysis.sentiment }}</span>
-                    </div>
-                    <div class="coin-desc">{{ structured.news_analysis?.details }}</div>
-                  </div>
-                </section>
-
-                <section class="analysis-section">
-                  <div class="section-title">🌊 市场情绪</div>
-                  <div class="coin-analysis">
-                    <div class="coin-desc">
-                      <p v-if="structured.market_sentiment?.long_short_ratio">
-                        多空：{{ structured.market_sentiment.long_short_ratio }}
-                      </p>
-                      <p v-if="structured.market_sentiment?.funding_rate">
-                        费率：{{ structured.market_sentiment.funding_rate }}
-                      </p>
-                      <p v-if="structured.market_sentiment?.liquidations">
-                        爆仓：{{ structured.market_sentiment.liquidations }}
-                      </p>
-                      <p v-if="structured.market_sentiment?.details">
-                        {{ structured.market_sentiment.details }}
-                      </p>
-                    </div>
-                  </div>
-                </section>
-
-                <section v-if="structured.key_evidence?.length" class="analysis-section">
-                  <div class="section-title">📎 关键证据</div>
-                  <div class="coin-analysis">
-                    <ul class="bullet-list">
-                      <li v-for="(e, i) in structured.key_evidence" :key="i">{{ e }}</li>
-                    </ul>
-                  </div>
-                </section>
-
-                <section v-if="structured.risks_and_invalidation?.length" class="analysis-section">
-                  <div class="section-title risk">⚠️ 风险与失效条件</div>
-                  <div class="coin-analysis risk">
-                    <ul class="bullet-list">
-                      <li v-for="(e, i) in structured.risks_and_invalidation" :key="i">{{ e }}</li>
-                    </ul>
-                  </div>
-                </section>
-              </template>
-
-              <!-- Markdown 回退 -->
-              <template v-else>
-                <section
-                  v-for="sec in sections"
-                  :key="sec.key + sec.title"
-                  class="analysis-section"
-                >
-                  <div class="section-title" :class="{ risk: sec.key === 'risk' }">
-                    <template v-if="sec.key === 'short'">⚡</template>
-                    <template v-else-if="sec.key === 'mid'">🔭</template>
-                    <template v-else-if="sec.key === 'tech'">📈</template>
-                    <template v-else-if="sec.key === 'news'">📰</template>
-                    <template v-else-if="sec.key === 'sentiment'">🌊</template>
-                    <template v-else-if="sec.key === 'evidence'">📎</template>
-                    <template v-else-if="sec.key === 'risk'">⚠️</template>
-                    {{ sec.title }}
-                  </div>
-                  <div
-                    class="coin-analysis"
-                    :class="[
-                      sec.key,
-                      sec.tag === 'buy' ? 'tone-buy' : sec.tag === 'sell' ? 'tone-sell' : sec.tag === 'wait' ? 'tone-wait' : '',
-                    ]"
+              <!-- JSON / Markdown：Tab 切换 -->
+              <div v-else-if="structured || sections.length" class="analysis-tabs-wrap">
+                <div class="analysis-tabs" role="tablist">
+                  <button
+                    v-for="tab in analysisTabs"
+                    :key="tab.id"
+                    type="button"
+                    role="tab"
+                    class="analysis-tab"
+                    :class="{ active: analysisTab === tab.id }"
+                    :aria-selected="analysisTab === tab.id"
+                    @click="analysisTab = tab.id"
                   >
-                    <div
-                      v-if="sec.tagLabel && (sec.key === 'short' || sec.key === 'mid')"
-                      class="coin-header"
-                    >
-                      <span
-                        class="tag"
-                        :class="sec.tag === 'buy' ? 'tag-buy' : sec.tag === 'sell' ? 'tag-sell' : 'tag-wait'"
-                      >
-                        {{ sec.tagLabel }}
-                      </span>
+                    {{ tab.label }}
+                  </button>
+                </div>
+
+                <div class="analysis-tab-panel">
+                  <template v-if="structured">
+                    <div v-show="analysisTab === 'short'" class="tab-pane">
+                      <div class="coin-analysis" :class="biasClass(shortTermBias(structured.short_term))">
+                        <div class="coin-header">
+                          <span
+                            class="tag"
+                            :class="biasClass(shortTermBias(structured.short_term)) === 'tone-buy' ? 'tag-buy' : biasClass(shortTermBias(structured.short_term)) === 'tone-sell' ? 'tag-sell' : 'tag-wait'"
+                            v-html="highlightBriefHtml(shortTermBias(structured.short_term) || '观望')"
+                          />
+                        </div>
+                        <div
+                          class="coin-desc"
+                          v-html="highlightBriefHtml(shortTermBody(structured.short_term))"
+                        />
+                      </div>
                     </div>
-                    <div class="coin-desc">{{ sec.body }}</div>
-                  </div>
-                </section>
-              </template>
+
+                    <div v-show="analysisTab === 'mid'" class="tab-pane">
+                      <div class="coin-analysis" :class="biasClass(shortTermBias(structured.mid_long_term))">
+                        <div v-if="shortTermBias(structured.mid_long_term)" class="coin-header">
+                          <span
+                            class="tag"
+                            :class="biasClass(shortTermBias(structured.mid_long_term)) === 'tone-buy' ? 'tag-buy' : biasClass(shortTermBias(structured.mid_long_term)) === 'tone-sell' ? 'tag-sell' : 'tag-wait'"
+                            v-html="highlightBriefHtml(shortTermBias(structured.mid_long_term))"
+                          />
+                        </div>
+                        <div
+                          class="coin-desc"
+                          v-html="highlightBriefHtml(shortTermBody(structured.mid_long_term))"
+                        />
+                      </div>
+                    </div>
+
+                    <div v-show="analysisTab === 'tech'" class="tab-pane tech-pane">
+                      <BriefKlineChart
+                        v-model="techTf"
+                        :m5="chartPacks.m5"
+                        :hour="chartPacks.hour"
+                        :day="chartPacks.day"
+                      />
+                      <div class="coin-analysis">
+                        <div class="coin-desc tech-desc">
+                          <template v-if="activeTechText">
+                            <strong>{{ activeTechLabel }}：</strong>
+                            <span v-html="highlightBriefHtml(activeTechText)" />
+                          </template>
+                          <template v-else>当前周期暂无文字分析</template>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div v-show="analysisTab === 'news'" class="tab-pane">
+                      <div class="coin-analysis" :class="biasClass(structured.news_analysis?.sentiment)">
+                        <div v-if="structured.news_analysis?.sentiment" class="coin-header">
+                          <span
+                            class="tag tag-wait"
+                            v-html="highlightBriefHtml(structured.news_analysis.sentiment)"
+                          />
+                        </div>
+                        <div
+                          class="coin-desc"
+                          v-html="highlightBriefHtml(structured.news_analysis?.details)"
+                        />
+                      </div>
+                    </div>
+
+                    <div v-show="analysisTab === 'sentiment'" class="tab-pane">
+                      <div class="coin-analysis">
+                        <div class="coin-desc">
+                          <p v-if="structured.market_sentiment?.long_short_ratio">
+                            多空：
+                            <span v-html="highlightBriefHtml(structured.market_sentiment.long_short_ratio)" />
+                          </p>
+                          <p v-if="structured.market_sentiment?.funding_rate">
+                            费率：
+                            <span v-html="highlightBriefHtml(structured.market_sentiment.funding_rate)" />
+                          </p>
+                          <p v-if="structured.market_sentiment?.liquidations">
+                            爆仓：
+                            <span v-html="highlightBriefHtml(structured.market_sentiment.liquidations)" />
+                          </p>
+                          <p
+                            v-if="structured.market_sentiment?.details"
+                            v-html="highlightBriefHtml(structured.market_sentiment.details)"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div v-show="analysisTab === 'evidence'" class="tab-pane">
+                      <div class="coin-analysis">
+                        <ul class="bullet-list">
+                          <li
+                            v-for="(e, i) in structured.key_evidence || []"
+                            :key="i"
+                            v-html="highlightBriefHtml(e)"
+                          />
+                        </ul>
+                      </div>
+                    </div>
+
+                    <div v-show="analysisTab === 'risk'" class="tab-pane">
+                      <div class="coin-analysis risk">
+                        <ul class="bullet-list">
+                          <li
+                            v-for="(e, i) in structured.risks_and_invalidation || []"
+                            :key="i"
+                            v-html="highlightBriefHtml(e)"
+                          />
+                        </ul>
+                      </div>
+                    </div>
+
+                    <div v-show="analysisTab === 'stance'" class="tab-pane stance-section">
+                      <div class="stance-row">
+                        <div v-for="card in stanceCards" :key="card.id" class="stance-card-col">
+                          <div class="stance-card-header">{{ card.header }}</div>
+                          <div class="stance-action-row">
+                            <span class="action-badge" :class="stanceActionClass(card.leg?.action)">
+                              {{ card.leg?.action || '观望' }}
+                            </span>
+                            <button
+                              v-if="isWaitAction(card.leg?.action)"
+                              type="button"
+                              class="open-order-btn"
+                              :disabled="loading || chatBusy"
+                              @click="requestOpenOrder"
+                            >
+                              开单
+                            </button>
+                          </div>
+                          <div class="sl-tp-info">
+                            <span class="muted">开仓</span>
+                            <span class="value">{{ fmtStancePrice(card.leg?.entry) }}</span>
+                            <span class="muted">·</span>
+                            <span class="muted">杠杆</span>
+                            <span class="value">{{ card.leg?.leverage != null ? `${card.leg.leverage}x` : '—' }}</span>
+                            <br />
+                            <span class="muted">止损</span>
+                            <span class="value" :class="{ green: card.leg?.stop != null }">
+                              {{ fmtStancePrice(card.leg?.stop) }}
+                            </span>
+                            <span class="muted">·</span>
+                            <span class="muted">止盈</span>
+                            <span class="value" :class="{ green: card.leg?.take_profit != null }">
+                              {{ fmtStancePrice(card.leg?.take_profit) }}
+                            </span>
+                          </div>
+                          <p
+                            class="stance-analysis"
+                            v-html="highlightBriefHtml(card.leg?.note || '暂无说明')"
+                          />
+                        </div>
+                      </div>
+                      <div class="stance-disclaimer">个人研究视角，非投资建议</div>
+                    </div>
+                  </template>
+
+                  <template v-else>
+                    <div
+                      v-for="sec in sections"
+                      v-show="analysisTab === sec.key"
+                      :key="sec.key"
+                      class="tab-pane"
+                    >
+                      <div
+                        class="coin-analysis"
+                        :class="[
+                          sec.key,
+                          sec.tag === 'buy' ? 'tone-buy' : sec.tag === 'sell' ? 'tone-sell' : sec.tag === 'wait' ? 'tone-wait' : '',
+                        ]"
+                      >
+                        <div
+                          v-if="sec.tagLabel && (sec.key === 'short' || sec.key === 'mid')"
+                          class="coin-header"
+                        >
+                          <span
+                            class="tag"
+                            :class="sec.tag === 'buy' ? 'tag-buy' : sec.tag === 'sell' ? 'tag-sell' : 'tag-wait'"
+                          >
+                            {{ sec.tagLabel }}
+                          </span>
+                        </div>
+                        <div class="coin-desc" v-html="highlightBriefHtml(sec.body)" />
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </div>
 
               <div class="disclaimer">
                 {{
@@ -988,8 +1174,9 @@ onUnmounted(() => {
 }
 
 .modal {
-  width: min(960px, 100%);
-  max-height: min(92vh, 920px);
+  width: min(1120px, 100%);
+  height: 1000px;
+  max-height: min(1000px, 96vh);
   background: var(--card, #15191e);
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -1343,6 +1530,59 @@ onUnmounted(() => {
 
 .result-layout {
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sentiment-sticky {
+  flex-shrink: 0;
+  z-index: 3;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+}
+
+.sentiment-sticky.bull {
+  background: rgba(14, 203, 129, 0.12);
+  border-bottom-color: rgba(14, 203, 129, 0.35);
+}
+
+.sentiment-sticky.bear {
+  background: rgba(246, 70, 93, 0.12);
+  border-bottom-color: rgba(246, 70, 93, 0.35);
+}
+
+.sentiment-sticky.neutral {
+  background: rgba(132, 142, 156, 0.12);
+  border-bottom-color: rgba(132, 142, 156, 0.28);
+}
+
+.sticky-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.sticky-coin {
+  font-weight: 800;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.sticky-ver {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
 }
 
 .result-scroll {
@@ -1434,8 +1674,166 @@ onUnmounted(() => {
 
 .sentiment-text {
   font-weight: 750;
-  font-size: 14px;
+  font-size: 15px;
   color: var(--text);
+}
+
+:deep(.hl-num) {
+  font-weight: 800;
+  color: #fbbf24;
+  background: color-mix(in srgb, #f59e0b 18%, transparent);
+  padding: 0 2px;
+  border-radius: 3px;
+}
+
+:deep(.hl-key) {
+  font-weight: 800;
+  color: var(--text);
+  background: color-mix(in srgb, #f59e0b 22%, transparent);
+  padding: 0 3px;
+  border-radius: 3px;
+}
+
+:deep(.hl-bull) {
+  color: #0ecb81;
+  font-weight: 750;
+}
+
+:deep(.hl-bear) {
+  color: #f6465d;
+  font-weight: 750;
+}
+
+:deep(.hl-neutral) {
+  color: #f59e0b;
+  font-weight: 700;
+}
+
+.stance-section {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.stance-row {
+  display: flex;
+  flex-direction: row;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.stance-card-col {
+  flex: 1;
+  min-width: 0;
+  background: #1e1e1e;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.25);
+}
+
+.stance-card-header {
+  font-size: 13px;
+  color: #888;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.stance-action-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.action-badge {
+  display: inline-block;
+  background: #2c3e50;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.action-badge.wait {
+  color: #f39c12;
+}
+
+.action-badge.long {
+  background: #1e3a2f;
+  color: #2ecc71;
+}
+
+.action-badge.short {
+  background: #3a1e1e;
+  color: #e74c3c;
+}
+
+.open-order-btn {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 6px;
+  border: none;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 750;
+  cursor: pointer;
+  color: #111;
+  background: linear-gradient(135deg, #f39c12, #f1c40f);
+}
+
+.open-order-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.sl-tp-info {
+  font-size: 13px;
+  color: #e0e0e0;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed #333;
+  line-height: 1.7;
+}
+
+.sl-tp-info .muted {
+  color: #888;
+  margin-right: 2px;
+}
+
+.sl-tp-info .value {
+  font-weight: 700;
+  margin-right: 6px;
+  color: #e0e0e0;
+}
+
+.sl-tp-info .value.green {
+  color: #2ecc71;
+}
+
+.stance-analysis {
+  font-size: 13px;
+  line-height: 1.65;
+  color: #e0e0e0;
+  margin: 0;
+  flex-grow: 1;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.stance-disclaimer {
+  font-size: 12px;
+  color: #555;
+  text-align: center;
+  margin-top: 12px;
+}
+
+@media (max-width: 900px) {
+  .stance-row {
+    flex-direction: column;
+  }
 }
 
 .sentiment-box.bull .sentiment-text {
@@ -1481,7 +1879,80 @@ onUnmounted(() => {
   border: 1px solid var(--border);
   background: var(--panel);
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
+}
+
+.analysis-tabs-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  flex: 1;
+}
+
+.analysis-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-bottom: 2px;
+}
+
+.analysis-tab {
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.analysis-tab:hover {
+  color: var(--text);
+  border-color: color-mix(in srgb, #6366f1 40%, var(--border));
+}
+
+.analysis-tab.active {
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(135deg, #6366f1, #a855f7);
+}
+
+.analysis-tab-panel {
+  flex: 1;
+  min-height: 360px;
+  height: 360px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  max-width: 100%;
+}
+
+.tech-pane,
+.tech-desc {
+  max-width: 100%;
+  overflow-x: hidden;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.tab-pane {
+  animation: tab-in 0.18s ease;
+}
+
+@keyframes tab-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .analysis-section {
@@ -1489,7 +1960,7 @@ onUnmounted(() => {
 }
 
 .section-title {
-  font-size: 13px;
+  font-size: 14px;
   color: #a855f7;
   font-weight: 750;
   margin-bottom: 8px;
@@ -1505,7 +1976,7 @@ onUnmounted(() => {
 .coin-analysis {
   background: var(--panel-2);
   border-radius: 8px;
-  padding: 12px;
+  padding: 14px;
   border-left: 3px solid #6366f1;
 }
 
@@ -1532,15 +2003,15 @@ onUnmounted(() => {
   justify-content: flex-end;
   gap: 8px;
   font-weight: 750;
-  margin-bottom: 6px;
-  font-size: 13px;
+  margin-bottom: 8px;
+  font-size: 14px;
   color: var(--text);
 }
 
 .tag {
-  padding: 2px 6px;
+  padding: 3px 8px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -1560,14 +2031,14 @@ onUnmounted(() => {
 }
 
 .coin-desc {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--muted);
-  line-height: 1.6;
+  line-height: 1.7;
   white-space: pre-wrap;
 }
 
 .coin-desc p {
-  margin: 0 0 8px;
+  margin: 0 0 10px;
 }
 
 .coin-desc p:last-child {
@@ -1578,12 +2049,12 @@ onUnmounted(() => {
   margin: 0;
   padding-left: 18px;
   color: var(--muted);
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: 14px;
+  line-height: 1.7;
 }
 
 .bullet-list li + li {
-  margin-top: 4px;
+  margin-top: 6px;
 }
 
 .coin-analysis.risk .coin-desc {
@@ -1592,7 +2063,7 @@ onUnmounted(() => {
 
 .disclaimer {
   margin: 4px 0 10px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--soft);
   text-align: center;
   border-top: 1px solid var(--border);
@@ -1689,6 +2160,7 @@ onUnmounted(() => {
 
 @media (max-width: 640px) {
   .modal {
+    height: min(1000px, 94vh);
     max-height: 94vh;
     width: 100%;
   }

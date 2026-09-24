@@ -360,124 +360,237 @@ function summarizeTf(klines, label) {
   };
 }
 
-async function fetchKlinesMulti(coin, tf) {
+function roundPx(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  if (n >= 1000) return Number(n.toFixed(2));
+  if (n >= 1) return Number(n.toFixed(4));
+  if (n >= 0.01) return Number(n.toFixed(6));
+  return Number(n.toFixed(8));
+}
+
+/** 供前端绘制的 K 线 + 技术位（服务端计算，模型勿改价） */
+function buildChartPack(klines, maxBars = 48) {
+  if (!Array.isArray(klines) || klines.length < 5) return null;
+  const slice = klines.slice(-maxBars);
+  const candles = slice
+    .map((k) => ({
+      t: k.time,
+      o: roundPx(k.open),
+      h: roundPx(k.high),
+      l: roundPx(k.low),
+      c: roundPx(k.close),
+    }))
+    .filter((k) => k.t && k.c != null);
+
+  if (candles.length < 5) return null;
+
+  const recent = slice.slice(-Math.min(36, slice.length));
+  const highs = recent.map((k) => k.high);
+  const lows = recent.map((k) => k.low);
+  const lastClose = slice[slice.length - 1].close;
+  let swingHigh = null;
+  let swingLow = null;
+  for (let i = 2; i < recent.length - 2; i += 1) {
+    if (
+      highs[i] >= highs[i - 1] &&
+      highs[i] >= highs[i - 2] &&
+      highs[i] >= highs[i + 1] &&
+      highs[i] >= highs[i + 2]
+    ) {
+      swingHigh = highs[i];
+    }
+    if (
+      lows[i] <= lows[i - 1] &&
+      lows[i] <= lows[i - 2] &&
+      lows[i] <= lows[i + 1] &&
+      lows[i] <= lows[i + 2]
+    ) {
+      swingLow = lows[i];
+    }
+  }
+  const prior = recent.slice(0, -1);
+  const rangeHigh = prior.length ? Math.max(...prior.map((k) => k.high)) : null;
+  const rangeLow = prior.length ? Math.min(...prior.map((k) => k.low)) : null;
+
+  const levels = [];
+  const pushLevel = (key, price, label) => {
+    const p = roundPx(price);
+    if (p == null) return;
+    if (levels.some((x) => Math.abs(x.price - p) / p < 0.0015)) return;
+    levels.push({ key, price: p, label });
+  };
+
+  if (swingHigh != null) pushLevel('resistance', swingHigh, '压力位');
+  if (swingLow != null) pushLevel('support', swingLow, '支撑位');
+  if (swingLow != null) pushLevel('swingLow', swingLow, '短期底部');
+  if (rangeHigh != null && lastClose >= rangeHigh * 0.998) {
+    pushLevel('breakout', rangeHigh, '突破位');
+  } else if (rangeLow != null && lastClose <= rangeLow * 1.002) {
+    pushLevel('breakdown', rangeLow, '跌破位');
+  } else if (rangeHigh != null) {
+    pushLevel('breakout', rangeHigh, '突破观察位');
+  }
+
+  return { candles, levels: levels.slice(0, 6) };
+}
+
+function attachChart(summary, klines) {
+  if (!summary) return null;
+  const maxBars = summary.tf === '5m' ? 60 : summary.tf === '1h' ? 48 : 60;
+  return {
+    ...summary,
+    chart: buildChartPack(klines, maxBars),
+  };
+}
+
+function klineSourceList(coin, tf) {
   const symbol = `${coin}USDT`;
   const gateContract = `${coin}_USDT`;
   const t = 4500;
-  const sources =
-    tf === '1h'
-      ? [
-          {
-            name: 'binance-fapi',
-            run: async () =>
-              mapKlines(await httpGet(`${BINANCE_FAPI}/fapi/v1/klines`, { symbol, interval: '1h', limit: 72 }, t)),
-          },
-          {
-            name: 'bybit',
-            run: async () =>
-              mapBybitKlines(
-                await httpGet(
-                  `${BYBIT}/v5/market/kline`,
-                  { category: 'linear', symbol, interval: '60', limit: 72 },
-                  t,
-                ),
-              ),
-          },
-          {
-            name: 'binance-spot',
-            run: async () =>
-              mapKlines(await httpGet(`${VISION}/api/v3/klines`, { symbol, interval: '1h', limit: 72 }, t)),
-          },
-          {
-            name: 'okx',
-            run: async () =>
-              mapOkxKlines(
-                await httpGet(
-                  `${OKX}/api/v5/market/candles`,
-                  { instId: `${coin}-USDT`, bar: '1H', limit: '72' },
-                  t,
-                ),
-              ),
-          },
-          {
-            name: 'bytick',
-            run: async () =>
-              mapBybitKlines(
-                await httpGet(
-                  `${BYTICK}/v5/market/kline`,
-                  { category: 'linear', symbol, interval: '60', limit: 72 },
-                  t,
-                ),
-              ),
-          },
-          {
-            name: 'gate',
-            run: async () =>
-              mapKlines(
-                await httpGet(
-                  `${GATE}/futures/usdt/candlesticks`,
-                  { contract: gateContract, interval: '1h', limit: 72 },
-                  t,
-                ),
-              ),
-          },
-        ]
-      : [
-          {
-            name: 'binance-fapi',
-            run: async () =>
-              mapKlines(await httpGet(`${BINANCE_FAPI}/fapi/v1/klines`, { symbol, interval: '1d', limit: 90 }, t)),
-          },
-          {
-            name: 'bybit',
-            run: async () =>
-              mapBybitKlines(
-                await httpGet(
-                  `${BYBIT}/v5/market/kline`,
-                  { category: 'linear', symbol, interval: 'D', limit: 90 },
-                  t,
-                ),
-              ),
-          },
-          {
-            name: 'binance-spot',
-            run: async () =>
-              mapKlines(await httpGet(`${VISION}/api/v3/klines`, { symbol, interval: '1d', limit: 90 }, t)),
-          },
-          {
-            name: 'okx',
-            run: async () =>
-              mapOkxKlines(
-                await httpGet(
-                  `${OKX}/api/v5/market/candles`,
-                  { instId: `${coin}-USDT`, bar: '1D', limit: '90' },
-                  t,
-                ),
-              ),
-          },
-          {
-            name: 'bytick',
-            run: async () =>
-              mapBybitKlines(
-                await httpGet(
-                  `${BYTICK}/v5/market/kline`,
-                  { category: 'linear', symbol, interval: 'D', limit: 90 },
-                  t,
-                ),
-              ),
-          },
-          {
-            name: 'gate',
-            run: async () =>
-              mapKlines(
-                await httpGet(
-                  `${GATE}/futures/usdt/candlesticks`,
-                  { contract: gateContract, interval: '1d', limit: 90 },
-                  t,
-                ),
-              ),
-          },
-        ];
+  if (tf === '5m') {
+    return [
+      {
+        name: 'binance-fapi',
+        run: async () =>
+          mapKlines(await httpGet(`${BINANCE_FAPI}/fapi/v1/klines`, { symbol, interval: '5m', limit: 96 }, t)),
+      },
+      {
+        name: 'bybit',
+        run: async () =>
+          mapBybitKlines(
+            await httpGet(
+              `${BYBIT}/v5/market/kline`,
+              { category: 'linear', symbol, interval: '5', limit: 96 },
+              t,
+            ),
+          ),
+      },
+      {
+        name: 'binance-spot',
+        run: async () =>
+          mapKlines(await httpGet(`${VISION}/api/v3/klines`, { symbol, interval: '5m', limit: 96 }, t)),
+      },
+      {
+        name: 'okx',
+        run: async () =>
+          mapOkxKlines(
+            await httpGet(
+              `${OKX}/api/v5/market/candles`,
+              { instId: `${coin}-USDT`, bar: '5m', limit: '96' },
+              t,
+            ),
+          ),
+      },
+      {
+        name: 'gate',
+        run: async () =>
+          mapKlines(
+            await httpGet(
+              `${GATE}/futures/usdt/candlesticks`,
+              { contract: gateContract, interval: '5m', limit: 96 },
+              t,
+            ),
+          ),
+      },
+    ];
+  }
+  if (tf === '1h') {
+    return [
+      {
+        name: 'binance-fapi',
+        run: async () =>
+          mapKlines(await httpGet(`${BINANCE_FAPI}/fapi/v1/klines`, { symbol, interval: '1h', limit: 72 }, t)),
+      },
+      {
+        name: 'bybit',
+        run: async () =>
+          mapBybitKlines(
+            await httpGet(
+              `${BYBIT}/v5/market/kline`,
+              { category: 'linear', symbol, interval: '60', limit: 72 },
+              t,
+            ),
+          ),
+      },
+      {
+        name: 'binance-spot',
+        run: async () =>
+          mapKlines(await httpGet(`${VISION}/api/v3/klines`, { symbol, interval: '1h', limit: 72 }, t)),
+      },
+      {
+        name: 'okx',
+        run: async () =>
+          mapOkxKlines(
+            await httpGet(
+              `${OKX}/api/v5/market/candles`,
+              { instId: `${coin}-USDT`, bar: '1H', limit: '72' },
+              t,
+            ),
+          ),
+      },
+      {
+        name: 'gate',
+        run: async () =>
+          mapKlines(
+            await httpGet(
+              `${GATE}/futures/usdt/candlesticks`,
+              { contract: gateContract, interval: '1h', limit: 72 },
+              t,
+            ),
+          ),
+      },
+    ];
+  }
+  return [
+    {
+      name: 'binance-fapi',
+      run: async () =>
+        mapKlines(await httpGet(`${BINANCE_FAPI}/fapi/v1/klines`, { symbol, interval: '1d', limit: 90 }, t)),
+    },
+    {
+      name: 'bybit',
+      run: async () =>
+        mapBybitKlines(
+          await httpGet(
+            `${BYBIT}/v5/market/kline`,
+            { category: 'linear', symbol, interval: 'D', limit: 90 },
+            t,
+          ),
+        ),
+    },
+    {
+      name: 'binance-spot',
+      run: async () =>
+        mapKlines(await httpGet(`${VISION}/api/v3/klines`, { symbol, interval: '1d', limit: 90 }, t)),
+    },
+    {
+      name: 'okx',
+      run: async () =>
+        mapOkxKlines(
+          await httpGet(
+            `${OKX}/api/v5/market/candles`,
+            { instId: `${coin}-USDT`, bar: '1D', limit: '90' },
+            t,
+          ),
+        ),
+    },
+    {
+      name: 'gate',
+      run: async () =>
+        mapKlines(
+          await httpGet(
+            `${GATE}/futures/usdt/candlesticks`,
+            { contract: gateContract, interval: '1d', limit: 90 },
+            t,
+          ),
+        ),
+    },
+  ];
+}
+
+async function fetchKlinesMulti(coin, tf) {
+  const sources = klineSourceList(coin, tf);
 
   // 先并行打前两个常用源，命中即返回
   const primary = sources.slice(0, 2);
@@ -637,14 +750,17 @@ async function fetchExternalCrowd(coin) {
 async function fetchTechSnapshot(coin) {
   const symbol = `${coin}USDT`;
   try {
-    const [hourPack, dayPack, tickerRaw, crowd] = await Promise.all([
+    const [m5Pack, hourPack, dayPack, tickerRaw, crowd] = await Promise.all([
+      fetchKlinesMulti(coin, '5m'),
       fetchKlinesMulti(coin, '1h'),
       fetchKlinesMulti(coin, '1d'),
       httpGet(`${BYBIT}/v5/market/tickers`, { category: 'linear', symbol }).catch(() => null),
       fetchExternalCrowd(coin),
     ]);
-    const hour = summarizeTf(hourPack.klines, '1h');
-    const day = summarizeTf(dayPack.klines, '1d');
+    const m5 = attachChart(summarizeTf(m5Pack.klines, '5m'), m5Pack.klines);
+    const hour = attachChart(summarizeTf(hourPack.klines, '1h'), hourPack.klines);
+    const day = attachChart(summarizeTf(dayPack.klines, '1d'), dayPack.klines);
+    if (m5) m5.source = m5Pack.source;
     if (hour) hour.source = hourPack.source;
     if (day) day.source = dayPack.source;
     const tick = tickerRaw?.result?.list?.[0];
@@ -659,11 +775,12 @@ async function fetchTechSnapshot(coin) {
       crowd.binanceTopAccount?.shortPct ??
       null;
     return {
-      available: Boolean(hour || day),
+      available: Boolean(m5 || hour || day),
       symbol,
+      m5,
       hour,
       day,
-      klineSources: { hour: hourPack.source, day: dayPack.source },
+      klineSources: { m5: m5Pack.source, hour: hourPack.source, day: dayPack.source },
       exchangeSentiment: {
         longAccountPct: exchangeLong,
         shortAccountPct: exchangeShort,
@@ -1184,6 +1301,7 @@ async function buildMarketBriefContext(coinInput, opts = {}) {
     market: { price, fundingPct: funding },
     tech: {
       available: Boolean(tech?.available),
+      m5: tech?.m5 || null,
       hour: tech?.hour || null,
       day: tech?.day || null,
       sources: tech?.klineSources || null,
@@ -1258,6 +1376,9 @@ function fmtTf(tf) {
     ? `BOLL 上=${tf.boll.upper} 中=${tf.boll.mid} 下=${tf.boll.lower}（${tf.boll.position}）`
     : 'BOLL=--';
   const atr = tf.atr ? `ATR=${tf.atr.atr}（${tf.atr.atrPct ?? '--'}%）` : 'ATR=--';
+  const levels = (tf.chart?.levels || [])
+    .map((l) => `${l.label}=${l.price}`)
+    .join('；');
   return [
     `- ${tf.tf}${tf.source ? `（${tf.source}）` : ''}: 收盘 ${tf.last}｜近1根 ${tf.change1Pct}%｜近段 ${tf.changeRecentPct}%`,
     `  MA7=${tf.ma7 ?? '--'} MA25=${tf.ma25 ?? '--'} RSI14=${tf.rsi14 ?? '--'} 结构=${tf.structure}`,
@@ -1265,6 +1386,7 @@ function fmtTf(tf) {
     `  ${macd}`,
     `  ${boll}`,
     `  近窗高低 ${tf.low} ~ ${tf.high}`,
+    levels ? `  图示价位：${levels}` : '  图示价位：暂无',
   ].join('\n');
 }
 
@@ -1311,8 +1433,9 @@ function contextToPrompt(ctx) {
 
   const technical = budgetClip(
     [
-      '【技术分析 · 小时线 / 日线】',
+      '【技术分析 · 5分钟 / 小时线 / 日线】',
       st.tech_klines === 'unavailable' ? '- K 线：unavailable' : null,
+      ctx.tech?.m5 ? fmtTf(ctx.tech.m5) : '- 5分钟：暂无',
       ctx.tech?.hour ? fmtTf(ctx.tech.hour) : '- 小时线：暂无',
       ctx.tech?.day ? fmtTf(ctx.tech.day) : '- 日线：暂无',
     ]
@@ -1400,7 +1523,7 @@ function contextToPrompt(ctx) {
   );
 
   const footer = budgetClip(
-    `【复述】价=${ctx.market?.price ?? '--'}｜费率=${ctx.market?.fundingPct ?? '--'}｜1h=${ctx.tech?.hour?.structure ?? '--'}｜1d=${ctx.tech?.day?.structure ?? '--'}｜爆仓≈$${liq?.totalUsd ?? '--'}`,
+    `【复述】价=${ctx.market?.price ?? '--'}｜费率=${ctx.market?.fundingPct ?? '--'}｜5m=${ctx.tech?.m5?.structure ?? '--'}｜1h=${ctx.tech?.hour?.structure ?? '--'}｜1d=${ctx.tech?.day?.structure ?? '--'}｜爆仓≈$${liq?.totalUsd ?? '--'}`,
     BUDGET.footer,
   );
 
