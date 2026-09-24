@@ -33,6 +33,7 @@ const FILES = [
   'lib/tradfiIntel.js',
   'lib/tradfiWhales.js',
   'lib/binanceTradfiTrade.js',
+  'lib/binanceCryptoTrade.js',
   'lib/hyperliquid.js',
   'lib/onchain.js',
   'lib/exchangeLabels.js',
@@ -72,6 +73,7 @@ const FILES = [
   'routes/x.js',
   'routes/whaleAi.js',
   'routes/okxTrade.js',
+  'routes/binanceTrade.js',
   'routes/okxKeys.js',
   'scripts/remote-deploy.sh',
 ];

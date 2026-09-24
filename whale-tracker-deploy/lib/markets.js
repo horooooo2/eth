@@ -993,6 +993,42 @@ async function lookupCoin(raw) {
   return { ok: true, id, symbol: spec.symbol, name: spec.name, price };
 }
 
+const COIN_SEARCH_NAMES = {
+  BTC: '比特币', ETH: '以太坊', SOL: '索拉纳', BNB: '币安币', XRP: '瑞波币',
+  DOGE: '狗狗币', ADA: '艾达币', AVAX: '雪崩', LINK: '链克', LTC: '莱特币',
+  DOT: '波卡', TRX: '波场', SUI: 'Sui', BCH: '比特币现金', SHIB: '柴犬币',
+};
+let coinSearchCache = { expiresAt: 0, items: [] };
+let coinSearchPromise = null;
+
+async function getCoinSearchCatalog() {
+  if (coinSearchCache.expiresAt > Date.now()) return coinSearchCache.items;
+  if (!coinSearchPromise) {
+    coinSearchPromise = (async () => {
+      const data = await tryGet(`${VISION}/api/v3/exchangeInfo`);
+      const symbols = Array.isArray(data?.symbols) ? data.symbols : [];
+      const ids = new Set(symbols
+        .filter((row) => row.status === 'TRADING' && row.quoteAsset === 'USDT')
+        .map((row) => String(row.baseAsset || '').toUpperCase())
+        .filter((id) => /^[A-Z0-9]{2,12}$/.test(id)));
+      for (const coin of COINS) ids.add(coin.id);
+      const items = [...ids].map((id) => ({ id, symbol: `${id}USDT`, name: COIN_SEARCH_NAMES[id] || id }));
+      coinSearchCache = { items, expiresAt: Date.now() + (symbols.length ? 10 * 60_000 : 60_000) };
+      return items;
+    })().finally(() => { coinSearchPromise = null; });
+  }
+  return coinSearchPromise;
+}
+
+async function searchCoins(raw) {
+  const query = String(raw || '').trim().toUpperCase().slice(0, 30);
+  if (!query) return [];
+  const items = await getCoinSearchCatalog();
+  return items.filter((item) => item.id.includes(query) || item.symbol.includes(query) || item.name.toUpperCase().includes(query))
+    .sort((a, b) => Number(b.id.startsWith(query)) - Number(a.id.startsWith(query)) || a.id.localeCompare(b.id))
+    .slice(0, 20);
+}
+
 async function buildCoreMarkets() {
   const localCal = await buildMacroEvents();
   const emptyFed = {
@@ -1107,6 +1143,7 @@ module.exports = {
   getQuotes,
   getLiquidations,
   lookupCoin,
+  searchCoins,
   fetchFedOdds,
   MAIN_COINS: COINS.map((item) => item.id),
 };

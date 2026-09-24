@@ -198,6 +198,25 @@ function migrate(database) {
       PRIMARY KEY (user_id, exchange)
     );
     CREATE INDEX IF NOT EXISTS idx_user_exchange_keys_user ON user_exchange_keys(user_id);
+
+    CREATE TABLE IF NOT EXISTS okx_ai_orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      ord_id TEXT NOT NULL,
+      cl_ord_id TEXT NOT NULL DEFAULT '',
+      inst_id TEXT NOT NULL,
+      coin TEXT NOT NULL DEFAULT '',
+      side TEXT NOT NULL,
+      pos_side TEXT NOT NULL DEFAULT '',
+      px REAL,
+      sz TEXT NOT NULL DEFAULT '',
+      amount_usd REAL,
+      leverage INTEGER,
+      simulated INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      UNIQUE(user_id, ord_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_okx_ai_orders_user ON okx_ai_orders(user_id, created_at DESC);
   `);
   // 旧策略表（v41_* / whale_ai_runtime_logs）不再创建；user_ai_keys / user_exchange_keys 继续使用。
 

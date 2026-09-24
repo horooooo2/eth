@@ -33,8 +33,8 @@ function rowToPublic(row) {
     hasSecret: Boolean(row.api_secret),
     hasPassphrase: Boolean(row.api_passphrase),
     updatedAt: Number(row.updated_at) || 0,
-    ready: exchange === 'okx' ? configured && Boolean(row.enabled) : false,
-    status: exchange === 'binance' ? 'pending' : configured ? 'ready' : 'missing',
+    ready: configured && Boolean(row.enabled),
+    status: configured && row.enabled ? 'ready' : 'missing',
   };
 }
 
@@ -89,6 +89,15 @@ function getOkxCredentialsForUser(userId) {
   return { apiKey, secret, passphrase, simulated: Boolean(row.simulated) };
 }
 
+function getBinanceCredentialsForUser(userId) {
+  const row = getExchangeKeysRaw(userId, 'binance');
+  if (!row || !row.enabled) return null;
+  const apiKey = String(row.api_key || '').trim();
+  const secret = String(row.api_secret || '').trim();
+  if (!apiKey || !secret) return null;
+  return { apiKey, secret, simulated: Boolean(row.simulated) };
+}
+
 function upsertExchangeKeys(userId, exchange, input = {}) {
   const uid = String(userId || '');
   const ex = normalizeExchange(exchange);
@@ -97,16 +106,11 @@ function upsertExchangeKeys(userId, exchange, input = {}) {
     err.status = 400;
     throw err;
   }
-  if (ex === 'binance') {
-    const err = new Error('币安对接暂不可配置');
-    err.status = 400;
-    throw err;
-  }
   const apiKey = String(input.apiKey ?? input.api_key ?? '').trim();
   const apiSecret = String(input.apiSecret ?? input.api_secret ?? '').trim();
   const apiPassphrase = String(input.apiPassphrase ?? input.api_passphrase ?? '').trim();
-  if (!apiKey || !apiSecret || !apiPassphrase) {
-    const err = new Error('请填写 OKX API Key / Secret / Passphrase');
+  if (!apiKey || !apiSecret || (ex === 'okx' && !apiPassphrase)) {
+    const err = new Error(ex === 'okx' ? '请填写 OKX API Key / Secret / Passphrase' : '请填写币安 API Key / Secret');
     err.status = 400;
     throw err;
   }
@@ -170,6 +174,26 @@ function patchOkxFlags(userId, input = {}) {
   return listExchangeKeys(uid);
 }
 
+function patchBinanceFlags(userId, input = {}) {
+  const uid = String(userId || '');
+  const row = getExchangeKeysRaw(uid, 'binance');
+  if (!row?.api_key || !row?.api_secret) {
+    const err = new Error('请先填写完整币安 API Key / Secret');
+    err.status = 400;
+    throw err;
+  }
+  const simulated = input.simulated === false || input.simulated === 0 || input.simulated === '0' ? 0 : 1;
+  if (simulated !== Number(row.simulated)) {
+    const err = new Error('切换币安演示盘或实盘时，请同时填写该环境的 API Key 和 Secret');
+    err.status = 400;
+    throw err;
+  }
+  const enabled = input.enabled === false || input.enabled === 0 || input.enabled === '0' ? 0 : 1;
+  getDb().prepare('UPDATE user_exchange_keys SET simulated = ?, enabled = ?, updated_at = ? WHERE user_id = ? AND exchange = ?')
+    .run(simulated, enabled, Date.now(), uid, 'binance');
+  return listExchangeKeys(uid);
+}
+
 function isOkxReadyForUser(userId) {
   return Boolean(getOkxCredentialsForUser(userId));
 }
@@ -178,8 +202,10 @@ module.exports = {
   listExchangeKeys,
   getExchangeKeysRaw,
   getOkxCredentialsForUser,
+  getBinanceCredentialsForUser,
   upsertExchangeKeys,
   patchOkxFlags,
+  patchBinanceFlags,
   deleteExchangeKeys,
   isOkxReadyForUser,
   maskKey,
