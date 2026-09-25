@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch as watchVue } from 'vue';
-import { fetchTradFiCatalog, fetchTradFiQuotes, fetchTradFiIntel, fetchAllTradFiWhales, previewTradfiOrder, submitTradfiOrder, type TradfiOrderInput, type TradfiOrderPlan, type TradFiIntelResponse, type TradFiMarketSymbol, type TradFiQuote, type TradFiAllWhaleResponse } from '@/api';
+import { fetchTradFiCatalog, fetchTradFiQuotes, fetchTradFiIntel, fetchAllTradFiWhales, analyzeTradfiAi, previewTradfiAi, submitTradfiAi, type TradfiAiAnalysis, type TradfiAiPreview, type TradFiIntelResponse, type TradFiMarketSymbol, type TradFiQuote, type TradFiAllWhaleResponse } from '@/api';
 import { ElMessageBox } from 'element-plus';
+import OkxAccountPanel from '@/components/OkxAccountPanel.vue';
 import { tradfiWatch } from '@/utils/tradfiWatch';
 
 const props = defineProps<{ active?: boolean }>();
@@ -128,16 +129,13 @@ const newsFilter = ref('全部');
 const newsQuery = ref('');
 const watch = tradfiWatch;
 const aiOpen = ref(false);
-const aiSide = ref('做多');
-const aiType = ref('限价单');
-const aiMargin = ref(100);
-const aiLeverage = ref('3×');
-const aiLimitPrice = ref(0);
-const orderPreview = ref<TradfiOrderPlan | null>(null);
-const orderConfigured = ref(false);
-const orderBusy = ref(false);
-const orderError = ref('');
-const orderResult = ref('');
+const aiMode = ref<'single' | 'ladder'>('single');
+const aiAnalysis = ref<TradfiAiAnalysis | null>(null);
+const aiPreview = ref<{ preview: TradfiAiPreview; fingerprint: string; configured: boolean; monitorReady: boolean; simulated: boolean | null } | null>(null);
+const aiBusy = ref(false);
+const aiActivity = ref<'analysis' | 'preview' | 'submit' | null>(null);
+const aiError = ref('');
+const aiResult = ref('');
 let quoteTimer = 0;
 let intelTimer = 0;
 let intelRequestId = 0;
@@ -307,72 +305,70 @@ function whaleDirection(direction: string) {
 function selectAsset(symbol: string) {
   if (!watch.value.includes(symbol) && !catalogBySymbol.value.has(symbol)) return;
   selected.value = symbol;
+  aiAnalysis.value = null;
+  aiPreview.value = null;
   void loadIntel(symbol);
 }
 
-watchVue([selected, aiSide, aiType, aiMargin, aiLeverage, aiLimitPrice], () => {
-  orderPreview.value = null;
-  orderResult.value = '';
-});
-
 function openAiOrder() {
-  aiLimitPrice.value = Number(quoteFor(selected.value)?.lastPrice || 0);
-  orderPreview.value = null;
-  orderError.value = '';
-  orderResult.value = '';
+  aiAnalysis.value = null;
+  aiPreview.value = null;
+  aiError.value = '';
+  aiResult.value = '';
   aiOpen.value = true;
 }
 
-function orderInput(): TradfiOrderInput {
-  return {
-    symbol: selected.value,
-    side: aiSide.value === '做多' ? 'BUY' : 'SELL',
-    type: aiType.value === '限价单' ? 'LIMIT' : 'MARKET',
-    marginUsdt: Number(aiMargin.value),
-    leverage: Number(aiLeverage.value.replace('×', '')),
-    ...(aiType.value === '限价单' ? { price: Number(aiLimitPrice.value) } : {}),
-  };
+watchVue(aiMode, () => { aiAnalysis.value = null; aiPreview.value = null; aiError.value = ''; aiResult.value = ''; });
+
+async function generateAiPlan() {
+  aiBusy.value = true;
+  aiActivity.value = 'analysis';
+  aiError.value = '';
+  aiResult.value = '';
+  aiAnalysis.value = null;
+  aiPreview.value = null;
+  try {
+    aiAnalysis.value = await analyzeTradfiAi(selected.value, aiMode.value);
+  } catch (err) {
+    aiError.value = err instanceof Error ? err.message : 'TradFi AI 分析失败';
+  } finally { aiBusy.value = false; aiActivity.value = null; }
 }
 
-async function previewOrder() {
-  orderBusy.value = true;
-  orderError.value = '';
+async function previewAiPlan() {
+  if (!aiAnalysis.value) return;
+  aiBusy.value = true;
+  aiActivity.value = 'preview';
+  aiError.value = '';
   try {
-    const result = await previewTradfiOrder(orderInput());
-    orderPreview.value = result.plan;
-    orderConfigured.value = result.configured;
+    aiPreview.value = await previewTradfiAi(aiAnalysis.value.analysisId);
   } catch (err) {
-    orderPreview.value = null;
-    orderError.value = err instanceof Error ? err.message : '订单预览失败';
-  } finally {
-    orderBusy.value = false;
-  }
+    aiPreview.value = null;
+    aiError.value = err instanceof Error ? err.message : '整套挂单预览失败';
+  } finally { aiBusy.value = false; aiActivity.value = null; }
 }
 
-async function placeOrder(testOnly: boolean) {
-  const plan = orderPreview.value;
-  if (!plan || orderBusy.value) return;
-  if (!testOnly) {
-    try {
-      await ElMessageBox.confirm(
-        `${plan.symbol} · ${plan.side === 'BUY' ? '做多' : '做空'} · ${plan.type === 'LIMIT' ? `限价 ${plan.price}` : '市价'} · 数量 ${plan.quantity} · 杠杆 ${plan.leverage}× · ${plan.testnet ? '演示盘' : '实盘'}。确认提交？`,
-        '确认币安开单', { confirmButtonText: '确认下单', cancelButtonText: '取消', type: 'warning' },
-      );
-    } catch { return; }
-  }
-  orderBusy.value = true;
-  orderError.value = '';
-  orderResult.value = '';
+async function submitAiPlan() {
+  const ready = aiPreview.value;
+  const analysis = aiAnalysis.value;
+  if (!ready || !analysis || aiBusy.value || !ready.configured || !ready.monitorReady) return;
   try {
-    const result = await submitTradfiOrder(orderInput(), plan, testOnly);
-    orderResult.value = testOnly ? '币安测试下单通过，未进入撮合。' : `订单已提交：${result.order?.orderId || result.order?.clientOrderId || '请在币安订单列表核对'}`;
-    orderPreview.value = null;
+    await ElMessageBox.confirm(
+      `${ready.simulated ? '演示盘' : '实盘'} · ${ready.preview.symbol} · ${ready.preview.orders.length} 笔 Maker 挂单 · 总保证金 ${ready.preview.totalMarginUsdt.toFixed(2)} USDT · 最多预计亏损 ${ready.preview.estimatedLossUsdt.toFixed(2)} USDT。确认提交整套计划？`,
+      '确认币安整套挂单', { confirmButtonText: '确认提交', cancelButtonText: '取消', type: 'warning' },
+    );
+  } catch { return; }
+  aiBusy.value = true;
+  aiActivity.value = 'submit';
+  aiError.value = '';
+  aiResult.value = '';
+  try {
+    const response = await submitTradfiAi(analysis.analysisId, ready.fingerprint);
+    aiResult.value = `${response.simulated ? '演示盘' : '实盘'}已提交 ${response.orders.length} 笔挂单和 ${response.protections.length} 笔保护单，请在币安订单列表核对。`;
+    aiPreview.value = null;
   } catch (err) {
-    orderError.value = `${err instanceof Error ? err.message : '下单失败'}。请在币安订单列表核对状态，重新预览后再提交。`;
-    orderPreview.value = null;
-  } finally {
-    orderBusy.value = false;
-  }
+    aiPreview.value = null;
+    aiError.value = `${err instanceof Error ? err.message : '提交失败'}。请在币安核对订单状态，勿直接重复提交。`;
+  } finally { aiBusy.value = false; aiActivity.value = null; }
 }
 
 </script>
@@ -429,6 +425,10 @@ async function placeOrder(testOnly: boolean) {
       </section>
 
       <div class="main-grid">
+        <section class="panel account-column">
+          <div class="panel-head"><div><div class="panel-title">交易账户</div><div class="panel-sub">币安 · TradFi 持仓与挂单</div></div></div>
+          <OkxAccountPanel exchange="tradfi" :boot-ready="true" :active="active !== false" />
+        </section>
         <section class="panel">
           <div class="panel-head">
             <div>
@@ -530,59 +530,86 @@ async function placeOrder(testOnly: boolean) {
       </div>
     </main>
 
-    <div v-if="aiOpen" class="modal-cover" @click.self="aiOpen = false">
-      <div class="dialog" role="dialog" aria-modal="true">
-        <div class="dialog-head">
-          <div>
-            <div class="eyebrow">TRADFI · 币安永续合约</div>
-            <h2>AI 分析 / 开单</h2>
+    <Teleport to="body">
+      <div v-if="aiOpen" class="modal-cover" @click.self="aiOpen = false">
+        <div class="dialog" role="dialog" aria-modal="true" aria-label="TradFi AI 分析与挂单">
+          <header class="dialog-head">
+            <div class="dialog-title"><span aria-hidden="true">✨</span> DeepSeek 智能投研 <span class="dialog-symbol">· {{ selected }}</span></div>
+            <button type="button" class="dialog-close" aria-label="关闭" @click="aiOpen = false">×</button>
+          </header>
+
+          <div class="dialog-body">
+            <div v-if="aiAnalysis" class="analysis-status" :class="aiAnalysis.plan.direction === 'BUY' ? 'bull' : aiAnalysis.plan.direction === 'SELL' ? 'bear' : 'neutral'">
+              <strong>{{ selected }} · {{ aiAnalysis.plan.marketState }} · {{ aiAnalysis.plan.decision }}</strong>
+              <span>{{ aiAnalysis.plan.decision === '暂缓' ? '等待更清晰的机会' : aiAnalysis.plan.direction === 'BUY' ? '方向：做多' : '方向：做空' }}</span>
+            </div>
+            <div class="dialog-scroll">
+              <div class="order-steps"><span :class="{ active: !aiAnalysis }">1 · AI 分析</span><span :class="{ active: aiAnalysis && !aiPreview }">2 · 预览订单</span><span :class="{ active: aiPreview }">3 · 确认挂单</span></div>
+              <template v-if="!aiAnalysis && aiActivity !== 'analysis'">
+                <p class="dialog-intro">选择开单方式，AI 将以小时线判断盘中方向，用 15、5、1 分钟线寻找挂单位置，并结合日线、资讯与盘口评估风险。</p>
+                <div class="mode-label">开单方式</div>
+                <div class="mode-options">
+                  <button type="button" class="mode-option" :class="{ active: aiMode === 'single' }" @click="aiMode = 'single'"><strong>单笔开仓</strong><span>一笔 Maker 限价挂单，附止盈止损</span></button>
+                  <button type="button" class="mode-option" :class="{ active: aiMode === 'ladder' }" @click="aiMode = 'ladder'"><strong>初始单＋两档加仓</strong><span>趋势时三档；震荡时自动转为单笔试探</span></button>
+                </div>
+              </template>
+
+              <div v-if="aiActivity === 'analysis'" class="loading-state"><div class="spinner" /><strong>AI 正在静默分析</strong><span>正在核对价格结构、资讯与市场数据…</span></div>
+              <div v-if="aiActivity === 'preview'" class="loading-state"><div class="spinner" /><strong>正在核算订单</strong><span>读取币安实时盘口与合约规则…</span></div>
+
+              <template v-if="aiAnalysis && aiActivity !== 'preview'">
+                <p class="result-reason">{{ aiAnalysis.plan.reason || '暂无明确交易结论' }}</p>
+                <div class="structure-grid">
+                  <section class="structure-card"><div class="structure-head">入场 · 1 / 5 / 15 分钟</div><p>{{ aiAnalysis.plan.shortView || '数据不足' }}</p></section>
+                  <section class="structure-card"><div class="structure-head">方向 · 1 小时</div><p>{{ aiAnalysis.plan.longView || '数据不足' }}</p></section>
+                </div>
+                <div v-if="aiAnalysis.plan.dayView" class="market-meta">日线背景：{{ aiAnalysis.plan.dayView }}</div>
+                <div class="market-meta">底层市场：{{ aiAnalysis.context.underlyingSession?.type || 'UNKNOWN' }} · 现价 {{ aiAnalysis.context.referencePrice }} · 标记价 {{ aiAnalysis.context.markPrice ?? '—' }} · 指数价 {{ aiAnalysis.context.indexPrice ?? '—' }}</div>
+                <div v-if="aiAnalysis.plan.thesis" class="market-meta">主要判断：{{ aiAnalysis.plan.thesis }} · 基本面 {{ aiAnalysis.plan.fundamentalBias }}</div>
+                <div v-if="aiAnalysis.plan.rangeLow && aiAnalysis.plan.rangeHigh" class="market-meta">震荡区间 {{ aiAnalysis.plan.rangeLow }} – {{ aiAnalysis.plan.rangeHigh }}；只在区间边缘考虑试探。</div>
+
+                <section v-if="aiAnalysis.plan.decision !== '暂缓'" class="plan-card">
+                  <div class="plan-head"><strong>{{ aiAnalysis.plan.mode === 'probe' ? '小仓位试探计划' : aiAnalysis.plan.mode === 'ladder' ? '分批加仓计划' : '单笔开仓计划' }}</strong><span>{{ aiAnalysis.plan.direction === 'BUY' ? '做多' : '做空' }} · {{ aiAnalysis.plan.leverage }}×</span></div>
+                  <div class="price-grid"><span>止损 <b>{{ aiAnalysis.plan.stop }}</b></span><span>止盈 <b>{{ aiAnalysis.plan.takeProfit }}</b></span></div>
+                  <div v-for="(leg, index) in aiAnalysis.plan.orders" :key="index" class="ai-leg"><strong>{{ aiAnalysis.plan.mode === 'probe' ? '试探单' : index ? `加仓 ${index}` : '初始单' }} · {{ leg.price }}</strong><span>保证金 {{ leg.marginUsdt }} USDT</span><p>{{ leg.reason }}</p></div>
+                  <p class="preview-note">失效条件：{{ aiAnalysis.plan.invalidation }}</p>
+                  <p v-if="aiAnalysis.plan.mode === 'ladder'" class="preview-note">确认后全部档位会立即挂到币安；后续基本面变化不会自动重新判断或撤单。</p>
+                </section>
+                <div v-else class="plan-card muted-plan">当前没有可提交的挂单计划。可重新分析，等待新的市场数据。</div>
+
+                <details v-if="aiAnalysis.plan.evidence.length" class="analysis-details"><summary>查看分析依据</summary><p v-for="(item, index) in aiAnalysis.plan.evidence" :key="index">{{ item }}</p></details>
+              </template>
+
+              <section v-if="aiPreview" class="preview-card">
+                <div class="plan-head"><strong>币安订单预览</strong><span>{{ aiPreview.simulated === null ? '未配置密钥' : aiPreview.simulated ? '演示盘' : '实盘' }}</span></div>
+                <div class="preview-summary"><span>总保证金 <b>{{ aiPreview.preview.totalMarginUsdt.toFixed(2) }} USDT</b></span><span>总名义价值 <b>{{ aiPreview.preview.totalNotionalUsdt.toFixed(2) }} USDT</b></span><span>预计止损亏损 <b>{{ aiPreview.preview.estimatedLossUsdt.toFixed(2) }} USDT</b></span></div>
+                <div v-for="(leg, index) in aiPreview.preview.orders" :key="index" class="ai-leg"><strong>{{ aiPreview.preview.mode === 'probe' ? '试探单' : index ? `加仓 ${index}` : '初始单' }} · Maker 限价 {{ leg.price }}</strong><span>数量 {{ leg.quantity }} · 保证金 {{ leg.marginUsdt }} USDT</span></div>
+                <div class="price-grid"><span>止损 <b>{{ aiPreview.preview.stopPrice }}</b></span><span>止盈 <b>{{ aiPreview.preview.takePrice }}</b></span></div>
+                <p class="preview-note">现价 {{ aiPreview.preview.last }} · 全部成交均价 {{ aiPreview.preview.averagePrice.toFixed(4) }} · 未成交挂单到期 {{ new Date(aiPreview.preview.expiresAt).toLocaleString('zh-CN') }}。预计亏损未计费用与滑点。</p>
+                <p v-if="!aiPreview.configured" class="order-error">请先在左下角「API 设置」配置币安 API 密钥。</p>
+                <p v-if="!aiPreview.monitorReady" class="order-error">常驻订单监控未运行，当前不能提交整套挂单。</p>
+              </section>
+
+              <p v-if="aiError" class="order-error" role="alert">{{ aiError }}</p>
+              <p v-if="aiResult" class="order-success" role="status">{{ aiResult }}</p>
+            </div>
           </div>
-          <button type="button" class="btn sm" @click="aiOpen = false">×</button>
-        </div>
-        <div class="dialog-body">
-          <p class="dialog-copy">当前标的：<b>{{ selected }}</b>。AI 策略尚未接入；下方是手动订单参数，确认后会提交到币安账户。</p>
-          <div class="dialog-section">
-            <h3>分析输入</h3>
-            <p>相关新闻与事件时间、基础面字段、合约价格结构、已验证的大户记录。缺失字段会在正式策略中标为“无数据”，不会自动补造结论。</p>
-          </div>
-          <div class="dialog-section">
-            <h3>当前策略状态</h3>
-            <p>尚未生成 AI 开单建议。请自行选择方向、金额和价格，并核对订单预览。</p>
-          </div>
-          <div class="form-grid">
-            <label class="field">订单方向
-              <select v-model="aiSide"><option>做多</option><option>做空</option></select>
-            </label>
-            <label class="field">订单类型
-              <select v-model="aiType"><option>限价单</option><option>市价单</option></select>
-            </label>
-            <label class="field">保证金（USDT）
-              <input v-model.number="aiMargin" type="number" min="1" />
-            </label>
-            <label class="field">杠杆
-              <select v-model="aiLeverage"><option>1×</option><option>2×</option><option>3×</option><option>5×</option></select>
-            </label>
-            <label v-if="aiType === '限价单'" class="field">限价（USDT）
-              <input v-model.number="aiLimitPrice" type="number" min="0" step="any" />
-            </label>
-          </div>
-          <div v-if="orderPreview" class="dialog-section order-preview">
-            <h3>订单预览 · {{ orderPreview.testnet === null ? '未配置密钥' : orderPreview.testnet ? '演示盘' : '实盘' }}</h3>
-            <p>{{ orderPreview.symbol }} · {{ orderPreview.side === 'BUY' ? '做多' : '做空' }} · {{ orderPreview.type === 'LIMIT' ? `限价 ${orderPreview.price}` : '市价' }} · 数量 {{ orderPreview.quantity }} · 预计名义价值 {{ orderPreview.estimatedNotional.toFixed(2) }} USDT · {{ orderPreview.leverage }}×</p>
-            <p>参考现价 {{ orderPreview.referencePrice }} USDT。市价成交价格可能变化；当前订单不附带止损止盈。</p>
-          </div>
-          <p v-if="orderError" class="order-error" role="alert">{{ orderError }}</p>
-          <p v-if="orderResult" class="order-success" role="status">{{ orderResult }}</p>
-          <p class="note">保证金范围 1–1000 USDT。测试下单不会进入撮合；实盘确认开单会产生真实交易。</p>
-          <div class="dialog-actions">
-            <button type="button" class="btn" @click="aiOpen = false">返回页面</button>
-            <button type="button" class="btn" :disabled="orderBusy" @click="previewOrder">{{ orderBusy ? '处理中…' : '预览订单参数' }}</button>
-            <button v-if="orderPreview && orderConfigured" type="button" class="btn" :disabled="orderBusy" @click="placeOrder(true)">测试下单</button>
-            <button v-if="orderPreview && orderConfigured" type="button" class="btn primary" :disabled="orderBusy" @click="placeOrder(false)">确认开单</button>
-          </div>
+
+          <footer class="dialog-footer">
+            <p class="footer-hint">挂单直接提交到币安；止盈止损触发后按市价执行。</p>
+            <div class="footer-actions">
+              <button type="button" class="btn" :disabled="aiBusy" @click="aiOpen = false">关闭</button>
+              <button v-if="!aiAnalysis || aiResult" type="button" class="btn primary" :disabled="aiBusy" @click="generateAiPlan">{{ aiActivity === 'analysis' ? '分析中…' : '开始 AI 分析' }}</button>
+              <template v-else>
+                <button type="button" class="btn" :disabled="aiBusy" @click="generateAiPlan">重新分析</button>
+                <button v-if="!aiPreview" type="button" class="btn primary" :disabled="aiBusy || aiAnalysis.plan.decision === '暂缓'" @click="previewAiPlan">{{ aiActivity === 'preview' ? '预览中…' : aiAnalysis.plan.decision === '暂缓' ? '暂无可预览订单' : aiAnalysis.plan.mode === 'probe' ? '预览试探单' : '预览订单' }}</button>
+                <button v-else type="button" class="btn primary" :disabled="aiBusy || !aiPreview.configured || !aiPreview.monitorReady" @click="submitAiPlan">{{ aiActivity === 'submit' ? '提交中…' : '确认在币安挂单' }}</button>
+              </template>
+            </div>
+          </footer>
         </div>
       </div>
-    </div>
+    </Teleport>
 
   </div>
 </template>
@@ -600,7 +627,7 @@ async function placeOrder(testOnly: boolean) {
 .up { color: var(--green); }
 .down { color: var(--red); }
 .muted { color: var(--muted); }
-.content { box-sizing: border-box; width: 100%; max-width: 1720px; height: 100%; min-height: 0; padding: 16px 28px; margin: auto; display: flex; flex-direction: column; overflow: hidden; }
+.content { box-sizing: border-box; width: 100%; height: 100%; min-height: 0; padding: 16px 0; display: flex; flex-direction: column; overflow: hidden; }
 .market-state { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 10px; margin-bottom: 12px; }
 .market-state, .strip, .focus { flex-shrink: 0; }
 .market-state span:first-child { color: var(--yellow); }
@@ -667,9 +694,14 @@ async function placeOrder(testOnly: boolean) {
 .panel-title { font-size: 15px; font-weight: 750; }
 .panel-sub { font-size: 10px; color: var(--muted); margin-top: 5px; }
 .section-tag { color: var(--yellow); font-size: 10px; font-weight: 700; }
-.main-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(330px, 0.8fr); gap: 16px; flex: 1; min-height: 0; }
+.main-grid { display: grid; grid-template-columns: minmax(270px, .78fr) minmax(0, 1.65fr) minmax(320px, .9fr); gap: 12px; flex: 1; min-height: 0; }
 .main-grid > .panel { display: flex; flex-direction: column; min-height: 0; }
 .main-grid .panel-head, .main-grid .feed-tools, .main-grid .panel-foot { flex-shrink: 0; }
+.account-column :deep(.okx-panel) { flex: 1; height: auto; min-height: 0; }
+.account-column :deep(.account-summary) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 12px; }
+.account-column :deep(.data-card:last-child) { grid-column: 1 / -1; }
+.account-column :deep(.order-list) { padding: 10px 12px; }
+.account-column :deep(.order-card) { padding: 12px; }
 .whale-head-actions { display: flex; align-items: center; gap: 10px; }
 .feed-tools { padding: 12px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .chips { display: flex; gap: 5px; flex-wrap: wrap; }
@@ -704,32 +736,73 @@ tbody tr:hover { background: var(--panel-2); }
 .source { color: var(--muted); font-size: 10px; }
 .wide-meta { color: var(--muted); font-size: 10px; }
 .whale-row-detail { color: var(--muted); }
-.modal-cover { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.72); z-index: 40; display: flex; align-items: center; justify-content: center; padding: 15px; }
-.dialog { width: min(680px, 100%); max-height: 92vh; overflow: auto; background: var(--card); border: 1px solid var(--border-2); border-radius: 12px; box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45); }
-.dialog-head { padding: 18px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 10px; }
-.eyebrow { font-size: 10px; letter-spacing: 0.2em; color: var(--yellow); font-weight: 800; }
-.dialog-head h2 { margin: 4px 0 0; font-size: 18px; }
-.dialog-body { padding: 19px 20px; }
-.dialog-copy { font-size: 11px; color: var(--muted); line-height: 1.7; margin: 0 0 15px; }
-.dialog-section { border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 12px; }
-.dialog-section h3 { margin: 0 0 9px; font-size: 12px; }
-.dialog-section p { font-size: 11px; color: var(--muted); line-height: 1.65; margin: 0; }
-.form-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
-.field { display: grid; gap: 6px; color: var(--muted); font-size: 10px; }
-.field input, .field select {
-  width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 9px; color: var(--text); outline: 0;
+.modal-cover { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box; background: rgba(0, 0, 0, .72); }
+.dialog { width: min(800px, 100%); height: 680px; max-height: 96vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 24px 64px rgba(0, 0, 0, .5); }
+.dialog-head { flex: none; min-height: 62px; box-sizing: border-box; padding: 14px 18px; border-bottom: 1px solid var(--border); background: linear-gradient(to right, rgba(99, 102, 241, .14), transparent); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.dialog-title { color: var(--text); font-size: 16px; font-weight: 750; }
+.dialog-symbol { color: var(--muted); }
+.dialog-close { border: 0; background: transparent; color: var(--muted); font-size: 22px; cursor: pointer; }
+.dialog-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.dialog-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 20px; }
+.order-steps { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.order-steps span { border: 1px solid var(--border); border-radius: 999px; padding: 6px 10px; color: var(--muted); font-size: 11px; }
+.order-steps span.active { border-color: #818cf8; color: #c7d2fe; background: rgba(99, 102, 241, .13); }
+.analysis-status { flex: none; padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--panel-2); display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+.analysis-status.bull { background: rgba(14, 203, 129, .12); border-bottom-color: rgba(14, 203, 129, .35); }
+.analysis-status.bear { background: rgba(246, 70, 93, .12); border-bottom-color: rgba(246, 70, 93, .35); }
+.analysis-status.neutral { background: rgba(132, 142, 156, .12); }
+.analysis-status span { color: var(--muted); font-size: 12px; }
+.dialog-intro { margin: 0 0 24px; color: var(--muted); line-height: 1.7; }
+.mode-label { color: var(--text); font-weight: 700; margin-bottom: 10px; }
+.mode-options, .structure-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.mode-option { min-height: 96px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 9px; padding: 16px; text-align: left; color: var(--text); background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; cursor: pointer; }
+.mode-option.active { border-color: #818cf8; background: color-mix(in srgb, #6366f1 13%, var(--panel-2)); }
+.mode-option strong { font-size: 14px; }
+.mode-option span { color: var(--muted); font-size: 12px; }
+.loading-state { min-height: 300px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--muted); text-align: center; }
+.loading-state strong { color: var(--text); font-size: 14px; }
+.spinner { width: 40px; height: 40px; border: 3px solid rgba(99, 102, 241, .25); border-top-color: #818cf8; border-radius: 50%; animation: spin .9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.result-reason { margin: 0 0 14px; color: var(--text); line-height: 1.7; font-size: 13px; }
+.structure-card, .plan-card, .preview-card { padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-2); }
+.structure-head { color: var(--text); font-weight: 750; margin-bottom: 8px; }
+.structure-card p { margin: 0; color: var(--muted); line-height: 1.6; font-size: 12px; }
+.market-meta { margin: 12px 0 16px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.plan-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: var(--text); font-size: 14px; }
+.plan-head span { color: #818cf8; font-size: 12px; font-weight: 700; }
+.price-grid, .preview-summary { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 14px 0; color: var(--muted); font-size: 12px; }
+.price-grid b, .preview-summary b { color: var(--text); }
+.ai-leg { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; margin-top: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.ai-leg strong { color: var(--text); }
+.ai-leg p { flex-basis: 100%; margin: 0; }
+.muted-plan { color: var(--muted); line-height: 1.6; }
+.analysis-details { margin: 16px 0; padding-top: 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+.analysis-details summary { cursor: pointer; }
+.analysis-details p { margin: 8px 0 0; line-height: 1.6; }
+.preview-card { margin-top: 14px; border-color: color-mix(in srgb, #818cf8 45%, var(--border)); }
+.preview-note { color: var(--muted); font-size: 12px; line-height: 1.7; }
+.order-error { color: var(--red); font-size: 12px; line-height: 1.6; }
+.order-success { color: var(--green); font-size: 12px; line-height: 1.6; }
+.dialog-footer { flex: none; padding: 12px 18px; border-top: 1px solid var(--border); background: var(--card); }
+.footer-hint { margin: 0 0 10px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.footer-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.footer-actions .btn { min-height: 36px; font-size: 12px; }
+.footer-actions .btn.primary { background: linear-gradient(135deg, #6366f1, #a855f7); color: #fff; border-color: transparent; }
+.footer-actions .btn:disabled { opacity: .5; cursor: not-allowed; }
+@media (max-width: 1180px) {
+  .content { overflow-y: auto; }
+  .main-grid { flex: none; grid-template-columns: minmax(260px, .7fr) minmax(0, 1.3fr); grid-template-rows: minmax(420px, 60vh) minmax(320px, 45vh); }
+  .main-grid > .panel:last-child { grid-column: 1 / -1; }
 }
-.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
-.note { font-size: 10px; color: var(--muted); line-height: 1.6; }
-.order-preview { margin-top: 12px; }
-.order-preview p + p { margin-top: 8px; }
-.order-error { color: var(--red); font-size: 12px; }
-.order-success { color: var(--green); font-size: 12px; }
 @media (max-width: 760px) {
-  .content { padding: 12px 13px; overflow-y: auto; }
-  .main-grid { flex: none; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(420px, 1fr) minmax(320px, 1fr); }
+  .content { padding: 12px 0; }
+  .main-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(360px, 50vh) minmax(420px, 55vh) minmax(320px, 45vh); }
+  .main-grid > .panel:last-child { grid-column: auto; }
   .news-item { grid-template-columns: 60px minmax(0, 1fr); }
   .news-mark { display: none; }
-  .form-grid { grid-template-columns: 1fr; }
+  .mode-options, .structure-grid { grid-template-columns: 1fr; }
+  .dialog-scroll { padding: 14px; }
+  .analysis-status { align-items: flex-start; flex-direction: column; }
+  .footer-actions .btn { flex: 1; }
 }
 </style>

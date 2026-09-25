@@ -14,6 +14,7 @@ const {
 } = require('../lib/okxTradeClient');
 const { getOkxCredentialsForUser, patchOkxFlags } = require('../lib/userExchangeKeys');
 const { recordAiOrder, buildAccountPreview } = require('../lib/okxAiLedger');
+const { validatedAiOrder } = require('../lib/cryptoAiOrderGate');
 
 const router = express.Router();
 
@@ -131,11 +132,23 @@ router.post('/order', async (req, res) => {
 });
 
 /** POST /api/okx/trade/stance-order — 按仓位建议 + 用户金额限价挂单 */
+router.post('/stance-preview', async (req, res) => {
+  if (!assertLogin(req, res)) return;
+  try {
+    userCredsOrThrow(req);
+    const input = validatedAiOrder(req.body, req.user.user.id);
+    res.json({ ok: true, ...await withUserTrade(req, () => placeStanceOrder(input, { dryRun: true })) });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
 router.post('/stance-order', async (req, res) => {
   if (!assertLogin(req, res)) return;
   try {
     const creds = userCredsOrThrow(req);
-    const result = await withUserTrade(req, () => placeStanceOrder(req.body || {}));
+    const input = validatedAiOrder(req.body, req.user.user.id);
+    const result = await withUserTrade(req, () => placeStanceOrder(input));
     rememberAiOrder(req, result);
     res.json({ ok: true, ...getTradeStatus(creds), ...result });
   } catch (err) {
@@ -170,7 +183,7 @@ router.post('/stance-order-stream', async (req, res) => {
       message: '准备挂单…',
     });
     const result = await withUserTrade(req, () =>
-      placeStanceOrder(req.body || {}, {
+      placeStanceOrder(validatedAiOrder(req.body, req.user.user.id), {
         onStage: (stage) => writeEvent('stage', stage),
       }),
     );

@@ -325,7 +325,6 @@ async function streamAnalyzeWithDeepseek(
 const {
   parseAnalysisResult,
   analysisResultToMarkdown,
-  markdownFallbackToResult,
   normalizeAnalysisResult,
 } = require('./analysisResult');
 
@@ -353,9 +352,14 @@ function buildMarketBriefMessages({
     : '';
 
   const tradeModeHint = [
-    '【强制开单模式 · 永久生效】',
-    '- personal_stance 三档 action 只能是「做多」或「做空」，禁止「观望」。',
-    '- 每档必须给出 entry（建议开仓价）、leverage（整数如 5/10/20）、stop、take_profit。',
+    '【方向与执行分离】',
+    '- 有足够证据时，每档必须明确做多或做空倾向，不得用空泛观望代替判断。关键数据缺失时可标记观望，并写明缺口。',
+    '- 每档给出 execution（现在可开|等待触发|禁止下单）和 trigger；等待触发必须写清价格/事件条件，等待不表示已经自动挂单。',
+    '- 等待触发时可另外给出回踩限价挂单方案：做多入场价必须低于当前价，做空必须高于当前价，且方向必须与 mid_long_term.direction 一致。限价单会在价格触及时尝试成交，不代表复合 trigger 已满足。',
+    '- 所有可下单建议的 entry 都由你根据技术结构、情绪、宏观消息和仓位证据独立确定为具体限价，不按固定百分比偏离现价。入场单只做 Maker：做多限价必须低于当前最优卖价，做空限价必须高于当前最优买价；若只有最新成交价而无盘口报价，分别保守地低于或高于最新价。不能给出可立即吃单的价格，也不要编造盘口数据；无法给出合适限价时标记等待触发或禁止下单，并说明原因。',
+    '- 对 short 和 mid_long 的每个入场价、触发价给出 entry_validation：technical 写该价位对应的结构/支撑阻力，sentiment 写情绪与费率是否支持，news_macro 写新闻宏观是否支持，positioning 写大户仓位/主动买卖是否支持。尽量引用输入中的具体数值、时间或事件；缺数据直写“暂无数据”。',
+    '- entry_validation.decision 只能是“支持”“冲突”“数据不足”；仅在技术价位明确、至少一个非技术维度支持且无重大反向证据时写“支持”。不能用 MA7 或前高本身冒充综合验证。',
+    '- 可交易建议必须有 entry、1–10倍 leverage、stop、take_profit；金额由服务端核算，每单保证金最多100 USDT。',
     '- note 用开单口吻，并写明依据（宏观定价、仓位/费率、K线位置）。',
     '',
     '【智能定价与市场心理 · 必须结合】',
@@ -364,7 +368,7 @@ function buildMarketBriefMessages({
     '   - 未公布：用预期 vs 前值 + 盘面是否已提前计价；假设现在距公布还有一段时间，评估波动窗口。',
     '   - 已公布：用实际 vs 预期判断超预期/不及预期，但不要机械跟字面利多利空。',
     '3) 常见反身性：若市场普遍预期利空并已大跌，数据兑现后可能「利空出尽」反弹；若普遍预期利好并已大涨，兑现后可能高开低走。开仓方向要写清是「顺预期冲击」还是「逆向博弈已计价」。',
-    '4) 超短线更看公布前后波动与盘口；中长期更看趋势与政策路径，但仍禁止观望。',
+    '4) 重大数据后区分消息字面影响、实际价格反应和仓位解释；若没有事件前后价格实测，禁止声称已经“利空出尽”或“空头挤压”。',
   ].join('\n');
 
   const userPrompt = [
@@ -378,25 +382,26 @@ function buildMarketBriefMessages({
     '3) 只输出一个 JSON 对象（不要 Markdown 解释），字段：',
     '{',
     '  "short_term": { "direction": "偏多|震荡|偏空|观望", "confidence": "低|中|高", "summary": "..." },',
-    '  "mid_long_term": { "direction": "...", "summary": "..." },',
+    '  "mid_long_term": { "direction": "偏多|震荡|偏空|观望", "summary": "..." },',
     '  "technical": { "m5": "...", "hourly": "...", "daily": "..." },',
     '  "derivatives": { "funding": "...", "liquidations": "...", "taker": "...", "details": "..." },',
     '  "whales": { "site": "...", "external": "...", "details": "..." },',
     '  "news_analysis": { "sentiment": "利好|中性|利空|混合", "details": "..." },',
+    '  "event_reaction": "事件公布后的实测价格反应及尚待验证的解释；无可对齐数据则写暂无",',
     '  "market_sentiment": { "long_short_ratio": "...", "funding_rate": "...", "liquidations": "...", "details": "..." },',
     '  "personal_stance": {',
     '    "headline": "仓位建议",',
     '    "basis": ["市场情绪", "新闻内容", "小时线走势"],',
-    '    "ultra_short": { "action": "做多|做空", "entry": 数字, "leverage": 数字, "stop": 数字, "take_profit": 数字, "note": "..." },',
-    '    "short": { "action": "做多|做空", "entry": 数字, "leverage": 数字, "stop": 数字, "take_profit": 数字, "note": "..." },',
-    '    "mid_long": { "action": "做多|做空", "entry": 数字, "leverage": 数字, "stop": 数字, "take_profit": 数字, "note": "..." }',
+    '    "ultra_short": { "action": "做多|做空|观望", "execution": "现在可开|等待触发|禁止下单", "trigger": "...", "entry": 数字, "leverage": 数字, "stop": 数字, "take_profit": 数字, "note": "..." },',
+    '    "short": { "action": "做多|做空|观望", "execution": "现在可开|等待触发|禁止下单", "trigger": "...", "entry_validation": { "technical": "...", "sentiment": "...", "news_macro": "...", "positioning": "...", "decision": "支持|冲突|数据不足" }, "entry": 数字, "leverage": 数字, "stop": 数字, "take_profit": 数字, "note": "..." },',
+    '    "mid_long": { "action": "做多|做空|观望", "execution": "现在可开|等待触发|禁止下单", "trigger": "...", "entry_validation": { "technical": "...", "sentiment": "...", "news_macro": "...", "positioning": "...", "decision": "支持|冲突|数据不足" }, "entry": 数字, "leverage": 数字, "stop": 数字, "take_profit": 数字, "note": "..." }',
     '  },',
     '  "key_evidence": ["..."],',
     '  "risks_and_invalidation": ["..."],',
     '  "disclaimer": "以上内容仅供研究参考，不构成投资建议。"',
     '}',
     '4) short_term.direction / confidence / summary 必填。',
-    '5) 强制开单：三档必须做多或做空，并给出 entry/leverage/stop/take_profit；禁止观望与 null 价位。',
+    '5) 短线以1h结构为主、长线以1d结构为主；可交易档必须有正确方向的entry/leverage/stop/take_profit。禁止把观望强制改为做多。',
     '6) personal_stance.basis 必填：3~6 个短标签，表示本次开单依据维度（如「市场情绪」「新闻内容」「小时线走势」「宏观日历」「巨鲸仓位」「资金费率」），不要写长句或免责声明。',
     '7) technical.m5 / hourly / daily 分别写对应周期，不要混写；disclaimer 不可省略。',
     '',
@@ -439,13 +444,9 @@ function finalizeAnalysis(rawText) {
       parseMode: 'cleaned',
     };
   }
-  const fallback = markdownFallbackToResult(rawText);
-  return {
-    analysis: String(rawText || analysisResultToMarkdown(fallback)),
-    structured: fallback,
-    analysisResult: fallback,
-    parseMode: 'markdown_fallback',
-  };
+  const err = new Error('AI 返回的分析格式不完整，请重新分析');
+  err.status = 502;
+  throw err;
 }
 
 async function analyzeMarketBrief(
@@ -463,7 +464,7 @@ async function analyzeMarketBrief(
     model: DEFAULT_MODEL,
     messages,
     temperature: 0.35,
-    max_tokens: 2200,
+    max_tokens: 4096,
   };
 
   let data;
@@ -488,6 +489,11 @@ async function analyzeMarketBrief(
     throw err;
   }
 
+  if (data?.choices?.[0]?.finish_reason === 'length') {
+    const err = new Error('AI 分析内容超出长度限制，请重新分析');
+    err.status = 502;
+    throw err;
+  }
   return {
     ...finalizeAnalysis(raw),
     model: data?.model || DEFAULT_MODEL,
@@ -539,7 +545,7 @@ async function streamAnalyzeMarketBrief(
         model: DEFAULT_MODEL,
         messages,
         temperature: 0.35,
-        max_tokens: 2200,
+        max_tokens: 4096,
         stream: true,
         response_format: { type: 'json_object' },
       }),
@@ -566,7 +572,7 @@ async function streamAnalyzeMarketBrief(
           model: DEFAULT_MODEL,
           messages,
           temperature: 0.35,
-          max_tokens: 2200,
+          max_tokens: 4096,
           stream: true,
         }),
         signal: controller.signal,
@@ -610,6 +616,7 @@ async function streamAnalyzeMarketBrief(
   let buffer = '';
   let raw = '';
   let model = DEFAULT_MODEL;
+  let finishReason = null;
 
   try {
     while (true) {
@@ -631,6 +638,7 @@ async function streamAnalyzeMarketBrief(
           continue;
         }
         if (json?.model) model = json.model;
+        if (json?.choices?.[0]?.finish_reason) finishReason = json.choices[0].finish_reason;
         const delta = json?.choices?.[0]?.delta?.content;
         if (typeof delta === 'string' && delta) {
           raw += delta;
@@ -651,6 +659,11 @@ async function streamAnalyzeMarketBrief(
   const text = String(raw || '').trim();
   if (!text) {
     const err = new Error('DeepSeek 未返回有效分析内容');
+    err.status = 502;
+    throw err;
+  }
+  if (finishReason === 'length') {
+    const err = new Error('AI 分析内容超出长度限制，请重新分析');
     err.status = 502;
     throw err;
   }
@@ -941,8 +954,9 @@ async function analyzeStanceLeg(
   const parsed = extractJsonObject(raw) || {};
   const leg = normalizeStanceLeg(parsed);
   if (!leg.action || leg.action === '观望') {
-    leg.action = '做多';
-    if (!leg.note) leg.note = '强制开单：模型未给出方向时默认做多，请结合盘面自检。';
+    const err = new Error('AI 未给出明确开仓方向，请重新分析');
+    err.status = 502;
+    throw err;
   }
   return {
     horizon: key,
@@ -954,6 +968,7 @@ async function analyzeStanceLeg(
 }
 
 module.exports = {
+  deepseekFetch,
   verifyDeepseekKey,
   analyzeWithDeepseek,
   streamAnalyzeWithDeepseek,

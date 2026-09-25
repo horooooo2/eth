@@ -2,7 +2,8 @@ const express = require('express');
 const { requireUser } = require('../lib/authStore');
 const { getBinanceCredentialsForUser } = require('../lib/userExchangeKeys');
 const { signedRequest } = require('../lib/binanceTradfiTrade');
-const { placeStance, accountBook } = require('../lib/binanceCryptoTrade');
+const { planStance, placeStance, accountBook } = require('../lib/binanceCryptoTrade');
+const { validatedAiOrder } = require('../lib/cryptoAiOrderGate');
 
 const router = express.Router();
 function credentials(req) {
@@ -16,8 +17,14 @@ function fail(res, err) { res.status(Number(err.status) || 500).json({ error: er
 router.get('/ai-book', async (req, res) => {
   try { res.json(await accountBook(credentials(req))); } catch (err) { fail(res, err); }
 });
+router.post('/stance-preview', async (req, res) => {
+  try {
+    credentials(req);
+    res.json({ ok: true, plan: await planStance(validatedAiOrder(req.body, req.user.user.id)) });
+  } catch (err) { fail(res, err); }
+});
 router.post('/stance-order', async (req, res) => {
-  try { res.json(await placeStance(credentials(req), req.body || {})); } catch (err) { fail(res, err); }
+  try { res.json(await placeStance(credentials(req), validatedAiOrder(req.body, req.user.user.id))); } catch (err) { fail(res, err); }
 });
 router.post('/cancel', async (req, res) => {
   try {

@@ -34,8 +34,11 @@ function buildAnalysisCapability(ctx) {
   const price = {
     required: true,
     ok: ctx.market?.price != null,
-    fresh: freshnessScore(st.price?.fetchedAt, ttl.price),
-    status: st.price?.status || (ctx.market?.price != null ? 'ok' : 'unavailable'),
+    fresh: freshnessScore(
+      st.price?.status === 'ok' ? st.price?.fetchedAt : st.technical?.fetchedAt,
+      st.price?.status === 'ok' ? ttl.price : ttl.technical,
+    ),
+    status: ctx.market?.price != null ? 'ok' : 'unavailable',
   };
   const technical = {
     important: true,

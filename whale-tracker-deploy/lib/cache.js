@@ -58,16 +58,28 @@ function readCache(name) {
   }
 }
 
-function writeCache(name, data) {
+function writeCache(name, data, options = {}) {
   const payload = {
     updatedAt: Date.now(),
     data,
   };
   try {
     ensureDir();
-    fs.writeFileSync(cachePath(name), JSON.stringify(payload), 'utf8');
+    if (options.strict) {
+      const target = cachePath(name);
+      const temporary = `${target}.${process.pid}.tmp`;
+      try {
+        fs.writeFileSync(temporary, JSON.stringify(payload), 'utf8');
+        fs.renameSync(temporary, target);
+      } finally {
+        if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+      }
+    } else {
+      fs.writeFileSync(cachePath(name), JSON.stringify(payload), 'utf8');
+    }
   } catch (err) {
     console.warn(`[cache] 写入 ${name} 失败:`, err.message);
+    if (options.strict) throw err;
   }
   return payload;
 }

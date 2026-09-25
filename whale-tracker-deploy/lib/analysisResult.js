@@ -53,13 +53,23 @@ function normalizePrice(v) {
 function normalizeLeverage(v) {
   const n = Number(v);
   if (!Number.isFinite(n) || n < 1) return null;
-  return Math.min(125, Math.round(n));
+  return Math.min(10, Math.round(n));
 }
 
 function normalizeStanceLeg(raw) {
   const o = raw && typeof raw === 'object' ? raw : {};
+  const validation = o.entry_validation && typeof o.entry_validation === 'object' ? o.entry_validation : {};
   return {
     action: normalizeAction(o.action || o.side || o.bias),
+    execution: ['现在可开', '等待触发', '禁止下单'].includes(o.execution) ? o.execution : '禁止下单',
+    trigger: asStr(o.trigger || o.entry_condition, 200),
+    entry_validation: {
+      technical: asStr(validation.technical, 240),
+      sentiment: asStr(validation.sentiment, 240),
+      news_macro: asStr(validation.news_macro, 240),
+      positioning: asStr(validation.positioning, 240),
+      decision: ['支持', '冲突', '数据不足'].includes(validation.decision) ? validation.decision : '数据不足',
+    },
     entry: normalizePrice(o.entry ?? o.open ?? o.entry_price),
     leverage: normalizeLeverage(o.leverage ?? o.lev ?? o.x),
     stop: normalizePrice(o.stop ?? o.stop_loss ?? o.sl),
@@ -68,19 +78,16 @@ function normalizeStanceLeg(raw) {
   };
 }
 
-/** 仓位建议禁止观望：按短线方向兜底为做多/做空 */
+/** 保留模型的观望结论；不能在缺少证据时默认做多。 */
 function coerceForcedStance(result) {
   if (!result?.personal_stance) return result;
   const dir = String(result.short_term?.direction || '');
-  const fallback = /偏空|承压|空/.test(dir) && !/偏多|多/.test(dir) ? '做空' : '做多';
   for (const key of ['ultra_short', 'short', 'mid_long']) {
     const leg = result.personal_stance[key];
     if (!leg) continue;
-    if (!leg.action || leg.action === '观望') {
-      leg.action = fallback;
-      if (!leg.note) {
-        leg.note = `强制开单：按短线「${dir || '中性'}」倾向选择${fallback}（需自设风控）。`;
-      }
+    if (leg.action === '观望') {
+      leg.execution = '禁止下单';
+      if (!leg.note) leg.note = `当前证据不足：${dir || '缺少明确方向'}。`;
     }
   }
   return result;
@@ -165,6 +172,7 @@ function emptyResult() {
     whales: { site: '', external: '', details: '' },
     news_analysis: { sentiment: '中性', details: '' },
     market_sentiment: { long_short_ratio: '', funding_rate: '', liquidations: '', details: '' },
+    event_reaction: '',
     key_evidence: [],
     risks_and_invalidation: [],
     personal_stance: {
@@ -232,6 +240,7 @@ function normalizeAnalysisResult(raw) {
       liquidations: asStr(sent.liquidations || der.liquidations, 200),
       details: asStr(sent.details, 800),
     },
+    event_reaction: asStr(raw.event_reaction, 600),
     key_evidence: asArr(raw.key_evidence),
     risks_and_invalidation: asArr(raw.risks_and_invalidation),
     personal_stance: {

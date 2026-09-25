@@ -1188,6 +1188,7 @@ async function buildMarketBriefContext(coinInput, opts = {}) {
           .slice(0, 8)
           .map((e) => ({
             title: clip(e.title, 100),
+            date: e.date || '',
             dateLabel: e.dateLabel || e.date || '',
             time: e.time || e.timeNote || '',
             daysUntil: e.daysUntil,
@@ -1277,6 +1278,7 @@ async function buildMarketBriefContext(coinInput, opts = {}) {
   };
 
   const marketSensitivity = computeMarketSensitivity(tech, benchmarks);
+  const eventReaction = computeEventReaction(macroMod?.macro, tech);
   const status = {
     tech_klines: statusMeta.technical?.status || (tech?.available ? 'ok' : 'unavailable'),
     market_sentiment:
@@ -1326,6 +1328,7 @@ async function buildMarketBriefContext(coinInput, opts = {}) {
       topPositions: whalesMod.topPositions || [],
     },
     sentiment,
+    eventReaction,
     alerts: whalesMod.alerts || [],
     defi: tvlMod.defi || null,
     sources: [
@@ -1345,6 +1348,30 @@ async function buildMarketBriefContext(coinInput, opts = {}) {
   };
   payload.capability = buildAnalysisCapability(payload);
   return payload;
+}
+
+function computeEventReaction(events, tech) {
+  const candles = tech?.m5?.chart?.candles || [];
+  if (candles.length < 3) return null;
+  const now = Date.now();
+  for (const event of [...(events || [])].reverse()) {
+    if (!event.actual || !/^\d{4}-\d{2}-\d{2}$/.test(event.date || '') || !/^\d{1,2}:\d{2}$/.test(event.time || '')) continue;
+    const eventAt = Date.parse(`${event.date}T${event.time}:00+08:00`);
+    if (!Number.isFinite(eventAt) || eventAt > now || now - eventAt > 5 * 60 * 60 * 1000) continue;
+    const before = [...candles].reverse().find((bar) => bar.t < eventAt);
+    const after = candles.filter((bar) => bar.t >= eventAt);
+    if (!before || after.length < 2 || !(before.c > 0)) continue;
+    const first = after[0];
+    const latest = after[after.length - 1];
+    const pct = (price) => Number((((price / before.c) - 1) * 100).toFixed(2));
+    return {
+      title: event.title, eventAt, source: tech.m5.source,
+      forecast: event.forecast || '', actual: event.actual,
+      beforePrice: before.c, first5mLowPct: pct(first.l), first5mHighPct: pct(first.h),
+      first5mClosePct: pct(first.c), latestClosePct: pct(latest.c), latestAt: latest.t,
+    };
+  }
+  return null;
 }
 
 function computeMarketSensitivity(tech, benchmarks) {
@@ -1516,9 +1543,12 @@ function contextToPrompt(ctx) {
   const macro = budgetClip(
     [
       '【宏观 / 基准 · 含预期/前值/实际，供定价与开仓判断】',
+      ctx.eventReaction
+        ? `事件后价格实测：${ctx.eventReaction.title}，预期${ctx.eventReaction.forecast || '--'}，实际${ctx.eventReaction.actual}；公布前价${ctx.eventReaction.beforePrice}；首根5m低点${ctx.eventReaction.first5mLowPct}%、收盘${ctx.eventReaction.first5mClosePct}%；最近5m收盘${ctx.eventReaction.latestClosePct}%（相对公布前）；K线来源${ctx.eventReaction.source}。`
+        : '事件后价格实测：unavailable（无可对齐的公布时刻与5m K线）。',
       ...(bmLines.length ? bmLines : ['- 基准 unavailable']),
       ...((ctx.macro || []).slice(0, 6).map(fmtMacro) || ['- 日历暂无']),
-      '解读要求：若实际已出，比较实际 vs 预期/前值判断超预期或不及预期；若未公布，用预期+市场定价（是否已提前计价）做情景；警惕「利空出尽是利好 / 利好出尽是利空」。',
+      '解读要求：区分消息字面方向与市场实际反应；若有实测才讨论先跌后涨等背离。空头回补、利空出尽、新买盘只是待验证解释，不能仅凭价格认定。',
       `marketSensitivity: ${ctx.marketSensitivity?.status || 'unavailable'}`,
     ].join('\n'),
     Math.max(BUDGET.macro, 1400),
@@ -1586,5 +1616,6 @@ module.exports = {
   buildMarketBriefContext,
   contextToPrompt,
   buildAnalyzeMarketSnippet,
+  computeEventReaction,
   normalizeCoin,
 };

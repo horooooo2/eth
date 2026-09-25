@@ -434,6 +434,7 @@ async function placeOrder(input = {}) {
         });
       } catch (err) {
         console.warn('[okx-trade] set-leverage:', err.message || err);
+        if (input.requireLeverage === true) throw err;
       }
     }
     console.log('[okx-trade] place', JSON.stringify({ ...body, posMode: mode }));
@@ -538,7 +539,7 @@ function roundToLot(sz, lotSz) {
   return n.toFixed(decimals);
 }
 
-function roundToTick(px, tickSz) {
+function roundToTick(px, tickSz, mode = 'nearest') {
   const tick = Number(tickSz);
   const price = Number(px);
   if (!(price > 0)) return String(px);
@@ -547,7 +548,8 @@ function roundToTick(px, tickSz) {
     return s.includes('.') ? Number(price).toFixed(s.split('.')[1].length) : String(Math.round(price));
   }
   const decimals = String(tickSz).includes('.') ? String(tickSz).split('.')[1].length : 0;
-  const n = Math.round(price / tick) * tick;
+  const units = price / tick;
+  const n = (mode === 'floor' ? Math.floor(units + 1e-10) : mode === 'ceil' ? Math.ceil(units - 1e-10) : Math.round(units)) * tick;
   return n.toFixed(decimals);
 }
 
@@ -562,22 +564,22 @@ function emitStage(onStage, payload) {
 
 /**
  * Maker-first stance order:
- * 1) fetch last price
- * 2) place post_only limit below (long) / above (short) market
+ * 1) fetch last price and best bid/ask
+ * 2) place the AI price as a post_only limit after tick-size rounding
  * 3) attach SL/TP algo on the same order
  */
 async function placeStanceOrder(input, opts = {}) {
   input = input || {};
+  const pendingMode = input.orderMode === 'pending';
+  if (pendingMode ? input.execution !== '等待触发' : input.execution !== '现在可开') throw Object.assign(new Error('该 AI 方案不适用于所选下单模式，请重新分析'), { status: 400 });
   const onStage = opts && typeof opts.onStage === 'function' ? opts.onStage : null;
   const coin = String(input.coin || '').trim().toUpperCase();
   const action = String(input.action || '');
   const amountUsd = Number(input.amountUsd);
-  const leverage = Math.max(1, Math.min(125, Math.round(Number(input.leverage) || 5)));
+  const leverage = Number(input.leverage);
   const entryHint = Number(input.entry);
   const stop = Number(input.stop);
   const takeProfit = Number(input.takeProfit != null ? input.takeProfit : input.take_profit);
-  const offsetBps = Math.max(1, Math.min(50, Number(input.offsetBps) || 5));
-  const wantPostOnly = input.postOnly === false || input.postOnly === '0' ? false : true;
 
   if (!coin) throw Object.assign(new Error('missing coin'), { status: 400 });
   const isLong = /做多|^long$|^buy$/i.test(action);
@@ -585,6 +587,9 @@ async function placeStanceOrder(input, opts = {}) {
   if (!isLong && !isShort) throw Object.assign(new Error('invalid action'), { status: 400 });
   if (!(amountUsd > 0) || amountUsd > 100) {
     throw Object.assign(new Error('amount must be 0-100 USDT'), { status: 400 });
+  }
+  if (!Number.isInteger(leverage) || leverage < 1 || leverage > 10) {
+    throw Object.assign(new Error('杠杆需在 1–10 倍之间'), { status: 400 });
   }
   if (!(stop > 0) || !(takeProfit > 0)) {
     throw Object.assign(new Error('invalid stop/tp'), { status: 400 });
@@ -604,6 +609,7 @@ async function placeStanceOrder(input, opts = {}) {
   const [inst, ticker] = await Promise.all([getSwapInstrument(instId), getSwapTicker(instId)]);
   const last = Number(ticker.last) || Number(ticker.markPx) || Number(ticker.askPx) || Number(ticker.bidPx);
   if (!(last > 0)) throw Object.assign(new Error('无法获取最新价'), { status: 502 });
+  if (pendingMode && (isLong ? !(entryHint < last) : !(entryHint > last))) throw Object.assign(new Error('挂单价必须位于有利于当前方向的一侧：做多低于现价，做空高于现价'), { status: 400 });
 
   const ctVal = Number(inst.ctVal) || 1;
   const lotSz = inst.lotSz || '1';
@@ -618,31 +624,19 @@ async function placeStanceOrder(input, opts = {}) {
     last,
   });
 
-  let rawLimit;
-  let limitReason;
-  if (isLong) {
-    const soft = last * (1 - offsetBps / 10000);
-    if (entryHint > 0 && entryHint < last) {
-      rawLimit = Math.min(entryHint, soft);
-      limitReason = rawLimit === entryHint ? 'AI开仓价（低于现价）' : ('现价下浮 ' + offsetBps + 'bp');
-    } else {
-      rawLimit = soft;
-      limitReason = '现价下浮 ' + offsetBps + 'bp（Maker）';
-    }
-  } else {
-    const soft = last * (1 + offsetBps / 10000);
-    if (entryHint > 0 && entryHint > last) {
-      rawLimit = Math.max(entryHint, soft);
-      limitReason = rawLimit === entryHint ? 'AI开仓价（高于现价）' : ('现价上浮 ' + offsetBps + 'bp');
-    } else {
-      rawLimit = soft;
-      limitReason = '现价上浮 ' + offsetBps + 'bp（Maker）';
-    }
-  }
-
-  const limitPx = roundToTick(rawLimit, tickSz);
+  if (!(entryHint > 0) || !Number.isFinite(entryHint)) throw Object.assign(new Error('缺少 AI 入场价，请重新分析'), { status: 400 });
+  const limitPx = roundToTick(entryHint, tickSz, isLong ? 'floor' : 'ceil');
   const limitNum = Number(limitPx);
   if (!(limitNum > 0)) throw Object.assign(new Error('invalid limit price'), { status: 400 });
+  const oppositeBest = Number(isLong ? ticker.askPx : ticker.bidPx);
+  if (!(oppositeBest > 0)) throw Object.assign(new Error('无法获取盘口报价，请稍后重新预览'), { status: 502 });
+  if (isLong ? limitNum >= oppositeBest : limitNum <= oppositeBest) throw Object.assign(new Error('AI 入场价会立即成交，无法作为 Maker 挂单；请重新分析'), { status: 400 });
+  if (input.expectedPrice != null && Number(input.expectedPrice) !== limitNum) {
+    throw Object.assign(new Error('行情已变化，请重新预览订单'), { status: 400 });
+  }
+  if (isLong ? !(stop < limitNum && takeProfit > limitNum) : !(takeProfit < limitNum && stop > limitNum)) {
+    throw Object.assign(new Error('止盈止损方向与实际委托价不符'), { status: 400 });
+  }
 
   const notional = amountUsd * leverage;
   const sz = roundToLot(notional / (limitNum * ctVal), lotSz);
@@ -650,13 +644,22 @@ async function placeStanceOrder(input, opts = {}) {
     throw Object.assign(new Error('amount too small for minSz=' + minSz), { status: 400 });
   }
 
+  const plan = {
+    instId, side, posSide, amountUsd, leverage, orderMode: pendingMode ? 'pending' : 'direct', entry: limitNum,
+    entryHint, last, stop, takeProfit, sz, notional, ctVal,
+    ordType: 'post_only',
+    estimatedLossUsdt: Math.abs(limitNum - stop) * Number(sz) * ctVal,
+  };
+  if (opts.dryRun) return { plan, simulated: isSimulated() };
+  if (input.expectedPrice == null) throw Object.assign(new Error('缺少已确认的订单预览价'), { status: 400 });
+
   const sideLabel = isLong ? '低于' : '高于';
   const sideVerb = isLong ? '买单' : '卖单';
   emitStage(onStage, {
     id: 'limit',
     status: 'running',
     progress: 48,
-    message: '以' + sideLabel + '现价挂限价' + sideVerb + ' ' + limitPx + '（' + limitReason + '）…',
+    message: '以 AI 入场价挂' + sideLabel + '现价的只做 Maker ' + sideVerb + ' ' + limitPx + '…',
     last,
     limitPx: limitNum,
   });
@@ -676,11 +679,12 @@ async function placeStanceOrder(input, opts = {}) {
     side,
     posSide,
     tdMode: 'cross',
-    ordType: wantPostOnly ? 'post_only' : 'limit',
+    ordType: 'post_only',
     px: String(limitPx),
     sz,
     lever: leverage,
     setLeverage: '1',
+    requireLeverage: true,
     clOrdId,
     attachAlgoOrds: [
       {
@@ -694,25 +698,7 @@ async function placeStanceOrder(input, opts = {}) {
     ],
   });
 
-  const plan = {
-    instId,
-    side,
-    posSide,
-    amountUsd,
-    leverage,
-    entry: limitNum,
-    entryHint: entryHint > 0 ? entryHint : null,
-    last,
-    stop,
-    takeProfit,
-    sz,
-    notional,
-    ctVal,
-    offsetBps,
-    ordType: wantPostOnly ? 'post_only' : 'limit',
-    limitReason,
-    clOrdId,
-  };
+  plan.clOrdId = clOrdId;
 
   emitStage(onStage, {
     id: 'done',

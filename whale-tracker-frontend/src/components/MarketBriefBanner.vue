@@ -2,22 +2,23 @@
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
-  streamChatMarketBrief,
   fetchMarketBriefAnalysis,
   streamMarketBrief,
   streamOkxStanceOrder,
   fetchOkxKeys,
   placeBinanceStanceOrder,
+  previewBinanceStanceOrder,
+  previewOkxStanceOrder,
+  type CryptoStanceOrderInput,
+  type CryptoStancePreview,
   type MarketBriefResponse,
   type MarketBriefStructured,
-  type MarketChatMessage,
   type OkxStanceOrderStage,
 } from '@/api';
 import { preferredCoinsState, normalizeCoinId } from '@/utils/watchedCoins';
 import {
   briefHistoryState,
   pushBriefHistory,
-  updateBriefHistoryMessages,
   removeBriefHistory,
   clearBriefHistory,
   formatBriefTime,
@@ -26,7 +27,7 @@ import {
 } from '@/utils/briefHistory';
 import { aiKeyReady } from '@/stores/aiKey';
 import { formatPrice } from '@/utils/format';
-import { highlightBriefHtml, highlightNumbersHtml } from '@/utils/briefHighlight';
+import { highlightBriefHtml } from '@/utils/briefHighlight';
 import BriefKlineChart from '@/components/BriefKlineChart.vue';
 
 type BiasTag = 'buy' | 'sell' | 'wait';
@@ -47,23 +48,16 @@ const LOADING_STEPS = [
   'DeepSeek 即将开始流式生成…',
 ];
 
-const REANALYZE_RE =
-  /重新分析|再分析|重新诊币|刷新分析|更新分析|重新生成|再生成|重新解读|再解读|重新跑|再跑一遍/;
-
 const open = ref(false);
 const phase = ref<Phase>('pick');
 const coin = ref(preferredCoinsState.value[0] || 'BTC');
 const customCoin = ref('');
 const loading = ref(false);
-const chatBusy = ref(false);
 const error = ref('');
 const result = ref<MarketBriefResponse | null>(null);
 const streamDraft = ref('');
 const statusMessage = ref('');
-const chatInput = ref('');
-const chatMessages = ref<MarketChatMessage[]>([]);
 const loadingStepIdx = ref(0);
-const chatListRef = ref<HTMLElement | null>(null);
 const streamScrollRef = ref<HTMLElement | null>(null);
 const analysisTab = ref('short');
 const techTf = ref<'5m' | '1h' | '1d'>('1d');
@@ -71,7 +65,6 @@ const techTf = ref<'5m' | '1h' | '1d'>('1d');
 let reqSeq = 0;
 let stepTimer: ReturnType<typeof setInterval> | null = null;
 let abortCtrl: AbortController | null = null;
-let chatAbortCtrl: AbortController | null = null;
 
 const preferredCoins = computed(() => preferredCoinsState.value);
 const historyList = computed(() => briefHistoryState.value);
@@ -226,39 +219,11 @@ const activeTechLabel = computed(() => {
 
 const personalStance = computed(() => structured.value?.personal_stance || null);
 
-const stanceBasis = computed(() => {
-  const raw: unknown = personalStance.value?.basis;
-  if (Array.isArray(raw) && raw.length) {
-    return raw.map((s) => String(s || '').trim()).filter(Boolean);
-  }
-  if (typeof raw === 'string' && raw.trim()) {
-    return raw
-      .split(/[+＋、,，/|｜]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-  }
-  // 旧结果兜底：按已有模块文案推断
-  const s = structured.value;
-  const items: string[] = [];
-  if (s?.market_sentiment?.details || s?.market_sentiment?.funding_rate || s?.market_sentiment?.long_short_ratio) {
-    items.push('市场情绪');
-  }
-  if (s?.news_analysis?.details || s?.news_analysis?.sentiment) items.push('新闻内容');
-  if (s?.technical?.hourly) items.push('小时线走势');
-  else if (s?.technical?.m5) items.push('5分钟走势');
-  if (s?.technical?.daily) items.push('日线走势');
-  if (s?.whales?.site || s?.whales?.external || s?.whales?.details) items.push('巨鲸仓位');
-  if (s?.derivatives?.funding) items.push('资金费率');
-  if (s?.derivatives?.liquidations) items.push('爆仓数据');
-  return items.length ? items : ['市场情绪', '新闻内容', '小时线走势'];
-});
-
 const stanceCards = computed(() => {
   const ps = personalStance.value;
   return [
-    { id: 'ultra_short', header: '超短线 (5分钟)', leg: ps?.ultra_short },
-    { id: 'short', header: '短期', leg: ps?.short },
-    { id: 'mid_long', header: '中长期', leg: ps?.mid_long },
+    { id: 'short', header: '短线 · 1小时', leg: ps?.short },
+    { id: 'mid_long', header: '长线 · 日线', leg: ps?.mid_long },
   ];
 });
 
@@ -276,7 +241,6 @@ const analysisTabs = computed<AnalysisTab[]>(() => {
     ];
     if (s.key_evidence?.length) tabs.push({ id: 'evidence', label: '关键证据' });
     if (s.risks_and_invalidation?.length) tabs.push({ id: 'risk', label: '风险失效' });
-    tabs.push({ id: 'stance', label: '仓位建议' });
     return tabs;
   }
   return sections.value.map((sec) => ({
@@ -312,12 +276,27 @@ function isWaitAction(action?: string) {
   return !action || /观望/.test(action);
 }
 
+function canUsePending(leg: NonNullable<MarketBriefStructured['personal_stance']>['short']) {
+  if (!leg || leg.execution !== '等待触发' || leg.entry_validation?.decision !== '支持') return false;
+  const validation = leg.entry_validation;
+  if (!validation.technical || !validation.sentiment || !validation.news_macro || !validation.positioning) return false;
+  if (![validation.sentiment, validation.news_macro, validation.positioning].some((item) => !/暂无|缺失|无数据|unavailable|未接入/i.test(String(item)))) return false;
+  const direction = structured.value?.mid_long_term?.direction;
+  if (leg.action === '做多' ? direction !== '偏多' : leg.action === '做空' ? direction !== '偏空' : true) return false;
+  return Number(leg.entry) > 0 && Number(leg.stop) > 0 && Number(leg.take_profit) > 0;
+}
+
 const orderDialogVisible = ref(false);
 const orderAmount = ref('10');
 const availableOrderExchanges = ref<Array<'binance' | 'okx'>>([]);
 const selectedOrderExchange = ref<'binance' | 'okx'>('binance');
 const orderExchangeSimulation = ref<{ binance: boolean; okx: boolean }>({ binance: true, okx: true });
 const orderSubmitting = ref(false);
+const orderPreview = ref<CryptoStancePreview['plan'] | null>(null);
+const orderPreviewBusy = ref(false);
+const orderPreviewError = ref('');
+const orderMode = ref<'direct' | 'pending'>('direct');
+let orderPreviewSeq = 0;
 const orderProgressVisible = ref(false);
 const orderProgress = ref(0);
 const orderProgressError = ref('');
@@ -328,8 +307,64 @@ const orderProgressSteps = ref<
 const orderTarget = ref<{
   id: string;
   header: string;
-  leg: NonNullable<MarketBriefStructured['personal_stance']>['ultra_short'];
+  leg: NonNullable<MarketBriefStructured['personal_stance']>['short'];
 } | null>(null);
+
+const orderPreviewPrice = computed(() => Number(orderPreview.value?.price ?? orderPreview.value?.entry));
+const orderDistancePct = computed(() => {
+  const last = Number(orderPreview.value?.last);
+  const price = orderPreviewPrice.value;
+  return last > 0 && Number.isFinite(price) ? ((price - last) / last * 100) : null;
+});
+const orderLeverage = computed(() => Math.min(10, Math.max(1, Math.round(Number(orderTarget.value?.leg?.leverage) || 1))));
+
+function stanceOrderInput(): CryptoStanceOrderInput | null {
+  const leg = orderTarget.value?.leg;
+  const targetCoin = result.value?.coin;
+  const analysisId = result.value?.analysisId;
+  const horizon = orderTarget.value?.id;
+  if (!leg || !targetCoin || !analysisId || (horizon !== 'short' && horizon !== 'mid_long') || leg.entry == null || leg.stop == null || leg.take_profit == null) return null;
+  return {
+    coin: targetCoin,
+    analysisId,
+    horizon,
+    action: String(leg.action),
+    execution: String(leg.execution || '禁止下单'),
+    orderMode: orderMode.value,
+    entry: Number(leg.entry),
+    stop: Number(leg.stop),
+    takeProfit: Number(leg.take_profit),
+    leverage: orderLeverage.value,
+    amountUsd: Number(orderAmount.value),
+  };
+}
+
+async function refreshOrderPreview() {
+  const seq = ++orderPreviewSeq;
+  orderPreview.value = null;
+  orderPreviewError.value = '';
+  const payload = stanceOrderInput();
+  if (!payload || !availableOrderExchanges.value.includes(selectedOrderExchange.value)) return;
+  if (!(payload.amountUsd > 0) || payload.amountUsd > 100) {
+    orderPreviewError.value = '本金必须在 0～100 USDT 之间';
+    return;
+  }
+  orderPreviewBusy.value = true;
+  try {
+    const response = selectedOrderExchange.value === 'binance'
+      ? await previewBinanceStanceOrder(payload)
+      : await previewOkxStanceOrder(payload);
+    if (seq === orderPreviewSeq) orderPreview.value = response.plan;
+  } catch (err) {
+    if (seq === orderPreviewSeq) orderPreviewError.value = err instanceof Error ? err.message : '无法预览订单';
+  } finally {
+    if (seq === orderPreviewSeq) orderPreviewBusy.value = false;
+  }
+}
+
+watch([orderAmount, selectedOrderExchange], () => {
+  if (orderDialogVisible.value) void refreshOrderPreview();
+});
 
 const ORDER_STEP_DEFS = [
   { id: 'price', label: '获取当前最新价格' },
@@ -378,8 +413,20 @@ function applyOrderStage(stage: OkxStanceOrderStage) {
 async function openOrderDialog(card: {
   id: string;
   header: string;
-  leg: NonNullable<MarketBriefStructured['personal_stance']>['ultra_short'];
-}) {
+  leg: NonNullable<MarketBriefStructured['personal_stance']>['short'];
+}, mode: 'direct' | 'pending' = 'direct') {
+  if (mode === 'pending' && !canUsePending(card.leg)) {
+    ElMessage.warning('AI 尚未验证这个挂单价，或方向与中长期判断不一致，请重新分析');
+    return;
+  }
+  if (!card.leg?.execution) {
+    ElMessage.warning('这份分析没有新的开单状态，请重新分析后再预览订单');
+    return;
+  }
+  if (mode === 'direct' && card.leg?.execution !== '现在可开') {
+    ElMessage.warning(card.leg?.trigger || card.leg?.note || '尚未达到开单条件，请重新分析');
+    return;
+  }
   if (isWaitAction(card.leg?.action)) {
     ElMessage.warning('当前仍为观望，请点顶部「重新分析」生成做多/做空方案');
     return;
@@ -389,6 +436,7 @@ async function openOrderDialog(card: {
     return;
   }
   orderTarget.value = card;
+  orderMode.value = mode;
   orderAmount.value = '10';
   try {
     const keys = await fetchOkxKeys();
@@ -403,29 +451,39 @@ async function openOrderDialog(card: {
     ElMessage.warning(err instanceof Error ? err.message : '读取交易所配置失败');
   }
   orderDialogVisible.value = true;
+  await refreshOrderPreview();
 }
 
 async function confirmStanceOrder() {
+  if (orderSubmitting.value) return;
   const card = orderTarget.value;
   const coin = result.value?.coin;
   if (!card?.leg || !coin) return;
-  const amount = Number(orderAmount.value);
+  const payload = stanceOrderInput();
   if (!availableOrderExchanges.value.includes(selectedOrderExchange.value)) {
     ElMessage.warning('请先在左下角「API 设置」配置币安或 OKX API 密钥');
     return;
   }
-  if (!(amount > 0) || amount > 100) {
+  if (!payload || !(payload.amountUsd > 0) || payload.amountUsd > 100) {
     ElMessage.warning('请输入 0~100 的 USDT 金额');
     return;
   }
-  const isLong = /做多|^long$|^buy$/i.test(String(card.leg.action));
+  if (!orderPreview.value || !Number.isFinite(orderPreviewPrice.value)) {
+    ElMessage.warning(orderPreviewError.value || '请等待真实订单预览完成');
+    return;
+  }
+  const previewPrice = orderPreviewPrice.value;
+  const previewLoss = Number(orderPreview.value.estimatedLossUsdt);
+  const exchange = selectedOrderExchange.value;
+  orderSubmitting.value = true;
   try {
     await ElMessageBox.confirm(
-      `交易所 ${selectedOrderExchange.value === 'binance' ? '币安' : 'OKX'} · ${orderExchangeSimulation.value[selectedOrderExchange.value] ? '演示盘' : '实盘'}\n将以限价 Maker 挂单（非市价）。\n币种 ${coin} · ${card.leg.action}\n参考开仓 ${fmtStancePrice(card.leg.entry)} · 杠杆 ${card.leg.leverage ?? '—'}x\n止损 ${fmtStancePrice(card.leg.stop)} · 止盈 ${fmtStancePrice(card.leg.take_profit)}\n保证金 ${amount} USDT\n挂单逻辑：先取最新价，再${isLong ? '低于现价挂买单' : '高于现价挂卖单'}，并附带止损止盈。`,
-      '确认挂单开仓',
+      `交易所 ${exchange === 'binance' ? '币安' : 'OKX'} · ${orderExchangeSimulation.value[exchange] ? '演示盘' : '实盘'}\n${coin} · ${card.leg.action} · ${card.header}\n实际委托价 ${fmtStancePrice(previewPrice)} · 本金 ${payload.amountUsd} USDT · 杠杆 ${payload.leverage}x\n止损 ${fmtStancePrice(card.leg.stop)} · 止盈 ${fmtStancePrice(card.leg.take_profit)}\n预计到止损亏损 ${Number.isFinite(previewLoss) ? previewLoss.toFixed(2) : '—'} USDT（未计手续费与滑点）${orderMode.value === 'pending' ? '\n挂单会立即提交交易所，价格触及时即可成交，不等待复合条件确认。' : ''}`,
+      orderMode.value === 'pending' ? '确认交易所限价挂单' : '确认挂单开仓',
       { type: 'warning', confirmButtonText: '开始挂单', cancelButtonText: '取消' },
     );
   } catch {
+    orderSubmitting.value = false;
     return;
   }
 
@@ -435,16 +493,8 @@ async function confirmStanceOrder() {
   orderSubmitting.value = true;
 
   try {
-    const payload = {
-      coin,
-      action: String(card.leg.action),
-      entry: Number(card.leg.entry),
-      stop: Number(card.leg.stop),
-      takeProfit: Number(card.leg.take_profit),
-      leverage: Number(card.leg.leverage) || 5,
-      amountUsd: amount,
-    };
-    if (selectedOrderExchange.value === 'binance') {
+    payload.expectedPrice = previewPrice;
+    if (exchange === 'binance') {
       applyOrderStage({ id: 'price', status: 'running', progress: 15, message: '读取币安行情与合约规则…' });
       const data = await placeBinanceStanceOrder(payload);
       orderProgress.value = 100;
@@ -503,7 +553,7 @@ function biasFromResult(data: MarketBriefResponse) {
   };
 }
 
-function saveHistory(data: MarketBriefResponse, messages: MarketChatMessage[] = []) {
+function saveHistory(data: MarketBriefResponse) {
   if (!data?.analysis) return;
   const { bias, confidence } = biasFromResult(data);
   const bits: string[] = [];
@@ -523,15 +573,8 @@ function saveHistory(data: MarketBriefResponse, messages: MarketChatMessage[] = 
     contextSnapshotId: data.contextSnapshotId,
     version: data.version,
     contextDiffSummary: data.contextDiff?.summary,
-    // 新诊币默认清空旧聊天；若显式传入则保留
-    messages,
+    messages: [],
   });
-}
-
-function persistChatMessages() {
-  const c = result.value?.coin || coin.value;
-  if (!c) return;
-  updateBriefHistoryMessages(c, chatMessages.value);
 }
 
 function openHistory(item: MarketBriefHistoryItem) {
@@ -540,15 +583,20 @@ function openHistory(item: MarketBriefHistoryItem) {
   streamDraft.value = '';
   error.value = '';
 
+  if (/^\s*\{\s*["']short_term["']\s*:/.test(item.structured?.short_term?.summary || item.analysis || '')) {
+    result.value = null;
+    phase.value = 'pick';
+    error.value = '这条历史分析的格式不完整，请重新分析';
+    return;
+  }
+
   if (!isBriefHistoryFresh(item)) {
-    chatMessages.value = [];
     ElMessage.info(`${item.coin} 历史已超过 1 小时，正在重新分析…`);
     phase.value = 'loading';
     void runBrief();
     return;
   }
 
-  chatMessages.value = Array.isArray(item.messages) ? [...item.messages] : [];
   result.value = {
     ok: true,
     coin: item.coin,
@@ -565,7 +613,6 @@ function openHistory(item: MarketBriefHistoryItem) {
     contextSummary: undefined,
   };
   phase.value = 'result';
-  void scrollChat();
 }
 
 function shortTermBias(st?: MarketBriefStructured['short_term'] | MarketBriefStructured['mid_long_term']) {
@@ -587,29 +634,6 @@ function biasClass(bias?: string) {
   if (/偏空|看空|承压|利空/.test(t)) return 'tone-sell';
   return 'tone-wait';
 }
-
-const summaryBits = computed(() => {
-  const bits: string[] = [];
-  if (result.value?.version) bits.push(result.value.version);
-  if (result.value?.contextDiff?.summary) bits.push(result.value.contextDiff.summary);
-  const s = result.value?.contextSummary;
-  if (!s) return bits;
-  if (s.price != null) bits.push(`现价 ${formatPrice(s.price)}`);
-  if (s.fundingPct != null) bits.push(`费率 ${s.fundingPct}%`);
-  if (s.hasTech) bits.push('含技术面');
-  if (s.hasLiq) bits.push(`爆仓 $${Math.round(s.liqTotalUsd || 0)}`);
-  bits.push(`站内新闻 ${s.newsCount}`);
-  if (s.webNewsCount) bits.push(`网络新闻 ${s.webNewsCount}`);
-  bits.push(`巨鲸 多${s.whaleLong}/空${s.whaleShort}`);
-  if (s.exchangeLongPct != null && s.exchangeShortPct != null) {
-    bits.push(`账户多/空 ${s.exchangeLongPct}%/${s.exchangeShortPct}%`);
-  }
-  bits.push(`异动 ${s.alertCount}`);
-  if (s.hasDefi) bits.push('含链上沉淀');
-  if (s.equityLike) bits.push('公司类标的');
-  if (s.cached) bits.push('缓存命中');
-  return bits;
-});
 
 function startLoadingSteps() {
   stopLoadingSteps();
@@ -638,9 +662,6 @@ function openModal() {
 
 function closeModal() {
   open.value = false;
-  chatAbortCtrl?.abort();
-  chatAbortCtrl = null;
-  chatBusy.value = false;
   if (loading.value) {
     reqSeq += 1;
     loading.value = false;
@@ -671,8 +692,7 @@ async function runBrief() {
   error.value = '';
   result.value = null;
   streamDraft.value = '';
-  statusMessage.value = '正在准备数据（强制开单）…';
-  chatMessages.value = [];
+  statusMessage.value = '正在分析价格、情绪与事件…';
   phase.value = 'loading';
   startLoadingSteps();
   let liveAnalysisId = '';
@@ -708,19 +728,11 @@ async function runBrief() {
         };
         stopLoadingSteps();
         phase.value = 'streaming';
-        statusMessage.value = 'DeepSeek 正在撰写…';
+        statusMessage.value = '正在生成交易计划…';
       },
       onDelta: (text) => {
         if (seq !== reqSeq || !text) return;
         streamDraft.value += text;
-        if (result.value) {
-          result.value = {
-            ...result.value,
-            analysis: streamDraft.value,
-            structured: null,
-            analysisResult: null,
-          };
-        }
         phase.value = 'streaming';
         nextTick(() => {
           const el = streamScrollRef.value;
@@ -772,15 +784,8 @@ async function runBrief() {
       }
     }
     error.value = err instanceof Error ? err.message : '生成建议失败';
-    if (streamDraft.value && result.value) {
-      result.value = {
-        ...result.value,
-        analysis: streamDraft.value,
-      };
-      phase.value = 'result';
-    } else {
-      phase.value = 'pick';
-    }
+    result.value = null;
+    phase.value = 'pick';
   } finally {
     if (seq === reqSeq) {
       loading.value = false;
@@ -790,89 +795,14 @@ async function runBrief() {
   }
 }
 
-async function scrollChat() {
-  await nextTick();
-  const el = chatListRef.value;
-  if (el) el.scrollTop = el.scrollHeight;
-}
-
-async function sendChat() {
-  const text = chatInput.value.trim();
-  if (!text || chatBusy.value || loading.value || !result.value) return;
-  if (!aiKeyReady.value) {
-    ElMessage.warning('请先配置 DeepSeek API Key');
-    return;
-  }
-  if (REANALYZE_RE.test(text)) {
-    chatInput.value = '';
-    ElMessage.info('正在重新拉取关键数据并生成新版本分析…');
-    await runBrief();
-    return;
-  }
-  chatInput.value = '';
-  chatMessages.value.push({ role: 'user', content: text });
-  chatMessages.value.push({ role: 'assistant', content: '' });
-  const assistantIdx = chatMessages.value.length - 1;
-  await scrollChat();
-  chatBusy.value = true;
-  chatAbortCtrl?.abort();
-  chatAbortCtrl = new AbortController();
-  const history = chatMessages.value.slice(0, -2);
-  try {
-    await streamChatMarketBrief(
-      {
-        coin: result.value.coin,
-        message: text,
-        analysis: result.value.analysis,
-        contextText: result.value.contextText,
-        messages: history,
-      },
-      {
-        signal: chatAbortCtrl.signal,
-        onDelta: (chunk) => {
-          const cur = chatMessages.value[assistantIdx];
-          if (!cur || cur.role !== 'assistant') return;
-          chatMessages.value[assistantIdx] = {
-            role: 'assistant',
-            content: (cur.content || '') + chunk,
-          };
-          void scrollChat();
-        },
-        onDone: (data) => {
-          const finalText = String(data.reply || chatMessages.value[assistantIdx]?.content || '').trim();
-          chatMessages.value[assistantIdx] = {
-            role: 'assistant',
-            content: finalText || '（无回复）',
-          };
-          persistChatMessages();
-          void scrollChat();
-        },
-      },
-    );
-    persistChatMessages();
-  } catch (err) {
-    if ((err as Error)?.name === 'AbortError') return;
-    chatMessages.value.splice(assistantIdx, 1);
-    chatMessages.value.pop();
-    chatInput.value = text;
-    ElMessage.error(err instanceof Error ? err.message : '对话失败');
-  } finally {
-    chatBusy.value = false;
-    chatAbortCtrl = null;
-  }
-}
-
 function backToPick() {
   phase.value = 'pick';
   error.value = '';
-  chatAbortCtrl?.abort();
-  chatAbortCtrl = null;
 }
 
 onUnmounted(() => {
   stopLoadingSteps();
   abortCtrl?.abort();
-  chatAbortCtrl?.abort();
 });
 </script>
 
@@ -897,12 +827,12 @@ onUnmounted(() => {
                 <button
                   type="button"
                   class="ghost-btn ghost-sm"
-                  :disabled="loading || chatBusy || phase === 'streaming'"
+                  :disabled="loading || phase === 'streaming'"
                   @click="() => runBrief()"
                 >
                   重新分析
                 </button>
-                <button type="button" class="ghost-btn ghost-sm" :disabled="loading || chatBusy" @click="backToPick">
+                <button type="button" class="ghost-btn ghost-sm" :disabled="loading" @click="backToPick">
                   换币种
                 </button>
               </div>
@@ -1019,7 +949,7 @@ onUnmounted(() => {
               <div class="sticky-main">
                 <span class="sticky-coin">{{ coin }}</span>
                 <span v-if="result?.version" class="sticky-ver">{{ result.version }}</span>
-                <span class="sentiment-text" v-html="highlightBriefHtml(sentiment.label)" />
+                <span class="sentiment-text">短线判断：{{ shortTermBias(structured?.short_term) || '分析中' }}</span>
               </div>
               <div
                 class="confidence"
@@ -1036,26 +966,41 @@ onUnmounted(() => {
             <div ref="streamScrollRef" class="result-scroll">
               <div v-if="phase === 'streaming'" class="stream-banner">
                 <span class="stream-dot" />
-                {{ statusMessage || 'DeepSeek 正在撰写…' }}
+                正在分析价格结构、情绪与事件…
               </div>
 
-              <div v-if="summaryBits.length" class="meta">
-                <span
-                  v-for="bit in summaryBits"
-                  :key="bit"
-                  class="chip"
-                  v-html="highlightNumbersHtml(bit)"
-                />
-              </div>
+              <div v-if="phase === 'streaming'" class="quiet-analysis">AI 正在静默分析，完成后显示交易结论。</div>
 
-              <!-- 流式草稿：边生成边显示 -->
-              <div v-if="phase === 'streaming'" class="stream-draft coin-analysis">
-                <div class="coin-desc" v-html="highlightBriefHtml(streamDraft || '…')" />
-                <span class="caret">▍</span>
-              </div>
-
-              <!-- JSON / Markdown：Tab 切换 -->
-              <div v-else-if="structured || sections.length" class="analysis-tabs-wrap">
+              <div v-else-if="structured || sections.length" class="simple-result">
+                <p v-if="structured?.event_reaction && !/暂无|unavailable/i.test(structured.event_reaction)" class="simple-event">事件反应：{{ structured.event_reaction }}</p>
+                <div v-if="structured" class="simple-cards">
+                  <div v-for="card in stanceCards" :key="card.id" class="simple-card">
+                    <div class="simple-card-head"><strong>{{ card.header }}</strong><span :class="stanceActionClass(card.leg?.action)">{{ card.leg?.action || '数据不足' }} · {{ card.leg?.execution || '禁止下单' }}</span></div>
+                    <div class="simple-prices">
+                      <span>参考入场 <b>{{ fmtStancePrice(card.leg?.entry) }}</b></span>
+                      <span>止损 <b>{{ fmtStancePrice(card.leg?.stop) }}</b></span>
+                      <span>止盈 <b>{{ fmtStancePrice(card.leg?.take_profit) }}</b></span>
+                    </div>
+                    <p class="simple-note">{{ card.leg?.note || (card.id === 'short' ? shortTermBody(structured.short_term) : shortTermBody(structured.mid_long_term)) }}</p>
+                    <p v-if="card.leg?.execution === '等待触发' && card.leg?.trigger" class="simple-note">触发条件：{{ card.leg.trigger }}</p>
+                    <details v-if="card.leg?.entry_validation" class="entry-validation">
+                      <summary>查看入场价验证 · {{ card.leg.entry_validation.decision }}</summary>
+                      <p>技术：{{ card.leg.entry_validation.technical || '暂无' }}</p>
+                      <p>情绪：{{ card.leg.entry_validation.sentiment || '暂无' }}</p>
+                      <p>新闻宏观：{{ card.leg.entry_validation.news_macro || '暂无' }}</p>
+                      <p>大户与资金：{{ card.leg.entry_validation.positioning || '暂无' }}</p>
+                    </details>
+                    <button v-if="card.leg?.execution === '现在可开'" type="button" class="primary-btn simple-order-btn" @click="openOrderDialog(card, 'direct')">预览订单</button>
+                    <div v-else-if="card.leg?.execution === '等待触发'" class="order-choice-row">
+                      <button type="button" class="primary-btn simple-order-btn" disabled>预览订单 · 待条件满足</button>
+                      <button type="button" class="primary-btn simple-order-btn" :disabled="!canUsePending(card.leg)" @click="openOrderDialog(card, 'pending')">挂单模式</button>
+                    </div>
+                    <p v-if="card.leg?.execution === '等待触发' && !canUsePending(card.leg)" class="order-hint">挂单价缺少综合验证，或与中长期方向不一致；请重新分析。</p>
+                  </div>
+                </div>
+                <div v-else class="simple-card"><strong>{{ sentiment.label }}</strong><p class="simple-note">结构化计划未生成，请重新分析后再预览订单。</p></div>
+                <details class="analysis-details"><summary>查看分析依据</summary>
+                <div class="analysis-tabs-wrap">
                 <div class="analysis-tabs" role="tablist">
                   <button
                     v-for="tab in analysisTabs"
@@ -1185,61 +1130,6 @@ onUnmounted(() => {
                       </div>
                     </div>
 
-                    <div v-show="analysisTab === 'stance'" class="tab-pane stance-section">
-                      <div class="stance-row">
-                        <div v-for="card in stanceCards" :key="card.id" class="stance-card-col">
-                          <div class="stance-card-header">
-                            <span>{{ card.header }}</span>
-                            <div class="stance-card-actions">
-                              <button
-                                type="button"
-                                class="stance-icon-btn"
-                                title="限价挂单开仓"
-                                :disabled="loading || chatBusy"
-                                @click="openOrderDialog(card)"
-                              >
-                                $
-                              </button>
-                            </div>
-                          </div>
-                          <div class="stance-action-row">
-                            <span class="action-badge" :class="stanceActionClass(card.leg?.action)">
-                              {{ card.leg?.action || '观望' }}
-                            </span>
-                          </div>
-                          <div class="sl-tp-info">
-                            <span class="muted">开仓</span>
-                            <span class="value">{{ fmtStancePrice(card.leg?.entry) }}</span>
-                            <span class="muted">·</span>
-                            <span class="muted">杠杆</span>
-                            <span class="value">{{ card.leg?.leverage != null ? `${card.leg.leverage}x` : '—' }}</span>
-                            <br />
-                            <span class="muted">止损</span>
-                            <span class="value" :class="{ green: card.leg?.stop != null }">
-                              {{ fmtStancePrice(card.leg?.stop) }}
-                            </span>
-                            <span class="muted">·</span>
-                            <span class="muted">止盈</span>
-                            <span class="value" :class="{ green: card.leg?.take_profit != null }">
-                              {{ fmtStancePrice(card.leg?.take_profit) }}
-                            </span>
-                          </div>
-                          <p
-                            class="stance-analysis"
-                            v-html="highlightBriefHtml(card.leg?.note || '暂无说明')"
-                          />
-                        </div>
-                      </div>
-                      <div class="stance-basis">
-                        <span class="stance-basis-label">分析依据</span>
-                        <div class="stance-basis-chips">
-                          <template v-for="(item, idx) in stanceBasis" :key="item">
-                            <span v-if="idx > 0" class="stance-basis-plus">+</span>
-                            <span class="stance-basis-chip">{{ item }}</span>
-                          </template>
-                        </div>
-                      </div>
-                    </div>
                   </template>
 
                   <template v-else>
@@ -1272,6 +1162,8 @@ onUnmounted(() => {
                     </div>
                   </template>
                 </div>
+                </div>
+                </details>
               </div>
 
               <div class="disclaimer">
@@ -1282,43 +1174,6 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <div v-if="phase === 'result'" class="chat-panel">
-              <div class="chat-toolbar">
-                <div class="chat-label">与 AI 继续探讨</div>
-              </div>
-              <div ref="chatListRef" class="chat-list">
-                <div v-if="!chatMessages.length" class="chat-empty">
-                  例如：这个止损合理吗？也可点顶部「重新分析」刷新简报。
-                </div>
-                <div
-                  v-for="(m, idx) in chatMessages"
-                  :key="idx"
-                  class="chat-bubble"
-                  :class="[m.role, { pending: chatBusy && idx === chatMessages.length - 1 && m.role === 'assistant' && !m.content }]"
-                >
-                  <template v-if="m.content">{{ m.content }}</template>
-                  <template v-else-if="chatBusy && m.role === 'assistant'">思考中…</template>
-                </div>
-              </div>
-              <div class="chat-input-row">
-                <input
-                  v-model="chatInput"
-                  class="chat-input"
-                  placeholder="输入问题，或说「重新分析」"
-                  :disabled="chatBusy || loading"
-                  maxlength="500"
-                  @keydown.enter.prevent="sendChat"
-                />
-                <button
-                  type="button"
-                  class="send-btn"
-                  :disabled="chatBusy || loading || !chatInput.trim()"
-                  @click="sendChat"
-                >
-                  发送
-                </button>
-              </div>
-            </div>
           </div>
         </div>
       </div>
@@ -1326,7 +1181,7 @@ onUnmounted(() => {
 
     <el-dialog
       v-model="orderDialogVisible"
-      title="按 AI 建议挂单开仓"
+      :title="orderMode === 'pending' ? 'AI 挂单模式 · 交易所限价委托' : '按 AI 建议挂单开仓'"
       width="420px"
       append-to-body
       destroy-on-close
@@ -1336,10 +1191,11 @@ onUnmounted(() => {
           {{ result?.coin }} · <strong>{{ orderTarget.leg.action }}</strong> ·
           {{ orderTarget.header }}
         </p>
-        <p class="order-meta">
-          参考开仓 {{ fmtStancePrice(orderTarget.leg.entry) }} · 杠杆
-          {{ orderTarget.leg.leverage != null ? `${orderTarget.leg.leverage}x` : '—' }}
-        </p>
+        <p class="order-meta">AI 挂单价 {{ fmtStancePrice(orderTarget.leg.entry) }} · 按交易所精度委托 {{ orderPreview ? fmtStancePrice(orderPreviewPrice) : '计算中…' }}</p>
+        <p v-if="orderPreview && orderDistancePct != null" class="order-meta">当前价 {{ fmtStancePrice(orderPreview.last) }} · 委托价较现价 {{ Math.abs(orderDistancePct).toFixed(2) }}% {{ orderDistancePct < 0 ? '更低' : '更高' }}</p>
+        <p class="order-hint">入场单只做 Maker；盘口变化导致委托会立即成交时，交易所可能取消挂单。止盈止损触发后按市价执行。</p>
+        <p v-if="orderMode === 'pending'" class="order-hint">点击确认后立即向交易所提交限价单。价格触及时可能成交，无需等待上方复合触发条件。</p>
+        <p class="order-meta">杠杆 {{ orderLeverage }}x（最多 10x）</p>
         <p class="order-meta">
           止损 {{ fmtStancePrice(orderTarget.leg.stop) }} · 止盈
           {{ fmtStancePrice(orderTarget.leg.take_profit) }}
@@ -1350,16 +1206,16 @@ onUnmounted(() => {
           <button v-for="exchange in availableOrderExchanges" :key="exchange" type="button" :class="{ selected: selectedOrderExchange === exchange }" @click="selectedOrderExchange = exchange">{{ exchange === 'binance' ? '币安' : 'OKX' }}</button>
         </div>
         <el-alert v-else type="info" :closable="false" title="请先在左下角「API 设置」配置币安或 OKX API 密钥" />
-        <p class="order-hint">
-          使用限价 Maker 挂单：先取最新价，做多低于现价 / 做空高于现价挂单，并附带 AI 止损止盈。
-        </p>
+        <p v-if="orderPreviewBusy" class="order-hint">正在读取实时行情并核算订单…</p>
+        <el-alert v-if="orderPreviewError" type="error" :closable="false" :title="orderPreviewError" />
+        <p v-if="orderPreview" class="order-hint">预计到止损亏损 {{ Number(orderPreview.estimatedLossUsdt || 0).toFixed(2) }} USDT（未计费用与滑点）。止盈止损必须被交易所接受。</p>
       </div>
       <template #footer>
         <button type="button" class="dlg-btn ghost" @click="orderDialogVisible = false">取消</button>
         <button
           type="button"
           class="dlg-btn primary"
-          :disabled="orderSubmitting || !availableOrderExchanges.length"
+          :disabled="orderSubmitting || orderPreviewBusy || !orderPreview || !availableOrderExchanges.length"
           @click="confirmStanceOrder"
         >
           {{ orderSubmitting ? '挂单中…' : '确认挂单' }}
@@ -1475,9 +1331,9 @@ onUnmounted(() => {
 }
 
 .modal {
-  width: min(1120px, 100%);
-  height: 1000px;
-  max-height: min(1000px, 96vh);
+  width: min(800px, 100%);
+  height: 680px;
+  max-height: min(680px, 96vh);
   background: var(--card, #15191e);
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -1610,8 +1466,7 @@ onUnmounted(() => {
   gap: 8px;
 }
 
-.custom-input,
-.chat-input {
+.custom-input {
   flex: 1;
   min-width: 0;
   height: 36px;
@@ -1625,8 +1480,7 @@ onUnmounted(() => {
   outline: none;
 }
 
-.custom-input:focus,
-.chat-input:focus {
+.custom-input:focus {
   border-color: color-mix(in srgb, #6366f1 60%, var(--border));
 }
 
@@ -1647,8 +1501,7 @@ onUnmounted(() => {
   background: var(--panel-2);
 }
 
-.primary-btn,
-.send-btn {
+.primary-btn {
   height: 40px;
   border: none;
   border-radius: 10px;
@@ -1773,8 +1626,7 @@ onUnmounted(() => {
   background: rgba(246, 70, 93, 0.12);
 }
 
-.primary-btn:disabled,
-.send-btn:disabled {
+.primary-btn:disabled {
   opacity: 0.55;
   cursor: default;
 }
@@ -2366,6 +2218,27 @@ onUnmounted(() => {
   flex: 1;
 }
 
+.simple-result { display: flex; flex-direction: column; gap: 18px; }
+.simple-event { margin: 0; padding: 10px 13px; background: var(--panel-2); border-radius: 8px; font-size: 13px; line-height: 1.5; }
+.simple-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
+.simple-card { border: 1px solid var(--border); background: var(--panel); border-radius: 12px; padding: 16px; }
+.simple-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.simple-card-head .long { color: #21b67a; }
+.simple-card-head .short { color: #e46a68; }
+.simple-prices { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 14px 0; font-size: 13px; color: var(--muted); }
+.simple-prices b { color: var(--text); }
+.simple-note { color: var(--muted); font-size: 13px; line-height: 1.5; min-height: 38px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.simple-order-btn { width: 100%; margin-top: 4px; }
+.order-choice-row { display: flex; gap: 8px; }
+.order-choice-row .simple-order-btn { flex: 1; min-width: 0; font-size: 12px; }
+.entry-validation { margin: 6px 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; color: var(--muted); }
+.entry-validation summary { cursor: pointer; }
+.entry-validation p { margin: 5px 0; line-height: 1.45; }
+.quiet-analysis { color: var(--muted); padding: 28px 0; text-align: center; }
+.analysis-details { border-top: 1px solid var(--border); padding-top: 12px; }
+.analysis-details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.analysis-details .analysis-tabs-wrap { margin-top: 14px; }
+
 .analysis-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -2546,31 +2419,6 @@ onUnmounted(() => {
   padding-top: 12px;
 }
 
-.chat-panel {
-  flex-shrink: 0;
-  border-top: 1px solid var(--border);
-  background: color-mix(in srgb, var(--card) 88%, #6366f1 6%);
-  padding: 10px 14px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: min(42vh, 420px);
-  min-height: 280px;
-}
-
-.chat-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.chat-label {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--soft);
-}
-
 .ghost-sm {
   height: 28px;
   padding: 0 10px;
@@ -2578,70 +2426,11 @@ onUnmounted(() => {
   border-radius: 8px;
 }
 
-.chat-list {
-  flex: 1;
-  min-height: 160px;
-  max-height: none;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-right: 2px;
-}
-
-.chat-empty {
-  font-size: 12px;
-  color: var(--soft);
-  padding: 8px 2px;
-}
-
-.chat-bubble {
-  max-width: 92%;
-  padding: 8px 10px;
-  border-radius: 10px;
-  font-size: 13px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.chat-bubble.user {
-  align-self: flex-end;
-  background: color-mix(in srgb, #6366f1 35%, var(--panel));
-  color: var(--text);
-}
-
-.chat-bubble.assistant {
-  align-self: flex-start;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  color: var(--muted);
-}
-
-.chat-bubble.pending {
-  opacity: 0.75;
-  font-style: italic;
-}
-
-.chat-input-row {
-  display: flex;
-  gap: 8px;
-}
-
-.send-btn {
-  flex: 0 0 auto;
-  width: 72px;
-  height: 36px;
-}
-
 @media (max-width: 640px) {
   .modal {
-    height: min(1000px, 94vh);
+    height: min(680px, 94vh);
     max-height: 94vh;
     width: 100%;
-  }
-  .chat-panel {
-    max-height: 220px;
   }
 }
 </style>

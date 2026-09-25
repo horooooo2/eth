@@ -185,7 +185,14 @@ const libFiles = [
   'lib/tradfiMarkets.js',
   'lib/tradfiIntel.js',
   'lib/tradfiWhales.js',
+  'lib/tradfiAiTrade.js',
+  'lib/tradfiAiMonitor.js',
   'lib/binanceTradfiTrade.js',
+  'lib/binanceCryptoTrade.js',
+  'lib/okxTradeClient.js',
+  'lib/analysisResult.js',
+  'lib/cryptoAiOrderGate.js',
+  'lib/marketBrief.js',
   'lib/hyperliquid.js',
   'lib/onchain.js',
   'lib/exchangeLabels.js',
@@ -203,6 +210,8 @@ const libFiles = [
   'routes/whales.js',
   'routes/news.js',
   'routes/whaleAi.js',
+  'routes/binanceTrade.js',
+  'routes/okxTrade.js',
   'server.js',
 ];
 for (const rel of libFiles) {
@@ -221,9 +230,9 @@ const nodeDeployTxt = `巨鲸追踪 · 生产部署
 1. 进入 whale-tracker-deploy 目录
 2. npm install --omit=dev
 3. npm start
-   或 PORT=3000 node server.js
-浏览器访问 http://服务器IP:3000
-健康检查 http://服务器IP:3000/api/health
+   或 PORT=80 node server.js
+浏览器访问 http://服务器IP （默认 80 端口）
+健康检查 http://服务器IP/api/health
 
 二、EdgeOne Pages（当前站点 *.edgeone.cool）
 请上传 whale-tracker-edgeone 整个文件夹（必须含 cloud-functions）。

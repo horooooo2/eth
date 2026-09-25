@@ -4,7 +4,10 @@ const { getIntel } = require('../lib/tradfiIntel');
 const { getWhaleActivity, getAllWhaleActivity } = require('../lib/tradfiWhales');
 const { requireUser } = require('../lib/authStore');
 const { getBinanceCredentialsForUser } = require('../lib/userExchangeKeys');
-const { previewTradfiOrder, placeTradfiOrder } = require('../lib/binanceTradfiTrade');
+const { getRawAiKey } = require('../lib/userAiKeys');
+const { accountBook } = require('../lib/binanceCryptoTrade');
+const { analyzeTradfiAi, previewTradfiAi, placeTradfiAi, previewFingerprint } = require('../lib/tradfiAiTrade');
+const { isRunning: tradfiAiMonitorRunning } = require('../lib/tradfiAiMonitor');
 
 const router = express.Router();
 
@@ -54,38 +57,44 @@ router.get('/whales', async (req, res) => {
   }
 });
 
-router.post('/order/preview', async (req, res) => {
+router.get('/account', async (req, res) => {
   try {
     const user = requireUser(req);
     const creds = getBinanceCredentialsForUser(user.user.id);
-    const plan = await previewTradfiOrder(req.body || {});
-    res.json({ ok: true, configured: Boolean(creds), plan: { ...plan, testnet: creds?.simulated ?? null } });
-  } catch (err) {
-    res.status(err.status || 502).json({ error: err.message || '订单预览失败' });
-  }
+    if (!creds) return res.json({ ok: true, configured: false, scope: 'tradfi', balance: { totalEq: null, usdtEq: null, availBal: null }, openPnl: 0, historyPnl: null, records: [] });
+    const [book, catalog] = await Promise.all([accountBook(creds), getCatalog()]);
+    const symbols = new Set(catalog.symbols.map((row) => row.symbol));
+    const records = book.records.filter((row) => symbols.has(row.instId));
+    res.json({ ...book, scope: 'tradfi', records, openPnl: records.filter((row) => row.kind === 'position').reduce((sum, row) => sum + Number(row.openUpl || 0), 0) });
+  } catch (err) { res.status(err.status || 502).json({ error: err.message || 'TradFi 交易账户加载失败', code: err.code }); }
 });
 
-router.post('/order/test', async (req, res) => {
+router.post('/ai/analyze', async (req, res) => {
   try {
     const user = requireUser(req);
-    const creds = getBinanceCredentialsForUser(user.user.id);
-    if (!creds) return res.status(400).json({ error: '请先在 API 设置中配置币安 API 密钥' });
-    res.json(await placeTradfiOrder(creds, req.body || {}, true));
-  } catch (err) {
-    res.status(err.status || 502).json({ error: err.message || '币安测试下单失败', code: err.code });
-  }
+    const key = getRawAiKey(user.user.id, 'deepseek');
+    if (!key?.apiKey) throw Object.assign(new Error('请先在 API 设置中配置 DeepSeek API Key'), { status: 400 });
+    res.json({ ok: true, ...await analyzeTradfiAi(user.user.id, key.apiKey, req.body?.symbol, req.body?.mode) });
+  } catch (err) { res.status(err.status || 502).json({ error: err.message || 'TradFi AI 分析失败' }); }
 });
 
-router.post('/order', async (req, res) => {
+router.post('/ai/preview', async (req, res) => {
   try {
     const user = requireUser(req);
-    if (req.body?.confirm !== true) return res.status(400).json({ error: '请先确认订单参数' });
     const creds = getBinanceCredentialsForUser(user.user.id);
-    if (!creds) return res.status(400).json({ error: '请先在 API 设置中配置币安 API 密钥' });
-    res.json(await placeTradfiOrder(creds, req.body || {}));
-  } catch (err) {
-    res.status(err.status || 502).json({ error: err.message || '币安下单失败', code: err.code });
-  }
+    const preview = await previewTradfiAi(user.user.id, req.body?.analysisId);
+    res.json({ ok: true, configured: Boolean(creds), monitorReady: tradfiAiMonitorRunning(), simulated: creds?.simulated ?? null, preview, fingerprint: previewFingerprint(preview) });
+  } catch (err) { res.status(err.status || 502).json({ error: err.message || '整套挂单预览失败' }); }
+});
+
+router.post('/ai/place', async (req, res) => {
+  try {
+    const user = requireUser(req);
+    if (req.body?.confirm !== true) throw Object.assign(new Error('请先确认整套挂单'), { status: 400 });
+    const creds = getBinanceCredentialsForUser(user.user.id);
+    if (!creds) throw Object.assign(new Error('请先在 API 设置中配置币安 API 密钥'), { status: 400 });
+    res.json(await placeTradfiAi(creds, user.user.id, req.body?.analysisId, req.body?.fingerprint));
+  } catch (err) { res.status(err.status || 502).json({ error: err.message || '整套挂单提交失败', code: err.code }); }
 });
 
 module.exports = router;

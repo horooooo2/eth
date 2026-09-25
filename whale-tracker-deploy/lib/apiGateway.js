@@ -15,7 +15,7 @@ const {
 } = require('./whales');
 const { getNews, getNewsDetail } = require('./newsService');
 const { getCalendar } = require('./calendar');
-const { getMarkets, getQuotes, getLiquidations, lookupCoin, fetchFedOdds } = require('./markets');
+const { getMarkets, getQuotes, getLiquidations, lookupCoin, searchCoins, fetchFedOdds } = require('./markets');
 const { fetchWhaleAlerts } = require('./onchain');
 const { readConfig, writeConfig, setWhaleMode, normalizeAddress, normalizeMode } = require('./config');
 
@@ -249,6 +249,9 @@ async function dispatch(method, pathname, query, body) {
     const result = await lookupCoin(query.symbol);
     if (!result.ok) return json(404, { error: result.error || '币种输入错误，请检查后再试' });
     return json(200, result);
+  }
+  if (method === 'GET' && path === '/markets/search') {
+    return json(200, { items: await searchCoins(query.q) });
   }
   if (method === 'GET' && path === '/markets/whale-alerts') {
     const minUsd = Math.max(0, Number(query.minUsd) || 100_000);

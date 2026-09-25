@@ -979,12 +979,15 @@ export type MarketBriefStructured = {
     liquidations?: string;
     details?: string;
   };
+  event_reaction?: string;
   personal_stance?: {
     headline?: string;
     /** 开单依据维度，如 市场情绪 / 新闻内容 / 小时线走势 */
     basis?: string[];
     ultra_short?: {
       action?: string;
+      execution?: string;
+      trigger?: string;
       entry?: number | null;
       leverage?: number | null;
       stop?: number | null;
@@ -993,6 +996,9 @@ export type MarketBriefStructured = {
     };
     short?: {
       action?: string;
+      execution?: string;
+      trigger?: string;
+      entry_validation?: { technical?: string; sentiment?: string; news_macro?: string; positioning?: string; decision?: string };
       entry?: number | null;
       leverage?: number | null;
       stop?: number | null;
@@ -1001,6 +1007,9 @@ export type MarketBriefStructured = {
     };
     mid_long?: {
       action?: string;
+      execution?: string;
+      trigger?: string;
+      entry_validation?: { technical?: string; sentiment?: string; news_macro?: string; positioning?: string; decision?: string };
       entry?: number | null;
       leverage?: number | null;
       stop?: number | null;
@@ -1540,21 +1549,29 @@ export async function deleteBinanceKeys() {
   return data;
 }
 
-export type TradfiOrderInput = { symbol: string; side: 'BUY' | 'SELL'; type: 'LIMIT' | 'MARKET'; marginUsdt: number; leverage: number; price?: number };
-export type TradfiOrderPlan = TradfiOrderInput & { quantity: string; price: string | null; referencePrice: number; estimatedNotional: number; testnet: boolean | null };
-
-export async function previewTradfiOrder(body: TradfiOrderInput) {
-  const { data } = await http.post<{ ok: boolean; configured: boolean; plan: TradfiOrderPlan }>('/tradfi/order/preview', body, { timeout: 20000 });
+export type TradfiAiLeg = { level: number; price: number; marginUsdt: number; reason: string; quantity?: string; notionalUsdt?: number };
+export type TradfiAiPlan = {
+  decision: '可挂单' | '可试探' | '暂缓'; marketState: '趋势' | '震荡' | '不明确'; direction: 'BUY' | 'SELL' | null; reason: string;
+  shortView: string; longView: string; dayView?: string; evidence: string[]; mode: 'single' | 'ladder' | 'probe';
+  fundamentalBias: string; thesis: string; invalidation: string; rangeLow: number | null; rangeHigh: number | null;
+  leverage?: number; stop?: number; takeProfit?: number; orders: TradfiAiLeg[]; totalMarginUsdt?: number;
+};
+export type TradfiAiAnalysis = { analysisId: string; symbol: string; context: { referencePrice: number; markPrice: number | null; indexPrice: number | null; underlyingSession: { type: string; nextChangeAt: number | null }; dataStatus: Record<string, string> }; plan: TradfiAiPlan };
+export type TradfiAiPreview = {
+  analysisId: string; symbol: string; mode: 'single' | 'ladder' | 'probe'; direction: 'BUY' | 'SELL'; leverage: number;
+  last: number; orders: TradfiAiLeg[]; stopPrice: string; takePrice: string; totalMarginUsdt: number;
+  totalNotionalUsdt: number; estimatedLossUsdt: number; averagePrice: number; expiresAt: number;
+};
+export async function analyzeTradfiAi(symbol: string, mode: 'single' | 'ladder') {
+  const { data } = await http.post<{ ok: boolean } & TradfiAiAnalysis>('/tradfi/ai/analyze', { symbol, mode }, { timeout: 150_000 });
   return data;
 }
-
-export async function submitTradfiOrder(body: TradfiOrderInput, plan: TradfiOrderPlan, testOnly = false) {
-  const { data } = await http.post<{ ok: boolean; testOnly: boolean; simulated: boolean; plan: TradfiOrderPlan; leverage: number | null; order: Record<string, unknown> }>(
-    testOnly ? '/tradfi/order/test' : '/tradfi/order', {
-      ...body, confirm: true, expectedQuantity: plan.quantity,
-      expectedPrice: plan.price, expectedReferencePrice: plan.referencePrice, expectedTestnet: plan.testnet,
-    }, { timeout: 45000 },
-  );
+export async function previewTradfiAi(analysisId: string) {
+  const { data } = await http.post<{ ok: boolean; configured: boolean; monitorReady: boolean; simulated: boolean | null; preview: TradfiAiPreview; fingerprint: string }>('/tradfi/ai/preview', { analysisId }, { timeout: 25_000 });
+  return data;
+}
+export async function submitTradfiAi(analysisId: string, fingerprint: string) {
+  const { data } = await http.post<{ ok: boolean; simulated: boolean; orders: Array<{ orderId: number; status: string; price: number }>; protections: Array<{ algoId: number; kind: string }> }>('/tradfi/ai/place', { analysisId, fingerprint, confirm: true }, { timeout: 90_000 });
   return data;
 }
 
@@ -1583,7 +1600,7 @@ export type OkxAiBook = {
   ok: boolean;
   configured?: boolean;
   simulated?: boolean;
-  scope: 'ai-only' | 'all';
+  scope: 'ai-only' | 'all' | 'tradfi';
   balance: {
     totalEq: number | null;
     usdtEq: number | null;
@@ -1604,15 +1621,38 @@ export async function fetchBinanceAccountBook() {
   return data;
 }
 
+export async function fetchTradfiAccountBook() {
+  const { data } = await http.get<OkxAiBook>('/tradfi/account', { timeout: 30_000 });
+  return data;
+}
+
 export async function cancelBinanceOrder(body: { symbol: string; orderId: string }) {
   const { data } = await http.post<{ ok: boolean }>('/binance/trade/cancel', body);
   return data;
 }
 
-export async function placeBinanceStanceOrder(body: {
+export type CryptoStanceOrderInput = {
   coin: string; action: string; entry: number; stop: number; takeProfit: number;
-  leverage: number; amountUsd: number;
-}) {
+  leverage: number; amountUsd: number; execution: string; expectedPrice?: number;
+  analysisId: string; horizon: 'short' | 'mid_long'; orderMode?: 'direct' | 'pending';
+};
+
+export type CryptoStancePreview = {
+  ok: boolean;
+  plan: { price?: string; entry?: number; last?: number; orderMode?: 'direct' | 'pending'; leverage: number; marginUsdt?: number; amountUsd?: number; estimatedLossUsdt?: number; stopPrice?: string; takePrice?: string; stop?: number; takeProfit?: number; notionalUsdt?: number; notional?: number };
+};
+
+export async function previewBinanceStanceOrder(body: CryptoStanceOrderInput) {
+  const { data } = await http.post<CryptoStancePreview>('/binance/trade/stance-preview', body, { timeout: 30_000 });
+  return data;
+}
+
+export async function previewOkxStanceOrder(body: CryptoStanceOrderInput) {
+  const { data } = await http.post<CryptoStancePreview>('/okx/trade/stance-preview', body, { timeout: 30_000 });
+  return data;
+}
+
+export async function placeBinanceStanceOrder(body: CryptoStanceOrderInput) {
   const { data } = await http.post<OkxStanceOrderResult>('/binance/trade/stance-order', body, { timeout: 90_000 });
   return data;
 }
@@ -1632,15 +1672,7 @@ export async function fetchOkxTradeStatus() {
   return data;
 }
 
-export async function placeOkxStanceOrder(body: {
-  coin: string;
-  action: string;
-  entry: number;
-  stop: number;
-  takeProfit: number;
-  leverage: number;
-  amountUsd: number;
-}) {
+export async function placeOkxStanceOrder(body: CryptoStanceOrderInput) {
   const { data } = await http.post<{
     ok: boolean;
     order?: Record<string, unknown> | null;
@@ -1674,15 +1706,7 @@ export type OkxStanceOrderResult = {
 
 /** SSE 挂单：取价 → 限价 Maker → 止损止盈 */
 export async function streamOkxStanceOrder(
-  body: {
-    coin: string;
-    action: string;
-    entry: number;
-    stop: number;
-    takeProfit: number;
-    leverage: number;
-    amountUsd: number;
-  },
+  body: CryptoStanceOrderInput,
   handlers: {
     onStage?: (stage: OkxStanceOrderStage) => void;
     onDone?: (data: OkxStanceOrderResult) => void;
