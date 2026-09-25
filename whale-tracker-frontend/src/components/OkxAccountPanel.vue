@@ -74,6 +74,17 @@ function rowPnl(row?: OkxAiOrderRecord) {
   return null;
 }
 
+function entryPrice(row?: OkxAiOrderRecord) {
+  if (!row || row.px == null || !Number.isFinite(Number(row.px))) return '—';
+  return Number(row.px).toLocaleString('zh-CN', { maximumFractionDigits: 8 });
+}
+
+function groupMode(group: TradfiGroup) {
+  if (group.long?.kind === 'pending' || group.short?.kind === 'pending') return '含挂单';
+  if (group.long && group.short) return '双向持仓';
+  return '单向持仓';
+}
+
 async function load(silent = false) {
   if (!props.bootReady || props.active === false) return;
   const seq = ++reqSeq;
@@ -163,20 +174,39 @@ defineExpose({ reload: () => load(true) });
     <el-skeleton v-else-if="loading && !book" :rows="6" animated class="pad" />
     <el-empty v-else-if="!book?.records.length" :description="props.exchange === 'tradfi' ? '暂无策略开单记录' : '暂无 AI 开单记录'" class="pad" />
     <div v-else-if="props.exchange === 'tradfi'" class="order-list tradfi-order-list">
-      <article v-for="group in tradfiGroups" :key="group.instId" class="tradfi-position-row">
-        <div class="tradfi-position-head"><strong>{{ group.coin }}</strong><span>{{ group.long?.kind === 'pending' || group.short?.kind === 'pending' ? '含挂单' : '双向仓位' }}</span></div>
-        <div class="tradfi-sides">
-          <section class="tradfi-side long">
-            <div><b>多头</b><em>{{ group.long?.kind === 'pending' ? '挂单中' : group.long ? '持仓中' : '—' }}</em></div>
-            <strong>{{ group.long ? plainAmount(group.long.px) : '—' }}</strong>
-            <small>名义 {{ group.long ? notionalAmount(group.long) : '—' }} · {{ group.long?.leverage ? group.long.leverage + 'x' : '—' }}</small>
-            <small :class="valueClass(rowPnl(group.long))">盈亏 {{ group.long ? formatSignedUsd(rowPnl(group.long)) : '—' }}</small>
+      <article v-for="group in tradfiGroups" :key="group.instId" class="asset-card">
+        <div class="asset-header">
+          <span>{{ group.coin }}</span>
+          <span class="asset-mode">{{ groupMode(group) }}</span>
+        </div>
+        <div class="position-row">
+          <section class="position-side">
+            <div class="side-header"><span class="side-badge long">多头</span></div>
+            <div class="position-details">
+              <span class="label">持仓价</span>
+              <span class="value">
+                {{ group.long ? entryPrice(group.long) : '—' }}
+                <span v-if="group.long?.leverage" class="leverage-tag">{{ group.long.leverage }}x</span>
+              </span>
+              <span class="label">名义价值</span>
+              <span class="value">{{ group.long ? notionalAmount(group.long) : '—' }}</span>
+              <span class="label">盈亏</span>
+              <span class="value" :class="valueClass(rowPnl(group.long))">{{ group.long ? formatSignedUsd(rowPnl(group.long)) : '—' }}</span>
+            </div>
           </section>
-          <section class="tradfi-side short">
-            <div><b>空头</b><em>{{ group.short?.kind === 'pending' ? '挂单中' : group.short ? '持仓中' : '—' }}</em></div>
-            <strong>{{ group.short ? plainAmount(group.short.px) : '—' }}</strong>
-            <small>名义 {{ group.short ? notionalAmount(group.short) : '—' }} · {{ group.short?.leverage ? group.short.leverage + 'x' : '—' }}</small>
-            <small :class="valueClass(rowPnl(group.short))">盈亏 {{ group.short ? formatSignedUsd(rowPnl(group.short)) : '—' }}</small>
+          <section class="position-side">
+            <div class="side-header"><span class="side-badge short">空头</span></div>
+            <div class="position-details">
+              <span class="label">持仓价</span>
+              <span class="value">
+                {{ group.short ? entryPrice(group.short) : '—' }}
+                <span v-if="group.short?.leverage" class="leverage-tag">{{ group.short.leverage }}x</span>
+              </span>
+              <span class="label">名义价值</span>
+              <span class="value">{{ group.short ? notionalAmount(group.short) : '—' }}</span>
+              <span class="label">盈亏</span>
+              <span class="value" :class="valueClass(rowPnl(group.short))">{{ group.short ? formatSignedUsd(rowPnl(group.short)) : '—' }}</span>
+            </div>
           </section>
         </div>
       </article>
@@ -382,18 +412,73 @@ defineExpose({ reload: () => load(true) });
 .detail-value {
   color: var(--text);
 }
-.tradfi-order-list { gap: 10px; }
-.tradfi-position-row { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-.tradfi-position-head { display: flex; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--border); }
-.tradfi-position-head strong { color: var(--text); }
-.tradfi-position-head span { color: var(--muted); font-size: 11px; }
-.tradfi-sides { display: grid; grid-template-columns: 1fr 1fr; }
-.tradfi-side { display: flex; flex-direction: column; gap: 5px; padding: 11px 12px; min-width: 0; font-variant-numeric: tabular-nums; }
-.tradfi-side + .tradfi-side { border-left: 1px solid var(--border); }
-.tradfi-side > div { display: flex; justify-content: space-between; font-size: 12px; }
-.tradfi-side.long b { color: var(--green); }
-.tradfi-side.short b { color: var(--red); }
-.tradfi-side em { color: var(--muted); font-style: normal; font-size: 11px; }
-.tradfi-side > strong { color: var(--text); font-size: 13px; }
-.tradfi-side small { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tradfi-order-list { gap: 16px; }
+.asset-card {
+  background: var(--panel-2);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.asset-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--text);
+}
+.asset-mode {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 400;
+}
+.position-row { display: grid; grid-template-columns: 1fr 1fr; }
+.position-side {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.position-side:first-child { border-right: 1px solid var(--border); }
+.side-header { display: flex; justify-content: space-between; align-items: center; }
+.side-badge {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.side-badge.long {
+  background: color-mix(in srgb, var(--green) 10%, transparent);
+  color: var(--green);
+}
+.side-badge.short {
+  background: color-mix(in srgb, var(--red) 10%, transparent);
+  color: var(--red);
+}
+.position-details {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 16px;
+  font-size: 13px;
+  align-items: center;
+}
+.position-details .label { color: var(--muted); }
+.position-details .value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.position-details .value.gain { color: var(--green); }
+.position-details .value.loss { color: var(--red); }
+.leverage-tag {
+  font-size: 11px;
+  background: var(--border);
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: var(--muted);
+  margin-left: 6px;
+}
 </style>

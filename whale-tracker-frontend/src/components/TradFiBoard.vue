@@ -265,8 +265,25 @@ function tradeDirection(row: BinanceAiTradeRecord) {
   const direction = row.posSide === 'short' ? '空' : row.posSide === 'long' ? '多' : row.side === 'sell' ? '空' : '多';
   return `${direction}${row.action === 'close' ? '平仓' : '开仓'}`;
 }
+function tradeTagClass(row: BinanceAiTradeRecord) {
+  return row.posSide === 'short' || (row.posSide !== 'long' && row.side === 'sell') ? 'short' : 'long';
+}
 function tradeAmount(value: number | null) { return value == null ? '—' : `${value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })} U`; }
 function tradePrice(value: number | null) { return value == null ? '—' : value.toLocaleString('zh-CN', { maximumFractionDigits: 6 }); }
+function tradeTime(raw: number | null) {
+  if (!raw) return '—';
+  const date = new Date(raw);
+  if (!Number.isFinite(date.getTime())) return '—';
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mi = String(date.getMinutes()).padStart(2, '0');
+  return `${mm}/${dd} ${hh}:${mi}`;
+}
+function pnlClass(value: number | null) {
+  if (value == null || !Number.isFinite(value) || value === 0) return 'pnl-zero';
+  return value > 0 ? 'pnl-positive' : 'pnl-negative';
+}
 async function toggleStrategy() {
   if (!strategySupported.value || strategyBusy.value) return;
   strategyBusy.value = true; strategyError.value = '';
@@ -346,27 +363,53 @@ async function closeAllPositions() {
       </section>
 
       <div class="main-grid">
-        <section class="panel records-column">
-          <div class="panel-head"><div><div class="panel-title">交易记录</div><div class="panel-sub">币安成交仓位明细</div></div><span class="section-tag">{{ tradeRows.length }} 条</span></div>
-          <div class="trade-records">
-            <article v-for="row in tradeRows" :key="row.tradeId" class="trade-record">
-              <div class="trade-record-head">
-                <strong>{{ row.coin }}</strong>
-                <span :class="row.posSide === 'short' ? 'down' : 'up'">{{ tradeDirection(row) }}</span>
-                <time>{{ newsTime(row.createdAt) }}</time>
+        <section class="panel history-panel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">交易记录</div>
+              <div class="panel-sub">币安成交仓位明细</div>
+            </div>
+            <div class="panel-count">{{ tradeRows.length }} 条</div>
+          </div>
+          <div class="history-list">
+            <article v-for="row in tradeRows" :key="row.tradeId" class="record-card">
+              <div class="record-header">
+                <div>
+                  <span class="record-symbol">{{ row.coin }}</span>
+                  <span class="tag" :class="tradeTagClass(row)">{{ tradeDirection(row) }}</span>
+                </div>
+                <span class="record-time">{{ tradeTime(row.createdAt) }}</span>
               </div>
-              <div class="trade-record-grid">
-                <span>成交价 <b>{{ tradePrice(row.px) }}</b></span>
-                <span>成交额 <b>{{ tradeAmount(row.amountUsd) }}</b></span>
-                <span>数量 <b>{{ row.sz }}</b></span>
-                <span>已实现盈亏 <b :class="row.realizedPnl >= 0 ? 'up' : 'down'">{{ tradeAmount(row.realizedPnl) }}</b></span>
+              <div class="record-grid">
+                <div class="data-item">
+                  <span class="data-label">成交价</span>
+                  <span class="data-value">{{ tradePrice(row.px) }}</span>
+                </div>
+                <div class="data-item">
+                  <span class="data-label">成交额</span>
+                  <span class="data-value">{{ tradeAmount(row.amountUsd) }}</span>
+                </div>
+                <div class="data-item">
+                  <span class="data-label">数量</span>
+                  <span class="data-value">{{ row.sz }}</span>
+                </div>
+                <div class="data-item">
+                  <span class="data-label">已实现盈亏</span>
+                  <span class="data-value" :class="pnlClass(row.realizedPnl)">{{ tradeAmount(row.realizedPnl) }}</span>
+                </div>
               </div>
             </article>
             <div v-if="!tradeRows.length" class="empty">暂无该标的策略成交记录</div>
           </div>
         </section>
-        <section class="panel account-column">
-          <div class="panel-head"><div><div class="panel-title">交易账户</div><div class="panel-sub">币安 · TradFi 自动策略持仓与挂单</div></div><button type="button" class="btn sm close-all-btn" :disabled="closingAll" @click="closeAllPositions">{{ closingAll ? '提交中…' : '一键平仓' }}</button></div>
+        <section class="panel account-panel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">交易账户</div>
+              <div class="panel-sub">币安 · TradFi 自动策略持仓与挂单</div>
+            </div>
+            <button type="button" class="btn-close-all" :disabled="closingAll" @click="closeAllPositions">{{ closingAll ? '提交中…' : '一键平仓' }}</button>
+          </div>
           <OkxAccountPanel ref="accountPanel" exchange="tradfi" :boot-ready="true" :active="active !== false" @loaded="onAccountLoaded" />
         </section>
 
@@ -522,25 +565,95 @@ async function closeAllPositions() {
 .btn.sm { padding: 7px 10px; }
 .btn.ghost { background: transparent; }
 .btn:disabled { opacity: 0.5; cursor: default; }
-.panel { background: var(--card); border: 1px solid var(--border); border-radius: 10px; min-width: 0; overflow: hidden; }
-.panel-head { padding: 16px 18px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 15px; }
-.panel-title { font-size: 15px; font-weight: 750; }
-.panel-sub { font-size: 10px; color: var(--muted); margin-top: 5px; }
+.panel { background: var(--card); border: 1px solid var(--border); border-radius: 8px; min-width: 0; overflow: hidden; }
+.panel-head { padding: 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 15px; }
+.panel-title { font-size: 16px; font-weight: 600; }
+.panel-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.panel-count { font-size: 12px; color: var(--muted); margin: 0; }
 .section-tag { color: var(--yellow); font-size: 10px; font-weight: 700; }
-.main-grid { display: grid; grid-template-columns: minmax(270px, .78fr) minmax(0, 1.65fr) minmax(320px, .9fr); gap: 12px; flex: 1; min-height: 0; }
+.main-grid { display: grid; grid-template-columns: minmax(300px, 360px) minmax(0, 1.65fr) minmax(320px, .9fr); gap: 16px; flex: 1; min-height: 0; }
 .main-grid > .panel { display: flex; flex-direction: column; min-height: 0; }
 .main-grid .panel-head, .main-grid .feed-tools, .main-grid .panel-foot { flex-shrink: 0; }
-.account-column :deep(.okx-panel) { flex: 1; height: auto; min-height: 0; }
-.account-column :deep(.account-summary) { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 12px; }
-.account-column :deep(.order-list) { padding: 10px 12px; }
-.account-column :deep(.order-card) { padding: 12px; }
-.trade-records { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 12px; }
-.trade-record { padding: 11px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
-.trade-record-head { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.trade-record-head time { margin-left: auto; color: var(--muted); font-size: 10px; }
-.trade-record-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 10px; margin-top: 9px; color: var(--muted); font-size: 11px; }
-.trade-record-grid b { display: block; margin-top: 2px; color: var(--text); font-weight: 600; }
-.close-all-btn { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, var(--border)); }
+.history-panel { min-width: 0; }
+.history-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.history-list::-webkit-scrollbar { width: 6px; }
+.history-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.record-card {
+  background: var(--panel-2);
+  border-radius: 6px;
+  padding: 12px;
+  border: 1px solid transparent;
+  transition: background-color .2s, border-color .2s;
+}
+.record-card:hover {
+  background: color-mix(in srgb, var(--panel-3) 80%, var(--panel-2));
+  border-color: var(--border);
+}
+.record-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+.record-symbol { font-weight: 600; font-size: 14px; }
+.tag {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  margin-left: 6px;
+}
+.tag.long { background: color-mix(in srgb, var(--green) 10%, transparent); color: var(--green); }
+.tag.short { background: color-mix(in srgb, var(--red) 10%, transparent); color: var(--red); }
+.record-time { color: color-mix(in srgb, var(--muted) 70%, transparent); font-size: 12px; }
+.record-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; font-size: 12px; }
+.data-item { display: flex; flex-direction: column; gap: 4px; }
+.data-label { color: var(--muted); font-size: 11px; }
+.data-value { font-variant-numeric: tabular-nums; font-weight: 500; color: var(--text); }
+.pnl-positive { color: var(--green); }
+.pnl-negative { color: var(--red); }
+.pnl-zero { color: var(--muted); opacity: .6; }
+.btn-close-all {
+  background: transparent;
+  color: var(--red);
+  border: 1px solid var(--red);
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background-color .2s;
+}
+.btn-close-all:hover:not(:disabled) { background: color-mix(in srgb, var(--red) 10%, transparent); }
+.btn-close-all:disabled { opacity: .5; cursor: default; }
+.account-panel :deep(.okx-panel) { flex: 1; height: auto; min-height: 0; background: transparent; }
+.account-panel :deep(.account-note) { display: none; }
+.account-panel :deep(.account-summary) {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.account-panel :deep(.data-card) {
+  background: var(--panel-2);
+  padding: 16px;
+  border-radius: 6px;
+  border: 0;
+}
+.account-panel :deep(.data-card:hover) { border: 0; }
+.account-panel :deep(.data-label) { font-size: 12px; margin-bottom: 8px; }
+.account-panel :deep(.data-value) { font-size: 22px; font-weight: 700; margin-bottom: 0; }
+.account-panel :deep(.data-sub) { margin-top: 6px; color: color-mix(in srgb, var(--muted) 70%, transparent); }
+.account-panel :deep(.tradfi-order-list) { padding: 16px; gap: 16px; }
 .strategy-state { display: flex; justify-content: space-between; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); }
 .strategy-state span { color: var(--muted); }
 .strategy-config { display: flex; align-items: end; gap: 12px; margin: 14px 0; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel-2); }
@@ -598,6 +711,9 @@ async function closeAllPositions() {
   .content { padding: 12px 0; }
   .main-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(360px, 50vh) minmax(420px, 55vh) minmax(320px, 45vh); }
   .main-grid > .panel:last-child { grid-column: auto; }
+  .account-panel :deep(.account-summary) { grid-template-columns: 1fr; }
+  .account-panel :deep(.position-row) { grid-template-columns: 1fr; }
+  .account-panel :deep(.position-side:first-child) { border-right: 0; border-bottom: 1px solid var(--border); }
   .news-item { grid-template-columns: 60px minmax(0, 1fr); }
   .news-mark { display: none; }
   .dialog-scroll { padding: 14px; }
