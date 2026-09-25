@@ -8,7 +8,7 @@ function candles(start, count, step, spread = 2) {
   });
 }
 
-const { marketState, ladderStep, requestedConfig, isPostOnlyReject, MAX_ADDITIONS, MARGIN, LEVERAGE } = require('../lib/tradfiRangeStrategy');
+const { marketState, ladderStep, requestedConfig, isPostOnlyReject, isRequestTimeout, MAX_ADDITIONS, MARGIN, LEVERAGE } = require('../lib/tradfiRangeStrategy');
 
 test('黄金窄幅结构允许震荡监控，明显单边结构识别为趋势', () => {
   const range15 = candles(1800, 48, 0.02, 2);
@@ -41,4 +41,9 @@ test('识别币安 Post Only Maker 拒单并允许安全换价重试', () => {
   assert.equal(isPostOnlyReject({ code: -5022, message: 'rejected' }), true);
   assert.equal(isPostOnlyReject({ message: 'Due to the order could not be executed as maker, the Post Only order will be rejected.' }), true);
   assert.equal(isPostOnlyReject({ code: -2013, message: 'Order does not exist.' }), false);
+});
+
+test('识别币安请求超时，以便平仓后的下一轮恢复', () => {
+  assert.equal(isRequestTimeout({ message: 'timeout of 12000ms exceeded' }), true);
+  assert.equal(isRequestTimeout({ message: 'Order does not exist.' }), false);
 });

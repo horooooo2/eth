@@ -69,6 +69,7 @@ function publicRow(row) {
     maxAdditions: MAX_ADDITIONS, marginPerOrder: config.marginUsdt, leverage: config.leverage, cycleId: s.cycleId || null,
     comboPnl: s.comboPnl ?? null, netPnl: s.netPnl ?? null, closeTrigger: s.closeTrigger ?? null,
     costs: s.costs || null, addStep: s.addStep ?? null, lastPrice: s.lastPrice ?? null, range: s.range || null,
+    cooldownUntil: s.cooldownUntil ?? null,
     lastError: row.last_error || '', startedAt: row.started_at, updatedAt: row.updated_at };
 }
 function status(userId, symbol) {
@@ -148,6 +149,7 @@ function positionsOf(rows, symbol) {
 }
 function qty(row) { return Math.abs(Number(row?.positionAmt || 0)); }
 function closeEnough(a, b) { return Math.abs(Number(a) - Number(b)) <= Math.max(1e-9, Number(b) * 0.00001); }
+function isRequestTimeout(err) { return /timeout of \d+ms exceeded|timeout/i.test(String(err?.message || err || '')); }
 async function orderQty(symbol, price, config) {
   const rules = await symbolRules(symbol);
   const lot = new Map((rules?.filters || []).map((f) => [f.filterType, f])).get('LOT_SIZE');
@@ -339,7 +341,22 @@ async function reconcileRow(row) {
   }
   const risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: row.symbol });
   const pos = positionsOf(risk, row.symbol);
-  if (!qty(pos.long) || !qty(pos.short)) throw invalid('双向仓位不完整，策略转人工接管', 409);
+  if (!qty(pos.long) || !qty(pos.short)) {
+    // A Binance timeout after the market-close request is indeterminate: the
+    // exchange can fill both legs while the HTTP response never arrives. The
+    // next poll then sees an empty account. Resume the next cycle only for this
+    // known timeout recovery case; manual closes still remain under manual control.
+    if (!qty(pos.long) && !qty(pos.short) && isRequestTimeout(row.last_error)
+      && Number(state.expectedLong || 0) > 0 && Number(state.expectedShort || 0) > 0) {
+      save(row, { status: 'waiting', additions: 0, last_error: '' }, {
+        entries: [], pending: null, expectedLong: 0, expectedShort: 0,
+        comboPnl: 0, cooldownUntil: Date.now() + COOLDOWN_MS,
+      });
+      log(row.user_id, row.symbol, '平仓请求超时，但交易所已确认双向仓位归零；策略将在冷却后开启下一轮', 'warn');
+      return;
+    }
+    throw invalid('双向仓位不完整，策略转人工接管', 409);
+  }
   if (row.status === 'add_pending' && state.pending) {
     const current = await orderState(creds, row.symbol, state.pending);
     if (current.status === 'FILLED') {
@@ -396,4 +413,4 @@ async function reconcile() {
 }
 function start() { if (timer) return; timer = setInterval(() => { void reconcile(); }, POLL_MS); timer.unref?.(); void reconcile(); }
 
-module.exports = { start, reconcile, status, enable, disable, closeAll, marketState, atr, ladderStep, costState, strategyConfig, requestedConfig, isPostOnlyReject, SYMBOLS, MAX_ADDITIONS, MARGIN, LEVERAGE, MAX_MARGIN, MAX_LEVERAGE };
+module.exports = { start, reconcile, status, enable, disable, closeAll, marketState, atr, ladderStep, costState, strategyConfig, requestedConfig, isPostOnlyReject, isRequestTimeout, SYMBOLS, MAX_ADDITIONS, MARGIN, LEVERAGE, MAX_MARGIN, MAX_LEVERAGE };

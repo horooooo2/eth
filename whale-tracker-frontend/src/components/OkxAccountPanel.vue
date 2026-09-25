@@ -17,7 +17,10 @@ const cancelingId = ref('');
 let timer: ReturnType<typeof setInterval> | null = null;
 let reqSeq = 0;
 
-type TradfiGroup = { instId: string; coin: string; long?: OkxAiOrderRecord; short?: OkxAiOrderRecord };
+type TradfiStrategy = NonNullable<OkxAiBook['strategies']>[number];
+type TradfiGroup = { instId: string; coin: string; long?: OkxAiOrderRecord; short?: OkxAiOrderRecord; strategy?: TradfiStrategy };
+const clock = ref(Date.now());
+let clockTimer: ReturnType<typeof setInterval> | null = null;
 const tradfiGroups = computed<TradfiGroup[]>(() => {
   const bySymbol = new Map<string, TradfiGroup>();
   for (const row of book.value?.records || []) {
@@ -29,6 +32,15 @@ const tradfiGroups = computed<TradfiGroup[]>(() => {
     const current = group[side];
     if (!current || (current.kind !== 'position' && row.kind === 'position')) group[side] = row;
     bySymbol.set(key, group);
+  }
+  for (const strategy of book.value?.strategies || []) {
+    if (!strategy.enabled) continue;
+    const group = bySymbol.get(strategy.symbol) || {
+      instId: strategy.symbol,
+      coin: strategy.symbol === 'XAUUSDT' ? '黄金（GOLD）' : strategy.symbol === 'XAGUSDT' ? '白银（SILVER）' : strategy.symbol,
+    };
+    group.strategy = strategy;
+    bySymbol.set(strategy.symbol, group);
   }
   return [...bySymbol.values()];
 });
@@ -80,9 +92,23 @@ function entryPrice(row?: OkxAiOrderRecord) {
 }
 
 function groupMode(group: TradfiGroup) {
+  const strategy = group.strategy;
+  if (strategy?.status === 'waiting') {
+    const remaining = Number(strategy.cooldownUntil || 0) - clock.value;
+    if (remaining > 0) return `冷却检查 · ${countdown(remaining)} 后检查开仓`;
+    return '检查震荡条件';
+  }
+  if (strategy?.status === 'entry_pending') return '等待双向底仓成交';
+  if (strategy?.status === 'add_pending') return `第 ${(strategy.additions || 0) + 1} 档补仓挂单中`;
+  if (strategy?.status === 'active') return `策略运行中 · 已补 ${strategy.additions || 0} 档`;
   if (group.long?.kind === 'pending' || group.short?.kind === 'pending') return '含挂单';
   if (group.long && group.short) return '双向持仓';
   return '单向持仓';
+}
+
+function countdown(ms: number) {
+  const seconds = Math.max(0, Math.ceil(ms / 1000));
+  return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
 async function load(silent = false) {
@@ -143,7 +169,8 @@ watch(
   { immediate: true },
 );
 
-onUnmounted(stopPoll);
+clockTimer = setInterval(() => { clock.value = Date.now(); }, 1000);
+onUnmounted(() => { stopPoll(); if (clockTimer) clearInterval(clockTimer); });
 defineExpose({ reload: () => load(true) });
 </script>
 
@@ -171,7 +198,7 @@ defineExpose({ reload: () => load(true) });
     <el-alert v-if="error" type="warning" :closable="false" :title="error" class="alert" />
     <el-alert v-else-if="book?.configured === false" type="info" :closable="false" title="请先在左下角「API 设置」配置币安 API 密钥" class="alert" />
     <el-skeleton v-else-if="loading && !book" :rows="6" animated class="pad" />
-    <el-empty v-else-if="!book?.records.length" :description="props.exchange === 'tradfi' ? '暂无策略开单记录' : '暂无 AI 开单记录'" class="pad" />
+    <el-empty v-else-if="props.exchange === 'tradfi' ? !tradfiGroups.length : !book?.records.length" :description="props.exchange === 'tradfi' ? '暂无运行中的策略或策略开单记录' : '暂无 AI 开单记录'" class="pad" />
     <div v-else-if="props.exchange === 'tradfi'" class="order-list tradfi-order-list">
       <article v-for="group in tradfiGroups" :key="group.instId" class="asset-card">
         <div class="asset-header">
@@ -211,7 +238,7 @@ defineExpose({ reload: () => load(true) });
       </article>
     </div>
     <div v-else class="order-list">
-      <article v-for="row in book.records" :key="(row.kind || 'row') + ':' + row.ordId" class="order-card">
+      <article v-for="row in (book?.records || [])" :key="(row.kind || 'row') + ':' + row.ordId" class="order-card">
         <div class="order-main">
           <span class="coin-name">{{ row.coin || row.instId }}</span>
           <span class="tag" :class="row.kind === 'pending' ? 'tag-pending' : 'tag-pos'">

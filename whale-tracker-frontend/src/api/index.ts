@@ -1555,7 +1555,7 @@ export type TradfiRangeStatus = {
   marginPerOrder: number; leverage: number; comboPnl?: number | null; lastPrice?: number | null;
   netPnl?: number | null; closeTrigger?: number | null; addStep?: number | null;
   costs?: { entryFee: number; exitFee: number; slippage: number; fundingNet: number; estimatedCosts: number; profitTarget: number; closeTrigger: number; netPnl: number } | null;
-  range?: { low: number; high: number } | null; lastError?: string; startedAt?: number | null; updatedAt?: number | null;
+  range?: { low: number; high: number } | null; cooldownUntil?: number | null; lastError?: string; startedAt?: number | null; updatedAt?: number | null;
 };
 export type TradfiRangeResponse = { ok: boolean; strategy: TradfiRangeStatus; events: TradfiRangeEvent[] };
 export async function fetchTradfiRangeStatus(symbol: string) {
@@ -1614,6 +1614,7 @@ export type OkxAiBook = {
   historyPnl: number | null;
   records: OkxAiOrderRecord[];
   trades?: BinanceAiTradeRecord[];
+  strategies?: TradfiRangeStatus[];
 };
 
 export type BinanceAiTradeRecord = {
