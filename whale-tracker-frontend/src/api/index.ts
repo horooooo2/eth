@@ -164,7 +164,8 @@ http.interceptors.response.use(
     ) {
       return Promise.reject(new Error('TIMEOUT'));
     }
-    if (status === 504 || status === 502 || status === 503) {
+    const tradfiAnalysisError = /\/tradfi\/ai\/analyze(?:\?|$)/.test(error.config?.url || '') && typeof data?.error === 'string';
+    if ((status === 504 || status === 502 || status === 503) && !tradfiAnalysisError) {
       return Promise.reject(new Error(`GATEWAY_${status}`));
     }
     const message =

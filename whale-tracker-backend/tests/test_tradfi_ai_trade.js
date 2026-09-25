@@ -8,6 +8,7 @@ function stub(path, exports) {
 
 const calls = [];
 const algoQty = new Map();
+let failAlgoLookupOnce = false;
 let marketPrice = 100;
 let lastPrompt = '';
 let staleMinuteBars = false;
@@ -60,9 +61,13 @@ stub('../lib/binanceTradfiTrade', {
     if (path.endsWith('/algoOrder') && method === 'POST') {
       const algoId = algoQty.size + 1;
       algoQty.set(algoId, params.quantity);
+      algoQty.set(params.clientAlgoId, params.quantity);
       return { algoId };
     }
-    if (path.endsWith('/algoOrder') && method === 'GET') return { algoStatus: 'NEW', side: 'SELL', quantity: algoQty.get(Number(params.algoId)) };
+    if (path.endsWith('/algoOrder') && method === 'GET') {
+      if (failAlgoLookupOnce) { failAlgoLookupOnce = false; throw Object.assign(new Error('Order does not exist.'), { code: -2013 }); }
+      return { algoStatus: 'NEW', side: 'SELL', quantity: algoQty.get(params.clientAlgoId || Number(params.algoId)) };
+    }
     if (path.endsWith('/order') && method === 'POST') return { orderId: calls.length, status: 'NEW' };
     throw new Error(`${method} ${path}`);
   },
@@ -71,6 +76,9 @@ stub('../lib/binanceTradfiTrade', {
 const { analyzeTradfiAi, previewTradfiAi, placeTradfiAi, previewFingerprint, normalizeModelPlan } = require('../lib/tradfiAiTrade');
 
 test('AI 加仓计划必须恰好三档、同方向递进并附有有效止损', () => {
+  const single = normalizeModelPlan(modelOutput, 'single', 100);
+  assert.equal(single.orders.length, 1, '单笔模式应只采用 AI 返回的第一档');
+  assert.equal(single.orders[0].price, 99);
   assert.throws(() => normalizeModelPlan({ ...modelOutput,
     orders: [{ price: 99, marginUsdt: 100, reason: '支撑' }] }, 'ladder', 100), /档位/);
   assert.throws(() => normalizeModelPlan({ ...modelOutput,
@@ -108,11 +116,13 @@ test('一键计划按三笔 Maker 挂单和六笔止盈止损提交，禁止重�
   await assert.rejects(previewTradfiAi('other-user', analysis.analysisId), /不属于当前用户/);
   await assert.rejects(placeTradfiAi({ apiKey: 'fake', secret: 'fake', simulated: true }, 'user1', analysis.analysisId, 'stale-preview'), /重新预览/);
   const stages = [];
+  failAlgoLookupOnce = true;
   const result = await placeTradfiAi({ apiKey: 'fake', secret: 'fake', simulated: true }, 'user1', analysis.analysisId, previewFingerprint(preview), (stage) => stages.push(stage));
   assert.equal(result.orders.length, 3);
   assert.equal(result.protections.length, 6);
   assert.equal(calls.filter((call) => call.path.endsWith('/order') && call.method === 'POST').length, 3);
   assert.ok(calls.filter((call) => call.path.endsWith('/order') && call.method === 'POST').every((call) => call.params.timeInForce === 'GTX'));
+  assert.ok(calls.some((call) => call.path.endsWith('/algoOrder') && call.method === 'GET' && call.params.clientAlgoId), '未查到时应按客户端 ID 复核');
   assert.deepEqual(stages.filter((stage) => stage.status === 'done').map((stage) => stage.id), [
     'prepare', 'leg-0-entry', 'leg-0-stop', 'leg-0-take', 'leg-1-entry', 'leg-1-stop', 'leg-1-take', 'leg-2-entry', 'leg-2-stop', 'leg-2-take', 'verify', 'done',
   ]);

@@ -75,7 +75,10 @@ router.post('/ai/analyze', async (req, res) => {
     const key = getRawAiKey(user.user.id, 'deepseek');
     if (!key?.apiKey) throw Object.assign(new Error('请先在 API 设置中配置 DeepSeek API Key'), { status: 400 });
     res.json({ ok: true, ...await analyzeTradfiAi(user.user.id, key.apiKey, req.body?.symbol, req.body?.mode) });
-  } catch (err) { res.status(err.status || 502).json({ error: err.message || 'TradFi AI 分析失败' }); }
+  } catch (err) {
+    console.error('[POST /api/tradfi/ai/analyze]', req.body?.symbol, req.body?.mode, err.message);
+    res.status(err.status || 502).json({ error: err.message || 'TradFi AI 分析失败' });
+  }
 });
 
 router.post('/ai/preview', async (req, res) => {

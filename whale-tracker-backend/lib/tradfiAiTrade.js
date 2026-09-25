@@ -16,6 +16,17 @@ function within(promise, ms) {
     Promise.resolve(promise).then((value) => { clearTimeout(timer); resolve(value); }, () => { clearTimeout(timer); resolve(null); });
   });
 }
+async function verifyAlgoOrder(creds, item) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const lookup = attempt === 1 ? { clientAlgoId: item.clientAlgoId } : { algoId: String(item.algoId) };
+      return await signedRequest(creds, 'GET', '/fapi/v1/algoOrder', lookup);
+    } catch (error) {
+      if (Number(error.code) !== -2013 || attempt === 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
+    }
+  }
+}
 function briefCandles(rows) {
   if (!Array.isArray(rows) || rows.length < 25) return null;
   const now = Date.now();
@@ -71,8 +82,11 @@ function normalizeModelPlan(raw, mode, referencePrice) {
   const leverage = Number(raw.leverage);
   const stop = positive(raw.stop);
   const takeProfit = positive(raw.takeProfit);
-  const orders = Array.isArray(raw.orders) ? raw.orders : [];
   const probe = decision === '可试探';
+  const rawOrders = Array.isArray(raw.orders) ? raw.orders : [];
+  // DeepSeek may occasionally include scale-in levels even when single-entry was
+  // requested. A single/probe plan deliberately uses only its primary entry.
+  const orders = probe || mode === 'single' ? rawOrders.slice(0, 1) : rawOrders;
   if ((probe && marketState !== '震荡') || (!probe && marketState !== '趋势')) throw invalid('AI 市场状态与交易方案不一致，请重新分析', 502);
   if (!common.thesis || !common.invalidation) throw invalid('AI 缺少交易依据或失效条件，请重新分析', 502);
   if (!direction || !Number.isInteger(leverage) || leverage < 1 || leverage > (probe ? 2 : 5) || !stop || !takeProfit || orders.length !== (probe ? 1 : mode === 'ladder' ? 3 : 1)) {
@@ -171,14 +185,27 @@ async function analyzeTradfiAi(userId, apiKey, symbolInput, modeInput) {
     'JSON 字段：{"marketState":"趋势|震荡|不明确","decision":"可挂单|可试探|暂缓","fundamentalBias":"偏多|偏空|中性|数据不足","direction":"做多|做空|观望","reason":"...","thesis":"盘中价格结构的主判断","invalidation":"判断失效的具体条件","rangeLow":数字或null,"rangeHigh":数字或null,"shortView":"分钟线执行依据","longView":"小时线趋势","dayView":"日线背景与风险","evidence":["..."],"leverage":数字,"stop":数字,"takeProfit":数字,"orders":[{"price":数字,"marginUsdt":数字,"reason":"..."}]}。暂缓时 orders=[]；可试探时 rangeLow/rangeHigh 与 orders[0] 必填。不要 Markdown。',
     JSON.stringify(context),
   ].join('\n');
-  const data = await deepseekFetch(apiKey, '/chat/completions', { method: 'POST', timeoutMs: 120_000, body: {
-    model: DEFAULT_MODEL, temperature: 0.25, max_tokens: 3000, response_format: { type: 'json_object' },
-    messages: [{ role: 'system', content: '严格按 JSON 输出，不得编造金融数据。' }, { role: 'user', content: prompt }],
-  } });
-  if (data?.choices?.[0]?.finish_reason === 'length') throw invalid('AI 计划输出超出长度限制，请重新分析', 502);
-  let raw;
-  try { raw = JSON.parse(String(data?.choices?.[0]?.message?.content || '')); } catch { throw invalid('AI 计划格式不完整，请重新分析', 502); }
-  const plan = normalizeModelPlan(raw, mode, referencePrice);
+  const requestPlan = async (repairReason = '') => {
+    const repair = repairReason
+      ? `\n上一次 JSON 未通过执行校验：${repairReason}。请重新输出完整 JSON。${mode === 'single' ? '单笔模式的 orders 必须只含一笔主入场单。' : '加仓模式在趋势计划中必须包含恰好三笔订单。'}`
+      : '';
+    const data = await deepseekFetch(apiKey, '/chat/completions', { method: 'POST', timeoutMs: 120_000, body: {
+      model: DEFAULT_MODEL, temperature: repairReason ? 0.1 : 0.25, max_tokens: 3000, response_format: { type: 'json_object' },
+      messages: [{ role: 'system', content: '严格按 JSON 输出，不得编造金融数据。' }, { role: 'user', content: `${prompt}${repair}` }],
+    } });
+    if (data?.choices?.[0]?.finish_reason === 'length') throw invalid('AI 计划输出超出长度限制，请重新分析', 502);
+    let raw;
+    try { raw = JSON.parse(String(data?.choices?.[0]?.message?.content || '')); } catch { throw invalid('AI 计划格式不完整，请重新分析', 502); }
+    return normalizeModelPlan(raw, mode, referencePrice);
+  };
+  let plan;
+  try {
+    plan = await requestPlan();
+  } catch (error) {
+    const modelPlanError = Number(error.status) === 502 && /AI|计划|方向|杠杆|止盈|止损|档位|结构|交易依据/.test(String(error.message || ''));
+    if (!modelPlanError) throw error;
+    plan = await requestPlan(String(error.message || '输出不符合要求').slice(0, 220));
+  }
   const analysisId = crypto.randomUUID();
   saved.set(analysisId, { userId, symbol, context, plan, createdAt: Date.now() });
   for (const [key, row] of saved) if (Date.now() - row.createdAt > MAX_AGE_MS) saved.delete(key);
@@ -283,15 +310,25 @@ async function placeTradfiAi(creds, userId, analysisId, expected, onProgress) {
       for (const [kind, type, triggerPrice] of [['stop', 'STOP_MARKET', preview.stopPrice], ['take', 'TAKE_PROFIT_MARKET', preview.takePrice]]) {
         const label = kind === 'stop' ? '止损' : '止盈';
         report({ id: `leg-${leg.level}-${kind}`, status: 'running', progress: actionProgress(), message: `正在提交第 ${leg.level + 1} 笔${label}保护单` });
-        const protection = await signedRequest(creds, 'POST', '/fapi/v1/algoOrder', { ...base, type, triggerPrice, clientAlgoId: `${id}_${kind}` });
-        protections.push({ level: leg.level, kind, algoId: protection.algoId });
+        const clientAlgoId = `${id}_${kind}`;
+        const protection = await signedRequest(creds, 'POST', '/fapi/v1/algoOrder', { ...base, type, triggerPrice, clientAlgoId });
+        protections.push({ level: leg.level, kind, algoId: protection.algoId, clientAlgoId });
+        if (!protection.algoId) throw invalid(`第 ${leg.level + 1} 笔${label}保护单未返回币安订单 ID，请核对条件单`, 502);
         completedActions += 1;
         report({ id: `leg-${leg.level}-${kind}`, status: 'done', progress: actionProgress(), message: `第 ${leg.level + 1} 笔${label}保护单已提交` });
       }
     }
     report({ id: 'verify', status: 'running', progress: 92, message: '正在逐笔核对止盈止损状态…' });
-    const checked = await Promise.all(protections.map((item) => signedRequest(creds, 'GET', '/fapi/v1/algoOrder', { algoId: String(item.algoId) })));
-    if (checked.some((item, index) => String(item.algoStatus) !== 'NEW' || item.side !== opposite || Number(item.quantity) !== Number(preview.orders[protections[index].level].quantity))) throw invalid('部分保护单未被交易所确认');
+    for (let index = 0; index < protections.length; index += 1) {
+      const item = protections[index];
+      let checked;
+      try { checked = await verifyAlgoOrder(creds, item); }
+      catch (error) { throw invalid(`核验第 ${item.level + 1} 笔${item.kind === 'stop' ? '止损' : '止盈'}保护单失败（algoId ${item.algoId}）：${error.message}`, 502); }
+      if (String(checked.algoStatus) !== 'NEW' || checked.side !== opposite || Number(checked.quantity) !== Number(preview.orders[item.level].quantity)) {
+        throw invalid(`第 ${item.level + 1} 笔${item.kind === 'stop' ? '止损' : '止盈'}保护单状态或数量异常：${checked.algoStatus || '未知'}`, 502);
+      }
+      report({ id: 'verify', status: 'running', progress: 92 + Math.floor(5 * (index + 1) / protections.length), message: `已核验 ${index + 1}/${protections.length} 笔保护单` });
+    }
     report({ id: 'verify', status: 'done', progress: 97, message: '全部保护单已确认' });
   } catch (error) {
     report({ id: 'cleanup', status: 'running', progress: actionProgress(), message: '提交未完成，正在核对并撤销可能已提交的订单…' });
@@ -315,7 +352,7 @@ async function placeTradfiAi(creds, userId, analysisId, expected, onProgress) {
       }
     }
     if (!unresolvedPosition) for (const item of protections) {
-      try { await signedRequest(creds, 'DELETE', '/fapi/v1/algoOrder', { algoId: String(item.algoId) }); } catch (err) { cleanup.push(err.message); }
+      try { await signedRequest(creds, 'DELETE', '/fapi/v1/algoOrder', item.algoId ? { algoId: String(item.algoId) } : { clientAlgoId: item.clientAlgoId }); } catch (err) { cleanup.push(err.message); }
     }
     throw invalid(`整套挂单未完成，已尝试撤销已提交委托。请立即在币安核对持仓与条件单。原因：${error.message}${cleanup.length ? `；撤销异常：${cleanup.join('、')}` : ''}`, 502);
   }
