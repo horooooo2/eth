@@ -15,6 +15,7 @@ let timer = null;
 let busy = false;
 
 function invalid(message, status = 400) { return Object.assign(new Error(message), { status }); }
+function isPostOnlyReject(error) { return Number(error?.code) === -5022 || /Post Only|could not be executed as maker/i.test(error?.message || ''); }
 function parseState(row) { try { return JSON.parse(row?.state_json || '{}'); } catch { return {}; } }
 function cleanSymbol(value) {
   const symbol = String(value || '').trim().toUpperCase();
@@ -130,20 +131,35 @@ function remember(userId, row, order, clientId, side, price, quantity) {
   } catch (err) { console.warn('[tradfi-range] ledger:', err.message); }
 }
 async function placeLimit(creds, row, side, price, suffix) {
-  const quantity = await orderQty(row.symbol, price);
-  const clientId = `wtf_rg_${parseState(row).cycleId}_${suffix}`.slice(0, 36);
-  let order;
-  try {
-    order = await signedRequest(creds, 'POST', '/fapi/v1/order', { symbol: row.symbol, side, positionSide: side === 'BUY' ? 'LONG' : 'SHORT', type: 'LIMIT', timeInForce: 'GTX', price: String(price), quantity, newClientOrderId: clientId });
-  } catch (error) {
-    try { order = await signedRequest(creds, 'GET', '/fapi/v1/order', { symbol: row.symbol, origClientOrderId: clientId }); }
-    catch (queryError) {
-      if (Number(queryError.code) === -2013) throw error;
-      throw invalid(`订单状态无法确认，请立即在币安核对 ${clientId}`, 409);
+  const rules = await symbolRules(row.symbol);
+  const tick = Number(new Map((rules?.filters || []).map((f) => [f.filterType, f])).get('PRICE_FILTER')?.tickSize);
+  if (!(tick > 0)) throw new Error('合约价格规则缺失');
+  let order; let clientId; let makerPrice; let quantity;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const book = await publicGet('/fapi/v1/ticker/bookTicker', { symbol: row.symbol });
+    const bid = Number(book.bidPrice); const ask = Number(book.askPrice);
+    const cushion = tick * attempt;
+    const raw = side === 'BUY' ? Math.min(Number(price), bid - cushion) : Math.max(Number(price), ask + cushion);
+    makerPrice = stepped(raw, tick, side === 'BUY' ? 'floor' : 'ceil');
+    quantity = await orderQty(row.symbol, Number(makerPrice));
+    clientId = `wtf_rg_${parseState(row).cycleId}_${suffix}_${attempt}`.slice(0, 36);
+    try {
+      order = await signedRequest(creds, 'POST', '/fapi/v1/order', { symbol: row.symbol, side, positionSide: side === 'BUY' ? 'LONG' : 'SHORT', type: 'LIMIT', timeInForce: 'GTX', price: makerPrice, quantity, newClientOrderId: clientId });
+      break;
+    } catch (error) {
+      const postOnlyRejected = isPostOnlyReject(error);
+      if (postOnlyRejected && attempt < 2) continue;
+      if (postOnlyRejected) throw invalid('盘口连续变化，Maker 挂单重试后仍被币安拒绝；本轮未创建订单，稍后自动重试', 503);
+      try { order = await signedRequest(creds, 'GET', '/fapi/v1/order', { symbol: row.symbol, origClientOrderId: clientId }); break; }
+      catch (queryError) {
+        if (Number(queryError.code) === -2013) throw error;
+        throw invalid(`订单状态无法确认，请立即在币安核对 ${clientId}`, 409);
+      }
     }
   }
-  remember(row.user_id, row, order, clientId, side, price, quantity);
-  return { orderId: String(order.orderId), clientOrderId: clientId, side, price, quantity, placedAt: Date.now() };
+  if (!order?.orderId) throw invalid('币安未返回订单编号，本轮停止提交', 409);
+  remember(row.user_id, row, order, clientId, side, Number(makerPrice), quantity);
+  return { orderId: String(order.orderId), clientOrderId: clientId, side, price: Number(makerPrice), quantity, placedAt: Date.now() };
 }
 async function startCycle(row, creds, market) {
   const risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: row.symbol });
@@ -257,4 +273,4 @@ async function reconcile() {
 }
 function start() { if (timer) return; timer = setInterval(() => { void reconcile(); }, POLL_MS); timer.unref?.(); void reconcile(); }
 
-module.exports = { start, reconcile, status, enable, disable, marketState, SYMBOLS, MAX_ADDITIONS, MARGIN, LEVERAGE };
+module.exports = { start, reconcile, status, enable, disable, marketState, isPostOnlyReject, SYMBOLS, MAX_ADDITIONS, MARGIN, LEVERAGE };

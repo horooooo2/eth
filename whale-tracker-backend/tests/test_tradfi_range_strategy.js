@@ -8,7 +8,7 @@ function candles(start, count, step, spread = 2) {
   });
 }
 
-const { marketState, MAX_ADDITIONS, MARGIN, LEVERAGE } = require('../lib/tradfiRangeStrategy');
+const { marketState, isPostOnlyReject, MAX_ADDITIONS, MARGIN, LEVERAGE } = require('../lib/tradfiRangeStrategy');
 
 test('黄金窄幅结构允许震荡监控，明显单边结构识别为趋势', () => {
   const range15 = candles(1800, 48, 0.02, 2);
@@ -23,4 +23,10 @@ test('策略固定为10U、10倍、最多20次补仓', () => {
   assert.equal(MARGIN, 10);
   assert.equal(LEVERAGE, 10);
   assert.equal(MAX_ADDITIONS, 20);
+});
+
+test('识别币安 Post Only Maker 拒单并允许安全换价重试', () => {
+  assert.equal(isPostOnlyReject({ code: -5022, message: 'rejected' }), true);
+  assert.equal(isPostOnlyReject({ message: 'Due to the order could not be executed as maker, the Post Only order will be rejected.' }), true);
+  assert.equal(isPostOnlyReject({ code: -2013, message: 'Order does not exist.' }), false);
 });
