@@ -173,8 +173,22 @@ async function cancelOrder(creds, symbol, order) {
     if (!['FILLED', 'CANCELED', 'EXPIRED', 'REJECTED'].includes(String(current.status))) await signedRequest(creds, 'DELETE', '/fapi/v1/order', { symbol, orderId: String(order.orderId) });
   } catch (err) { if (Number(err.code) !== -2013) throw err; }
 }
+function closeClientId(cycleId, positionSide) {
+  const side = positionSide === 'LONG' ? 'L' : 'S';
+  const cycle = String(cycleId || 'na').replace(/[^A-Za-z0-9]/g, '').slice(0, 8) || 'na';
+  return `wtf_c_${cycle}_${side}${crypto.randomBytes(4).toString('hex')}`.slice(0, 36);
+}
+function isCloseClientId(value) {
+  const id = String(value || '');
+  return id.startsWith('wtf_c_') || /_close_/.test(id);
+}
 async function cancelKnown(creds, symbol, state) {
-  await Promise.all([...(state.entries || []), state.pending].filter(Boolean).map((o) => cancelOrder(creds, symbol, o)));
+  await Promise.all([...(state.entries || []), ...(state.closeOrders || []), state.pending].filter(Boolean).map((o) => cancelOrder(creds, symbol, o)));
+}
+async function cancelOpenCloses(creds, symbol) {
+  const open = await signedRequest(creds, 'GET', '/fapi/v1/openOrders', { symbol });
+  const closes = (Array.isArray(open) ? open : []).filter((order) => isCloseClientId(order.clientOrderId));
+  await Promise.all(closes.map((order) => cancelOrder(creds, symbol, order)));
 }
 function remember(userId, row, order, clientId, side, price, quantity) {
   const config = strategyConfig(row);
@@ -291,7 +305,7 @@ async function placeCloseMaker(creds, row, positionSide, quantity) {
     const offset = Math.max(tick * 2, (side === 'SELL' ? ask : bid) * SLIPPAGE_RATE) + tick * attempt;
     const raw = side === 'SELL' ? ask + offset : bid - offset;
     const price = stepped(raw, tick, side === 'SELL' ? 'ceil' : 'floor');
-    const clientId = `wtf_rg_${state.cycleId || Date.now()}_close_${positionSide}_${attempt}`.slice(0, 36);
+    const clientId = closeClientId(state.cycleId, positionSide);
     try {
       const order = await signedRequest(creds, 'POST', '/fapi/v1/order', {
         symbol: row.symbol, side, positionSide, type: 'LIMIT', timeInForce: 'GTX', price, quantity: String(quantity), newClientOrderId: clientId,
@@ -312,6 +326,7 @@ async function closeAll(userId) {
   for (const row of rows) {
     const state = parseState(row);
     await cancelKnown(creds, row.symbol, state);
+    await cancelOpenCloses(creds, row.symbol);
     const risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: row.symbol });
     const pos = positionsOf(risk, row.symbol);
     const longQty = Math.min(qty(pos.long), Number(state.expectedLong || 0));
@@ -323,6 +338,7 @@ async function closeAll(userId) {
     ].filter(Boolean));
     if (orders.length) {
       submitted.push(...orders);
+      save(row, { enabled: 0, status: 'close_pending', last_error: '' }, { pending: null, entries: [], closeOrders: orders, closePlacedAt: Date.now() });
       log(userId, row.symbol, `一键平仓已提交 ${orders.length} 笔 Maker 限价单`, 'trade', { orders, offsetRate: SLIPPAGE_RATE });
     }
   }
@@ -460,4 +476,4 @@ async function reconcile() {
 }
 function start() { if (timer) return; timer = setInterval(() => { void reconcile(); }, POLL_MS); timer.unref?.(); void reconcile(); }
 
-module.exports = { start, reconcile, status, enable, disable, closeAll, marketState, atr, ladderStep, costState, strategyConfig, requestedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, SYMBOLS, MAX_ADDITIONS, MARGIN, LEVERAGE, MAX_MARGIN, MAX_LEVERAGE };
+module.exports = { start, reconcile, status, enable, disable, closeAll, closeClientId, marketState, atr, ladderStep, costState, strategyConfig, requestedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, SYMBOLS, MAX_ADDITIONS, MARGIN, LEVERAGE, MAX_MARGIN, MAX_LEVERAGE };

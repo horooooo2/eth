@@ -8,7 +8,7 @@ function candles(start, count, step, spread = 2) {
   });
 }
 
-const { marketState, ladderStep, requestedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, MAX_ADDITIONS, MARGIN, LEVERAGE } = require('../lib/tradfiRangeStrategy');
+const { marketState, ladderStep, requestedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, closeClientId, MAX_ADDITIONS, MARGIN, LEVERAGE } = require('../lib/tradfiRangeStrategy');
 
 test('黄金窄幅结构允许震荡监控，明显单边结构识别为趋势', () => {
   const range15 = candles(1800, 48, 0.02, 2);
@@ -35,6 +35,15 @@ test('启动前允许设置单边保证金和杠杆，并限制最大值', () =>
   assert.deepEqual(requestedConfig({ marginUsdt: 20, leverage: 50 }), { marginUsdt: 20, leverage: 50 });
   assert.throws(() => requestedConfig({ marginUsdt: 20.1, leverage: 10 }), /20 USDT/);
   assert.throws(() => requestedConfig({ marginUsdt: 10, leverage: 51 }), /50 倍/);
+});
+
+test('每次平仓使用新的客户订单号，避免币安报 ClientOrderId 重复', () => {
+  const ids = new Set([closeClientId('cycle1234', 'LONG'), closeClientId('cycle1234', 'LONG'), closeClientId('cycle1234', 'SHORT')]);
+  assert.equal(ids.size, 3);
+  for (const id of ids) {
+    assert.match(id, /^wtf_c_[A-Za-z0-9]+_[LS][a-f0-9]+$/);
+    assert.ok(id.length <= 36);
+  }
 });
 
 test('识别币安 Post Only Maker 拒单并允许安全换价重试', () => {
