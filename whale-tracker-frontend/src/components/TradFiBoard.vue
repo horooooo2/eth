@@ -269,6 +269,11 @@ function tradeTagClass(row: BinanceAiTradeRecord) {
   return row.posSide === 'short' || (row.posSide !== 'long' && row.side === 'sell') ? 'short' : 'long';
 }
 function tradeAmount(value: number | null) { return value == null ? '—' : `${value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })} U`; }
+function tradeFee(row: BinanceAiTradeRecord) {
+  const fee = Number(row.commission);
+  if (!Number.isFinite(fee)) return '—';
+  return `-${fee.toLocaleString('zh-CN', { maximumFractionDigits: 8 })} ${row.commissionAsset || 'USDT'}`;
+}
 function tradePrice(value: number | null) { return value == null ? '—' : value.toLocaleString('zh-CN', { maximumFractionDigits: 6 }); }
 function tradeTime(raw: number | null) {
   if (!raw) return '—';
@@ -396,6 +401,10 @@ async function closeAllPositions() {
                 <div class="data-item">
                   <span class="data-label">已实现盈亏</span>
                   <span class="data-value" :class="pnlClass(row.realizedPnl)">{{ tradeAmount(row.realizedPnl) }}</span>
+                </div>
+                <div class="data-item">
+                  <span class="data-label">交易费用</span>
+                  <span class="data-value pnl-negative">{{ tradeFee(row) }}</span>
                 </div>
               </div>
             </article>
