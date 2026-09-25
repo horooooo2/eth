@@ -1617,7 +1617,6 @@ export type OkxAiBook = {
   openPnl: number;
   realizedPnl?: number | null;
   historyPnl: number | null;
-  strategyTotalPnl?: number | null;
   records: OkxAiOrderRecord[];
   trades?: BinanceAiTradeRecord[];
   strategies?: TradfiRangeStatus[];

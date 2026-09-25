@@ -223,11 +223,6 @@ defineExpose({ reload: () => load(true) });
         <div class="data-value" :class="valueClass(book?.costs?.netCost)">{{ formatSignedUsd(book?.costs?.netCost) }}</div>
         <div class="data-sub">资金费 {{ formatSignedUsd(book?.costs?.fundingFees) }} · 手续费 {{ preciseUsd(book?.costs?.tradingFees) }}</div>
       </div>
-      <div v-if="props.exchange === 'tradfi'" class="data-card">
-        <div class="data-label">策略总盈亏</div>
-        <div class="data-value" :class="valueClass(book?.strategyTotalPnl)">{{ formatSignedUsd(book?.strategyTotalPnl) }}</div>
-        <div class="data-sub">已实现 {{ formatSignedUsd(book?.realizedPnl) }} + 当前仓位 - 开仓费 + 资金费</div>
-      </div>
     </div>
 
     <p v-if="props.exchange === 'tradfi'" class="account-note">余额与币安 U 本位合约账户共用；下方只展示本站自动策略提交的 TradFi 持仓与挂单。</p>

@@ -150,7 +150,7 @@ const intel = ref<TradFiIntelResponse | null>(null);
 const intelLoading = ref(false);
 const intelError = ref('');
 const strategySupported = computed(() => selected.value === 'XAUUSDT' || selected.value === 'XAGUSDT');
-const tradeRows = computed(() => (accountBook.value?.trades || []).filter((row) => row.instId === selected.value));
+const tradeRows = computed(() => (accountBook.value?.trades || []).filter((row) => row.instId === selected.value).slice(0, 50));
 
 const catalogBySymbol = computed(() => new Map(catalog.value.map((item) => [item.symbol, item])));
 function assetFor(symbol: string): Asset {
@@ -567,7 +567,7 @@ async function closeAllPositions() {
 .panel-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .panel-count { font-size: 12px; color: var(--muted); margin: 0; }
 .section-tag { color: var(--yellow); font-size: 10px; font-weight: 700; }
-.main-grid { display: grid; grid-template-columns: minmax(300px, 360px) minmax(0, 1.65fr) minmax(320px, .9fr); gap: 16px; flex: 1; min-height: 0; }
+.main-grid { display: grid; grid-template-columns: minmax(420px, 460px) minmax(0, 1.65fr) minmax(320px, .9fr); gap: 16px; flex: 1; min-height: 0; }
 .main-grid > .panel { display: flex; flex-direction: column; min-height: 0; }
 .main-grid .panel-head, .main-grid .feed-tools, .main-grid .panel-foot { flex-shrink: 0; }
 .history-panel { min-width: 0; }
@@ -583,8 +583,8 @@ async function closeAllPositions() {
 .record-table-head,
 .record-row {
   display: grid;
-  grid-template-columns: 98px 72px minmax(100px, 1fr) 78px 46px;
-  column-gap: 8px;
+  grid-template-columns: 88px 64px minmax(92px, 1fr) 70px 40px;
+  column-gap: 4px;
   align-items: center;
   font-variant-numeric: tabular-nums;
 }
@@ -592,7 +592,7 @@ async function closeAllPositions() {
   position: sticky;
   top: 0;
   z-index: 2;
-  padding: 8px 14px;
+  padding: 8px 10px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
   color: var(--muted);
@@ -601,7 +601,7 @@ async function closeAllPositions() {
 .record-table-head > span:not(:first-child) { text-align: right; }
 .record-row {
   min-height: 48px;
-  padding: 8px 14px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--border);
   font-size: 12px;
   transition: background-color .15s;
@@ -718,7 +718,7 @@ async function closeAllPositions() {
 .footer-actions .btn:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 1180px) {
   .content { overflow-y: auto; }
-  .main-grid { flex: none; grid-template-columns: minmax(260px, .7fr) minmax(0, 1.3fr); grid-template-rows: minmax(420px, 60vh) minmax(320px, 45vh); }
+  .main-grid { flex: none; grid-template-columns: minmax(400px, .85fr) minmax(0, 1.3fr); grid-template-rows: minmax(420px, 60vh) minmax(320px, 45vh); }
   .main-grid > .panel:last-child { grid-column: 1 / -1; }
 }
 @media (max-width: 760px) {

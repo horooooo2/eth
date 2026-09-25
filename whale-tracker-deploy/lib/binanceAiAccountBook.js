@@ -135,7 +135,7 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
     const key = String(trade.id || `${trade.orderId}:${trade.time}`);
     if (!uniqueTrades.has(key)) uniqueTrades.set(key, trade);
   }
-  const trades = [...uniqueTrades.values()].map((trade) => {
+  const allTrades = [...uniqueTrades.values()].map((trade) => {
     const positionSide = String(trade.positionSide || 'BOTH').toUpperCase();
     const side = String(trade.side || '').toUpperCase();
     const closesPosition = positionSide === 'LONG' ? side === 'SELL' : positionSide === 'SHORT' ? side === 'BUY' : Number(trade.realizedPnl) !== 0;
@@ -148,10 +148,18 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
       realizedPnl: Number(trade.realizedPnl) || 0, commission: Number(trade.commission) || 0,
       commissionAsset: trade.commissionAsset || 'USDT', createdAt: Number(trade.time) || 0,
     };
-  }).sort((a, b) => b.createdAt - a.createdAt).slice(0, 100);
+  }).sort((a, b) => b.createdAt - a.createdAt);
+  // The sidebar is scoped to the selected symbol. Retain 50 rows per symbol so
+  // XAU activity cannot push XAG history out of the UI (or vice versa).
+  const perSymbolCount = new Map();
+  const trades = allTrades.filter((trade) => {
+    const count = perSymbolCount.get(trade.instId) || 0;
+    perSymbolCount.set(trade.instId, count + 1);
+    return count < 50;
+  });
   const feesBySymbol = {};
   for (const symbol of candidateSymbols) feesBySymbol[symbol] = { tradingFees: 0, fundingFees: 0, netCost: 0 };
-  for (const trade of trades) {
+  for (const trade of allTrades) {
     if (trade.source !== 'ai' || trade.action !== 'open') continue;
     if (trade.commissionAsset !== 'USDT') continue;
     const fees = feesBySymbol[trade.instId] || (feesBySymbol[trade.instId] = { tradingFees: 0, fundingFees: 0, netCost: 0 });
@@ -168,11 +176,10 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
     fundingFees: sum.fundingFees + fees.fundingFees,
     netCost: sum.netCost + fees.netCost,
   }), { tradingFees: 0, fundingFees: 0, netCost: 0 });
-  const realizedPnl = scope === 'tradfi' ? trades.reduce((sum, trade) => sum + Number(trade.realizedPnl || 0), 0) : null;
-  const historyPnl = scope === 'tradfi' ? trades.reduce((sum, trade) => sum + trade.realizedPnl - (trade.commissionAsset === 'USDT' ? trade.commission : 0), 0) : null;
+  const realizedPnl = scope === 'tradfi' ? allTrades.reduce((sum, trade) => sum + Number(trade.realizedPnl || 0), 0) : null;
+  const historyPnl = scope === 'tradfi' ? allTrades.reduce((sum, trade) => sum + trade.realizedPnl - (trade.commissionAsset === 'USDT' ? trade.commission : 0), 0) : null;
   const openPnl = pos.reduce((sum, item) => sum + Number(item.row.unRealizedProfit || 0) * item.share, 0);
-  const strategyTotalPnl = scope === 'tradfi' ? Number(realizedPnl || 0) + openPnl - costs.tradingFees + costs.fundingFees : null;
-  return { ok: true, configured: true, simulated: creds.simulated, scope: 'ai-only', balance: { totalEq: Number(usdt?.balance) || null, usdtEq: Number(usdt?.balance) || null, availBal: Number(usdt?.availableBalance) || null }, openPnl, realizedPnl, historyPnl, strategyTotalPnl, records, trades, costs, feesBySymbol };
+  return { ok: true, configured: true, simulated: creds.simulated, scope: 'ai-only', balance: { totalEq: Number(usdt?.balance) || null, usdtEq: Number(usdt?.balance) || null, availBal: Number(usdt?.availableBalance) || null }, openPnl, realizedPnl, historyPnl, records, trades, costs, feesBySymbol };
 }
 
 module.exports = { accountBook };
