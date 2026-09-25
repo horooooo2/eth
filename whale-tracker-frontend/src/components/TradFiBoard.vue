@@ -151,6 +151,8 @@ const intelLoading = ref(false);
 const intelError = ref('');
 const strategySupported = computed(() => selected.value === 'XAUUSDT' || selected.value === 'XAGUSDT');
 const tradeRows = computed(() => (accountBook.value?.trades || []).filter((row) => row.instId === selected.value).slice(0, 50));
+const historyTab = ref<'trades' | 'logs'>('trades');
+const strategyLogs = computed(() => strategyData.value?.events || []);
 
 const catalogBySymbol = computed(() => new Map(catalog.value.map((item) => [item.symbol, item])));
 function assetFor(symbol: string): Asset {
@@ -291,6 +293,13 @@ function tradeClock(raw: number | null) {
   if (!Number.isFinite(date.getTime())) return '—';
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
+function logLevelLabel(level: string) {
+  if (level === 'error') return '异常';
+  if (level === 'warn') return '提醒';
+  if (level === 'success') return '完成';
+  if (level === 'trade') return '交易';
+  return '运行';
+}
 function pnlClass(value: number | null) {
   if (value == null || !Number.isFinite(value) || value === 0) return 'pnl-zero';
   return value > 0 ? 'pnl-positive' : 'pnl-negative';
@@ -377,12 +386,15 @@ async function closeAllPositions() {
         <section class="panel history-panel">
           <div class="panel-head">
             <div>
-              <div class="panel-title">交易记录</div>
-              <div class="panel-sub">币安成交仓位明细</div>
+              <div class="history-tabs" role="tablist" aria-label="策略记录">
+                <button type="button" :class="{ active: historyTab === 'trades' }" @click="historyTab = 'trades'">交易记录</button>
+                <button type="button" :class="{ active: historyTab === 'logs' }" @click="historyTab = 'logs'">运行日志</button>
+              </div>
+              <div class="panel-sub">{{ historyTab === 'trades' ? '币安成功成交明细' : '当前标的策略运行记录' }}</div>
             </div>
-            <div class="panel-count">{{ tradeRows.length }} 条</div>
+            <div class="panel-count">{{ historyTab === 'trades' ? `${tradeRows.length} 条` : `${strategyLogs.length} 条` }}</div>
           </div>
-          <div class="history-list">
+          <div v-show="historyTab === 'trades'" class="history-list">
             <div class="record-table-head">
               <span>品种/方向</span><span>成交价</span><span>数量 / 成交额</span><span>已实现盈亏</span><span>时间</span>
             </div>
@@ -396,6 +408,13 @@ async function closeAllPositions() {
               <div class="record-time" :title="tradeTime(row.createdAt)">{{ tradeClock(row.createdAt) }}</div>
             </article>
             <div v-if="!tradeRows.length" class="empty">暂无该标的策略成交记录</div>
+          </div>
+          <div v-show="historyTab === 'logs'" class="history-list log-list">
+            <article v-for="row in strategyLogs" :key="row.id" class="strategy-log-row" :class="`level-${row.level}`">
+              <div class="log-top"><span class="log-level">{{ logLevelLabel(row.level) }}</span><time>{{ tradeTime(row.created_at) }}</time></div>
+              <p>{{ row.message }}</p>
+            </article>
+            <div v-if="!strategyLogs.length" class="empty">暂无该标的策略运行记录</div>
           </div>
         </section>
         <section class="panel account-panel">
@@ -566,6 +585,19 @@ async function closeAllPositions() {
 .panel-title { font-size: 16px; font-weight: 600; }
 .panel-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .panel-count { font-size: 12px; color: var(--muted); margin: 0; }
+.history-tabs { display: inline-flex; align-items: center; gap: 4px; }
+.history-tabs button {
+  border: 0;
+  border-radius: 5px;
+  padding: 5px 9px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.history-tabs button:hover { color: var(--text); background: var(--panel-2); }
+.history-tabs button.active { color: var(--yellow); background: color-mix(in srgb, var(--yellow) 12%, transparent); }
 .section-tag { color: var(--yellow); font-size: 10px; font-weight: 700; }
 .main-grid { display: grid; grid-template-columns: minmax(420px, 460px) minmax(0, 1.65fr) minmax(320px, .9fr); gap: 16px; flex: 1; min-height: 0; }
 .main-grid > .panel { display: flex; flex-direction: column; min-height: 0; }
@@ -633,6 +665,16 @@ async function closeAllPositions() {
 .record-pnl { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; font-weight: 600; }
 .record-pnl small { color: var(--muted); font-size: 10px; font-weight: 400; }
 .record-time { color: var(--muted); font-size: 11px; }
+.log-list { padding: 0 10px; gap: 0; }
+.strategy-log-row { padding: 11px 4px; border-bottom: 1px solid var(--border); }
+.strategy-log-row:last-child { border-bottom: 0; }
+.log-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.log-level { border-radius: 3px; padding: 2px 5px; color: var(--muted); background: var(--panel-2); font-size: 10px; font-weight: 600; }
+.level-trade .log-level, .level-success .log-level { color: var(--green); background: color-mix(in srgb, var(--green) 10%, transparent); }
+.level-warn .log-level { color: var(--yellow); background: color-mix(in srgb, var(--yellow) 10%, transparent); }
+.level-error .log-level { color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); }
+.log-top time { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.strategy-log-row p { margin: 7px 0 0; color: var(--text); font-size: 12px; line-height: 1.5; }
 .pnl-positive { color: var(--green); }
 .pnl-negative { color: var(--red); }
 .pnl-zero { color: var(--muted); opacity: .6; }

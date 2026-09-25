@@ -148,7 +148,8 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
       realizedPnl: Number(trade.realizedPnl) || 0, commission: Number(trade.commission) || 0,
       commissionAsset: trade.commissionAsset || 'USDT', createdAt: Number(trade.time) || 0,
     };
-  }).sort((a, b) => b.createdAt - a.createdAt);
+  }).filter((trade) => Number(trade.sz) > 0 && Number(trade.amountUsd) > 0 && Number(trade.createdAt) > 0)
+    .sort((a, b) => b.createdAt - a.createdAt);
   // The sidebar is scoped to the selected symbol. Retain 50 rows per symbol so
   // XAU activity cannot push XAG history out of the UI (or vice versa).
   const perSymbolCount = new Map();

@@ -126,6 +126,18 @@ function sideRealized(group: TradfiGroup, side: 'long' | 'short') {
 }
 
 function legStatus(group: TradfiGroup, side: 'long' | 'short') { return group.strategy?.[side]; }
+function sideMask(group: TradfiGroup, side: 'long' | 'short') {
+  const strategy = group.strategy;
+  const leg = legStatus(group, side);
+  if (!strategy) return '';
+  if (leg?.phase === 'close_pending') return '止盈挂单中';
+  if (leg?.phase === 'reentry_wait') return '止盈后冷却，等待重建';
+  if (leg?.phase === 'reentry_pending') return '正在重建底仓';
+  if (strategy.status === 'waiting') return '等待震荡条件';
+  if (strategy.status === 'entry_pending' || group[side]?.kind === 'pending') return '等待成交';
+  if (!group[side]) return '等待成交';
+  return '';
+}
 
 function preciseUsd(value: number | null | undefined) {
   if (value == null || !Number.isFinite(Number(value))) return '--';
@@ -234,18 +246,17 @@ defineExpose({ reload: () => load(true) });
       <article v-for="group in tradfiGroups" :key="group.instId" class="asset-card">
         <div class="asset-header">
           <span>{{ group.coin }} <b class="asset-pnl" :class="valueClass(groupPnl(group))">{{ formatSignedUsd(groupPnl(group)) }}</b></span>
+          <span v-if="group.strategy" class="asset-config">单笔：{{ group.strategy.marginPerOrder }}U · 倍数：{{ group.strategy.leverage }}X</span>
           <span class="asset-fees">手续费 {{ preciseUsd(groupFees(group).tradingFees) }} · 资金费 {{ formatSignedUsd(groupFees(group).fundingFees) }}</span>
           <span class="asset-mode">{{ groupMode(group) }}</span>
         </div>
         <div class="position-row">
           <section class="position-side">
+            <div v-if="sideMask(group, 'long')" class="position-mask">{{ sideMask(group, 'long') }}</div>
             <div class="side-header"><span class="side-badge long">多头</span></div>
             <div class="position-details">
               <span class="label">持仓价</span>
-              <span class="value">
-                {{ group.long ? entryPrice(group.long) : '—' }}
-                <span v-if="group.long?.leverage" class="leverage-tag">{{ group.long.leverage }}x</span>
-              </span>
+              <span class="value">{{ group.long ? entryPrice(group.long) : '—' }}</span>
               <span class="label">名义价值</span>
               <span class="value">{{ group.long ? notionalAmount(group.long) : '—' }}</span>
               <span class="label">盈亏</span>
@@ -257,13 +268,11 @@ defineExpose({ reload: () => load(true) });
             </div>
           </section>
           <section class="position-side">
+            <div v-if="sideMask(group, 'short')" class="position-mask">{{ sideMask(group, 'short') }}</div>
             <div class="side-header"><span class="side-badge short">空头</span></div>
             <div class="position-details">
               <span class="label">持仓价</span>
-              <span class="value">
-                {{ group.short ? entryPrice(group.short) : '—' }}
-                <span v-if="group.short?.leverage" class="leverage-tag">{{ group.short.leverage }}x</span>
-              </span>
+              <span class="value">{{ group.short ? entryPrice(group.short) : '—' }}</span>
               <span class="label">名义价值</span>
               <span class="value">{{ group.short ? notionalAmount(group.short) : '—' }}</span>
               <span class="label">盈亏</span>
@@ -498,6 +507,7 @@ defineExpose({ reload: () => load(true) });
 .asset-pnl { margin-left: 6px; font-variant-numeric: tabular-nums; }
 .asset-pnl.gain { color: var(--green); }
 .asset-pnl.loss { color: var(--red); }
+.asset-config { margin-left: 8px; color: var(--muted); font-size: 11px; font-weight: 400; }
 .asset-fees { margin-left: auto; font-size: 11px; color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
 .asset-mode {
   font-size: 12px;
@@ -512,6 +522,7 @@ defineExpose({ reload: () => load(true) });
   flex-direction: column;
   gap: 12px;
   min-width: 0;
+  position: relative;
 }
 .position-side:first-child { border-right: 1px solid var(--border); }
 .side-header { display: flex; justify-content: space-between; align-items: center; }
@@ -544,12 +555,19 @@ defineExpose({ reload: () => load(true) });
 }
 .position-details .value.gain { color: var(--green); }
 .position-details .value.loss { color: var(--red); }
-.leverage-tag {
-  font-size: 11px;
-  background: var(--border);
-  padding: 1px 4px;
-  border-radius: 3px;
+.position-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
   color: var(--muted);
-  margin-left: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  background: color-mix(in srgb, var(--panel-2) 83%, transparent);
+  backdrop-filter: blur(2px);
 }
 </style>
