@@ -63,6 +63,8 @@ test('TradFi 交易记录来自本站策略订单的币安成交明细', async (
   assert.equal(book.trades.length, 1);
   assert.equal(book.trades[0].amountUsd, 10);
   assert.equal(book.trades[0].action, 'open');
+  assert.equal(book.costs.tradingFees, 0.004);
+  assert.equal(book.costs.netCost, -0.004);
 });
 
 test('AI 仓位平仓后手动重开不会再次显示为 AI 仓位', async () => {

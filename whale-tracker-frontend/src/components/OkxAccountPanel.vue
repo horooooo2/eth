@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
 import { cancelOkxOrder, fetchOkxAiBook, fetchTradfiAccountBook, type OkxAiBook, type OkxAiOrderRecord } from '@/api';
-import { formatSignedUsd, formatTimeShort, formatUsd } from '@/utils/format';
+import { formatSignedUsd, formatTimeShort } from '@/utils/format';
 
 const props = defineProps<{
   bootReady?: boolean;
@@ -106,6 +106,19 @@ function groupMode(group: TradfiGroup) {
   return '单向持仓';
 }
 
+function groupPnl(group: TradfiGroup) {
+  return [rowPnl(group.long), rowPnl(group.short)].reduce<number>((sum, value) => sum + (Number(value) || 0), 0);
+}
+
+function groupFees(group: TradfiGroup) {
+  return book.value?.feesBySymbol?.[group.instId] || { tradingFees: 0, fundingFees: 0, netCost: 0 };
+}
+
+function preciseUsd(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(Number(value))) return '--';
+  return `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 function countdown(ms: number) {
   const seconds = Math.max(0, Math.ceil(ms / 1000));
   return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
@@ -179,8 +192,8 @@ defineExpose({ reload: () => load(true) });
     <div class="account-summary">
       <div class="data-card">
         <div class="data-label">当前余额</div>
-        <div class="data-value">{{ formatUsd(book?.balance.usdtEq ?? book?.balance.totalEq) }}</div>
-        <div class="data-sub">可用 {{ formatUsd(book?.balance.availBal) }}</div>
+        <div class="data-value">{{ preciseUsd(book?.balance.usdtEq ?? book?.balance.totalEq) }}</div>
+        <div class="data-sub">可用 {{ preciseUsd(book?.balance.availBal) }}</div>
       </div>
       <div class="data-card">
         <div class="data-label">当前仓位盈亏</div>
@@ -192,6 +205,11 @@ defineExpose({ reload: () => load(true) });
         <div class="data-value" :class="valueClass(book?.historyPnl)">{{ book?.historyPnl == null ? '--' : formatSignedUsd(book.historyPnl) }}</div>
         <div class="data-sub">{{ props.exchange === 'okx' ? 'AI 已平' : '暂未统计' }}</div>
       </div>
+      <div v-if="props.exchange === 'tradfi'" class="data-card">
+        <div class="data-label">资金费用</div>
+        <div class="data-value" :class="valueClass(book?.costs?.netCost)">{{ formatSignedUsd(book?.costs?.netCost) }}</div>
+        <div class="data-sub">资金费 {{ formatSignedUsd(book?.costs?.fundingFees) }} · 手续费 {{ preciseUsd(book?.costs?.tradingFees) }}</div>
+      </div>
     </div>
 
     <p v-if="props.exchange === 'tradfi'" class="account-note">余额与币安 U 本位合约账户共用；下方只展示本站自动策略提交的 TradFi 持仓与挂单。</p>
@@ -202,7 +220,8 @@ defineExpose({ reload: () => load(true) });
     <div v-else-if="props.exchange === 'tradfi'" class="order-list tradfi-order-list">
       <article v-for="group in tradfiGroups" :key="group.instId" class="asset-card">
         <div class="asset-header">
-          <span>{{ group.coin }}</span>
+          <span>{{ group.coin }} <b class="asset-pnl" :class="valueClass(groupPnl(group))">{{ formatSignedUsd(groupPnl(group)) }}</b></span>
+          <span class="asset-fees">手续费 {{ preciseUsd(groupFees(group).tradingFees) }} · 资金费 {{ formatSignedUsd(groupFees(group).fundingFees) }}</span>
           <span class="asset-mode">{{ groupMode(group) }}</span>
         </div>
         <div class="position-row">
@@ -455,10 +474,15 @@ defineExpose({ reload: () => load(true) });
   align-items: center;
   color: var(--text);
 }
+.asset-pnl { margin-left: 6px; font-variant-numeric: tabular-nums; }
+.asset-pnl.gain { color: var(--green); }
+.asset-pnl.loss { color: var(--red); }
+.asset-fees { margin-left: auto; font-size: 11px; color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
 .asset-mode {
   font-size: 12px;
   color: var(--muted);
   font-weight: 400;
+  margin-left: 12px;
 }
 .position-row { display: grid; grid-template-columns: 1fr 1fr; }
 .position-side {

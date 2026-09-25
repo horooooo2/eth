@@ -1615,6 +1615,8 @@ export type OkxAiBook = {
   records: OkxAiOrderRecord[];
   trades?: BinanceAiTradeRecord[];
   strategies?: TradfiRangeStatus[];
+  costs?: { tradingFees: number; fundingFees: number; netCost: number };
+  feesBySymbol?: Record<string, { tradingFees: number; fundingFees: number; netCost: number }>;
 };
 
 export type BinanceAiTradeRecord = {

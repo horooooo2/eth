@@ -23,6 +23,13 @@ async function accountBook(creds, userId, scope = 'crypto') {
   const userTrades = scope === 'tradfi' ? (await Promise.all(candidateSymbols.map((symbol) =>
     signedRequest(creds, 'GET', '/fapi/v1/userTrades', { symbol, limit: '1000' }).catch(() => []),
   ))).flat() : [];
+  const fundingRows = scope === 'tradfi' ? (await Promise.all(candidateSymbols.map((symbol) => {
+    const firstCreatedAt = ledger.filter((row) => row.symbol === symbol)
+      .map((row) => Number(row.created_at)).filter(Number.isFinite).sort((a, b) => a - b)[0];
+    const params = { symbol, incomeType: 'FUNDING_FEE', limit: '1000' };
+    if (firstCreatedAt) params.startTime = String(firstCreatedAt);
+    return signedRequest(creds, 'GET', '/fapi/v1/income', params).catch(() => []);
+  }))).flat() : [];
   const aiOrderIds = new Set(orderHistory.filter((order) =>
     isAiClientId(order.clientOrderId, scope)
       || ledgerIds.has(String(order.orderId))
@@ -80,8 +87,26 @@ async function accountBook(creds, userId, scope = 'crypto') {
       commissionAsset: trade.commissionAsset || 'USDT', createdAt: Number(trade.time) || 0,
     };
   }).sort((a, b) => b.createdAt - a.createdAt).slice(0, 100);
+  const feesBySymbol = {};
+  for (const symbol of candidateSymbols) feesBySymbol[symbol] = { tradingFees: 0, fundingFees: 0, netCost: 0 };
+  for (const trade of trades) {
+    if (trade.commissionAsset !== 'USDT') continue;
+    const fees = feesBySymbol[trade.instId] || (feesBySymbol[trade.instId] = { tradingFees: 0, fundingFees: 0, netCost: 0 });
+    fees.tradingFees += Number(trade.commission) || 0;
+  }
+  for (const income of fundingRows) {
+    const symbol = String(income.symbol || '');
+    if (!feesBySymbol[symbol]) continue;
+    feesBySymbol[symbol].fundingFees += Number(income.income) || 0;
+  }
+  for (const fees of Object.values(feesBySymbol)) fees.netCost = fees.fundingFees - fees.tradingFees;
+  const costs = Object.values(feesBySymbol).reduce((sum, fees) => ({
+    tradingFees: sum.tradingFees + fees.tradingFees,
+    fundingFees: sum.fundingFees + fees.fundingFees,
+    netCost: sum.netCost + fees.netCost,
+  }), { tradingFees: 0, fundingFees: 0, netCost: 0 });
   const historyPnl = scope === 'tradfi' ? trades.reduce((sum, trade) => sum + trade.realizedPnl - (trade.commissionAsset === 'USDT' ? trade.commission : 0), 0) : null;
-  return { ok: true, configured: true, simulated: creds.simulated, scope: 'ai-only', balance: { totalEq: Number(usdt?.balance) || null, usdtEq: Number(usdt?.balance) || null, availBal: Number(usdt?.availableBalance) || null }, openPnl: pos.reduce((sum, item) => sum + Number(item.row.unRealizedProfit || 0) * item.share, 0), historyPnl, records, trades };
+  return { ok: true, configured: true, simulated: creds.simulated, scope: 'ai-only', balance: { totalEq: Number(usdt?.balance) || null, usdtEq: Number(usdt?.balance) || null, availBal: Number(usdt?.availableBalance) || null }, openPnl: pos.reduce((sum, item) => sum + Number(item.row.unRealizedProfit || 0) * item.share, 0), historyPnl, records, trades, costs, feesBySymbol };
 }
 
 module.exports = { accountBook };

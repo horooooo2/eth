@@ -638,7 +638,7 @@ async function closeAllPositions() {
 .account-panel :deep(.account-note) { display: none; }
 .account-panel :deep(.account-summary) {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 12px;
   padding: 16px;
   border-bottom: 1px solid var(--border);
