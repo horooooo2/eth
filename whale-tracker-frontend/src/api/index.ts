@@ -1575,6 +1575,51 @@ export async function submitTradfiAi(analysisId: string, fingerprint: string) {
   return data;
 }
 
+export type TradfiAiSubmitStage = { id: string; status: 'running' | 'done' | 'error'; progress: number; message: string };
+export type TradfiAiSubmitResult = { ok: boolean; simulated: boolean; orders: Array<{ orderId: number; status: string; price: number }>; protections: Array<{ algoId: number; kind: string }> };
+
+export async function streamTradfiAi(analysisId: string, fingerprint: string, onStage: (stage: TradfiAiSubmitStage) => void): Promise<TradfiAiSubmitResult> {
+  const response = await fetch('/api/tradfi/ai/place-stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...(authToken() ? { Authorization: `Bearer ${authToken()}` } : {}) },
+    body: JSON.stringify({ analysisId, fingerprint, confirm: true }),
+  });
+  if (!response.ok) {
+    let message = `提交失败 HTTP ${response.status}`;
+    try { const body = await response.json() as { error?: string }; if (body.error) message = body.error; } catch { /* ignore */ }
+    throw new Error(message);
+  }
+  if (!response.body) throw new Error('浏览器不支持实时订单进度');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let result: TradfiAiSubmitResult | null = null;
+  const parse = (block: string) => {
+    let event = '';
+    const dataLines: string[] = [];
+    for (const line of block.split('\n')) {
+      if (line.startsWith('event:')) event = line.slice(6).trim();
+      if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+    }
+    if (!dataLines.length) return;
+    const data = JSON.parse(dataLines.join('\n')) as TradfiAiSubmitStage & TradfiAiSubmitResult & { error?: string };
+    if (event === 'stage') onStage(data);
+    if (event === 'done') result = data;
+    if (event === 'error') throw new Error(data.error || '提交失败，请在币安核对订单');
+  };
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    buffer += decoder.decode(chunk.value, { stream: true }).replace(/\r\n/g, '\n');
+    const blocks = buffer.split('\n\n');
+    buffer = blocks.pop() || '';
+    for (const block of blocks) if (block.trim()) parse(block);
+  }
+  if (buffer.trim()) parse(buffer);
+  if (!result) throw new Error('订单进度连接中断，请在币安核对订单状态');
+  return result;
+}
+
 export type OkxAiOrderRecord = {
   kind?: 'position' | 'pending';
   ordId: string;

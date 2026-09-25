@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch as watchVue } from 'vue';
-import { fetchTradFiCatalog, fetchTradFiQuotes, fetchTradFiIntel, fetchAllTradFiWhales, analyzeTradfiAi, previewTradfiAi, submitTradfiAi, type TradfiAiAnalysis, type TradfiAiPreview, type TradFiIntelResponse, type TradFiMarketSymbol, type TradFiQuote, type TradFiAllWhaleResponse } from '@/api';
+import { fetchTradFiCatalog, fetchTradFiQuotes, fetchTradFiIntel, fetchAllTradFiWhales, analyzeTradfiAi, previewTradfiAi, streamTradfiAi, type TradfiAiAnalysis, type TradfiAiPreview, type TradfiAiSubmitStage, type TradFiIntelResponse, type TradFiMarketSymbol, type TradFiQuote, type TradFiAllWhaleResponse } from '@/api';
 import { ElMessageBox } from 'element-plus';
 import OkxAccountPanel from '@/components/OkxAccountPanel.vue';
 import { tradfiWatch } from '@/utils/tradfiWatch';
@@ -136,6 +136,16 @@ const aiBusy = ref(false);
 const aiActivity = ref<'analysis' | 'preview' | 'submit' | null>(null);
 const aiError = ref('');
 const aiResult = ref('');
+const aiProgressVisible = ref(false);
+const aiProgress = ref(0);
+const aiProgressSteps = ref<Array<{ id: string; label: string; status: 'pending' | 'running' | 'done' | 'error'; detail: string }>>([]);
+function resetAiProgress() { aiProgressVisible.value = false; aiProgress.value = 0; aiProgressSteps.value = []; }
+function updateAiProgress(stage: TradfiAiSubmitStage) {
+  aiProgress.value = Math.max(aiProgress.value, Math.min(100, stage.progress));
+  const step = aiProgressSteps.value.find((item) => item.id === stage.id);
+  if (step) { step.status = stage.status; step.detail = stage.message; }
+  else if (stage.id === 'cleanup') aiProgressSteps.value.push({ id: stage.id, label: '核对并清理未完成订单', status: 'running', detail: stage.message });
+}
 let quoteTimer = 0;
 let intelTimer = 0;
 let intelRequestId = 0;
@@ -315,10 +325,13 @@ function openAiOrder() {
   aiPreview.value = null;
   aiError.value = '';
   aiResult.value = '';
+  resetAiProgress();
   aiOpen.value = true;
 }
 
-watchVue(aiMode, () => { aiAnalysis.value = null; aiPreview.value = null; aiError.value = ''; aiResult.value = ''; });
+function closeAiOrder() { if (!aiBusy.value) aiOpen.value = false; }
+
+watchVue(aiMode, () => { aiAnalysis.value = null; aiPreview.value = null; aiError.value = ''; aiResult.value = ''; resetAiProgress(); });
 
 async function generateAiPlan() {
   aiBusy.value = true;
@@ -327,6 +340,7 @@ async function generateAiPlan() {
   aiResult.value = '';
   aiAnalysis.value = null;
   aiPreview.value = null;
+  resetAiProgress();
   try {
     aiAnalysis.value = await analyzeTradfiAi(selected.value, aiMode.value);
   } catch (err) {
@@ -361,12 +375,27 @@ async function submitAiPlan() {
   aiActivity.value = 'submit';
   aiError.value = '';
   aiResult.value = '';
+  aiProgressVisible.value = true;
+  aiProgress.value = 0;
+  aiProgressSteps.value = [
+    { id: 'prepare', label: '核对账户与订单', status: 'pending', detail: '' },
+    ...ready.preview.orders.flatMap((_, index) => [
+      { id: `leg-${index}-entry`, label: `第 ${index + 1} 笔入场单`, status: 'pending' as const, detail: '' },
+      { id: `leg-${index}-stop`, label: `第 ${index + 1} 笔止损单`, status: 'pending' as const, detail: '' },
+      { id: `leg-${index}-take`, label: `第 ${index + 1} 笔止盈单`, status: 'pending' as const, detail: '' },
+    ]),
+    { id: 'verify', label: '核验全部保护单', status: 'pending', detail: '' },
+  ];
   try {
-    const response = await submitTradfiAi(analysis.analysisId, ready.fingerprint);
+    const response = await streamTradfiAi(analysis.analysisId, ready.fingerprint, updateAiProgress);
+    aiProgress.value = 100;
+    aiProgressSteps.value.forEach((step) => { step.status = 'done'; });
     aiResult.value = `${response.simulated ? '演示盘' : '实盘'}已提交 ${response.orders.length} 笔挂单和 ${response.protections.length} 笔保护单，请在币安订单列表核对。`;
     aiPreview.value = null;
   } catch (err) {
     aiPreview.value = null;
+    const running = aiProgressSteps.value.find((step) => step.status === 'running');
+    if (running) running.status = 'error';
     aiError.value = `${err instanceof Error ? err.message : '提交失败'}。请在币安核对订单状态，勿直接重复提交。`;
   } finally { aiBusy.value = false; aiActivity.value = null; }
 }
@@ -531,11 +560,11 @@ async function submitAiPlan() {
     </main>
 
     <Teleport to="body">
-      <div v-if="aiOpen" class="modal-cover" @click.self="aiOpen = false">
+      <div v-if="aiOpen" class="modal-cover" @click.self="closeAiOrder">
         <div class="dialog" role="dialog" aria-modal="true" aria-label="TradFi AI 分析与挂单">
           <header class="dialog-head">
             <div class="dialog-title"><span aria-hidden="true">✨</span> DeepSeek 智能投研 <span class="dialog-symbol">· {{ selected }}</span></div>
-            <button type="button" class="dialog-close" aria-label="关闭" @click="aiOpen = false">×</button>
+            <button type="button" class="dialog-close" aria-label="关闭" :disabled="aiBusy" @click="closeAiOrder">×</button>
           </header>
 
           <div class="dialog-body">
@@ -545,6 +574,11 @@ async function submitAiPlan() {
             </div>
             <div class="dialog-scroll">
               <div class="order-steps"><span :class="{ active: !aiAnalysis }">1 · AI 分析</span><span :class="{ active: aiAnalysis && !aiPreview }">2 · 预览订单</span><span :class="{ active: aiPreview }">3 · 确认挂单</span></div>
+              <section v-if="aiProgressVisible" class="submit-progress" aria-live="polite">
+                <div class="submit-progress-head"><strong>逐笔提交进度</strong><span>{{ aiProgress }}%</span></div>
+                <div class="submit-progress-track"><div class="submit-progress-fill" :style="{ width: `${aiProgress}%` }" /></div>
+                <div class="submit-progress-list"><div v-for="step in aiProgressSteps" :key="step.id" class="submit-progress-step" :class="step.status"><span class="submit-progress-dot" /><span>{{ step.label }}</span><small v-if="step.status !== 'pending'">{{ step.detail }}</small></div></div>
+              </section>
               <template v-if="!aiAnalysis && aiActivity !== 'analysis'">
                 <p class="dialog-intro">选择开单方式，AI 将以小时线判断盘中方向，用 15、5、1 分钟线寻找挂单位置，并结合日线、资讯与盘口评估风险。</p>
                 <div class="mode-label">开单方式</div>
@@ -598,7 +632,7 @@ async function submitAiPlan() {
           <footer class="dialog-footer">
             <p class="footer-hint">挂单直接提交到币安；止盈止损触发后按市价执行。</p>
             <div class="footer-actions">
-              <button type="button" class="btn" :disabled="aiBusy" @click="aiOpen = false">关闭</button>
+              <button type="button" class="btn" :disabled="aiBusy" @click="closeAiOrder">关闭</button>
               <button v-if="!aiAnalysis || aiResult" type="button" class="btn primary" :disabled="aiBusy" @click="generateAiPlan">{{ aiActivity === 'analysis' ? '分析中…' : '开始 AI 分析' }}</button>
               <template v-else>
                 <button type="button" class="btn" :disabled="aiBusy" @click="generateAiPlan">重新分析</button>
@@ -783,6 +817,17 @@ tbody tr:hover { background: var(--panel-2); }
 .preview-note { color: var(--muted); font-size: 12px; line-height: 1.7; }
 .order-error { color: var(--red); font-size: 12px; line-height: 1.6; }
 .order-success { color: var(--green); font-size: 12px; line-height: 1.6; }
+.submit-progress { position: sticky; top: 0; z-index: 2; margin: 8px 0 16px; padding: 14px; border: 1px solid #818cf8; border-radius: 10px; background: var(--card); box-shadow: 0 8px 24px rgba(0, 0, 0, .2); }
+.submit-progress-head { display: flex; justify-content: space-between; margin-bottom: 10px; color: var(--text); }
+.submit-progress-track { height: 8px; overflow: hidden; border-radius: 8px; background: var(--panel-2); }
+.submit-progress-fill { height: 100%; background: linear-gradient(90deg, #6366f1, #a855f7); transition: width .25s ease; }
+.submit-progress-list { max-height: 175px; overflow-y: auto; margin-top: 10px; }
+.submit-progress-step { display: flex; align-items: center; gap: 8px; padding: 3px 0; color: var(--muted); font-size: 12px; }
+.submit-progress-step small { margin-left: auto; text-align: right; }
+.submit-progress-step.done { color: var(--green); }
+.submit-progress-step.running { color: #818cf8; }
+.submit-progress-step.error { color: var(--red); }
+.submit-progress-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .dialog-footer { flex: none; padding: 12px 18px; border-top: 1px solid var(--border); background: var(--card); }
 .footer-hint { margin: 0 0 10px; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .footer-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }

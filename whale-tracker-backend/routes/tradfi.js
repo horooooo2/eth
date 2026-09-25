@@ -97,4 +97,27 @@ router.post('/ai/place', async (req, res) => {
   } catch (err) { res.status(err.status || 502).json({ error: err.message || '整套挂单提交失败', code: err.code }); }
 });
 
+router.post('/ai/place-stream', async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+  const writeEvent = (event, data) => {
+    if (!res.writableEnded && !res.destroyed) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+  try {
+    const user = requireUser(req);
+    if (req.body?.confirm !== true) throw Object.assign(new Error('请先确认整套挂单'), { status: 400 });
+    const creds = getBinanceCredentialsForUser(user.user.id);
+    if (!creds) throw Object.assign(new Error('请先在 API 设置中配置币安 API 密钥'), { status: 400 });
+    const result = await placeTradfiAi(creds, user.user.id, req.body?.analysisId, req.body?.fingerprint, (stage) => writeEvent('stage', stage));
+    writeEvent('done', result);
+  } catch (err) {
+    writeEvent('error', { error: err.message || '整套挂单提交失败', code: err.code });
+  } finally {
+    if (!res.writableEnded) res.end();
+  }
+});
+
 module.exports = router;

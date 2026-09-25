@@ -231,7 +231,8 @@ async function previewTradfiAi(userId, analysisId) {
     averagePrice: totalNotionalUsdt / orders.reduce((sum, order) => sum + Number(order.quantity), 0),
   };
 }
-async function placeTradfiAi(creds, userId, analysisId, expected) {
+async function placeTradfiAi(creds, userId, analysisId, expected, onProgress) {
+  const report = (stage) => { try { onProgress?.(stage); } catch { /* A closed progress stream must not interrupt exchange cleanup. */ } };
   if (!tradfiAiMonitor.isRunning()) throw invalid('整套挂单需要常驻后端核对保护单；当前监控服务未运行', 503);
   const savedPlan = getSaved(userId, analysisId);
   if (savedPlan.submitted || savedPlan.submitting) throw invalid('该 AI 计划正在提交或已提交，请在币安核对订单');
@@ -241,15 +242,19 @@ async function placeTradfiAi(creds, userId, analysisId, expected) {
   let hedge;
   let positionSide;
   try {
+    report({ id: 'prepare', status: 'running', progress: 3, message: '核对订单预览与币安账户…' });
     preview = await previewTradfiAi(userId, analysisId);
     if (!expected || expected !== previewFingerprint(preview)) throw invalid('计划或行情已变化，请重新预览');
     const mode = await signedRequest(creds, 'GET', '/fapi/v1/positionSide/dual');
+    report({ id: 'prepare', status: 'running', progress: 6, message: '账户持仓模式已核对' });
     hedge = mode.dualSidePosition === true || mode.dualSidePosition === 'true';
     positionSide = hedge ? (preview.direction === 'BUY' ? 'LONG' : 'SHORT') : 'BOTH';
     const positions = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: preview.symbol });
+    report({ id: 'prepare', status: 'running', progress: 10, message: '现有仓位已核对' });
     if ((Array.isArray(positions) ? positions : []).some((position) => position.symbol === preview.symbol && Number(position.positionAmt || 0) !== 0)) throw invalid('该合约已有持仓，请先处理，避免保护单影响原仓位');
     await signedRequest(creds, 'POST', '/fapi/v1/leverage', { symbol: preview.symbol, leverage: String(preview.leverage) });
     savedPlan.submitted = true;
+    report({ id: 'prepare', status: 'done', progress: 15, message: '账户和杠杆已核对，开始逐笔提交' });
   } finally {
     savedPlan.submitting = false;
   }
@@ -258,25 +263,38 @@ async function placeTradfiAi(creds, userId, analysisId, expected) {
   const placed = [];
   const attemptedIds = [];
   const protections = [];
+  const totalActions = preview.orders.length * 3;
+  let completedActions = 0;
+  const actionProgress = () => 15 + Math.floor(75 * completedActions / totalActions);
   try {
     for (const leg of preview.orders) {
       const id = `wtf_${group}_${leg.level}`;
       attemptedIds.push(id);
+      report({ id: `leg-${leg.level}-entry`, status: 'running', progress: actionProgress(), message: `正在提交第 ${leg.level + 1}/${preview.orders.length} 笔 Maker 入场单` });
       const order = await signedRequest(creds, 'POST', '/fapi/v1/order', {
         symbol: preview.symbol, side: preview.direction, positionSide, type: 'LIMIT', timeInForce: 'GTX',
         price: String(leg.price), quantity: leg.quantity, newClientOrderId: id,
       });
       placed.push({ ...leg, orderId: order.orderId, clientOrderId: id, status: order.status });
+      completedActions += 1;
+      report({ id: `leg-${leg.level}-entry`, status: 'done', progress: actionProgress(), message: `第 ${leg.level + 1} 笔入场单已提交` });
       const base = { algoType: 'CONDITIONAL', symbol: preview.symbol, side: opposite, positionSide, quantity: leg.quantity, workingType: 'CONTRACT_PRICE' };
       if (!hedge) base.reduceOnly = 'true';
       for (const [kind, type, triggerPrice] of [['stop', 'STOP_MARKET', preview.stopPrice], ['take', 'TAKE_PROFIT_MARKET', preview.takePrice]]) {
+        const label = kind === 'stop' ? '止损' : '止盈';
+        report({ id: `leg-${leg.level}-${kind}`, status: 'running', progress: actionProgress(), message: `正在提交第 ${leg.level + 1} 笔${label}保护单` });
         const protection = await signedRequest(creds, 'POST', '/fapi/v1/algoOrder', { ...base, type, triggerPrice, clientAlgoId: `${id}_${kind}` });
         protections.push({ level: leg.level, kind, algoId: protection.algoId });
+        completedActions += 1;
+        report({ id: `leg-${leg.level}-${kind}`, status: 'done', progress: actionProgress(), message: `第 ${leg.level + 1} 笔${label}保护单已提交` });
       }
     }
+    report({ id: 'verify', status: 'running', progress: 92, message: '正在逐笔核对止盈止损状态…' });
     const checked = await Promise.all(protections.map((item) => signedRequest(creds, 'GET', '/fapi/v1/algoOrder', { algoId: String(item.algoId) })));
     if (checked.some((item, index) => String(item.algoStatus) !== 'NEW' || item.side !== opposite || Number(item.quantity) !== Number(preview.orders[protections[index].level].quantity))) throw invalid('部分保护单未被交易所确认');
+    report({ id: 'verify', status: 'done', progress: 97, message: '全部保护单已确认' });
   } catch (error) {
+    report({ id: 'cleanup', status: 'running', progress: actionProgress(), message: '提交未完成，正在核对并撤销可能已提交的订单…' });
     const cleanup = [];
     let unresolvedPosition = false;
     for (const clientOrderId of attemptedIds) {
@@ -307,6 +325,7 @@ async function placeTradfiAi(creds, userId, analysisId, expected) {
     protections: protections.map((item) => ({ algoId: item.algoId })),
     expiresAt: preview.expiresAt,
   });
+  report({ id: 'done', status: 'done', progress: 100, message: `${preview.orders.length} 笔入场单及保护单已提交并纳入监控` });
   return { ok: true, simulated: creds.simulated, preview, orders: placed, protections };
 }
 function previewFingerprint(preview) {

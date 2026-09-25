@@ -107,11 +107,16 @@ test('一键计划按三笔 Maker 挂单和六笔止盈止损提交，禁止重�
   assert.ok(preview.estimatedLossUsdt <= preview.totalMarginUsdt * 0.3);
   await assert.rejects(previewTradfiAi('other-user', analysis.analysisId), /不属于当前用户/);
   await assert.rejects(placeTradfiAi({ apiKey: 'fake', secret: 'fake', simulated: true }, 'user1', analysis.analysisId, 'stale-preview'), /重新预览/);
-  const result = await placeTradfiAi({ apiKey: 'fake', secret: 'fake', simulated: true }, 'user1', analysis.analysisId, previewFingerprint(preview));
+  const stages = [];
+  const result = await placeTradfiAi({ apiKey: 'fake', secret: 'fake', simulated: true }, 'user1', analysis.analysisId, previewFingerprint(preview), (stage) => stages.push(stage));
   assert.equal(result.orders.length, 3);
   assert.equal(result.protections.length, 6);
   assert.equal(calls.filter((call) => call.path.endsWith('/order') && call.method === 'POST').length, 3);
   assert.ok(calls.filter((call) => call.path.endsWith('/order') && call.method === 'POST').every((call) => call.params.timeInForce === 'GTX'));
+  assert.deepEqual(stages.filter((stage) => stage.status === 'done').map((stage) => stage.id), [
+    'prepare', 'leg-0-entry', 'leg-0-stop', 'leg-0-take', 'leg-1-entry', 'leg-1-stop', 'leg-1-take', 'leg-2-entry', 'leg-2-stop', 'leg-2-take', 'verify', 'done',
+  ]);
+  assert.equal(stages.at(-1).progress, 100);
   await assert.rejects(placeTradfiAi({ simulated: true }, 'user1', analysis.analysisId, previewFingerprint(preview)), /已提交/);
 });
 
