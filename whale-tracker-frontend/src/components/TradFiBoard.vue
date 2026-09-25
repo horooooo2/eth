@@ -285,6 +285,12 @@ function tradeTime(raw: number | null) {
   const mi = String(date.getMinutes()).padStart(2, '0');
   return `${mm}/${dd} ${hh}:${mi}`;
 }
+function tradeClock(raw: number | null) {
+  if (!raw) return '—';
+  const date = new Date(raw);
+  if (!Number.isFinite(date.getTime())) return '—';
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
 function pnlClass(value: number | null) {
   if (value == null || !Number.isFinite(value) || value === 0) return 'pnl-zero';
   return value > 0 ? 'pnl-positive' : 'pnl-negative';
@@ -377,36 +383,17 @@ async function closeAllPositions() {
             <div class="panel-count">{{ tradeRows.length }} 条</div>
           </div>
           <div class="history-list">
-            <article v-for="row in tradeRows" :key="row.tradeId" class="record-card">
-              <div class="record-header">
-                <div>
-                  <span class="record-symbol">{{ row.coin }}</span>
-                  <span class="tag" :class="tradeTagClass(row)">{{ tradeDirection(row) }}</span>
-                </div>
-                <span class="record-time">{{ tradeTime(row.createdAt) }}</span>
+            <div class="record-table-head">
+              <span>品种/方向</span><span>成交价</span><span>数量 / 成交额</span><span>已实现盈亏</span><span>时间</span>
+            </div>
+            <article v-for="row in tradeRows" :key="row.tradeId" class="record-row">
+              <div class="record-symbol"><span>{{ row.coin }}</span><span class="tag" :class="tradeTagClass(row)">{{ tradeDirection(row) }}</span></div>
+              <div class="record-price">{{ tradePrice(row.px) }}</div>
+              <div class="record-amount">{{ row.sz }} / {{ tradeAmount(row.amountUsd) }}</div>
+              <div class="record-pnl" :class="pnlClass(row.realizedPnl)" :title="`交易费用 ${tradeFee(row)}`">
+                <span>{{ tradeAmount(row.realizedPnl) }}</span><small>{{ tradeFee(row) }}</small>
               </div>
-              <div class="record-grid">
-                <div class="data-item">
-                  <span class="data-label">成交价</span>
-                  <span class="data-value">{{ tradePrice(row.px) }}</span>
-                </div>
-                <div class="data-item">
-                  <span class="data-label">成交额</span>
-                  <span class="data-value">{{ tradeAmount(row.amountUsd) }}</span>
-                </div>
-                <div class="data-item">
-                  <span class="data-label">数量</span>
-                  <span class="data-value">{{ row.sz }}</span>
-                </div>
-                <div class="data-item">
-                  <span class="data-label">已实现盈亏</span>
-                  <span class="data-value" :class="pnlClass(row.realizedPnl)">{{ tradeAmount(row.realizedPnl) }}</span>
-                </div>
-                <div class="data-item">
-                  <span class="data-label">交易费用</span>
-                  <span class="data-value pnl-negative">{{ tradeFee(row) }}</span>
-                </div>
-              </div>
+              <div class="record-time" :title="tradeTime(row.createdAt)">{{ tradeClock(row.createdAt) }}</div>
             </article>
             <div v-if="!tradeRows.length" class="empty">暂无该标的策略成交记录</div>
           </div>
@@ -483,11 +470,11 @@ async function closeAllPositions() {
             </div>
             <div class="strategy-metrics">
               <div><span>单笔保证金</span><b>{{ strategyData?.strategy.marginPerOrder ?? strategyMargin }} USDT</b></div><div><span>杠杆</span><b>{{ strategyData?.strategy.leverage ?? strategyLeverage }}×</b></div>
-              <div><span>已补仓</span><b>{{ strategyData?.strategy.additions || 0 }} / 20</b></div><div><span>下一档间距</span><b>{{ strategyData?.strategy.addStep == null ? '—' : `${Number(strategyData.strategy.addStep).toFixed(2)}` }}</b></div>
-              <div><span>组合浮盈亏</span><b>{{ strategyData?.strategy.comboPnl == null ? '—' : `${Number(strategyData.strategy.comboPnl).toFixed(2)} U` }}</b></div><div><span>预计平仓后净盈亏</span><b>{{ strategyData?.strategy.netPnl == null ? '—' : `${Number(strategyData.strategy.netPnl).toFixed(2)} U` }}</b></div>
+              <div><span>已补仓</span><b v-if="strategyData?.strategy.longAdditions == null && strategyData?.strategy.shortAdditions == null">{{ strategyData?.strategy.additions || 0 }} / 20</b><b v-else>多 {{ strategyData?.strategy.longAdditions || 0 }}/20 · 空 {{ strategyData?.strategy.shortAdditions || 0 }}/20</b></div><div><span>下一档间距</span><b>{{ strategyData?.strategy.addStep == null ? '—' : `${Number(strategyData.strategy.addStep).toFixed(2)}` }}</b></div>
+              <div><span>多头净盈亏</span><b>{{ strategyData?.strategy.long?.costs == null ? '—' : `${Number(strategyData.strategy.long.costs.netPnl).toFixed(2)} U` }}</b></div><div><span>空头净盈亏</span><b>{{ strategyData?.strategy.short?.costs == null ? '—' : `${Number(strategyData.strategy.short.costs.netPnl).toFixed(2)} U` }}</b></div>
             </div>
-            <p class="dialog-intro">服务器24小时识别震荡结构，建立双向底仓；补仓间距为 15 分钟 ATR 的 0.6 倍，并限制在现价的 0.08%～0.35%。常规模式达到净利润目标后自动平仓；恢复模式会在达到目标后按 ATR 跟踪利润回撤。手动改仓或达到20档后进入人工接管。</p>
-            <p v-if="strategyData?.strategy.costs" class="market-meta">预估成本：开仓费 {{ Number(strategyData.strategy.costs.entryFee).toFixed(3) }}U · 平仓费 {{ Number(strategyData.strategy.costs.exitFee).toFixed(3) }}U · 滑点 {{ Number(strategyData.strategy.costs.slippage).toFixed(3) }}U · 资金费 {{ Number(strategyData.strategy.costs.fundingNet).toFixed(3) }}U。{{ strategyData.strategy.recovery ? `恢复模式：净利达到 ${Number(strategyData.strategy.costs.profitTarget).toFixed(2)}U 后启动 ATR 跟踪；峰值 ${Number(strategyData.strategy.recoveryPeakNetPnl || 0).toFixed(2)}U，回撤 ${Number(strategyData.strategy.recoveryTrail || 0).toFixed(2)}U 平仓。` : `净利润目标 ${Number(strategyData.strategy.costs.profitTarget).toFixed(2)}U；浮盈达到 ${Number(strategyData.strategy.costs.closeTrigger).toFixed(2)}U 才平仓。` }}</p>
+            <p class="dialog-intro">服务器24小时识别震荡结构，建立双向底仓；补仓间距为 15 分钟 ATR 的 0.6 倍，并限制在现价的 0.08%～0.35%。多头、空头各自最多补仓 20 次。任一侧达到单边净利润目标后以 Maker 平仓，10 秒后按初始金额和杠杆建立同方向新底仓；另一侧状态保留。</p>
+            <p v-if="strategyData?.strategy.long?.costs || strategyData?.strategy.short?.costs" class="market-meta">多头：{{ strategyData.strategy.long?.recovery ? `恢复中，目标 ${Number(strategyData.strategy.long.costs?.profitTarget || 0).toFixed(2)}U，ATR 回撤 ${Number(strategyData.strategy.long.recoveryTrail || 0).toFixed(2)}U` : `常规目标 ${Number(strategyData.strategy.long?.costs?.profitTarget || 0).toFixed(2)}U` }}。空头：{{ strategyData.strategy.short?.recovery ? `恢复中，目标 ${Number(strategyData.strategy.short.costs?.profitTarget || 0).toFixed(2)}U，ATR 回撤 ${Number(strategyData.strategy.short.recoveryTrail || 0).toFixed(2)}U` : `常规目标 ${Number(strategyData.strategy.short?.costs?.profitTarget || 0).toFixed(2)}U` }}。</p>
             <p v-if="strategyData?.strategy.range" class="market-meta">当前参考区间：{{ strategyData.strategy.range.low }} – {{ strategyData.strategy.range.high }} · 最新价 {{ strategyData.strategy.lastPrice ?? '—' }}</p>
             <p v-if="strategyData?.strategy.lastError || strategyError" class="order-error">{{ strategyError || strategyData?.strategy.lastError }}</p>
           </div>
@@ -588,32 +575,46 @@ async function closeAllPositions() {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
 }
 .history-list::-webkit-scrollbar { width: 6px; }
 .history-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-.record-card {
-  background: var(--panel-2);
-  border-radius: 6px;
-  padding: 12px;
-  border: 1px solid transparent;
-  transition: background-color .2s, border-color .2s;
-}
-.record-card:hover {
-  background: color-mix(in srgb, var(--panel-3) 80%, var(--panel-2));
-  border-color: var(--border);
-}
-.record-header {
-  display: flex;
-  justify-content: space-between;
+.record-table-head,
+.record-row {
+  display: grid;
+  grid-template-columns: 98px 72px minmax(100px, 1fr) 78px 46px;
+  column-gap: 8px;
   align-items: center;
-  margin-bottom: 12px;
-  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
-.record-symbol { font-weight: 600; font-size: 14px; }
+.record-table-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 8px 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+}
+.record-table-head > span:not(:first-child) { text-align: right; }
+.record-row {
+  min-height: 48px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  transition: background-color .15s;
+}
+.record-row:hover { background: color-mix(in srgb, var(--panel-3) 78%, var(--panel-2)); }
+.record-symbol {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 600;
+  min-width: 0;
+}
 .tag {
   padding: 2px 6px;
   border-radius: 4px;
@@ -623,11 +624,15 @@ async function closeAllPositions() {
 }
 .tag.long { background: color-mix(in srgb, var(--green) 10%, transparent); color: var(--green); }
 .tag.short { background: color-mix(in srgb, var(--red) 10%, transparent); color: var(--red); }
-.record-time { color: color-mix(in srgb, var(--muted) 70%, transparent); font-size: 12px; }
-.record-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; font-size: 12px; }
-.data-item { display: flex; flex-direction: column; gap: 4px; }
-.data-label { color: var(--muted); font-size: 11px; }
-.data-value { font-variant-numeric: tabular-nums; font-weight: 500; color: var(--text); }
+.record-price,
+.record-amount,
+.record-pnl,
+.record-time { text-align: right; min-width: 0; }
+.record-price { color: var(--text); }
+.record-amount { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.record-pnl { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; font-weight: 600; }
+.record-pnl small { color: var(--muted); font-size: 10px; font-weight: 400; }
+.record-time { color: var(--muted); font-size: 11px; }
 .pnl-positive { color: var(--green); }
 .pnl-negative { color: var(--red); }
 .pnl-zero { color: var(--muted); opacity: .6; }

@@ -99,8 +99,14 @@ function groupMode(group: TradfiGroup) {
     return '检查震荡条件';
   }
   if (strategy?.status === 'entry_pending') return '等待双向底仓成交';
-  if (strategy?.status === 'add_pending') return `第 ${(strategy.additions || 0) + 1} 档补仓挂单中`;
-  if (strategy?.status === 'active') return `策略运行中 · 已补 ${strategy.additions || 0} 档`;
+  if (strategy?.long?.phase === 'close_pending' || strategy?.short?.phase === 'close_pending') return '单边止盈挂单中';
+  if (strategy?.long?.phase === 'reentry_wait' || strategy?.short?.phase === 'reentry_wait') return '单边止盈后冷却，等待重建底仓';
+  if (strategy?.long?.phase === 'reentry_pending' || strategy?.short?.phase === 'reentry_pending') return '正在重建单边底仓';
+  if (strategy?.status === 'add_pending') return `补仓挂单中 · 多${strategy.longAdditions ?? '—'}/20 · 空${strategy.shortAdditions ?? '—'}/20`;
+  if (strategy?.status === 'active') {
+    if (strategy.longAdditions == null && strategy.shortAdditions == null) return `策略运行中 · 已补 ${strategy.additions || 0} 档`;
+    return `策略运行中 · 多${strategy.longAdditions || 0}/20 · 空${strategy.shortAdditions || 0}/20`;
+  }
   if (group.long?.kind === 'pending' || group.short?.kind === 'pending') return '含挂单';
   if (group.long && group.short) return '双向持仓';
   return '单向持仓';
@@ -113,6 +119,13 @@ function groupPnl(group: TradfiGroup) {
 function groupFees(group: TradfiGroup) {
   return book.value?.feesBySymbol?.[group.instId] || { tradingFees: 0, fundingFees: 0, netCost: 0 };
 }
+
+function sideRealized(group: TradfiGroup, side: 'long' | 'short') {
+  return (book.value?.trades || []).filter((trade) => trade.instId === group.instId && trade.action === 'close' && String(trade.posSide).toLowerCase() === side)
+    .reduce((sum, trade) => sum + Number(trade.realizedPnl || 0), 0);
+}
+
+function legStatus(group: TradfiGroup, side: 'long' | 'short') { return group.strategy?.[side]; }
 
 function preciseUsd(value: number | null | undefined) {
   if (value == null || !Number.isFinite(Number(value))) return '--';
@@ -210,6 +223,11 @@ defineExpose({ reload: () => load(true) });
         <div class="data-value" :class="valueClass(book?.costs?.netCost)">{{ formatSignedUsd(book?.costs?.netCost) }}</div>
         <div class="data-sub">资金费 {{ formatSignedUsd(book?.costs?.fundingFees) }} · 手续费 {{ preciseUsd(book?.costs?.tradingFees) }}</div>
       </div>
+      <div v-if="props.exchange === 'tradfi'" class="data-card">
+        <div class="data-label">策略总盈亏</div>
+        <div class="data-value" :class="valueClass(book?.strategyTotalPnl)">{{ formatSignedUsd(book?.strategyTotalPnl) }}</div>
+        <div class="data-sub">已实现 {{ formatSignedUsd(book?.realizedPnl) }} + 当前仓位 - 开仓费 + 资金费</div>
+      </div>
     </div>
 
     <p v-if="props.exchange === 'tradfi'" class="account-note">余额与币安 U 本位合约账户共用；下方只展示本站自动策略提交的 TradFi 持仓与挂单。</p>
@@ -237,6 +255,10 @@ defineExpose({ reload: () => load(true) });
               <span class="value">{{ group.long ? notionalAmount(group.long) : '—' }}</span>
               <span class="label">盈亏</span>
               <span class="value" :class="valueClass(rowPnl(group.long))">{{ group.long ? formatSignedUsd(rowPnl(group.long)) : '—' }}</span>
+              <span class="label">已实现</span>
+              <span class="value" :class="valueClass(sideRealized(group, 'long'))">{{ formatSignedUsd(sideRealized(group, 'long')) }}</span>
+              <span class="label">状态</span>
+              <span class="value">{{ legStatus(group, 'long')?.recovery ? `恢复中 · ${legStatus(group, 'long')?.additions || 0}/20` : `常规 · ${legStatus(group, 'long')?.additions || 0}/20` }}</span>
             </div>
           </section>
           <section class="position-side">
@@ -251,6 +273,10 @@ defineExpose({ reload: () => load(true) });
               <span class="value">{{ group.short ? notionalAmount(group.short) : '—' }}</span>
               <span class="label">盈亏</span>
               <span class="value" :class="valueClass(rowPnl(group.short))">{{ group.short ? formatSignedUsd(rowPnl(group.short)) : '—' }}</span>
+              <span class="label">已实现</span>
+              <span class="value" :class="valueClass(sideRealized(group, 'short'))">{{ formatSignedUsd(sideRealized(group, 'short')) }}</span>
+              <span class="label">状态</span>
+              <span class="value">{{ legStatus(group, 'short')?.recovery ? `恢复中 · ${legStatus(group, 'short')?.additions || 0}/20` : `常规 · ${legStatus(group, 'short')?.additions || 0}/20` }}</span>
             </div>
           </section>
         </div>

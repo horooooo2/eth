@@ -68,6 +68,8 @@ test('TradFi 交易记录来自本站策略订单的币安成交明细', async (
   assert.equal(book.trades.find((row) => row.source === 'manual').realizedPnl, 0.5);
   assert.equal(book.costs.tradingFees, 0.004);
   assert.equal(book.costs.netCost, -0.004);
+  assert.equal(book.realizedPnl, 0.5);
+  assert.equal(book.strategyTotalPnl, 2.496);
 });
 
 test('已归因的手动平仓在交易所历史暂不可见时仍保留在策略记录中', async () => {

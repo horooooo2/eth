@@ -168,8 +168,11 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
     fundingFees: sum.fundingFees + fees.fundingFees,
     netCost: sum.netCost + fees.netCost,
   }), { tradingFees: 0, fundingFees: 0, netCost: 0 });
+  const realizedPnl = scope === 'tradfi' ? trades.reduce((sum, trade) => sum + Number(trade.realizedPnl || 0), 0) : null;
   const historyPnl = scope === 'tradfi' ? trades.reduce((sum, trade) => sum + trade.realizedPnl - (trade.commissionAsset === 'USDT' ? trade.commission : 0), 0) : null;
-  return { ok: true, configured: true, simulated: creds.simulated, scope: 'ai-only', balance: { totalEq: Number(usdt?.balance) || null, usdtEq: Number(usdt?.balance) || null, availBal: Number(usdt?.availableBalance) || null }, openPnl: pos.reduce((sum, item) => sum + Number(item.row.unRealizedProfit || 0) * item.share, 0), historyPnl, records, trades, costs, feesBySymbol };
+  const openPnl = pos.reduce((sum, item) => sum + Number(item.row.unRealizedProfit || 0) * item.share, 0);
+  const strategyTotalPnl = scope === 'tradfi' ? Number(realizedPnl || 0) + openPnl - costs.tradingFees + costs.fundingFees : null;
+  return { ok: true, configured: true, simulated: creds.simulated, scope: 'ai-only', balance: { totalEq: Number(usdt?.balance) || null, usdtEq: Number(usdt?.balance) || null, availBal: Number(usdt?.availableBalance) || null }, openPnl, realizedPnl, historyPnl, strategyTotalPnl, records, trades, costs, feesBySymbol };
 }
 
 module.exports = { accountBook };

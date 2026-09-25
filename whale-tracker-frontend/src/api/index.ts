@@ -1550,12 +1550,15 @@ export async function deleteBinanceKeys() {
 }
 
 export type TradfiRangeEvent = { id: number; level: string; message: string; details: Record<string, unknown>; created_at: number };
+export type TradfiLegStatus = { phase: string; additions: number; expectedQty: number; lastAddPrice: number; minPnl: number; recovery: boolean; recoveryArmed: boolean; recoveryPeakNetPnl: number; recoveryTrail: number; costs?: { entryFee: number; exitFee: number; fundingNet: number; estimatedCosts: number; profitTarget: number; closeTrigger: number; netPnl: number; recovery: boolean } | null };
 export type TradfiRangeStatus = {
   symbol: string; enabled: boolean; status: string; simulated: boolean | null; additions: number; maxAdditions: number;
+  longAdditions?: number; shortAdditions?: number; maxTotalAdditions?: number;
   marginPerOrder: number; leverage: number; comboPnl?: number | null; lastPrice?: number | null;
   netPnl?: number | null; closeTrigger?: number | null; addStep?: number | null;
   recovery?: boolean; recoveryArmed?: boolean; recoveryPeakNetPnl?: number | null; recoveryTrail?: number | null;
-  costs?: { entryFee: number; exitFee: number; slippage: number; fundingNet: number; estimatedCosts: number; profitTarget: number; closeTrigger: number; netPnl: number } | null;
+  long?: TradfiLegStatus; short?: TradfiLegStatus;
+  costs?: { entryFee?: number; exitFee?: number; slippage?: number; fundingNet?: number; estimatedCosts?: number; profitTarget?: number; closeTrigger?: number; netPnl?: number; long?: TradfiLegStatus['costs']; short?: TradfiLegStatus['costs'] } | null;
   range?: { low: number; high: number } | null; cooldownUntil?: number | null; cycleStartedAt?: number | null; lastError?: string; startedAt?: number | null; updatedAt?: number | null;
 };
 export type TradfiRangeResponse = { ok: boolean; strategy: TradfiRangeStatus; events: TradfiRangeEvent[] };
@@ -1612,7 +1615,9 @@ export type OkxAiBook = {
     availBal: number | null;
   };
   openPnl: number;
+  realizedPnl?: number | null;
   historyPnl: number | null;
+  strategyTotalPnl?: number | null;
   records: OkxAiOrderRecord[];
   trades?: BinanceAiTradeRecord[];
   strategies?: TradfiRangeStatus[];
