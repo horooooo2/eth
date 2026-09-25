@@ -1603,6 +1603,13 @@ export type OkxAiBook = {
   openPnl: number;
   historyPnl: number | null;
   records: OkxAiOrderRecord[];
+  trades?: BinanceAiTradeRecord[];
+};
+
+export type BinanceAiTradeRecord = {
+  tradeId: string; orderId: string; instId: string; coin: string; side: string; posSide: string;
+  action: 'open' | 'close'; px: number | null; sz: string; amountUsd: number | null;
+  realizedPnl: number; commission: number; commissionAsset: string; createdAt: number;
 };
 
 export async function fetchOkxAiBook() {

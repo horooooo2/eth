@@ -23,7 +23,7 @@ async function planStance(input) {
   const stop = finitePositive(input.stop);
   const take = finitePositive(input.takeProfit);
   if (!margin || margin > 100) throw invalid('保证金需在 0–100 USDT 之间');
-  if (!Number.isInteger(leverage) || leverage < 1 || leverage > 10) throw invalid('杠杆需在 1–10 倍之间');
+  if (leverage !== 5) throw invalid('虚拟币 AI 策略固定使用 5 倍杠杆');
   if (!stop || !take) throw invalid('止损和止盈价格无效');
   const [rules, ticker, book] = await Promise.all([
     symbolRules(symbol),
@@ -148,6 +148,14 @@ async function accountBook(creds, userId, scope = 'crypto') {
     if (firstLedgerId) params.orderId = String(firstLedgerId);
     return signedRequest(creds, 'GET', '/fapi/v1/allOrders', params).catch(() => []);
   }))).flat();
+  const userTrades = scope === 'tradfi' ? (await Promise.all(candidateSymbols.map((symbol) =>
+    signedRequest(creds, 'GET', '/fapi/v1/userTrades', { symbol, limit: '1000' }).catch(() => []),
+  ))).flat() : [];
+  const aiOrderIds = new Set(orderHistory.filter((order) =>
+    isAiClientId(order.clientOrderId, scope)
+      || ledgerIds.has(String(order.orderId))
+      || ledgerClients.has(String(order.clientOrderId || '')),
+  ).map((order) => String(order.orderId)));
   const pending = (Array.isArray(orders) ? orders : []).filter((row) =>
     isAiClientId(row.clientOrderId, scope) || ledgerIds.has(String(row.orderId)) || ledgerClients.has(String(row.clientOrderId || '')));
   const aiQtyByPosition = new Map();
@@ -186,7 +194,22 @@ async function accountBook(creds, userId, scope = 'crypto') {
     ...pos.map(({ row: p, share, aiQty }) => ({ kind: 'position', ordId: `pos:${p.symbol}:${p.positionSide}`, instId: p.symbol, coin: p.symbol.slice(0, -4), side: Number(p.positionAmt) < 0 ? 'sell' : 'buy', posSide: p.positionSide?.toLowerCase(), px: Number(p.entryPrice), sz: String(aiQty), amountUsd: Math.abs(Number(p.notional)) * share, leverage: Number(p.leverage), state: 'filled', createdAt: Number(p.updateTime) || 0, openUpl: Number(p.unRealizedProfit) * share, realizedPnl: null, source: 'ai' })),
     ...pending.map((o) => { const saved = ledger.find((row) => row.order_id === String(o.orderId)); return ({ kind: 'pending', ordId: String(o.orderId), instId: o.symbol, coin: o.symbol.slice(0, -4), side: String(o.side).toLowerCase(), posSide: String(o.positionSide).toLowerCase(), px: Number(o.price), sz: String(Number(o.origQty) - Number(o.executedQty || 0)), amountUsd: (Number(o.origQty) - Number(o.executedQty || 0)) * Number(o.price), leverage: Number(saved?.leverage) || null, state: 'live', createdAt: Number(o.time) || 0, openUpl: null, realizedPnl: null, source: 'ai' }); }),
   ];
-  return { ok: true, configured: true, simulated: creds.simulated, scope: 'ai-only', balance: { totalEq: Number(usdt?.balance) || null, usdtEq: Number(usdt?.balance) || null, availBal: Number(usdt?.availableBalance) || null }, openPnl: pos.reduce((sum, item) => sum + Number(item.row.unRealizedProfit || 0) * item.share, 0), historyPnl: null, records };
+  const trades = userTrades.filter((trade) => aiOrderIds.has(String(trade.orderId))).map((trade) => {
+    const positionSide = String(trade.positionSide || 'BOTH').toUpperCase();
+    const side = String(trade.side || '').toUpperCase();
+    const closesPosition = positionSide === 'LONG' ? side === 'SELL' : positionSide === 'SHORT' ? side === 'BUY' : Number(trade.realizedPnl) !== 0;
+    return {
+      tradeId: String(trade.id || `${trade.orderId}:${trade.time}`), orderId: String(trade.orderId),
+      instId: trade.symbol, coin: String(trade.symbol || '').replace(/USDT$/, ''), side: side.toLowerCase(),
+      posSide: positionSide.toLowerCase(), action: closesPosition ? 'close' : 'open',
+      px: Number(trade.price) || null, sz: String(trade.qty || ''),
+      amountUsd: Number(trade.quoteQty) || Number(trade.price) * Number(trade.qty) || null,
+      realizedPnl: Number(trade.realizedPnl) || 0, commission: Number(trade.commission) || 0,
+      commissionAsset: trade.commissionAsset || 'USDT', createdAt: Number(trade.time) || 0,
+    };
+  }).sort((a, b) => b.createdAt - a.createdAt).slice(0, 100);
+  const historyPnl = scope === 'tradfi' ? trades.reduce((sum, trade) => sum + trade.realizedPnl - (trade.commissionAsset === 'USDT' ? trade.commission : 0), 0) : null;
+  return { ok: true, configured: true, simulated: creds.simulated, scope: 'ai-only', balance: { totalEq: Number(usdt?.balance) || null, usdtEq: Number(usdt?.balance) || null, availBal: Number(usdt?.availableBalance) || null }, openPnl: pos.reduce((sum, item) => sum + Number(item.row.unRealizedProfit || 0) * item.share, 0), historyPnl, records, trades };
 }
 
 module.exports = { planStance, placeStance, accountBook };

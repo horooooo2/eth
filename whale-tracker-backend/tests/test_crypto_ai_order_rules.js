@@ -32,12 +32,12 @@ const { validatedAiOrder } = require('../lib/cryptoAiOrderGate');
 
 const valid = {
   execution: '现在可开', coin: 'ETH', action: '做多', entry: 99,
-  stop: 90, takeProfit: 110, amountUsd: 100, leverage: 10,
+  stop: 90, takeProfit: 110, amountUsd: 100, leverage: 5,
 };
 
 test('币安预览限制本金和杠杆，并要求止盈止损', async () => {
   await assert.rejects(planStance({ ...valid, amountUsd: 100.01 }), /100 USDT/);
-  await assert.rejects(planStance({ ...valid, leverage: 11 }), /1–10/);
+  await assert.rejects(planStance({ ...valid, leverage: 10 }), /固定使用 5/);
   await assert.rejects(planStance({ ...valid, stop: undefined }), /止损/);
   await assert.rejects(planStance({ ...valid, takeProfit: undefined }), /止盈/);
   await assert.rejects(planStance({ ...valid, execution: '等待触发' }), /不适用于所选下单模式/);
@@ -46,7 +46,7 @@ test('币安预览限制本金和杠杆，并要求止盈止损', async () => {
 test('币安实际委托价和预览价一致，并核算到止损的损失', async () => {
   const plan = await planStance(valid);
   assert.equal(Number(plan.price), 99);
-  assert.equal(plan.leverage, 10);
+  assert.equal(plan.leverage, 5);
   assert.equal(plan.last, 100);
   assert.ok(plan.estimatedLossUsdt > 0);
   await assert.rejects(planStance({ ...valid, expectedPrice: 98.9 }), /重新预览/);
@@ -63,7 +63,7 @@ test('手动挂单模式按 AI 的低位入场价提交预览，不强迫贴近�
 });
 
 test('OKX 在网络请求前拒绝超限和缺保护条件', async () => {
-  await assert.rejects(placeStanceOrder({ ...valid, leverage: 11 }, { dryRun: true }), /1–10/);
+  await assert.rejects(placeStanceOrder({ ...valid, leverage: 10 }, { dryRun: true }), /固定使用 5/);
   await assert.rejects(placeStanceOrder({ ...valid, takeProfit: 0 }, { dryRun: true }), /stop\/tp/);
   await assert.rejects(placeStanceOrder({ ...valid, execution: '等待触发' }, { dryRun: true }), /不适用于所选下单模式/);
 });
@@ -75,7 +75,7 @@ test('缺乏方向时不再默认做多', () => {
   }).result;
   assert.equal(output.personal_stance.short.action, '观望');
   assert.equal(output.personal_stance.short.execution, '禁止下单');
-  assert.equal(output.personal_stance.short.leverage, 10);
+  assert.equal(output.personal_stance.short.leverage, 5);
 });
 
 test('AI 入场价的多维验证随结构化结果保存', () => {

@@ -40,7 +40,7 @@ function validatedAiOrder(input, userId, readAnalysis = getAnalysis) {
   const entry = Number(leg.entry);
   const stop = Number(leg.stop);
   const takeProfit = Number(leg.take_profit);
-  const leverage = Math.min(10, Number(leg.leverage));
+  const leverage = 5;
   if (![entry, stop, takeProfit, leverage].every((n) => Number.isFinite(n) && n > 0)) {
     throw invalid('AI 建议缺少有效的入场价、止盈止损或杠杆');
   }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch as watchVue } from 'vue';
-import { fetchTradFiCatalog, fetchTradFiQuotes, fetchTradFiIntel, fetchTradfiRangeStatus, startTradfiRange, stopTradfiRange, type TradfiRangeResponse, type TradFiIntelResponse, type TradFiMarketSymbol, type TradFiQuote } from '@/api';
+import { fetchTradFiCatalog, fetchTradFiQuotes, fetchTradFiIntel, fetchTradfiRangeStatus, startTradfiRange, stopTradfiRange, type BinanceAiTradeRecord, type OkxAiBook, type TradfiRangeResponse, type TradFiIntelResponse, type TradFiMarketSymbol, type TradFiQuote } from '@/api';
 import OkxAccountPanel from '@/components/OkxAccountPanel.vue';
 import { tradfiWatch } from '@/utils/tradfiWatch';
 
@@ -131,6 +131,7 @@ const strategyOpen = ref(false);
 const strategyBusy = ref(false);
 const strategyError = ref('');
 const strategyData = ref<TradfiRangeResponse | null>(null);
+const accountBook = ref<OkxAiBook | null>(null);
 let quoteTimer = 0;
 let intelTimer = 0;
 let intelRequestId = 0;
@@ -144,6 +145,7 @@ const intel = ref<TradFiIntelResponse | null>(null);
 const intelLoading = ref(false);
 const intelError = ref('');
 const strategySupported = computed(() => selected.value === 'XAUUSDT' || selected.value === 'XAGUSDT');
+const tradeRows = computed(() => (accountBook.value?.trades || []).filter((row) => row.instId === selected.value));
 
 const catalogBySymbol = computed(() => new Map(catalog.value.map((item) => [item.symbol, item])));
 function assetFor(symbol: string): Asset {
@@ -246,6 +248,13 @@ async function loadStrategy(silent = false) {
 }
 function openStrategy() { strategyOpen.value = true; void loadStrategy(); }
 function closeStrategy() { if (!strategyBusy.value) strategyOpen.value = false; }
+function onAccountLoaded(book: OkxAiBook) { accountBook.value = book; }
+function tradeDirection(row: BinanceAiTradeRecord) {
+  const direction = row.posSide === 'short' ? '空' : row.posSide === 'long' ? '多' : row.side === 'sell' ? '空' : '多';
+  return `${direction}${row.action === 'close' ? '平仓' : '开仓'}`;
+}
+function tradeAmount(value: number | null) { return value == null ? '—' : `${value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })} U`; }
+function tradePrice(value: number | null) { return value == null ? '—' : value.toLocaleString('zh-CN', { maximumFractionDigits: 6 }); }
 async function toggleStrategy() {
   if (!strategySupported.value || strategyBusy.value) return;
   strategyBusy.value = true; strategyError.value = '';
@@ -309,18 +318,27 @@ async function toggleStrategy() {
 
       <div class="main-grid">
         <section class="panel records-column">
-          <div class="panel-head"><div><div class="panel-title">交易记录</div><div class="panel-sub">黄金/白银震荡策略运行日志</div></div><span class="section-tag">{{ strategyData?.events.length || 0 }} 条</span></div>
-          <div v-if="strategySupported" class="strategy-events">
-            <article v-for="event in strategyData?.events || []" :key="event.id" class="strategy-event" :class="event.level">
-              <time>{{ newsTime(event.created_at) }}</time><p>{{ event.message }}</p>
+          <div class="panel-head"><div><div class="panel-title">交易记录</div><div class="panel-sub">币安成交仓位明细</div></div><span class="section-tag">{{ tradeRows.length }} 条</span></div>
+          <div class="trade-records">
+            <article v-for="row in tradeRows" :key="row.tradeId" class="trade-record">
+              <div class="trade-record-head">
+                <strong>{{ row.coin }}</strong>
+                <span :class="row.posSide === 'short' ? 'down' : 'up'">{{ tradeDirection(row) }}</span>
+                <time>{{ newsTime(row.createdAt) }}</time>
+              </div>
+              <div class="trade-record-grid">
+                <span>成交价 <b>{{ tradePrice(row.px) }}</b></span>
+                <span>成交额 <b>{{ tradeAmount(row.amountUsd) }}</b></span>
+                <span>数量 <b>{{ row.sz }}</b></span>
+                <span>已实现盈亏 <b :class="row.realizedPnl >= 0 ? 'up' : 'down'">{{ tradeAmount(row.realizedPnl) }}</b></span>
+              </div>
             </article>
-            <div v-if="!strategyData?.events.length" class="empty">暂无震荡交易记录</div>
+            <div v-if="!tradeRows.length" class="empty">暂无该标的策略成交记录</div>
           </div>
-          <div v-else class="empty">该标的不运行震荡交易策略</div>
         </section>
         <section class="panel account-column">
           <div class="panel-head"><div><div class="panel-title">交易账户</div><div class="panel-sub">币安 · TradFi 自动策略持仓与挂单</div></div></div>
-          <OkxAccountPanel exchange="tradfi" :boot-ready="true" :active="active !== false" />
+          <OkxAccountPanel exchange="tradfi" :boot-ready="true" :active="active !== false" @loaded="onAccountLoaded" />
         </section>
 
         <section class="panel">
@@ -480,13 +498,12 @@ async function toggleStrategy() {
 .account-column :deep(.account-summary) { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 12px; }
 .account-column :deep(.order-list) { padding: 10px 12px; }
 .account-column :deep(.order-card) { padding: 12px; }
-.strategy-events { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 14px; }
-.strategy-event { padding: 11px 4px; border-bottom: 1px solid var(--border); }
-.strategy-event time { color: var(--muted); font-size: 10px; }
-.strategy-event p { margin: 5px 0 0; line-height: 1.5; font-size: 12px; }
-.strategy-event.error p { color: var(--red); }
-.strategy-event.success p { color: var(--green); }
-.strategy-event.trade p { color: var(--yellow); }
+.trade-records { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 12px; }
+.trade-record { padding: 11px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
+.trade-record-head { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.trade-record-head time { margin-left: auto; color: var(--muted); font-size: 10px; }
+.trade-record-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 10px; margin-top: 9px; color: var(--muted); font-size: 11px; }
+.trade-record-grid b { display: block; margin-top: 2px; color: var(--text); font-weight: 600; }
 .strategy-state { display: flex; justify-content: space-between; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); }
 .strategy-state span { color: var(--muted); }
 .strategy-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }

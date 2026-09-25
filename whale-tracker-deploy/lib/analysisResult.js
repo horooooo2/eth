@@ -53,7 +53,7 @@ function normalizePrice(v) {
 function normalizeLeverage(v) {
   const n = Number(v);
   if (!Number.isFinite(n) || n < 1) return null;
-  return Math.min(10, Math.round(n));
+  return 5;
 }
 
 function normalizeStanceLeg(raw) {

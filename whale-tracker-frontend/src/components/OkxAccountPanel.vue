@@ -8,6 +8,7 @@ const props = defineProps<{
   active?: boolean;
   exchange?: 'binance' | 'okx' | 'tradfi';
 }>();
+const emit = defineEmits<{ loaded: [book: OkxAiBook] }>();
 
 const loading = ref(false);
 const error = ref('');
@@ -65,6 +66,7 @@ async function load(silent = false) {
     const data = await (props.exchange === 'tradfi' ? fetchTradfiAccountBook() : props.exchange === 'binance' ? fetchBinanceAccountBook() : fetchOkxAiBook());
     if (seq !== reqSeq) return;
     book.value = data;
+    emit('loaded', data);
   } catch (err) {
     if (seq !== reqSeq) return;
     error.value = err instanceof Error ? err.message : '交易账户加载失败';

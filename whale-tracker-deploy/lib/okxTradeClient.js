@@ -588,8 +588,8 @@ async function placeStanceOrder(input, opts = {}) {
   if (!(amountUsd > 0) || amountUsd > 100) {
     throw Object.assign(new Error('amount must be 0-100 USDT'), { status: 400 });
   }
-  if (!Number.isInteger(leverage) || leverage < 1 || leverage > 10) {
-    throw Object.assign(new Error('杠杆需在 1–10 倍之间'), { status: 400 });
+  if (leverage !== 5) {
+    throw Object.assign(new Error('虚拟币 AI 策略固定使用 5 倍杠杆'), { status: 400 });
   }
   if (!(stop > 0) || !(takeProfit > 0)) {
     throw Object.assign(new Error('invalid stop/tp'), { status: 400 });

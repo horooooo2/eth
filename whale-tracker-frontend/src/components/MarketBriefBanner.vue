@@ -316,7 +316,7 @@ const orderDistancePct = computed(() => {
   const price = orderPreviewPrice.value;
   return last > 0 && Number.isFinite(price) ? ((price - last) / last * 100) : null;
 });
-const orderLeverage = computed(() => Math.min(10, Math.max(1, Math.round(Number(orderTarget.value?.leg?.leverage) || 1))));
+const orderLeverage = computed(() => 5);
 
 function stanceOrderInput(): CryptoStanceOrderInput | null {
   const leg = orderTarget.value?.leg;
@@ -1195,7 +1195,7 @@ onUnmounted(() => {
         <p v-if="orderPreview && orderDistancePct != null" class="order-meta">当前价 {{ fmtStancePrice(orderPreview.last) }} · 委托价较现价 {{ Math.abs(orderDistancePct).toFixed(2) }}% {{ orderDistancePct < 0 ? '更低' : '更高' }}</p>
         <p class="order-hint">入场单只做 Maker；盘口变化导致委托会立即成交时，交易所可能取消挂单。止盈止损触发后按市价执行。</p>
         <p v-if="orderMode === 'pending'" class="order-hint">点击确认后立即向交易所提交限价单。价格触及时可能成交，无需等待上方复合触发条件。</p>
-        <p class="order-meta">杠杆 {{ orderLeverage }}x（最多 10x）</p>
+        <p class="order-meta">杠杆 {{ orderLeverage }}x（AI 策略固定）</p>
         <p class="order-meta">
           止损 {{ fmtStancePrice(orderTarget.leg.stop) }} · 止盈
           {{ fmtStancePrice(orderTarget.leg.take_profit) }}
