@@ -4,6 +4,7 @@ const { getBinanceCredentialsForUser } = require('../lib/userExchangeKeys');
 const { signedRequest } = require('../lib/binanceTradfiTrade');
 const { planStance, placeStance, accountBook } = require('../lib/binanceCryptoTrade');
 const { validatedAiOrder } = require('../lib/cryptoAiOrderGate');
+const { recordBinanceAiOrder } = require('../lib/binanceAiLedger');
 
 const router = express.Router();
 function credentials(req) {
@@ -15,16 +16,31 @@ function credentials(req) {
 function fail(res, err) { res.status(Number(err.status) || 500).json({ error: err.message || '币安交易请求失败', code: err.code }); }
 
 router.get('/ai-book', async (req, res) => {
-  try { res.json(await accountBook(credentials(req))); } catch (err) { fail(res, err); }
+  try {
+    const user = requireUser(req);
+    res.json(await accountBook(credentials(req), user.user.id, 'crypto'));
+  } catch (err) { fail(res, err); }
 });
 router.post('/stance-preview', async (req, res) => {
   try {
+    const user = requireUser(req);
     credentials(req);
-    res.json({ ok: true, plan: await planStance(validatedAiOrder(req.body, req.user.user.id)) });
+    res.json({ ok: true, plan: await planStance(validatedAiOrder(req.body, user.user.id)) });
   } catch (err) { fail(res, err); }
 });
 router.post('/stance-order', async (req, res) => {
-  try { res.json(await placeStance(credentials(req), validatedAiOrder(req.body, req.user.user.id))); } catch (err) { fail(res, err); }
+  try {
+    const user = requireUser(req);
+    const creds = credentials(req);
+    const result = await placeStance(creds, validatedAiOrder(req.body, user.user.id));
+    recordBinanceAiOrder(user.user.id, 'crypto', {
+      orderId: result.order?.orderId, clientOrderId: result.order?.clientOrderId,
+      symbol: result.plan.symbol, side: result.plan.side, positionSide: result.order?.positionSide,
+      price: result.plan.price, quantity: result.plan.quantity, marginUsdt: result.plan.marginUsdt,
+      leverage: result.plan.leverage, simulated: result.simulated,
+    });
+    res.json(result);
+  } catch (err) { fail(res, err); }
 });
 router.post('/cancel', async (req, res) => {
   try {

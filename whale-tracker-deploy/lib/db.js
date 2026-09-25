@@ -217,6 +217,25 @@ function migrate(database) {
       UNIQUE(user_id, ord_id)
     );
     CREATE INDEX IF NOT EXISTS idx_okx_ai_orders_user ON okx_ai_orders(user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS binance_ai_orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      order_id TEXT NOT NULL,
+      client_order_id TEXT NOT NULL DEFAULT '',
+      symbol TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'crypto',
+      side TEXT NOT NULL,
+      position_side TEXT NOT NULL DEFAULT 'BOTH',
+      price REAL,
+      quantity TEXT NOT NULL DEFAULT '',
+      margin_usdt REAL,
+      leverage INTEGER,
+      simulated INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      UNIQUE(user_id, order_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_binance_ai_orders_user ON binance_ai_orders(user_id, scope, created_at DESC);
   `);
   // 旧策略表（v41_* / whale_ai_runtime_logs）不再创建；user_ai_keys / user_exchange_keys 继续使用。
 

@@ -15,15 +15,16 @@ require.cache[clientPath] = {
       { filterType: 'LOT_SIZE', stepSize: '0.001', minQty: '0.001' },
       { filterType: 'MIN_NOTIONAL', notional: '5' },
     ] }),
-    publicGet: async () => ({ price: '100' }),
+    publicGet: async (path) => path.endsWith('/bookTicker') ? { askPrice: '100.1', bidPrice: '99.9' } : { price: '100' },
     stepped: (value, step, mode = 'floor') => (mode === 'ceil' ? Math.ceil(value / Number(step) - 1e-9) : Math.floor(value / Number(step) + 1e-9)) * Number(step) + '',
     signedRequest: async (_creds, method, path, params) => {
       calls.push({ method, path, params });
       if (path === failAt && (!failId || String(params?.clientAlgoId || '').endsWith(failId))) throw Error('rejected');
       if (path.endsWith('/positionSide/dual')) return { dualSidePosition: false };
       if (path.endsWith('/positionRisk')) return [{ positionSide: 'BOTH', positionAmt: '0' }];
+      if (path.endsWith('/algoOrder') && method === 'GET') return { algoStatus: 'NEW', side: 'SELL', quantity: '0.505' };
       if (path.endsWith('/algoOrder')) return { algoId: calls.length };
-      if (path.endsWith('/order')) return { orderId: 123 };
+      if (path.endsWith('/order')) return { orderId: 123, status: 'NEW' };
       return {};
     },
   },
@@ -33,7 +34,7 @@ if (original) require.cache[clientPath] = original;
 else delete require.cache[clientPath];
 delete require.cache[tradePath];
 
-const input = { coin: 'BTC', action: '做多', stop: 90, takeProfit: 110, leverage: 5, amountUsd: 10 };
+const input = { execution: '现在可开', coin: 'BTC', action: '做多', entry: 99, expectedPrice: 99, stop: 90, takeProfit: 110, leverage: 5, amountUsd: 10 };
 test('plans a USDT perpetual post-only order with valid notional', async () => {
   const plan = await planStance(input);
   assert.equal(plan.symbol, 'BTCUSDT');

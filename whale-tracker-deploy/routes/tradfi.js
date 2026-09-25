@@ -62,7 +62,7 @@ router.get('/account', async (req, res) => {
     const user = requireUser(req);
     const creds = getBinanceCredentialsForUser(user.user.id);
     if (!creds) return res.json({ ok: true, configured: false, scope: 'tradfi', balance: { totalEq: null, usdtEq: null, availBal: null }, openPnl: 0, historyPnl: null, records: [] });
-    const [book, catalog] = await Promise.all([accountBook(creds), getCatalog()]);
+    const [book, catalog] = await Promise.all([accountBook(creds, user.user.id, 'tradfi'), getCatalog()]);
     const symbols = new Set(catalog.symbols.map((row) => row.symbol));
     const records = book.records.filter((row) => symbols.has(row.instId));
     res.json({ ...book, scope: 'tradfi', records, openPnl: records.filter((row) => row.kind === 'position').reduce((sum, row) => sum + Number(row.openUpl || 0), 0) });

@@ -128,7 +128,7 @@ onUnmounted(stopPoll);
       <div class="data-card">
         <div class="data-label">当前仓位盈亏</div>
         <div class="data-value" :class="valueClass(book?.openPnl)">{{ formatSignedUsd(book?.openPnl) }}</div>
-        <div class="data-sub">{{ props.exchange === 'tradfi' ? 'TradFi 持仓' : props.exchange === 'binance' ? '全部持仓' : 'AI 持仓' }}</div>
+        <div class="data-sub">AI 持仓</div>
       </div>
       <div class="data-card">
         <div class="data-label">历史盈亏</div>
@@ -137,11 +137,11 @@ onUnmounted(stopPoll);
       </div>
     </div>
 
-    <p v-if="props.exchange === 'tradfi'" class="account-note">余额与币安 U 本位合约账户共用；下方只展示 TradFi 持仓与普通挂单。</p>
+    <p v-if="props.exchange === 'tradfi'" class="account-note">余额与币安 U 本位合约账户共用；下方只展示本站 AI 提交的 TradFi 持仓与挂单。</p>
     <el-alert v-if="error" type="warning" :closable="false" :title="error" class="alert" />
     <el-alert v-else-if="book?.configured === false" type="info" :closable="false" title="请先在左下角「API 设置」配置币安 API 密钥" class="alert" />
     <el-skeleton v-else-if="loading && !book" :rows="6" animated class="pad" />
-    <el-empty v-else-if="!book?.records.length" :description="props.exchange === 'okx' ? '暂无 AI 开单记录' : '暂无持仓或挂单'" class="pad" />
+    <el-empty v-else-if="!book?.records.length" description="暂无 AI 开单记录" class="pad" />
     <div v-else class="order-list">
       <article v-for="row in book.records" :key="(row.kind || 'row') + ':' + row.ordId" class="order-card">
         <div class="order-main">
@@ -195,6 +195,7 @@ onUnmounted(stopPoll);
 .account-note { margin: 0; padding: 10px 16px; color: var(--muted); font-size: 11px; line-height: 1.5; border-bottom: 1px solid var(--border); }
 .account-summary {
   display: flex;
+  flex-wrap: nowrap;
   align-items: stretch;
   gap: 8px;
   padding: 16px;

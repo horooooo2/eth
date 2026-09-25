@@ -23,6 +23,7 @@ stub('../lib/tradfiMarkets', { getCatalog: async () => ({ symbols: [{ symbol: 'X
 stub('../lib/tradfiIntel', { getIntel: async () => ({ news: { items: [{ title: '测试新闻', publishedAt: new Date().toISOString() }] }, fundamentals: { rows: [], status: 'unavailable' }, events: { items: [] } }) });
 stub('../lib/tradfiWhales', { getWhaleActivity: async () => ({ rows: [], coverageNote: '样本为空' }) });
 stub('../lib/tradfiAiMonitor', { isRunning: () => true, register: () => {} });
+stub('../lib/binanceAiLedger', { recordBinanceAiOrder: () => {} });
 stub('../lib/deepseekClient', {
   DEFAULT_MODEL: 'test-model',
   deepseekFetch: async (_key, _path, request) => {

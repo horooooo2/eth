@@ -630,7 +630,7 @@ async function submitAiPlan() {
           </div>
 
           <footer class="dialog-footer">
-            <p class="footer-hint">挂单直接提交到币安；止盈止损触发后按市价执行。</p>
+            <p class="footer-hint">确认一次后，系统依次提交入场挂单、止损单和止盈单；止盈止损触发后按市价执行。</p>
             <div class="footer-actions">
               <button type="button" class="btn" :disabled="aiBusy" @click="closeAiOrder">关闭</button>
               <button v-if="!aiAnalysis || aiResult" type="button" class="btn primary" :disabled="aiBusy" @click="generateAiPlan">{{ aiActivity === 'analysis' ? '分析中…' : '开始 AI 分析' }}</button>
@@ -732,8 +732,7 @@ async function submitAiPlan() {
 .main-grid > .panel { display: flex; flex-direction: column; min-height: 0; }
 .main-grid .panel-head, .main-grid .feed-tools, .main-grid .panel-foot { flex-shrink: 0; }
 .account-column :deep(.okx-panel) { flex: 1; height: auto; min-height: 0; }
-.account-column :deep(.account-summary) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 12px; }
-.account-column :deep(.data-card:last-child) { grid-column: 1 / -1; }
+.account-column :deep(.account-summary) { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 12px; }
 .account-column :deep(.order-list) { padding: 10px 12px; }
 .account-column :deep(.order-card) { padding: 12px; }
 .whale-head-actions { display: flex; align-items: center; gap: 10px; }

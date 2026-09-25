@@ -5,6 +5,7 @@ const { getWhaleActivity } = require('./tradfiWhales');
 const { publicGet, signedRequest, symbolRules, stepped } = require('./binanceTradfiTrade');
 const { deepseekFetch, DEFAULT_MODEL } = require('./deepseekClient');
 const tradfiAiMonitor = require('./tradfiAiMonitor');
+const { recordBinanceAiOrder } = require('./binanceAiLedger');
 
 const MAX_AGE_MS = 20 * 60_000;
 const saved = new Map();
@@ -362,6 +363,15 @@ async function placeTradfiAi(creds, userId, analysisId, expected, onProgress) {
     protections: protections.map((item) => ({ algoId: item.algoId })),
     expiresAt: preview.expiresAt,
   });
+  for (const item of placed) {
+    try {
+      recordBinanceAiOrder(userId, 'tradfi', {
+        orderId: item.orderId, clientOrderId: item.clientOrderId, symbol: preview.symbol,
+        side: preview.direction, positionSide, price: item.price, quantity: item.quantity,
+        marginUsdt: item.marginUsdt, leverage: preview.leverage, simulated: creds.simulated,
+      });
+    } catch (error) { console.warn('[binance-ai-ledger] TradFi record failed:', error.message); }
+  }
   report({ id: 'done', status: 'done', progress: 100, message: `${preview.orders.length} 笔入场单及保护单已提交并纳入监控` });
   return { ok: true, simulated: creds.simulated, preview, orders: placed, protections };
 }
