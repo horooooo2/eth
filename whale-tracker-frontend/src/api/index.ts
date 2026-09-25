@@ -164,8 +164,7 @@ http.interceptors.response.use(
     ) {
       return Promise.reject(new Error('TIMEOUT'));
     }
-    const tradfiAnalysisError = /\/tradfi\/ai\/analyze(?:\?|$)/.test(error.config?.url || '') && typeof data?.error === 'string';
-    if ((status === 504 || status === 502 || status === 503) && !tradfiAnalysisError) {
+    if (status === 504 || status === 502 || status === 503) {
       return Promise.reject(new Error(`GATEWAY_${status}`));
     }
     const message =
@@ -1550,75 +1549,24 @@ export async function deleteBinanceKeys() {
   return data;
 }
 
-export type TradfiAiLeg = { level: number; price: number; marginUsdt: number; reason: string; quantity?: string; notionalUsdt?: number };
-export type TradfiAiPlan = {
-  decision: '可挂单' | '可试探' | '暂缓'; marketState: '趋势' | '震荡' | '不明确'; direction: 'BUY' | 'SELL' | null; reason: string;
-  shortView: string; longView: string; dayView?: string; evidence: string[]; mode: 'single' | 'ladder' | 'probe';
-  fundamentalBias: string; thesis: string; invalidation: string; rangeLow: number | null; rangeHigh: number | null;
-  leverage?: number; stop?: number; takeProfit?: number; orders: TradfiAiLeg[]; totalMarginUsdt?: number;
+export type TradfiRangeEvent = { id: number; level: string; message: string; details: Record<string, unknown>; created_at: number };
+export type TradfiRangeStatus = {
+  symbol: string; enabled: boolean; status: string; simulated: boolean | null; additions: number; maxAdditions: number;
+  marginPerOrder: number; leverage: number; comboPnl?: number | null; lastPrice?: number | null;
+  range?: { low: number; high: number } | null; lastError?: string; startedAt?: number | null; updatedAt?: number | null;
 };
-export type TradfiAiAnalysis = { analysisId: string; symbol: string; context: { referencePrice: number; markPrice: number | null; indexPrice: number | null; underlyingSession: { type: string; nextChangeAt: number | null }; dataStatus: Record<string, string> }; plan: TradfiAiPlan };
-export type TradfiAiPreview = {
-  analysisId: string; symbol: string; mode: 'single' | 'ladder' | 'probe'; direction: 'BUY' | 'SELL'; leverage: number;
-  last: number; orders: TradfiAiLeg[]; stopPrice: string; takePrice: string; totalMarginUsdt: number;
-  totalNotionalUsdt: number; estimatedLossUsdt: number; averagePrice: number; expiresAt: number;
-};
-export async function analyzeTradfiAi(symbol: string, mode: 'single' | 'ladder') {
-  const { data } = await http.post<{ ok: boolean } & TradfiAiAnalysis>('/tradfi/ai/analyze', { symbol, mode }, { timeout: 150_000 });
+export type TradfiRangeResponse = { ok: boolean; strategy: TradfiRangeStatus; events: TradfiRangeEvent[] };
+export async function fetchTradfiRangeStatus(symbol: string) {
+  const { data } = await http.get<TradfiRangeResponse>('/tradfi/range/status', { params: { symbol }, timeout: 20_000 });
   return data;
 }
-export async function previewTradfiAi(analysisId: string) {
-  const { data } = await http.post<{ ok: boolean; configured: boolean; monitorReady: boolean; simulated: boolean | null; preview: TradfiAiPreview; fingerprint: string }>('/tradfi/ai/preview', { analysisId }, { timeout: 25_000 });
+export async function startTradfiRange(symbol: string) {
+  const { data } = await http.post<TradfiRangeResponse>('/tradfi/range/start', { symbol }, { timeout: 20_000 });
   return data;
 }
-export async function submitTradfiAi(analysisId: string, fingerprint: string) {
-  const { data } = await http.post<{ ok: boolean; simulated: boolean; orders: Array<{ orderId: number; status: string; price: number }>; protections: Array<{ algoId: number; kind: string }> }>('/tradfi/ai/place', { analysisId, fingerprint, confirm: true }, { timeout: 90_000 });
+export async function stopTradfiRange(symbol: string) {
+  const { data } = await http.post<TradfiRangeResponse>('/tradfi/range/stop', { symbol }, { timeout: 20_000 });
   return data;
-}
-
-export type TradfiAiSubmitStage = { id: string; status: 'running' | 'done' | 'error'; progress: number; message: string };
-export type TradfiAiSubmitResult = { ok: boolean; simulated: boolean; orders: Array<{ orderId: number; status: string; price: number }>; protections: Array<{ algoId: number; kind: string }> };
-
-export async function streamTradfiAi(analysisId: string, fingerprint: string, onStage: (stage: TradfiAiSubmitStage) => void): Promise<TradfiAiSubmitResult> {
-  const response = await fetch('/api/tradfi/ai/place-stream', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...(authToken() ? { Authorization: `Bearer ${authToken()}` } : {}) },
-    body: JSON.stringify({ analysisId, fingerprint, confirm: true }),
-  });
-  if (!response.ok) {
-    let message = `提交失败 HTTP ${response.status}`;
-    try { const body = await response.json() as { error?: string }; if (body.error) message = body.error; } catch { /* ignore */ }
-    throw new Error(message);
-  }
-  if (!response.body) throw new Error('浏览器不支持实时订单进度');
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let result: TradfiAiSubmitResult | null = null;
-  const parse = (block: string) => {
-    let event = '';
-    const dataLines: string[] = [];
-    for (const line of block.split('\n')) {
-      if (line.startsWith('event:')) event = line.slice(6).trim();
-      if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
-    }
-    if (!dataLines.length) return;
-    const data = JSON.parse(dataLines.join('\n')) as TradfiAiSubmitStage & TradfiAiSubmitResult & { error?: string };
-    if (event === 'stage') onStage(data);
-    if (event === 'done') result = data;
-    if (event === 'error') throw new Error(data.error || '提交失败，请在币安核对订单');
-  };
-  while (true) {
-    const chunk = await reader.read();
-    if (chunk.done) break;
-    buffer += decoder.decode(chunk.value, { stream: true }).replace(/\r\n/g, '\n');
-    const blocks = buffer.split('\n\n');
-    buffer = blocks.pop() || '';
-    for (const block of blocks) if (block.trim()) parse(block);
-  }
-  if (buffer.trim()) parse(buffer);
-  if (!result) throw new Error('订单进度连接中断，请在币安核对订单状态');
-  return result;
 }
 
 export type OkxAiOrderRecord = {

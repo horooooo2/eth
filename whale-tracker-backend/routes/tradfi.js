@@ -4,10 +4,8 @@ const { getIntel } = require('../lib/tradfiIntel');
 const { getWhaleActivity, getAllWhaleActivity } = require('../lib/tradfiWhales');
 const { requireUser } = require('../lib/authStore');
 const { getBinanceCredentialsForUser } = require('../lib/userExchangeKeys');
-const { getRawAiKey } = require('../lib/userAiKeys');
 const { accountBook } = require('../lib/binanceCryptoTrade');
-const { analyzeTradfiAi, previewTradfiAi, placeTradfiAi, previewFingerprint } = require('../lib/tradfiAiTrade');
-const { isRunning: tradfiAiMonitorRunning } = require('../lib/tradfiAiMonitor');
+const rangeStrategy = require('../lib/tradfiRangeStrategy');
 
 const router = express.Router();
 
@@ -69,58 +67,28 @@ router.get('/account', async (req, res) => {
   } catch (err) { res.status(err.status || 502).json({ error: err.message || 'TradFi 交易账户加载失败', code: err.code }); }
 });
 
-router.post('/ai/analyze', async (req, res) => {
+router.get('/range/status', (req, res) => {
   try {
     const user = requireUser(req);
-    const key = getRawAiKey(user.user.id, 'deepseek');
-    if (!key?.apiKey) throw Object.assign(new Error('请先在 API 设置中配置 DeepSeek API Key'), { status: 400 });
-    res.json({ ok: true, ...await analyzeTradfiAi(user.user.id, key.apiKey, req.body?.symbol, req.body?.mode) });
-  } catch (err) {
-    console.error('[POST /api/tradfi/ai/analyze]', req.body?.symbol, req.body?.mode, err.message);
-    res.status(err.status || 502).json({ error: err.message || 'TradFi AI 分析失败' });
-  }
+    res.json({ ok: true, ...rangeStrategy.status(user.user.id, req.query.symbol) });
+  } catch (err) { res.status(err.status || 500).json({ error: err.message || '震荡策略状态加载失败' }); }
 });
 
-router.post('/ai/preview', async (req, res) => {
+router.post('/range/start', async (req, res) => {
   try {
     const user = requireUser(req);
-    const creds = getBinanceCredentialsForUser(user.user.id);
-    const preview = await previewTradfiAi(user.user.id, req.body?.analysisId);
-    res.json({ ok: true, configured: Boolean(creds), monitorReady: tradfiAiMonitorRunning(), simulated: creds?.simulated ?? null, preview, fingerprint: previewFingerprint(preview) });
-  } catch (err) { res.status(err.status || 502).json({ error: err.message || '整套挂单预览失败' }); }
-});
-
-router.post('/ai/place', async (req, res) => {
-  try {
-    const user = requireUser(req);
-    if (req.body?.confirm !== true) throw Object.assign(new Error('请先确认整套挂单'), { status: 400 });
     const creds = getBinanceCredentialsForUser(user.user.id);
     if (!creds) throw Object.assign(new Error('请先在 API 设置中配置币安 API 密钥'), { status: 400 });
-    res.json(await placeTradfiAi(creds, user.user.id, req.body?.analysisId, req.body?.fingerprint));
-  } catch (err) { res.status(err.status || 502).json({ error: err.message || '整套挂单提交失败', code: err.code }); }
+    res.json({ ok: true, ...rangeStrategy.enable(user.user.id, req.body?.symbol, creds.simulated) });
+    void rangeStrategy.reconcile();
+  } catch (err) { res.status(err.status || 500).json({ error: err.message || '震荡策略启动失败', code: err.code }); }
 });
 
-router.post('/ai/place-stream', async (req, res) => {
-  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.flushHeaders?.();
-  const writeEvent = (event, data) => {
-    if (!res.writableEnded && !res.destroyed) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  };
+router.post('/range/stop', async (req, res) => {
   try {
     const user = requireUser(req);
-    if (req.body?.confirm !== true) throw Object.assign(new Error('请先确认整套挂单'), { status: 400 });
-    const creds = getBinanceCredentialsForUser(user.user.id);
-    if (!creds) throw Object.assign(new Error('请先在 API 设置中配置币安 API 密钥'), { status: 400 });
-    const result = await placeTradfiAi(creds, user.user.id, req.body?.analysisId, req.body?.fingerprint, (stage) => writeEvent('stage', stage));
-    writeEvent('done', result);
-  } catch (err) {
-    writeEvent('error', { error: err.message || '整套挂单提交失败', code: err.code });
-  } finally {
-    if (!res.writableEnded) res.end();
-  }
+    res.json({ ok: true, ...await rangeStrategy.disable(user.user.id, req.body?.symbol) });
+  } catch (err) { res.status(err.status || 500).json({ error: err.message || '震荡策略暂停失败', code: err.code }); }
 });
 
 module.exports = router;

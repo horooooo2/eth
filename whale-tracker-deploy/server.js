@@ -53,7 +53,7 @@ const { start: startOnchainFlow, getStatus: getOnchainFlowStatus } = require('./
 const { start: startCexFlow } = require('./lib/cexMarketFlow');
 const { start: startCoinankFlow } = require('./lib/coinankFlow');
 const { start: startDefillamaMacro } = require('./lib/defillamaMacro');
-const { start: startTradfiAiMonitor } = require('./lib/tradfiAiMonitor');
+const { start: startTradfiRangeStrategy } = require('./lib/tradfiRangeStrategy');
 
 const app = createApp({ prefixes: ['/api'] });
 const PORT = Number(process.env.PORT) || 80;
@@ -131,7 +131,7 @@ const server = http.createServer(app);
 attachRealtimeHub(server);
 
 server.listen(PORT, '0.0.0.0', () => {
-  startTradfiAiMonitor();
+  startTradfiRangeStrategy();
   const hl = getHlInfoConfig();
   console.log(`WhaleTracker 已启动 http://0.0.0.0:${PORT}`);
   console.log(

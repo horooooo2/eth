@@ -236,6 +236,32 @@ function migrate(database) {
       UNIQUE(user_id, order_id)
     );
     CREATE INDEX IF NOT EXISTS idx_binance_ai_orders_user ON binance_ai_orders(user_id, scope, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS tradfi_range_strategies (
+      user_id TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'waiting',
+      simulated INTEGER NOT NULL DEFAULT 0,
+      additions INTEGER NOT NULL DEFAULT 0,
+      state_json TEXT NOT NULL DEFAULT '{}',
+      last_error TEXT NOT NULL DEFAULT '',
+      started_at INTEGER,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, symbol)
+    );
+    CREATE INDEX IF NOT EXISTS idx_tradfi_range_enabled ON tradfi_range_strategies(enabled, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS tradfi_range_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      level TEXT NOT NULL DEFAULT 'info',
+      message TEXT NOT NULL,
+      details_json TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_tradfi_range_events_user ON tradfi_range_events(user_id, symbol, created_at DESC);
   `);
   // 旧策略表（v41_* / whale_ai_runtime_logs）不再创建；user_ai_keys / user_exchange_keys 继续使用。
 

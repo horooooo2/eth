@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch as watchVue } from 'vue';
-import { fetchTradFiCatalog, fetchTradFiQuotes, fetchTradFiIntel, fetchAllTradFiWhales, analyzeTradfiAi, previewTradfiAi, streamTradfiAi, type TradfiAiAnalysis, type TradfiAiPreview, type TradfiAiSubmitStage, type TradFiIntelResponse, type TradFiMarketSymbol, type TradFiQuote, type TradFiAllWhaleResponse } from '@/api';
-import { ElMessageBox } from 'element-plus';
+import { fetchTradFiCatalog, fetchTradFiQuotes, fetchTradFiIntel, fetchTradfiRangeStatus, startTradfiRange, stopTradfiRange, type TradfiRangeResponse, type TradFiIntelResponse, type TradFiMarketSymbol, type TradFiQuote } from '@/api';
 import OkxAccountPanel from '@/components/OkxAccountPanel.vue';
 import { tradfiWatch } from '@/utils/tradfiWatch';
 
@@ -128,29 +127,14 @@ const selected = ref('XAUUSDT');
 const newsFilter = ref('全部');
 const newsQuery = ref('');
 const watch = tradfiWatch;
-const aiOpen = ref(false);
-const aiMode = ref<'single' | 'ladder'>('single');
-const aiAnalysis = ref<TradfiAiAnalysis | null>(null);
-const aiPreview = ref<{ preview: TradfiAiPreview; fingerprint: string; configured: boolean; monitorReady: boolean; simulated: boolean | null } | null>(null);
-const aiBusy = ref(false);
-const aiActivity = ref<'analysis' | 'preview' | 'submit' | null>(null);
-const aiError = ref('');
-const aiResult = ref('');
-const aiProgressVisible = ref(false);
-const aiProgress = ref(0);
-const aiProgressSteps = ref<Array<{ id: string; label: string; status: 'pending' | 'running' | 'done' | 'error'; detail: string }>>([]);
-function resetAiProgress() { aiProgressVisible.value = false; aiProgress.value = 0; aiProgressSteps.value = []; }
-function updateAiProgress(stage: TradfiAiSubmitStage) {
-  aiProgress.value = Math.max(aiProgress.value, Math.min(100, stage.progress));
-  const step = aiProgressSteps.value.find((item) => item.id === stage.id);
-  if (step) { step.status = stage.status; step.detail = stage.message; }
-  else if (stage.id === 'cleanup') aiProgressSteps.value.push({ id: stage.id, label: '核对并清理未完成订单', status: 'running', detail: stage.message });
-}
+const strategyOpen = ref(false);
+const strategyBusy = ref(false);
+const strategyError = ref('');
+const strategyData = ref<TradfiRangeResponse | null>(null);
 let quoteTimer = 0;
 let intelTimer = 0;
 let intelRequestId = 0;
-let whaleRequestId = 0;
-let whaleTimer = 0;
+let strategyTimer = 0;
 const catalog = ref<TradFiMarketSymbol[]>([]);
 const quotes = ref<Record<string, TradFiQuote>>({});
 const marketError = ref('');
@@ -159,9 +143,7 @@ const marketUpdatedAt = ref('');
 const intel = ref<TradFiIntelResponse | null>(null);
 const intelLoading = ref(false);
 const intelError = ref('');
-const whaleData = ref<TradFiAllWhaleResponse | null>(null);
-const whaleLoading = ref(false);
-const whaleError = ref('');
+const strategySupported = computed(() => selected.value === 'XAUUSDT' || selected.value === 'XAGUSDT');
 
 const catalogBySymbol = computed(() => new Map(catalog.value.map((item) => [item.symbol, item])));
 function assetFor(symbol: string): Asset {
@@ -227,177 +209,49 @@ onMounted(() => {
   void loadMarkets();
   quoteTimer = window.setInterval(() => { void refreshQuotes(); }, 15_000);
   intelTimer = window.setInterval(() => { void loadIntel(selected.value); }, 5 * 60_000);
-  if (props.active) void loadWhales();
-  whaleTimer = window.setInterval(() => { if (props.active) void loadWhales(); }, 60_000);
+  if (props.active && strategySupported.value) void loadStrategy();
+  strategyTimer = window.setInterval(() => { if (props.active && strategySupported.value) void loadStrategy(true); }, 15_000);
 });
-onUnmounted(() => {
-  window.clearInterval(quoteTimer);
-  window.clearInterval(intelTimer);
-  window.clearInterval(whaleTimer);
-});
-watchVue(() => props.active, (active) => { if (active) void loadWhales(); });
-watchVue(watch, (symbols) => {
-  if (!symbols.includes(selected.value)) selectAsset(symbols[0]);
-  void refreshQuotes();
-});
+onUnmounted(() => { window.clearInterval(quoteTimer); window.clearInterval(intelTimer); window.clearInterval(strategyTimer); });
+watchVue(() => props.active, (active) => { if (active && strategySupported.value) void loadStrategy(); });
+watchVue(watch, (symbols) => { if (!symbols.includes(selected.value)) selectAsset(symbols[0]); void refreshQuotes(); });
 
 const newsRows = computed(() => {
   const q = newsQuery.value.trim().toLowerCase();
-  return (intel.value?.news.items || []).filter((row) => {
-    if (newsFilter.value !== '全部' && row.category !== newsFilter.value) return false;
-    if (!q) return true;
-    return `${row.title} ${row.summary}`.toLowerCase().includes(q);
-  });
+  return (intel.value?.news.items || []).filter((row) => (newsFilter.value === '全部' || row.category === newsFilter.value) && (!q || `${row.title} ${row.summary}`.toLowerCase().includes(q)));
 });
-
-const whaleRows = computed(() => whaleData.value?.rows || []);
-const selectedWhaleCode = computed(() => {
-  const base = catalogBySymbol.value.get(selected.value)?.baseAsset || selected.value.replace(/USDT$/, '');
-  return ({ XAU: 'GOLD', XAG: 'SILVER', XPT: 'PLATINUM', XPD: 'PALLADIUM' } as Record<string, string>)[base] || base;
-});
-const relatedWhaleRows = computed(() => whaleRows.value.filter((row) =>
-  row.coin.split(':').pop()?.toUpperCase() === selectedWhaleCode.value,
-));
-
-function isUp(change: string) {
-  return change.startsWith('+');
-}
-
-function newsTime(raw: string | null) {
+function isUp(change: string) { return change.startsWith('+'); }
+function newsTime(raw: string | number | null) {
   if (!raw) return '时间未提供';
   const date = new Date(raw);
   return Number.isFinite(date.getTime()) ? date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '时间未提供';
 }
-
 async function loadIntel(symbol: string) {
-  const requestId = ++intelRequestId;
-  intel.value = null;
-  intelLoading.value = true;
-  intelError.value = '';
-  try {
-    const data = await fetchTradFiIntel(symbol);
-    if (selected.value === symbol && requestId === intelRequestId) intel.value = data;
-  } catch (err) {
-    if (selected.value === symbol && requestId === intelRequestId) intelError.value = err instanceof Error ? err.message : '资讯与基础面获取失败';
-  } finally {
-    if (selected.value === symbol && requestId === intelRequestId) intelLoading.value = false;
-  }
+  const requestId = ++intelRequestId; intel.value = null; intelLoading.value = true; intelError.value = '';
+  try { const data = await fetchTradFiIntel(symbol); if (selected.value === symbol && requestId === intelRequestId) intel.value = data; }
+  catch (err) { if (selected.value === symbol && requestId === intelRequestId) intelError.value = err instanceof Error ? err.message : '资讯获取失败'; }
+  finally { if (selected.value === symbol && requestId === intelRequestId) intelLoading.value = false; }
 }
-
-async function loadWhales() {
-  const requestId = ++whaleRequestId;
-  whaleLoading.value = true;
-  whaleError.value = '';
-  try {
-    const result = await fetchAllTradFiWhales();
-    if (requestId === whaleRequestId) whaleData.value = result;
-  } catch (err) {
-    if (requestId === whaleRequestId) whaleError.value = err instanceof Error ? err.message : '大户数据获取失败';
-  } finally {
-    if (requestId === whaleRequestId) whaleLoading.value = false;
-  }
-}
-
-function whaleAssetName(coin: string) {
-  const code = coin.split(':').pop()?.toUpperCase() || coin;
-  const names: Record<string, string> = {
-    GOLD: '黄金', SILVER: '白银', PLATINUM: '铂金', PALLADIUM: '钯金', SNDK: '闪迪',
-  };
-  const name = names[code] || catalog.value.find((item) => item.baseAsset === code)?.name || code;
-  return name === code ? code : `${name}（${code}）`;
-}
-function whaleTime(time: number | null) { return time ? new Date(time).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '当前持仓'; }
-function whaleUsd(value: number | null) { return value == null ? '—' : `$${Math.abs(value).toLocaleString('en-US', { maximumFractionDigits: 2 })}`; }
-function whaleDirection(direction: string) {
-  return ({ 'Open Long': '开多', 'Open Short': '开空', 'Close Long': '平多', 'Close Short': '平空' } as Record<string, string>)[direction] || direction;
-}
-
 function selectAsset(symbol: string) {
   if (!watch.value.includes(symbol) && !catalogBySymbol.value.has(symbol)) return;
-  selected.value = symbol;
-  aiAnalysis.value = null;
-  aiPreview.value = null;
-  void loadIntel(symbol);
+  selected.value = symbol; strategyData.value = null; strategyError.value = ''; void loadIntel(symbol);
+  if (symbol === 'XAUUSDT' || symbol === 'XAGUSDT') void loadStrategy();
 }
-
-function openAiOrder() {
-  aiAnalysis.value = null;
-  aiPreview.value = null;
-  aiError.value = '';
-  aiResult.value = '';
-  resetAiProgress();
-  aiOpen.value = true;
+async function loadStrategy(silent = false) {
+  if (!strategySupported.value) return;
+  if (!silent) strategyBusy.value = true;
+  try { strategyData.value = await fetchTradfiRangeStatus(selected.value); strategyError.value = ''; }
+  catch (err) { strategyError.value = err instanceof Error ? err.message : '震荡策略状态加载失败'; }
+  finally { if (!silent) strategyBusy.value = false; }
 }
-
-function closeAiOrder() { if (!aiBusy.value) aiOpen.value = false; }
-
-watchVue(aiMode, () => { aiAnalysis.value = null; aiPreview.value = null; aiError.value = ''; aiResult.value = ''; resetAiProgress(); });
-
-async function generateAiPlan() {
-  aiBusy.value = true;
-  aiActivity.value = 'analysis';
-  aiError.value = '';
-  aiResult.value = '';
-  aiAnalysis.value = null;
-  aiPreview.value = null;
-  resetAiProgress();
-  try {
-    aiAnalysis.value = await analyzeTradfiAi(selected.value, aiMode.value);
-  } catch (err) {
-    aiError.value = err instanceof Error ? err.message : 'TradFi AI 分析失败';
-  } finally { aiBusy.value = false; aiActivity.value = null; }
-}
-
-async function previewAiPlan() {
-  if (!aiAnalysis.value) return;
-  aiBusy.value = true;
-  aiActivity.value = 'preview';
-  aiError.value = '';
-  try {
-    aiPreview.value = await previewTradfiAi(aiAnalysis.value.analysisId);
-  } catch (err) {
-    aiPreview.value = null;
-    aiError.value = err instanceof Error ? err.message : '整套挂单预览失败';
-  } finally { aiBusy.value = false; aiActivity.value = null; }
-}
-
-async function submitAiPlan() {
-  const ready = aiPreview.value;
-  const analysis = aiAnalysis.value;
-  if (!ready || !analysis || aiBusy.value || !ready.configured || !ready.monitorReady) return;
-  try {
-    await ElMessageBox.confirm(
-      `${ready.simulated ? '演示盘' : '实盘'} · ${ready.preview.symbol} · ${ready.preview.orders.length} 笔 Maker 挂单 · 总保证金 ${ready.preview.totalMarginUsdt.toFixed(2)} USDT · 最多预计亏损 ${ready.preview.estimatedLossUsdt.toFixed(2)} USDT。确认提交整套计划？`,
-      '确认币安整套挂单', { confirmButtonText: '确认提交', cancelButtonText: '取消', type: 'warning' },
-    );
-  } catch { return; }
-  aiBusy.value = true;
-  aiActivity.value = 'submit';
-  aiError.value = '';
-  aiResult.value = '';
-  aiProgressVisible.value = true;
-  aiProgress.value = 0;
-  aiProgressSteps.value = [
-    { id: 'prepare', label: '核对账户与订单', status: 'pending', detail: '' },
-    ...ready.preview.orders.flatMap((_, index) => [
-      { id: `leg-${index}-entry`, label: `第 ${index + 1} 笔入场单`, status: 'pending' as const, detail: '' },
-      { id: `leg-${index}-stop`, label: `第 ${index + 1} 笔止损单`, status: 'pending' as const, detail: '' },
-      { id: `leg-${index}-take`, label: `第 ${index + 1} 笔止盈单`, status: 'pending' as const, detail: '' },
-    ]),
-    { id: 'verify', label: '核验全部保护单', status: 'pending', detail: '' },
-  ];
-  try {
-    const response = await streamTradfiAi(analysis.analysisId, ready.fingerprint, updateAiProgress);
-    aiProgress.value = 100;
-    aiProgressSteps.value.forEach((step) => { step.status = 'done'; });
-    aiResult.value = `${response.simulated ? '演示盘' : '实盘'}已提交 ${response.orders.length} 笔挂单和 ${response.protections.length} 笔保护单，请在币安订单列表核对。`;
-    aiPreview.value = null;
-  } catch (err) {
-    aiPreview.value = null;
-    const running = aiProgressSteps.value.find((step) => step.status === 'running');
-    if (running) running.status = 'error';
-    aiError.value = `${err instanceof Error ? err.message : '提交失败'}。请在币安核对订单状态，勿直接重复提交。`;
-  } finally { aiBusy.value = false; aiActivity.value = null; }
+function openStrategy() { strategyOpen.value = true; void loadStrategy(); }
+function closeStrategy() { if (!strategyBusy.value) strategyOpen.value = false; }
+async function toggleStrategy() {
+  if (!strategySupported.value || strategyBusy.value) return;
+  strategyBusy.value = true; strategyError.value = '';
+  try { strategyData.value = strategyData.value?.strategy.enabled ? await stopTradfiRange(selected.value) : await startTradfiRange(selected.value); }
+  catch (err) { strategyError.value = err instanceof Error ? err.message : '震荡策略操作失败'; }
+  finally { strategyBusy.value = false; }
 }
 
 </script>
@@ -449,69 +303,24 @@ async function submitAiPlan() {
           <div><span>关联大户市场</span><b>Hyperliquid HIP-3</b></div>
         </div>
         <div class="focus-actions">
-          <button type="button" class="btn primary" @click="openAiOrder">✧ AI 分析 / 开单</button>
+          <button v-if="strategySupported" type="button" class="btn primary" @click="openStrategy">震荡交易</button>
         </div>
       </section>
 
       <div class="main-grid">
-        <section class="panel account-column">
-          <div class="panel-head"><div><div class="panel-title">交易账户</div><div class="panel-sub">币安 · TradFi 持仓与挂单</div></div></div>
-          <OkxAccountPanel exchange="tradfi" :boot-ready="true" :active="active !== false" />
+        <section class="panel records-column">
+          <div class="panel-head"><div><div class="panel-title">交易记录</div><div class="panel-sub">黄金/白银震荡策略运行日志</div></div><span class="section-tag">{{ strategyData?.events.length || 0 }} 条</span></div>
+          <div v-if="strategySupported" class="strategy-events">
+            <article v-for="event in strategyData?.events || []" :key="event.id" class="strategy-event" :class="event.level">
+              <time>{{ newsTime(event.created_at) }}</time><p>{{ event.message }}</p>
+            </article>
+            <div v-if="!strategyData?.events.length" class="empty">暂无震荡交易记录</div>
+          </div>
+          <div v-else class="empty">该标的不运行震荡交易策略</div>
         </section>
-        <section class="panel">
-          <div class="panel-head">
-            <div>
-              <div class="panel-title">大户成交与持仓</div>
-              <div class="panel-sub">展示与当前合约关联的 HIP-3 公开成交、持仓和挂单</div>
-            </div>
-            <div class="whale-head-actions">
-              <span class="section-tag">{{ whaleLoading ? '正在更新' : `${relatedWhaleRows.length} 条记录` }}</span>
-              <button type="button" class="btn sm" :disabled="whaleLoading" @click="loadWhales">刷新</button>
-            </div>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>时间</th>
-                  <th>地址 / 平台</th>
-                  <th>关联标的</th>
-                  <th>记录类型</th>
-                  <th>方向</th>
-                  <th>名义价值</th>
-                  <th>价格 / 浮盈亏</th>
-                  <th>来源</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="row in relatedWhaleRows" :key="row.id">
-                  <td class="mono muted">{{ whaleTime(row.time) }}</td>
-                  <td>
-                    <span class="addr mono" :title="row.address">{{ row.address.slice(0, 7) }}…{{ row.address.slice(-5) }}</span><br />
-                    <span class="source">{{ row.name || 'Hyperliquid 地址' }}</span>
-                  </td>
-                  <td>{{ whaleAssetName(row.coin) }}<br /><span class="source mono">{{ row.coin }}</span></td>
-                  <td>{{ row.type }}</td>
-                  <td>
-                    <span class="whale-type" :class="{ short: /空|卖|Short|Sell/i.test(row.direction), order: row.type === '挂单' }">
-                      {{ whaleDirection(row.direction) }}<span v-if="row.leverage"> {{ row.leverage }}×</span>
-                    </span>
-                  </td>
-                  <td class="mono">{{ whaleUsd(row.notionalUsd) }}</td>
-                  <td class="whale-row-detail"><span v-if="row.price != null">价格 {{ row.price }}</span><br v-if="row.price != null && row.unrealizedPnlUsd != null" /><span v-if="row.unrealizedPnlUsd != null" :class="row.unrealizedPnlUsd >= 0 ? 'up' : 'down'">浮盈亏 {{ row.unrealizedPnlUsd >= 0 ? '+' : '−' }}{{ whaleUsd(row.unrealizedPnlUsd) }}</span></td>
-                  <td class="source">{{ row.dex }}<br />{{ row.source }}</td>
-                </tr>
-                <tr v-if="!relatedWhaleRows.length">
-                  <td colspan="8" class="empty">
-                    {{ whaleLoading ? '正在查询公开账户数据…' : whaleError || (whaleData?.failedRequests && !whaleData?.successfulRequests ? '上游查询失败，请稍后重试' : '已扫描地址暂无该合约关联的成交、持仓或挂单') }}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div class="panel-foot">
-            当前筛选：{{ selected }} · {{ whaleData?.coverageNote || '公开账户数据仅覆盖已扫描的地址。' }}<span v-if="whaleData?.failedRequests"> · {{ whaleData.failedRequests }} 次上游请求失败，结果可能不完整。</span><span v-if="whaleData?.updatedAt"> · 更新 {{ newsTime(whaleData.updatedAt) }}</span><span v-if="whaleData?.stale"> · 当前为缓存数据</span>
-          </div>
+        <section class="panel account-column">
+          <div class="panel-head"><div><div class="panel-title">交易账户</div><div class="panel-sub">币安 · TradFi 自动策略持仓与挂单</div></div></div>
+          <OkxAccountPanel exchange="tradfi" :boot-ready="true" :active="active !== false" />
         </section>
 
         <section class="panel">
@@ -560,87 +369,23 @@ async function submitAiPlan() {
     </main>
 
     <Teleport to="body">
-      <div v-if="aiOpen" class="modal-cover" @click.self="closeAiOrder">
-        <div class="dialog" role="dialog" aria-modal="true" aria-label="TradFi AI 分析与挂单">
-          <header class="dialog-head">
-            <div class="dialog-title"><span aria-hidden="true">✨</span> DeepSeek 智能投研 <span class="dialog-symbol">· {{ selected }}</span></div>
-            <button type="button" class="dialog-close" aria-label="关闭" :disabled="aiBusy" @click="closeAiOrder">×</button>
-          </header>
-
-          <div class="dialog-body">
-            <div v-if="aiAnalysis" class="analysis-status" :class="aiAnalysis.plan.direction === 'BUY' ? 'bull' : aiAnalysis.plan.direction === 'SELL' ? 'bear' : 'neutral'">
-              <strong>{{ selected }} · {{ aiAnalysis.plan.marketState }} · {{ aiAnalysis.plan.decision }}</strong>
-              <span>{{ aiAnalysis.plan.decision === '暂缓' ? '等待更清晰的机会' : aiAnalysis.plan.direction === 'BUY' ? '方向：做多' : '方向：做空' }}</span>
+      <div v-if="strategyOpen" class="modal-cover" @click.self="closeStrategy">
+        <div class="dialog strategy-dialog" role="dialog" aria-modal="true" aria-label="震荡交易">
+          <header class="dialog-head"><div class="dialog-title">震荡交易 <span class="dialog-symbol">· {{ selected }}</span></div><button type="button" class="dialog-close" :disabled="strategyBusy" @click="closeStrategy">×</button></header>
+          <div class="dialog-scroll">
+            <section class="strategy-state">
+              <strong>{{ strategyData?.strategy.enabled ? '服务器运行中' : strategyData?.strategy.status === 'manual' ? '人工接管' : '未运行' }}</strong>
+              <span>{{ strategyData?.strategy.simulated == null ? '币安账户待核对' : strategyData.strategy.simulated ? '演示盘' : '实盘' }}</span>
+            </section>
+            <div class="strategy-metrics">
+              <div><span>单笔保证金</span><b>10 USDT</b></div><div><span>杠杆</span><b>10×</b></div>
+              <div><span>已补仓</span><b>{{ strategyData?.strategy.additions || 0 }} / 20</b></div><div><span>组合浮盈亏</span><b>{{ strategyData?.strategy.comboPnl == null ? '—' : `${Number(strategyData.strategy.comboPnl).toFixed(2)} U` }}</b></div>
             </div>
-            <div class="dialog-scroll">
-              <div class="order-steps"><span :class="{ active: !aiAnalysis }">1 · AI 分析</span><span :class="{ active: aiAnalysis && !aiPreview }">2 · 预览订单</span><span :class="{ active: aiPreview }">3 · 确认挂单</span></div>
-              <section v-if="aiProgressVisible" class="submit-progress" aria-live="polite">
-                <div class="submit-progress-head"><strong>逐笔提交进度</strong><span>{{ aiProgress }}%</span></div>
-                <div class="submit-progress-track"><div class="submit-progress-fill" :style="{ width: `${aiProgress}%` }" /></div>
-                <div class="submit-progress-list"><div v-for="step in aiProgressSteps" :key="step.id" class="submit-progress-step" :class="step.status"><span class="submit-progress-dot" /><span>{{ step.label }}</span><small v-if="step.status !== 'pending'">{{ step.detail }}</small></div></div>
-              </section>
-              <template v-if="!aiAnalysis && aiActivity !== 'analysis'">
-                <p class="dialog-intro">选择开单方式，AI 将以小时线判断盘中方向，用 15、5、1 分钟线寻找挂单位置，并结合日线、资讯与盘口评估风险。</p>
-                <div class="mode-label">开单方式</div>
-                <div class="mode-options">
-                  <button type="button" class="mode-option" :class="{ active: aiMode === 'single' }" @click="aiMode = 'single'"><strong>单笔开仓</strong><span>一笔 Maker 限价挂单，附止盈止损</span></button>
-                  <button type="button" class="mode-option" :class="{ active: aiMode === 'ladder' }" @click="aiMode = 'ladder'"><strong>初始单＋两档加仓</strong><span>趋势时三档；震荡时自动转为单笔试探</span></button>
-                </div>
-              </template>
-
-              <div v-if="aiActivity === 'analysis'" class="loading-state"><div class="spinner" /><strong>AI 正在静默分析</strong><span>正在核对价格结构、资讯与市场数据…</span></div>
-              <div v-if="aiActivity === 'preview'" class="loading-state"><div class="spinner" /><strong>正在核算订单</strong><span>读取币安实时盘口与合约规则…</span></div>
-
-              <template v-if="aiAnalysis && aiActivity !== 'preview'">
-                <p class="result-reason">{{ aiAnalysis.plan.reason || '暂无明确交易结论' }}</p>
-                <div class="structure-grid">
-                  <section class="structure-card"><div class="structure-head">入场 · 1 / 5 / 15 分钟</div><p>{{ aiAnalysis.plan.shortView || '数据不足' }}</p></section>
-                  <section class="structure-card"><div class="structure-head">方向 · 1 小时</div><p>{{ aiAnalysis.plan.longView || '数据不足' }}</p></section>
-                </div>
-                <div v-if="aiAnalysis.plan.dayView" class="market-meta">日线背景：{{ aiAnalysis.plan.dayView }}</div>
-                <div class="market-meta">底层市场：{{ aiAnalysis.context.underlyingSession?.type || 'UNKNOWN' }} · 现价 {{ aiAnalysis.context.referencePrice }} · 标记价 {{ aiAnalysis.context.markPrice ?? '—' }} · 指数价 {{ aiAnalysis.context.indexPrice ?? '—' }}</div>
-                <div v-if="aiAnalysis.plan.thesis" class="market-meta">主要判断：{{ aiAnalysis.plan.thesis }} · 基本面 {{ aiAnalysis.plan.fundamentalBias }}</div>
-                <div v-if="aiAnalysis.plan.rangeLow && aiAnalysis.plan.rangeHigh" class="market-meta">震荡区间 {{ aiAnalysis.plan.rangeLow }} – {{ aiAnalysis.plan.rangeHigh }}；只在区间边缘考虑试探。</div>
-
-                <section v-if="aiAnalysis.plan.decision !== '暂缓'" class="plan-card">
-                  <div class="plan-head"><strong>{{ aiAnalysis.plan.mode === 'probe' ? '小仓位试探计划' : aiAnalysis.plan.mode === 'ladder' ? '分批加仓计划' : '单笔开仓计划' }}</strong><span>{{ aiAnalysis.plan.direction === 'BUY' ? '做多' : '做空' }} · {{ aiAnalysis.plan.leverage }}×</span></div>
-                  <div class="price-grid"><span>止损 <b>{{ aiAnalysis.plan.stop }}</b></span><span>止盈 <b>{{ aiAnalysis.plan.takeProfit }}</b></span></div>
-                  <div v-for="(leg, index) in aiAnalysis.plan.orders" :key="index" class="ai-leg"><strong>{{ aiAnalysis.plan.mode === 'probe' ? '试探单' : index ? `加仓 ${index}` : '初始单' }} · {{ leg.price }}</strong><span>保证金 {{ leg.marginUsdt }} USDT</span><p>{{ leg.reason }}</p></div>
-                  <p class="preview-note">失效条件：{{ aiAnalysis.plan.invalidation }}</p>
-                  <p v-if="aiAnalysis.plan.mode === 'ladder'" class="preview-note">确认后全部档位会立即挂到币安；后续基本面变化不会自动重新判断或撤单。</p>
-                </section>
-                <div v-else class="plan-card muted-plan">当前没有可提交的挂单计划。可重新分析，等待新的市场数据。</div>
-
-                <details v-if="aiAnalysis.plan.evidence.length" class="analysis-details"><summary>查看分析依据</summary><p v-for="(item, index) in aiAnalysis.plan.evidence" :key="index">{{ item }}</p></details>
-              </template>
-
-              <section v-if="aiPreview" class="preview-card">
-                <div class="plan-head"><strong>币安订单预览</strong><span>{{ aiPreview.simulated === null ? '未配置密钥' : aiPreview.simulated ? '演示盘' : '实盘' }}</span></div>
-                <div class="preview-summary"><span>总保证金 <b>{{ aiPreview.preview.totalMarginUsdt.toFixed(2) }} USDT</b></span><span>总名义价值 <b>{{ aiPreview.preview.totalNotionalUsdt.toFixed(2) }} USDT</b></span><span>预计止损亏损 <b>{{ aiPreview.preview.estimatedLossUsdt.toFixed(2) }} USDT</b></span></div>
-                <div v-for="(leg, index) in aiPreview.preview.orders" :key="index" class="ai-leg"><strong>{{ aiPreview.preview.mode === 'probe' ? '试探单' : index ? `加仓 ${index}` : '初始单' }} · Maker 限价 {{ leg.price }}</strong><span>数量 {{ leg.quantity }} · 保证金 {{ leg.marginUsdt }} USDT</span></div>
-                <div class="price-grid"><span>止损 <b>{{ aiPreview.preview.stopPrice }}</b></span><span>止盈 <b>{{ aiPreview.preview.takePrice }}</b></span></div>
-                <p class="preview-note">现价 {{ aiPreview.preview.last }} · 全部成交均价 {{ aiPreview.preview.averagePrice.toFixed(4) }} · 未成交挂单到期 {{ new Date(aiPreview.preview.expiresAt).toLocaleString('zh-CN') }}。预计亏损未计费用与滑点。</p>
-                <p v-if="!aiPreview.configured" class="order-error">请先在左下角「API 设置」配置币安 API 密钥。</p>
-                <p v-if="!aiPreview.monitorReady" class="order-error">常驻订单监控未运行，当前不能提交整套挂单。</p>
-              </section>
-
-              <p v-if="aiError" class="order-error" role="alert">{{ aiError }}</p>
-              <p v-if="aiResult" class="order-success" role="status">{{ aiResult }}</p>
-            </div>
+            <p class="dialog-intro">服务器24小时识别震荡结构，建立双向底仓并按10U固定档位补充亏损侧。组合盈利后自动平仓；趋势失效、手动改仓或达到20档后停止自动操作并进入人工接管。</p>
+            <p v-if="strategyData?.strategy.range" class="market-meta">当前参考区间：{{ strategyData.strategy.range.low }} – {{ strategyData.strategy.range.high }} · 最新价 {{ strategyData.strategy.lastPrice ?? '—' }}</p>
+            <p v-if="strategyData?.strategy.lastError || strategyError" class="order-error">{{ strategyError || strategyData?.strategy.lastError }}</p>
           </div>
-
-          <footer class="dialog-footer">
-            <p class="footer-hint">确认一次后，系统依次提交入场挂单、止损单和止盈单；止盈止损触发后按市价执行。</p>
-            <div class="footer-actions">
-              <button type="button" class="btn" :disabled="aiBusy" @click="closeAiOrder">关闭</button>
-              <button v-if="!aiAnalysis || aiResult" type="button" class="btn primary" :disabled="aiBusy" @click="generateAiPlan">{{ aiActivity === 'analysis' ? '分析中…' : '开始 AI 分析' }}</button>
-              <template v-else>
-                <button type="button" class="btn" :disabled="aiBusy" @click="generateAiPlan">重新分析</button>
-                <button v-if="!aiPreview" type="button" class="btn primary" :disabled="aiBusy || aiAnalysis.plan.decision === '暂缓'" @click="previewAiPlan">{{ aiActivity === 'preview' ? '预览中…' : aiAnalysis.plan.decision === '暂缓' ? '暂无可预览订单' : aiAnalysis.plan.mode === 'probe' ? '预览试探单' : '预览订单' }}</button>
-                <button v-else type="button" class="btn primary" :disabled="aiBusy || !aiPreview.configured || !aiPreview.monitorReady" @click="submitAiPlan">{{ aiActivity === 'submit' ? '提交中…' : '确认在币安挂单' }}</button>
-              </template>
-            </div>
-          </footer>
+          <footer class="dialog-footer"><p class="footer-hint">暂停策略会撤销已知挂单并保留已成交仓位。</p><div class="footer-actions"><button class="btn" :disabled="strategyBusy" @click="closeStrategy">关闭</button><button class="btn primary" :disabled="strategyBusy" @click="toggleStrategy">{{ strategyBusy ? '处理中…' : strategyData?.strategy.enabled ? '暂停策略' : '启动24H策略' }}</button></div></footer>
         </div>
       </div>
     </Teleport>
@@ -735,7 +480,19 @@ async function submitAiPlan() {
 .account-column :deep(.account-summary) { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 12px; }
 .account-column :deep(.order-list) { padding: 10px 12px; }
 .account-column :deep(.order-card) { padding: 12px; }
-.whale-head-actions { display: flex; align-items: center; gap: 10px; }
+.strategy-events { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 14px; }
+.strategy-event { padding: 11px 4px; border-bottom: 1px solid var(--border); }
+.strategy-event time { color: var(--muted); font-size: 10px; }
+.strategy-event p { margin: 5px 0 0; line-height: 1.5; font-size: 12px; }
+.strategy-event.error p { color: var(--red); }
+.strategy-event.success p { color: var(--green); }
+.strategy-event.trade p { color: var(--yellow); }
+.strategy-state { display: flex; justify-content: space-between; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); }
+.strategy-state span { color: var(--muted); }
+.strategy-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
+.strategy-metrics div { padding: 13px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
+.strategy-metrics span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 7px; }
+.strategy-dialog { height: auto; min-height: 470px; }
 .feed-tools { padding: 12px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .chips { display: flex; gap: 5px; flex-wrap: wrap; }
 .chip { border: 1px solid transparent; background: var(--panel-2); border-radius: 5px; color: var(--muted); padding: 6px 10px; font-size: 10px; }
@@ -756,19 +513,6 @@ async function submitAiPlan() {
 .news-mark { color: var(--yellow); font-size: 10px; white-space: nowrap; }
 .empty { padding: 38px 15px; text-align: center; color: var(--muted); font-size: 12px; }
 .panel-foot { border-top: 1px solid var(--border); padding: 11px 18px; color: var(--muted); font-size: 10px; line-height: 1.5; }
-.table-wrap { flex: 1; min-height: 0; overflow: auto; }
-.table-wrap thead th { position: sticky; top: 0; z-index: 1; }
-table { width: 100%; border-collapse: collapse; white-space: nowrap; text-align: left; font-size: 11px; }
-th { background: var(--bg-2); color: var(--muted); font-weight: 600; font-size: 10px; padding: 11px 14px; }
-td { padding: 13px 14px; border-top: 1px solid var(--border); }
-tbody tr:hover { background: var(--panel-2); }
-.whale-type { display: inline-block; border-radius: 4px; padding: 4px 7px; background: color-mix(in srgb, var(--green) 18%, var(--panel-2)); color: var(--green); font-size: 10px; font-weight: 700; }
-.whale-type.short { background: color-mix(in srgb, var(--red) 18%, var(--panel-2)); color: var(--red); }
-.whale-type.order { background: var(--panel-3); color: var(--muted); }
-.addr { color: var(--text); }
-.source { color: var(--muted); font-size: 10px; }
-.wide-meta { color: var(--muted); font-size: 10px; }
-.whale-row-detail { color: var(--muted); }
 .modal-cover { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box; background: rgba(0, 0, 0, .72); }
 .dialog { width: min(800px, 100%); height: 680px; max-height: 96vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 24px 64px rgba(0, 0, 0, .5); }
 .dialog-head { flex: none; min-height: 62px; box-sizing: border-box; padding: 14px 18px; border-bottom: 1px solid var(--border); background: linear-gradient(to right, rgba(99, 102, 241, .14), transparent); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -777,56 +521,9 @@ tbody tr:hover { background: var(--panel-2); }
 .dialog-close { border: 0; background: transparent; color: var(--muted); font-size: 22px; cursor: pointer; }
 .dialog-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .dialog-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 20px; }
-.order-steps { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
-.order-steps span { border: 1px solid var(--border); border-radius: 999px; padding: 6px 10px; color: var(--muted); font-size: 11px; }
-.order-steps span.active { border-color: #818cf8; color: #c7d2fe; background: rgba(99, 102, 241, .13); }
-.analysis-status { flex: none; padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--panel-2); display: flex; justify-content: space-between; gap: 12px; align-items: center; }
-.analysis-status.bull { background: rgba(14, 203, 129, .12); border-bottom-color: rgba(14, 203, 129, .35); }
-.analysis-status.bear { background: rgba(246, 70, 93, .12); border-bottom-color: rgba(246, 70, 93, .35); }
-.analysis-status.neutral { background: rgba(132, 142, 156, .12); }
-.analysis-status span { color: var(--muted); font-size: 12px; }
 .dialog-intro { margin: 0 0 24px; color: var(--muted); line-height: 1.7; }
-.mode-label { color: var(--text); font-weight: 700; margin-bottom: 10px; }
-.mode-options, .structure-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.mode-option { min-height: 96px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 9px; padding: 16px; text-align: left; color: var(--text); background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; cursor: pointer; }
-.mode-option.active { border-color: #818cf8; background: color-mix(in srgb, #6366f1 13%, var(--panel-2)); }
-.mode-option strong { font-size: 14px; }
-.mode-option span { color: var(--muted); font-size: 12px; }
-.loading-state { min-height: 300px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--muted); text-align: center; }
-.loading-state strong { color: var(--text); font-size: 14px; }
-.spinner { width: 40px; height: 40px; border: 3px solid rgba(99, 102, 241, .25); border-top-color: #818cf8; border-radius: 50%; animation: spin .9s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-.result-reason { margin: 0 0 14px; color: var(--text); line-height: 1.7; font-size: 13px; }
-.structure-card, .plan-card, .preview-card { padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-2); }
-.structure-head { color: var(--text); font-weight: 750; margin-bottom: 8px; }
-.structure-card p { margin: 0; color: var(--muted); line-height: 1.6; font-size: 12px; }
 .market-meta { margin: 12px 0 16px; color: var(--muted); font-size: 12px; line-height: 1.6; }
-.plan-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: var(--text); font-size: 14px; }
-.plan-head span { color: #818cf8; font-size: 12px; font-weight: 700; }
-.price-grid, .preview-summary { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 14px 0; color: var(--muted); font-size: 12px; }
-.price-grid b, .preview-summary b { color: var(--text); }
-.ai-leg { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; margin-top: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); font-size: 12px; line-height: 1.6; }
-.ai-leg strong { color: var(--text); }
-.ai-leg p { flex-basis: 100%; margin: 0; }
-.muted-plan { color: var(--muted); line-height: 1.6; }
-.analysis-details { margin: 16px 0; padding-top: 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
-.analysis-details summary { cursor: pointer; }
-.analysis-details p { margin: 8px 0 0; line-height: 1.6; }
-.preview-card { margin-top: 14px; border-color: color-mix(in srgb, #818cf8 45%, var(--border)); }
-.preview-note { color: var(--muted); font-size: 12px; line-height: 1.7; }
 .order-error { color: var(--red); font-size: 12px; line-height: 1.6; }
-.order-success { color: var(--green); font-size: 12px; line-height: 1.6; }
-.submit-progress { position: sticky; top: 0; z-index: 2; margin: 8px 0 16px; padding: 14px; border: 1px solid #818cf8; border-radius: 10px; background: var(--card); box-shadow: 0 8px 24px rgba(0, 0, 0, .2); }
-.submit-progress-head { display: flex; justify-content: space-between; margin-bottom: 10px; color: var(--text); }
-.submit-progress-track { height: 8px; overflow: hidden; border-radius: 8px; background: var(--panel-2); }
-.submit-progress-fill { height: 100%; background: linear-gradient(90deg, #6366f1, #a855f7); transition: width .25s ease; }
-.submit-progress-list { max-height: 175px; overflow-y: auto; margin-top: 10px; }
-.submit-progress-step { display: flex; align-items: center; gap: 8px; padding: 3px 0; color: var(--muted); font-size: 12px; }
-.submit-progress-step small { margin-left: auto; text-align: right; }
-.submit-progress-step.done { color: var(--green); }
-.submit-progress-step.running { color: #818cf8; }
-.submit-progress-step.error { color: var(--red); }
-.submit-progress-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .dialog-footer { flex: none; padding: 12px 18px; border-top: 1px solid var(--border); background: var(--card); }
 .footer-hint { margin: 0 0 10px; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .footer-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
@@ -844,9 +541,8 @@ tbody tr:hover { background: var(--panel-2); }
   .main-grid > .panel:last-child { grid-column: auto; }
   .news-item { grid-template-columns: 60px minmax(0, 1fr); }
   .news-mark { display: none; }
-  .mode-options, .structure-grid { grid-template-columns: 1fr; }
   .dialog-scroll { padding: 14px; }
-  .analysis-status { align-items: flex-start; flex-direction: column; }
+  .strategy-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .footer-actions .btn { flex: 1; }
 }
 </style>
