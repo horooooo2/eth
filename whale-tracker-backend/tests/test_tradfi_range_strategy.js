@@ -8,7 +8,7 @@ function candles(start, count, step, spread = 2) {
   });
 }
 
-const { marketState, ladderStep, requestedConfig, isPostOnlyReject, isRequestTimeout, MAX_ADDITIONS, MARGIN, LEVERAGE } = require('../lib/tradfiRangeStrategy');
+const { marketState, ladderStep, requestedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, MAX_ADDITIONS, MARGIN, LEVERAGE } = require('../lib/tradfiRangeStrategy');
 
 test('黄金窄幅结构允许震荡监控，明显单边结构识别为趋势', () => {
   const range15 = candles(1800, 48, 0.02, 2);
@@ -46,4 +46,10 @@ test('识别币安 Post Only Maker 拒单并允许安全换价重试', () => {
 test('识别币安请求超时，以便平仓后的下一轮恢复', () => {
   assert.equal(isRequestTimeout({ message: 'timeout of 12000ms exceeded' }), true);
   assert.equal(isRequestTimeout({ message: 'Order does not exist.' }), false);
+});
+
+test('恢复模式达到目标后用 ATR 回撤锁定利润，震荡则直接兑现目标', () => {
+  assert.deepEqual(recoveryExitState({ recovery: true, armed: true, netPnl: 8, peakNetPnl: 10, trail: 1.5, trend: true, target: 6 }), { shouldClose: true, reason: '恢复模式利润回撤触发' });
+  assert.deepEqual(recoveryExitState({ recovery: true, armed: true, netPnl: 6, peakNetPnl: 6, trail: 1.5, trend: false, target: 6 }), { shouldClose: true, reason: '恢复模式目标达成' });
+  assert.equal(recoveryExitState({ recovery: true, armed: false, netPnl: 8, peakNetPnl: 10, trail: 1.5, trend: true, target: 6 }).shouldClose, false);
 });

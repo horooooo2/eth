@@ -7,6 +7,7 @@ function stub(path, exports) {
 }
 
 let closedThenManual = false;
+let hideManualTrade = false;
 
 stub('../lib/binanceAiLedger', {
   listBinanceAiOrders: (_userId, scope) => [{ order_id: '101', client_order_id: scope === 'tradfi' ? 'wtf_rg_cycle_base_l_0' : 'wtai_group_e', symbol: 'BTCUSDT', leverage: 5 }],
@@ -34,6 +35,7 @@ stub('../lib/binanceTradfiTrade', {
     ];
     if (path.endsWith('/userTrades') && params.symbol === 'BTCUSDT') return [
       { id: 1, orderId: 101, symbol: 'BTCUSDT', side: 'BUY', positionSide: 'BOTH', price: '100', qty: '0.1', quoteQty: '10', realizedPnl: '0', commission: '0.004', commissionAsset: 'USDT', time: 10 },
+      ...(hideManualTrade ? [] : [{ id: 2, orderId: 102, symbol: 'BTCUSDT', side: 'SELL', positionSide: 'BOTH', price: '110', qty: '0.05', quoteQty: '5.5', realizedPnl: '0.5', commission: '0.002', commissionAsset: 'USDT', time: 20 }]),
     ];
     if (path.endsWith('/userTrades')) return [];
     if (path.endsWith('/allOrders') && params.symbol === 'BTCUSDT') return [
@@ -60,11 +62,22 @@ test('币安交易账户只展示 AI 挂单和 AI 对应的仓位份额', async 
 
 test('TradFi 交易记录来自本站策略订单的币安成交明细', async () => {
   const book = await accountBook({ simulated: false }, 'u1', 'tradfi');
-  assert.equal(book.trades.length, 1);
-  assert.equal(book.trades[0].amountUsd, 10);
-  assert.equal(book.trades[0].action, 'open');
+  assert.equal(book.trades.length, 2);
+  assert.equal(book.trades.find((row) => row.source === 'ai').amountUsd, 10);
+  assert.equal(book.trades.find((row) => row.source === 'manual').action, 'close');
+  assert.equal(book.trades.find((row) => row.source === 'manual').realizedPnl, 0.5);
   assert.equal(book.costs.tradingFees, 0.004);
   assert.equal(book.costs.netCost, -0.004);
+});
+
+test('已归因的手动平仓在交易所历史暂不可见时仍保留在策略记录中', async () => {
+  hideManualTrade = true;
+  try {
+    const book = await accountBook({ simulated: false }, 'u1', 'tradfi');
+    assert.ok(book.trades.some((row) => row.tradeId === '2' && row.source === 'manual' && row.realizedPnl === 0.5));
+  } finally {
+    hideManualTrade = false;
+  }
 });
 
 test('AI 仓位平仓后手动重开不会再次显示为 AI 仓位', async () => {

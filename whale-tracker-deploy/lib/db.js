@@ -262,6 +262,25 @@ function migrate(database) {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_tradfi_range_events_user ON tradfi_range_events(user_id, symbol, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS tradfi_manual_strategy_closures (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      trade_id TEXT NOT NULL,
+      order_id TEXT NOT NULL DEFAULT '',
+      symbol TEXT NOT NULL,
+      side TEXT NOT NULL DEFAULT '',
+      position_side TEXT NOT NULL DEFAULT '',
+      price REAL,
+      quantity REAL NOT NULL DEFAULT 0,
+      amount_usd REAL,
+      realized_pnl REAL NOT NULL DEFAULT 0,
+      commission REAL NOT NULL DEFAULT 0,
+      commission_asset TEXT NOT NULL DEFAULT 'USDT',
+      created_at INTEGER NOT NULL,
+      UNIQUE(user_id, trade_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_tradfi_manual_closures_user ON tradfi_manual_strategy_closures(user_id, created_at DESC);
   `);
   // 旧策略表（v41_* / whale_ai_runtime_logs）不再创建；user_ai_keys / user_exchange_keys 继续使用。
 

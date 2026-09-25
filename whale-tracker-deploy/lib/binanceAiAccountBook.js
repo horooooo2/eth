@@ -1,5 +1,28 @@
 const { signedRequest } = require('./binanceTradfiTrade');
 const { listBinanceAiOrders, isAiClientId } = require('./binanceAiLedger');
+const { getDb } = require('./db');
+
+function rememberManualStrategyClosure(userId, trade) {
+  if (!userId || !trade?.id) return;
+  try {
+    getDb().prepare(`INSERT OR IGNORE INTO tradfi_manual_strategy_closures
+      (user_id,trade_id,order_id,symbol,side,position_side,price,quantity,amount_usd,realized_pnl,commission,commission_asset,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      String(userId), String(trade.id), String(trade.orderId || ''), String(trade.symbol || ''), String(trade.side || ''),
+      String(trade.positionSide || 'BOTH'), Number(trade.price) || null, Number(trade.qty) || 0,
+      Number(trade.quoteQty) || Number(trade.price) * Number(trade.qty) || null, Number(trade.realizedPnl) || 0,
+      Number(trade.commission) || 0, String(trade.commissionAsset || 'USDT'), Number(trade.time) || Date.now(),
+    );
+  } catch (err) { console.warn('[binance-ai-book] manual closure ledger:', err.message); }
+}
+
+function storedManualStrategyClosures(userId) {
+  if (!userId) return [];
+  try {
+    return getDb().prepare(`SELECT * FROM tradfi_manual_strategy_closures WHERE user_id=? ORDER BY created_at DESC LIMIT 1000`)
+      .all(String(userId));
+  } catch { return []; }
+}
 
 async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol = {}) {
   const [balances, positions, orders] = await Promise.all([
@@ -49,7 +72,11 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
       || ledgerIds.has(String(order.orderId))
       || ledgerClients.has(String(order.clientOrderId || ''));
     if (isAiEntry) {
-      aiQtyByPosition.set(key, (aiQtyByPosition.get(key) || 0) + filled);
+      // Strategy exits share the same AI client-id prefix. Count them as a
+      // reduction or a completed cycle will keep appearing as an AI position.
+      const isClosing = order.reduceOnly === true || order.reduceOnly === 'true'
+        || order.closePosition === true || /_close_/.test(String(order.clientOrderId || ''));
+      aiQtyByPosition.set(key, Math.max(0, (aiQtyByPosition.get(key) || 0) + (isClosing ? -filled : filled)));
       continue;
     }
     // Manual adds never increase the AI share. Any later opposite fill consumes the
@@ -73,14 +100,49 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
     ...pos.map(({ row: p, share, aiQty }) => ({ kind: 'position', ordId: `pos:${p.symbol}:${p.positionSide}`, instId: p.symbol, coin: p.symbol.slice(0, -4), side: Number(p.positionAmt) < 0 ? 'sell' : 'buy', posSide: p.positionSide?.toLowerCase(), px: Number(p.entryPrice), sz: String(aiQty), amountUsd: Math.abs(Number(p.notional)) * share, leverage: Number(p.leverage), state: 'filled', createdAt: Number(p.updateTime) || 0, openUpl: Number(p.unRealizedProfit) * share, realizedPnl: null, source: 'ai' })),
     ...pending.map((o) => { const saved = ledger.find((row) => row.order_id === String(o.orderId)); return ({ kind: 'pending', ordId: String(o.orderId), instId: o.symbol, coin: o.symbol.slice(0, -4), side: String(o.side).toLowerCase(), posSide: String(o.positionSide).toLowerCase(), px: Number(o.price), sz: String(Number(o.origQty) - Number(o.executedQty || 0)), amountUsd: (Number(o.origQty) - Number(o.executedQty || 0)) * Number(o.price), leverage: Number(saved?.leverage) || null, state: 'live', createdAt: Number(o.time) || 0, openUpl: null, realizedPnl: null, source: 'ai' }); }),
   ];
-  const trades = userTrades.filter((trade) => aiOrderIds.has(String(trade.orderId))).map((trade) => {
+  const strategyQty = new Map();
+  const manualClosures = [];
+  const orderedTrades = [...userTrades].sort((a, b) => Number(a.time || 0) - Number(b.time || 0));
+  for (const trade of orderedTrades) {
+    const positionSide = String(trade.positionSide || 'BOTH').toUpperCase();
+    const side = String(trade.side || '').toUpperCase();
+    const closes = positionSide === 'LONG' ? side === 'SELL' : positionSide === 'SHORT' ? side === 'BUY' : Number(trade.realizedPnl) !== 0;
+    const direction = positionSide === 'BOTH'
+      ? (closes ? (side === 'SELL' ? 'LONG' : 'SHORT') : (side === 'BUY' ? 'LONG' : 'SHORT'))
+      : positionSide;
+    const key = `${trade.symbol}|${direction}`;
+    const quantity = Number(trade.qty || 0);
+    if (aiOrderIds.has(String(trade.orderId))) {
+      strategyQty.set(key, Math.max(0, (strategyQty.get(key) || 0) + (closes ? -quantity : quantity)));
+      continue;
+    }
+    if (!closes || !(quantity > 0)) continue;
+    const attributedQty = Math.min(quantity, strategyQty.get(key) || 0);
+    if (!(attributedQty > 0)) continue;
+    strategyQty.set(key, (strategyQty.get(key) || 0) - attributedQty);
+    const share = attributedQty / quantity;
+    manualClosures.push({ ...trade, qty: String(attributedQty), quoteQty: Number(trade.quoteQty || 0) * share,
+      realizedPnl: Number(trade.realizedPnl || 0) * share, commission: Number(trade.commission || 0) * share, manualStrategyClose: true });
+  }
+  for (const trade of manualClosures) rememberManualStrategyClosure(userId, trade);
+  const storedManual = scope === 'tradfi' ? storedManualStrategyClosures(userId).map((trade) => ({
+    id: trade.trade_id, orderId: trade.order_id, symbol: trade.symbol, side: trade.side, positionSide: trade.position_side,
+    price: trade.price, qty: trade.quantity, quoteQty: trade.amount_usd, realizedPnl: trade.realized_pnl,
+    commission: trade.commission, commissionAsset: trade.commission_asset, time: trade.created_at, manualStrategyClose: true,
+  })) : [];
+  const uniqueTrades = new Map();
+  for (const trade of [...userTrades.filter((trade) => aiOrderIds.has(String(trade.orderId))), ...manualClosures, ...storedManual]) {
+    const key = String(trade.id || `${trade.orderId}:${trade.time}`);
+    if (!uniqueTrades.has(key)) uniqueTrades.set(key, trade);
+  }
+  const trades = [...uniqueTrades.values()].map((trade) => {
     const positionSide = String(trade.positionSide || 'BOTH').toUpperCase();
     const side = String(trade.side || '').toUpperCase();
     const closesPosition = positionSide === 'LONG' ? side === 'SELL' : positionSide === 'SHORT' ? side === 'BUY' : Number(trade.realizedPnl) !== 0;
     return {
       tradeId: String(trade.id || `${trade.orderId}:${trade.time}`), orderId: String(trade.orderId),
       instId: trade.symbol, coin: String(trade.symbol || '').replace(/USDT$/, ''), side: side.toLowerCase(),
-      posSide: positionSide.toLowerCase(), action: closesPosition ? 'close' : 'open',
+      posSide: positionSide.toLowerCase(), action: closesPosition ? 'close' : 'open', source: trade.manualStrategyClose ? 'manual' : 'ai',
       px: Number(trade.price) || null, sz: String(trade.qty || ''),
       amountUsd: Number(trade.quoteQty) || Number(trade.price) * Number(trade.qty) || null,
       realizedPnl: Number(trade.realizedPnl) || 0, commission: Number(trade.commission) || 0,
@@ -90,6 +152,7 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
   const feesBySymbol = {};
   for (const symbol of candidateSymbols) feesBySymbol[symbol] = { tradingFees: 0, fundingFees: 0, netCost: 0 };
   for (const trade of trades) {
+    if (trade.source !== 'ai' || trade.action !== 'open') continue;
     if (trade.commissionAsset !== 'USDT') continue;
     const fees = feesBySymbol[trade.instId] || (feesBySymbol[trade.instId] = { tradingFees: 0, fundingFees: 0, netCost: 0 });
     fees.tradingFees += Number(trade.commission) || 0;

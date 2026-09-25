@@ -263,7 +263,7 @@ function closeStrategy() { if (!strategyBusy.value) strategyOpen.value = false; 
 function onAccountLoaded(book: OkxAiBook) { accountBook.value = book; }
 function tradeDirection(row: BinanceAiTradeRecord) {
   const direction = row.posSide === 'short' ? '空' : row.posSide === 'long' ? '多' : row.side === 'sell' ? '空' : '多';
-  return `${direction}${row.action === 'close' ? '平仓' : '开仓'}`;
+  return row.source === 'manual' ? `${direction}手动平仓` : `${direction}${row.action === 'close' ? '平仓' : '开仓'}`;
 }
 function tradeTagClass(row: BinanceAiTradeRecord) {
   return row.posSide === 'short' || (row.posSide !== 'long' && row.side === 'sell') ? 'short' : 'long';
@@ -486,8 +486,8 @@ async function closeAllPositions() {
               <div><span>已补仓</span><b>{{ strategyData?.strategy.additions || 0 }} / 20</b></div><div><span>下一档间距</span><b>{{ strategyData?.strategy.addStep == null ? '—' : `${Number(strategyData.strategy.addStep).toFixed(2)}` }}</b></div>
               <div><span>组合浮盈亏</span><b>{{ strategyData?.strategy.comboPnl == null ? '—' : `${Number(strategyData.strategy.comboPnl).toFixed(2)} U` }}</b></div><div><span>预计平仓后净盈亏</span><b>{{ strategyData?.strategy.netPnl == null ? '—' : `${Number(strategyData.strategy.netPnl).toFixed(2)} U` }}</b></div>
             </div>
-            <p class="dialog-intro">服务器24小时识别震荡结构，建立双向底仓；补仓间距为 15 分钟 ATR 的 0.6 倍，并限制在现价的 0.08%～0.35%。组合净盈利达到目标后自动平仓；趋势失效、手动改仓或达到20档后停止自动操作并进入人工接管。</p>
-            <p v-if="strategyData?.strategy.costs" class="market-meta">预估成本：开仓费 {{ Number(strategyData.strategy.costs.entryFee).toFixed(3) }}U · 平仓费 {{ Number(strategyData.strategy.costs.exitFee).toFixed(3) }}U · 滑点 {{ Number(strategyData.strategy.costs.slippage).toFixed(3) }}U · 资金费 {{ Number(strategyData.strategy.costs.fundingNet).toFixed(3) }}U。净利润目标 {{ Number(strategyData.strategy.costs.profitTarget).toFixed(2) }}U；浮盈达到 {{ Number(strategyData.strategy.costs.closeTrigger).toFixed(2) }}U 才平仓。</p>
+            <p class="dialog-intro">服务器24小时识别震荡结构，建立双向底仓；补仓间距为 15 分钟 ATR 的 0.6 倍，并限制在现价的 0.08%～0.35%。常规模式达到净利润目标后自动平仓；恢复模式会在达到目标后按 ATR 跟踪利润回撤。手动改仓或达到20档后进入人工接管。</p>
+            <p v-if="strategyData?.strategy.costs" class="market-meta">预估成本：开仓费 {{ Number(strategyData.strategy.costs.entryFee).toFixed(3) }}U · 平仓费 {{ Number(strategyData.strategy.costs.exitFee).toFixed(3) }}U · 滑点 {{ Number(strategyData.strategy.costs.slippage).toFixed(3) }}U · 资金费 {{ Number(strategyData.strategy.costs.fundingNet).toFixed(3) }}U。{{ strategyData.strategy.recovery ? `恢复模式：净利达到 ${Number(strategyData.strategy.costs.profitTarget).toFixed(2)}U 后启动 ATR 跟踪；峰值 ${Number(strategyData.strategy.recoveryPeakNetPnl || 0).toFixed(2)}U，回撤 ${Number(strategyData.strategy.recoveryTrail || 0).toFixed(2)}U 平仓。` : `净利润目标 ${Number(strategyData.strategy.costs.profitTarget).toFixed(2)}U；浮盈达到 ${Number(strategyData.strategy.costs.closeTrigger).toFixed(2)}U 才平仓。` }}</p>
             <p v-if="strategyData?.strategy.range" class="market-meta">当前参考区间：{{ strategyData.strategy.range.low }} – {{ strategyData.strategy.range.high }} · 最新价 {{ strategyData.strategy.lastPrice ?? '—' }}</p>
             <p v-if="strategyData?.strategy.lastError || strategyError" class="order-error">{{ strategyError || strategyData?.strategy.lastError }}</p>
           </div>

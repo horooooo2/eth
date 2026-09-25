@@ -1554,6 +1554,7 @@ export type TradfiRangeStatus = {
   symbol: string; enabled: boolean; status: string; simulated: boolean | null; additions: number; maxAdditions: number;
   marginPerOrder: number; leverage: number; comboPnl?: number | null; lastPrice?: number | null;
   netPnl?: number | null; closeTrigger?: number | null; addStep?: number | null;
+  recovery?: boolean; recoveryArmed?: boolean; recoveryPeakNetPnl?: number | null; recoveryTrail?: number | null;
   costs?: { entryFee: number; exitFee: number; slippage: number; fundingNet: number; estimatedCosts: number; profitTarget: number; closeTrigger: number; netPnl: number } | null;
   range?: { low: number; high: number } | null; cooldownUntil?: number | null; cycleStartedAt?: number | null; lastError?: string; startedAt?: number | null; updatedAt?: number | null;
 };
@@ -1621,7 +1622,7 @@ export type OkxAiBook = {
 
 export type BinanceAiTradeRecord = {
   tradeId: string; orderId: string; instId: string; coin: string; side: string; posSide: string;
-  action: 'open' | 'close'; px: number | null; sz: string; amountUsd: number | null;
+  action: 'open' | 'close'; source?: 'ai' | 'manual'; px: number | null; sz: string; amountUsd: number | null;
   realizedPnl: number; commission: number; commissionAsset: string; createdAt: number;
 };
 
