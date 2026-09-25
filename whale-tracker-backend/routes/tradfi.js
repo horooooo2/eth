@@ -79,7 +79,7 @@ router.post('/range/start', async (req, res) => {
     const user = requireUser(req);
     const creds = getBinanceCredentialsForUser(user.user.id);
     if (!creds) throw Object.assign(new Error('请先在 API 设置中配置币安 API 密钥'), { status: 400 });
-    res.json({ ok: true, ...rangeStrategy.enable(user.user.id, req.body?.symbol, creds.simulated) });
+    res.json({ ok: true, ...rangeStrategy.enable(user.user.id, req.body?.symbol, creds.simulated, req.body) });
     void rangeStrategy.reconcile();
   } catch (err) { res.status(err.status || 500).json({ error: err.message || '震荡策略启动失败', code: err.code }); }
 });
@@ -89,6 +89,13 @@ router.post('/range/stop', async (req, res) => {
     const user = requireUser(req);
     res.json({ ok: true, ...await rangeStrategy.disable(user.user.id, req.body?.symbol) });
   } catch (err) { res.status(err.status || 500).json({ error: err.message || '震荡策略暂停失败', code: err.code }); }
+});
+
+router.post('/close-all', async (req, res) => {
+  try {
+    const user = requireUser(req);
+    res.json({ ok: true, ...await rangeStrategy.closeAll(user.user.id) });
+  } catch (err) { res.status(err.status || 500).json({ error: err.message || '一键平仓提交失败', code: err.code }); }
 });
 
 module.exports = router;

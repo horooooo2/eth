@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch as watchVue } from 'vue';
-import { fetchTradFiCatalog, fetchTradFiQuotes, fetchTradFiIntel, fetchTradfiRangeStatus, startTradfiRange, stopTradfiRange, type BinanceAiTradeRecord, type OkxAiBook, type TradfiRangeResponse, type TradFiIntelResponse, type TradFiMarketSymbol, type TradFiQuote } from '@/api';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import { closeTradfiPositions, fetchTradFiCatalog, fetchTradFiQuotes, fetchTradFiIntel, fetchTradfiRangeStatus, startTradfiRangeWithConfig, stopTradfiRange, type BinanceAiTradeRecord, type OkxAiBook, type TradfiRangeResponse, type TradFiIntelResponse, type TradFiMarketSymbol, type TradFiQuote } from '@/api';
 import OkxAccountPanel from '@/components/OkxAccountPanel.vue';
 import { tradfiWatch } from '@/utils/tradfiWatch';
 
@@ -131,7 +132,11 @@ const strategyOpen = ref(false);
 const strategyBusy = ref(false);
 const strategyError = ref('');
 const strategyData = ref<TradfiRangeResponse | null>(null);
+const strategyMargin = ref(10);
+const strategyLeverage = ref(10);
+const closingAll = ref(false);
 const accountBook = ref<OkxAiBook | null>(null);
+const accountPanel = ref<{ reload: () => void } | null>(null);
 let quoteTimer = 0;
 let intelTimer = 0;
 let intelRequestId = 0;
@@ -246,7 +251,14 @@ async function loadStrategy(silent = false) {
   catch (err) { strategyError.value = err instanceof Error ? err.message : '震荡策略状态加载失败'; }
   finally { if (!silent) strategyBusy.value = false; }
 }
-function openStrategy() { strategyOpen.value = true; void loadStrategy(); }
+async function openStrategy() {
+  strategyOpen.value = true;
+  await loadStrategy();
+  if (!strategyData.value?.strategy.enabled) {
+    strategyMargin.value = Number(strategyData.value?.strategy.marginPerOrder || 10);
+    strategyLeverage.value = Number(strategyData.value?.strategy.leverage || 10);
+  }
+}
 function closeStrategy() { if (!strategyBusy.value) strategyOpen.value = false; }
 function onAccountLoaded(book: OkxAiBook) { accountBook.value = book; }
 function tradeDirection(row: BinanceAiTradeRecord) {
@@ -258,9 +270,26 @@ function tradePrice(value: number | null) { return value == null ? '—' : value
 async function toggleStrategy() {
   if (!strategySupported.value || strategyBusy.value) return;
   strategyBusy.value = true; strategyError.value = '';
-  try { strategyData.value = strategyData.value?.strategy.enabled ? await stopTradfiRange(selected.value) : await startTradfiRange(selected.value); }
+  try {
+    if (strategyData.value?.strategy.enabled) strategyData.value = await stopTradfiRange(selected.value);
+    else strategyData.value = await startTradfiRangeWithConfig(selected.value, { marginUsdt: Number(strategyMargin.value), leverage: Number(strategyLeverage.value) });
+  }
   catch (err) { strategyError.value = err instanceof Error ? err.message : '震荡策略操作失败'; }
   finally { strategyBusy.value = false; }
+}
+async function closeAllPositions() {
+  if (closingAll.value) return;
+  try {
+    await ElMessageBox.confirm('将撤销本站震荡策略的未成交入场单，并为黄金、白银策略持仓提交接近市价的 Post Only 平仓单。订单需要等待成交。', '确认一键平仓', { type: 'warning', confirmButtonText: '提交平仓单', cancelButtonText: '取消' });
+  } catch { return; }
+  closingAll.value = true;
+  try {
+    const result = await closeTradfiPositions();
+    ElMessage.success(result.submitted.length ? `已提交 ${result.submitted.length} 笔 Maker 平仓单` : '没有可平的策略仓位或挂单');
+    void loadStrategy(true);
+    void accountPanel.value?.reload();
+  } catch (err) { ElMessage.error(err instanceof Error ? err.message : '一键平仓提交失败'); }
+  finally { closingAll.value = false; }
 }
 
 </script>
@@ -337,8 +366,8 @@ async function toggleStrategy() {
           </div>
         </section>
         <section class="panel account-column">
-          <div class="panel-head"><div><div class="panel-title">交易账户</div><div class="panel-sub">币安 · TradFi 自动策略持仓与挂单</div></div></div>
-          <OkxAccountPanel exchange="tradfi" :boot-ready="true" :active="active !== false" @loaded="onAccountLoaded" />
+          <div class="panel-head"><div><div class="panel-title">交易账户</div><div class="panel-sub">币安 · TradFi 自动策略持仓与挂单</div></div><button type="button" class="btn sm close-all-btn" :disabled="closingAll" @click="closeAllPositions">{{ closingAll ? '提交中…' : '一键平仓' }}</button></div>
+          <OkxAccountPanel ref="accountPanel" exchange="tradfi" :boot-ready="true" :active="active !== false" @loaded="onAccountLoaded" />
         </section>
 
         <section class="panel">
@@ -395,11 +424,18 @@ async function toggleStrategy() {
               <strong>{{ strategyData?.strategy.enabled ? '服务器运行中' : strategyData?.strategy.status === 'manual' ? '人工接管' : '未运行' }}</strong>
               <span>{{ strategyData?.strategy.simulated == null ? '币安账户待核对' : strategyData.strategy.simulated ? '演示盘' : '实盘' }}</span>
             </section>
-            <div class="strategy-metrics">
-              <div><span>单笔保证金</span><b>10 USDT</b></div><div><span>杠杆</span><b>10×</b></div>
-              <div><span>已补仓</span><b>{{ strategyData?.strategy.additions || 0 }} / 20</b></div><div><span>组合浮盈亏</span><b>{{ strategyData?.strategy.comboPnl == null ? '—' : `${Number(strategyData.strategy.comboPnl).toFixed(2)} U` }}</b></div>
+            <div class="strategy-config">
+              <label>单边保证金 <input v-model.number="strategyMargin" type="number" min="1" max="20" step="1" :disabled="strategyData?.strategy.enabled || strategyBusy" /><b>USDT</b></label>
+              <label>杠杆 <input v-model.number="strategyLeverage" type="number" min="1" max="50" step="1" :disabled="strategyData?.strategy.enabled || strategyBusy" /><b>×</b></label>
+              <span>{{ strategyData?.strategy.enabled ? '策略运行中，参数已锁定' : '启动后参数锁定' }}</span>
             </div>
-            <p class="dialog-intro">服务器24小时识别震荡结构，建立双向底仓并按10U固定档位补充亏损侧。组合盈利后自动平仓；趋势失效、手动改仓或达到20档后停止自动操作并进入人工接管。</p>
+            <div class="strategy-metrics">
+              <div><span>单笔保证金</span><b>{{ strategyData?.strategy.marginPerOrder ?? strategyMargin }} USDT</b></div><div><span>杠杆</span><b>{{ strategyData?.strategy.leverage ?? strategyLeverage }}×</b></div>
+              <div><span>已补仓</span><b>{{ strategyData?.strategy.additions || 0 }} / 20</b></div><div><span>下一档间距</span><b>{{ strategyData?.strategy.addStep == null ? '—' : `${Number(strategyData.strategy.addStep).toFixed(2)}` }}</b></div>
+              <div><span>组合浮盈亏</span><b>{{ strategyData?.strategy.comboPnl == null ? '—' : `${Number(strategyData.strategy.comboPnl).toFixed(2)} U` }}</b></div><div><span>预计平仓后净盈亏</span><b>{{ strategyData?.strategy.netPnl == null ? '—' : `${Number(strategyData.strategy.netPnl).toFixed(2)} U` }}</b></div>
+            </div>
+            <p class="dialog-intro">服务器24小时识别震荡结构，建立双向底仓；补仓间距为 15 分钟 ATR 的 0.6 倍，并限制在现价的 0.08%～0.35%。组合净盈利达到目标后自动平仓；趋势失效、手动改仓或达到20档后停止自动操作并进入人工接管。</p>
+            <p v-if="strategyData?.strategy.costs" class="market-meta">预估成本：开仓费 {{ Number(strategyData.strategy.costs.entryFee).toFixed(3) }}U · 平仓费 {{ Number(strategyData.strategy.costs.exitFee).toFixed(3) }}U · 滑点 {{ Number(strategyData.strategy.costs.slippage).toFixed(3) }}U · 资金费 {{ Number(strategyData.strategy.costs.fundingNet).toFixed(3) }}U。净利润目标 {{ Number(strategyData.strategy.costs.profitTarget).toFixed(2) }}U；浮盈达到 {{ Number(strategyData.strategy.costs.closeTrigger).toFixed(2) }}U 才平仓。</p>
             <p v-if="strategyData?.strategy.range" class="market-meta">当前参考区间：{{ strategyData.strategy.range.low }} – {{ strategyData.strategy.range.high }} · 最新价 {{ strategyData.strategy.lastPrice ?? '—' }}</p>
             <p v-if="strategyData?.strategy.lastError || strategyError" class="order-error">{{ strategyError || strategyData?.strategy.lastError }}</p>
           </div>
@@ -504,8 +540,14 @@ async function toggleStrategy() {
 .trade-record-head time { margin-left: auto; color: var(--muted); font-size: 10px; }
 .trade-record-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 10px; margin-top: 9px; color: var(--muted); font-size: 11px; }
 .trade-record-grid b { display: block; margin-top: 2px; color: var(--text); font-weight: 600; }
+.close-all-btn { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, var(--border)); }
 .strategy-state { display: flex; justify-content: space-between; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); }
 .strategy-state span { color: var(--muted); }
+.strategy-config { display: flex; align-items: end; gap: 12px; margin: 14px 0; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel-2); }
+.strategy-config label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.strategy-config input { width: 66px; padding: 6px 7px; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 5px; }
+.strategy-config input:disabled { opacity: .65; cursor: not-allowed; }
+.strategy-config span { margin-left: auto; color: var(--muted); font-size: 11px; }
 .strategy-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
 .strategy-metrics div { padding: 13px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
 .strategy-metrics span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 7px; }

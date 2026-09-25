@@ -1553,6 +1553,8 @@ export type TradfiRangeEvent = { id: number; level: string; message: string; det
 export type TradfiRangeStatus = {
   symbol: string; enabled: boolean; status: string; simulated: boolean | null; additions: number; maxAdditions: number;
   marginPerOrder: number; leverage: number; comboPnl?: number | null; lastPrice?: number | null;
+  netPnl?: number | null; closeTrigger?: number | null; addStep?: number | null;
+  costs?: { entryFee: number; exitFee: number; slippage: number; fundingNet: number; estimatedCosts: number; profitTarget: number; closeTrigger: number; netPnl: number } | null;
   range?: { low: number; high: number } | null; lastError?: string; startedAt?: number | null; updatedAt?: number | null;
 };
 export type TradfiRangeResponse = { ok: boolean; strategy: TradfiRangeStatus; events: TradfiRangeEvent[] };
@@ -1564,8 +1566,16 @@ export async function startTradfiRange(symbol: string) {
   const { data } = await http.post<TradfiRangeResponse>('/tradfi/range/start', { symbol }, { timeout: 20_000 });
   return data;
 }
+export async function startTradfiRangeWithConfig(symbol: string, body: { marginUsdt: number; leverage: number }) {
+  const { data } = await http.post<TradfiRangeResponse>('/tradfi/range/start', { symbol, ...body }, { timeout: 20_000 });
+  return data;
+}
 export async function stopTradfiRange(symbol: string) {
   const { data } = await http.post<TradfiRangeResponse>('/tradfi/range/stop', { symbol }, { timeout: 20_000 });
+  return data;
+}
+export async function closeTradfiPositions() {
+  const { data } = await http.post<{ ok: boolean; submitted: { orderId: string; symbol: string; positionSide: string; side: string; price: number; quantity: string }[] }>('/tradfi/close-all', {}, { timeout: 30_000 });
   return data;
 }
 

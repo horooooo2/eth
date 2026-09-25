@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onUnmounted, ref, watch } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import { cancelBinanceOrder, cancelOkxOrder, fetchBinanceAccountBook, fetchOkxAiBook, fetchTradfiAccountBook, type OkxAiBook, type OkxAiOrderRecord } from '@/api';
 import { formatSignedUsd, formatTimeShort, formatUsd } from '@/utils/format';
 
@@ -16,6 +16,22 @@ const book = ref<OkxAiBook | null>(null);
 const cancelingId = ref('');
 let timer: ReturnType<typeof setInterval> | null = null;
 let reqSeq = 0;
+
+type TradfiGroup = { instId: string; coin: string; long?: OkxAiOrderRecord; short?: OkxAiOrderRecord };
+const tradfiGroups = computed<TradfiGroup[]>(() => {
+  const bySymbol = new Map<string, TradfiGroup>();
+  for (const row of book.value?.records || []) {
+    const key = row.instId;
+    if (!key) continue;
+    const group = bySymbol.get(key) || { instId: key, coin: row.coin || key.replace(/USDT$/, '') };
+    const isLong = String(row.posSide).toLowerCase() === 'long' || (String(row.posSide).toLowerCase() === 'both' && row.side === 'buy');
+    const side = isLong ? 'long' : 'short';
+    const current = group[side];
+    if (!current || (current.kind !== 'position' && row.kind === 'position')) group[side] = row;
+    bySymbol.set(key, group);
+  }
+  return [...bySymbol.values()];
+});
 
 function valueClass(n: number | null | undefined) {
   if (n == null || !Number.isFinite(n) || n === 0) return '';
@@ -51,7 +67,8 @@ function notionalAmount(row: OkxAiOrderRecord) {
   return '--';
 }
 
-function rowPnl(row: OkxAiOrderRecord) {
+function rowPnl(row?: OkxAiOrderRecord) {
+  if (!row) return null;
   if (row.realizedPnl != null && Number.isFinite(row.realizedPnl)) return row.realizedPnl;
   if (row.openUpl != null && Number.isFinite(row.openUpl)) return row.openUpl;
   return null;
@@ -117,6 +134,7 @@ watch(
 );
 
 onUnmounted(stopPoll);
+defineExpose({ reload: () => load(true) });
 </script>
 
 <template>
@@ -144,6 +162,25 @@ onUnmounted(stopPoll);
     <el-alert v-else-if="book?.configured === false" type="info" :closable="false" title="请先在左下角「API 设置」配置币安 API 密钥" class="alert" />
     <el-skeleton v-else-if="loading && !book" :rows="6" animated class="pad" />
     <el-empty v-else-if="!book?.records.length" :description="props.exchange === 'tradfi' ? '暂无策略开单记录' : '暂无 AI 开单记录'" class="pad" />
+    <div v-else-if="props.exchange === 'tradfi'" class="order-list tradfi-order-list">
+      <article v-for="group in tradfiGroups" :key="group.instId" class="tradfi-position-row">
+        <div class="tradfi-position-head"><strong>{{ group.coin }}</strong><span>{{ group.long?.kind === 'pending' || group.short?.kind === 'pending' ? '含挂单' : '双向仓位' }}</span></div>
+        <div class="tradfi-sides">
+          <section class="tradfi-side long">
+            <div><b>多头</b><em>{{ group.long?.kind === 'pending' ? '挂单中' : group.long ? '持仓中' : '—' }}</em></div>
+            <strong>{{ group.long ? plainAmount(group.long.px) : '—' }}</strong>
+            <small>名义 {{ group.long ? notionalAmount(group.long) : '—' }} · {{ group.long?.leverage ? group.long.leverage + 'x' : '—' }}</small>
+            <small :class="valueClass(rowPnl(group.long))">盈亏 {{ group.long ? formatSignedUsd(rowPnl(group.long)) : '—' }}</small>
+          </section>
+          <section class="tradfi-side short">
+            <div><b>空头</b><em>{{ group.short?.kind === 'pending' ? '挂单中' : group.short ? '持仓中' : '—' }}</em></div>
+            <strong>{{ group.short ? plainAmount(group.short.px) : '—' }}</strong>
+            <small>名义 {{ group.short ? notionalAmount(group.short) : '—' }} · {{ group.short?.leverage ? group.short.leverage + 'x' : '—' }}</small>
+            <small :class="valueClass(rowPnl(group.short))">盈亏 {{ group.short ? formatSignedUsd(rowPnl(group.short)) : '—' }}</small>
+          </section>
+        </div>
+      </article>
+    </div>
     <div v-else class="order-list">
       <article v-for="row in book.records" :key="(row.kind || 'row') + ':' + row.ordId" class="order-card">
         <div class="order-main">
@@ -156,7 +193,7 @@ onUnmounted(stopPoll);
           </span>
           <span v-if="row.kind === 'pending'" class="status-text">{{ stateLabel(row.state) }}</span>
           <button
-            v-if="row.kind === 'pending' && props.exchange !== 'tradfi'"
+            v-if="row.kind === 'pending'"
             type="button"
             class="cancel-btn"
             :disabled="cancelingId === row.ordId"
@@ -345,4 +382,18 @@ onUnmounted(stopPoll);
 .detail-value {
   color: var(--text);
 }
+.tradfi-order-list { gap: 10px; }
+.tradfi-position-row { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.tradfi-position-head { display: flex; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.tradfi-position-head strong { color: var(--text); }
+.tradfi-position-head span { color: var(--muted); font-size: 11px; }
+.tradfi-sides { display: grid; grid-template-columns: 1fr 1fr; }
+.tradfi-side { display: flex; flex-direction: column; gap: 5px; padding: 11px 12px; min-width: 0; font-variant-numeric: tabular-nums; }
+.tradfi-side + .tradfi-side { border-left: 1px solid var(--border); }
+.tradfi-side > div { display: flex; justify-content: space-between; font-size: 12px; }
+.tradfi-side.long b { color: var(--green); }
+.tradfi-side.short b { color: var(--red); }
+.tradfi-side em { color: var(--muted); font-style: normal; font-size: 11px; }
+.tradfi-side > strong { color: var(--text); font-size: 13px; }
+.tradfi-side small { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>
