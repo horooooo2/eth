@@ -1,7 +1,7 @@
 const { signedRequest } = require('./binanceTradfiTrade');
 const { listBinanceAiOrders, isAiClientId } = require('./binanceAiLedger');
 
-async function accountBook(creds, userId, scope = 'crypto') {
+async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol = {}) {
   const [balances, positions, orders] = await Promise.all([
     signedRequest(creds, 'GET', '/fapi/v2/balance'),
     signedRequest(creds, 'GET', '/fapi/v2/positionRisk'),
@@ -24,10 +24,10 @@ async function accountBook(creds, userId, scope = 'crypto') {
     signedRequest(creds, 'GET', '/fapi/v1/userTrades', { symbol, limit: '1000' }).catch(() => []),
   ))).flat() : [];
   const fundingRows = scope === 'tradfi' ? (await Promise.all(candidateSymbols.map((symbol) => {
-    const firstCreatedAt = ledger.filter((row) => row.symbol === symbol)
-      .map((row) => Number(row.created_at)).filter(Number.isFinite).sort((a, b) => a - b)[0];
+    const cycleStartedAt = Number(fundingSinceBySymbol[symbol]);
+    if (!(cycleStartedAt > 0)) return [];
     const params = { symbol, incomeType: 'FUNDING_FEE', limit: '1000' };
-    if (firstCreatedAt) params.startTime = String(firstCreatedAt);
+    params.startTime = String(cycleStartedAt);
     return signedRequest(creds, 'GET', '/fapi/v1/income', params).catch(() => []);
   }))).flat() : [];
   const aiOrderIds = new Set(orderHistory.filter((order) =>

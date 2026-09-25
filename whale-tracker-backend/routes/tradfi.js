@@ -60,10 +60,16 @@ router.get('/account', async (req, res) => {
     const user = requireUser(req);
     const creds = getBinanceCredentialsForUser(user.user.id);
     if (!creds) return res.json({ ok: true, configured: false, scope: 'tradfi', balance: { totalEq: null, usdtEq: null, availBal: null }, openPnl: 0, historyPnl: null, records: [], strategies: [] });
-    const [book, catalog] = await Promise.all([accountBook(creds, user.user.id, 'tradfi'), getCatalog()]);
+    const [catalog, strategies] = await Promise.all([
+      getCatalog(),
+      Promise.resolve(['XAUUSDT', 'XAGUSDT'].map((symbol) => rangeStrategy.status(user.user.id, symbol).strategy).filter((row) => row.enabled)),
+    ]);
+    const fundingSinceBySymbol = Object.fromEntries(strategies
+      .filter((row) => Number(row.cycleStartedAt) > 0)
+      .map((row) => [row.symbol, Number(row.cycleStartedAt)]));
+    const book = await accountBook(creds, user.user.id, 'tradfi', fundingSinceBySymbol);
     const symbols = new Set(catalog.symbols.map((row) => row.symbol));
     const records = book.records.filter((row) => symbols.has(row.instId));
-    const strategies = ['XAUUSDT', 'XAGUSDT'].map((symbol) => rangeStrategy.status(user.user.id, symbol).strategy).filter((row) => row.enabled);
     res.json({ ...book, scope: 'tradfi', records, strategies, openPnl: records.filter((row) => row.kind === 'position').reduce((sum, row) => sum + Number(row.openUpl || 0), 0) });
   } catch (err) { res.status(err.status || 502).json({ error: err.message || 'TradFi 交易账户加载失败', code: err.code }); }
 });

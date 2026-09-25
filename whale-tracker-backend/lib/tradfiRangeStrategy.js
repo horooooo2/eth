@@ -69,7 +69,7 @@ function publicRow(row) {
     maxAdditions: MAX_ADDITIONS, marginPerOrder: config.marginUsdt, leverage: config.leverage, cycleId: s.cycleId || null,
     comboPnl: s.comboPnl ?? null, netPnl: s.netPnl ?? null, closeTrigger: s.closeTrigger ?? null,
     costs: s.costs || null, addStep: s.addStep ?? null, lastPrice: s.lastPrice ?? null, range: s.range || null,
-    cooldownUntil: s.cooldownUntil ?? null,
+    cooldownUntil: s.cooldownUntil ?? null, cycleStartedAt: s.cycleStartedAt ?? null,
     lastError: row.last_error || '', startedAt: row.started_at, updatedAt: row.updated_at };
 }
 function status(userId, symbol) {
