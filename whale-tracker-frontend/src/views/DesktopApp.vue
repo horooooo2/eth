@@ -46,7 +46,16 @@ function onBrandIconError() {
   if (brandIconIdx.value < brandIcons.length - 1) brandIconIdx.value += 1;
 }
 
-const sideTab = ref<'virtual' | 'tradfi'>('virtual');
+const SIDE_TAB_STORAGE_KEY = 'whale-tracker:side-tab';
+function readSideTab(): 'virtual' | 'tradfi' {
+  try {
+    return window.localStorage.getItem(SIDE_TAB_STORAGE_KEY) === 'tradfi' ? 'tradfi' : 'virtual';
+  } catch { return 'virtual'; }
+}
+const sideTab = ref<'virtual' | 'tradfi'>(readSideTab());
+watch(sideTab, (tab) => {
+  try { window.localStorage.setItem(SIDE_TAB_STORAGE_KEY, tab); } catch { /* storage unavailable */ }
+});
 const whaleListRef = ref<InstanceType<typeof WhaleList> | null>(null);
 const newsListRef = ref<InstanceType<typeof NewsList> | null>(null);
 const quotes = ref<RecoQuotes>({});
@@ -120,15 +129,9 @@ async function loadQuotes() {
 }
 
 async function loadAll(refresh = false, silent = false) {
-  bootBusy.value = true;
-  bootProgress.value = 4;
-  bootLabel.value = '巨鲸加载中…';
   secondaryReady.value = false;
   try {
     await whaleStore.load(refresh, silent);
-    bootProgress.value = 50;
-
-    bootLabel.value = '异动记录加载中…';
     try {
       const data = await fetchPagedAlertHistory({ page: 1, limit: 50 });
       const list = (data.alerts || [])
@@ -138,13 +141,9 @@ async function loadAll(refresh = false, silent = false) {
     } catch {
       // 子组件会再拉
     }
-    bootProgress.value = 100;
-    bootLabel.value = '完成';
   } finally {
     secondaryReady.value = true;
-    await new Promise((r) => window.setTimeout(r, 120));
-    bootBusy.value = false;
-    // 新闻 / 行情 / 资金动态 / 日历：遮罩关闭后静默加载
+    // 新闻 / 行情 / 资金动态 / 日历：首屏后静默加载
     void Promise.all([
       newsStore.load(refresh, true).catch(() => null),
       loadQuotes().catch(() => null),
@@ -160,9 +159,6 @@ async function pollNewsAndQuotes() {
 }
 
 const secondaryReady = ref(false);
-const bootBusy = ref(true);
-const bootLabel = ref('巨鲸加载中…');
-const bootProgress = ref(0);
 
 const {
   status: realtimeStatus,
@@ -183,13 +179,6 @@ const {
   } else if (msg.type === 'xTweet' && Array.isArray(msg.tweets)) {
     noteXTweets(msg.tweets as unknown as XFeedTweet[]);
   }
-});
-
-const pageBusy = computed(() => bootBusy.value);
-const loadProgressText = computed(() => {
-  const progress = whaleStore.loadProgress;
-  if (!progress || !progress.total) return '';
-  return `${progress.loaded}/${progress.total}`;
 });
 
 watch(
@@ -252,7 +241,6 @@ onUnmounted(() => {
   <div
     class="app-shell"
     :class="{
-      busy: pageBusy && isLoggedIn,
       'login-only': !authBootstrapped || !isLoggedIn,
     }"
     @pointerdown="unlockAlertSound"
@@ -302,20 +290,6 @@ onUnmounted(() => {
     </div>
 
     <template v-else>
-    <div v-if="pageBusy" class="page-mask">
-      <div class="page-mask-card">
-        <p class="mask-title">正在加载首页</p>
-        <p class="mask-label">{{ bootLabel }}</p>
-        <div class="bar-track">
-          <div class="bar-fill" :style="{ width: `${bootProgress}%` }" />
-        </div>
-        <p class="mask-pct">{{ bootProgress }}%</p>
-        <p v-if="bootLabel.startsWith('巨鲸') && loadProgressText" class="dim">
-          {{ loadProgressText }}
-        </p>
-      </div>
-    </div>
-
     <WhaleAlertDock :dock-active="true" @focus-whale="onFocusWhaleCard" />
 
     <aside class="sidebar" aria-label="主导航">
@@ -459,11 +433,6 @@ onUnmounted(() => {
 .app-shell.login-only {
   display: block;
 }
-.app-shell.busy {
-  pointer-events: none;
-  user-select: none;
-}
-
 .login-gate {
   width: 100%;
   min-height: 100vh;
@@ -741,64 +710,6 @@ onUnmounted(() => {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-}
-.page-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 4000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: color-mix(in srgb, var(--bg) 72%, transparent);
-  backdrop-filter: blur(3px);
-  pointer-events: all;
-}
-.page-mask-card {
-  width: min(360px, calc(100vw - 40px));
-  min-width: 220px;
-  padding: 22px 24px;
-  border-radius: 14px;
-  border: 1px solid var(--border-2);
-  background: var(--card);
-  color: var(--text);
-  text-align: center;
-  box-shadow: 0 16px 48px #00000066;
-}
-.page-mask-card .mask-title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 800;
-}
-.page-mask-card .mask-label {
-  margin: 8px 0 16px;
-  font-size: 13px;
-  color: var(--muted);
-  min-height: 1.2em;
-}
-.page-mask-card .bar-track {
-  height: 8px;
-  border-radius: 999px;
-  background: var(--panel-2);
-  overflow: hidden;
-}
-.page-mask-card .bar-fill {
-  height: 100%;
-  border-radius: 999px;
-  background: linear-gradient(90deg, var(--blue), #60a5fa);
-  transition: width 0.18s ease;
-}
-.page-mask-card .mask-pct {
-  margin: 10px 0 0;
-  font-size: 13px;
-  font-weight: 700;
-  color: color-mix(in srgb, var(--text) 70%, var(--muted));
-  font-variant-numeric: tabular-nums;
-}
-.page-mask-card .dim {
-  margin-top: 8px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--muted);
 }
 .topbar {
   /* 与下方 .grid 三列对齐：共振信号落在巨鲸列正上方 */
