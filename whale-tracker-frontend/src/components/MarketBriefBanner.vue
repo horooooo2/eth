@@ -6,8 +6,6 @@ import {
   streamMarketBrief,
   streamOkxStanceOrder,
   fetchOkxKeys,
-  placeBinanceStanceOrder,
-  previewBinanceStanceOrder,
   previewOkxStanceOrder,
   type CryptoStanceOrderInput,
   type CryptoStancePreview,
@@ -288,9 +286,8 @@ function canUsePending(leg: NonNullable<MarketBriefStructured['personal_stance']
 
 const orderDialogVisible = ref(false);
 const orderAmount = ref('10');
-const availableOrderExchanges = ref<Array<'binance' | 'okx'>>([]);
-const selectedOrderExchange = ref<'binance' | 'okx'>('binance');
-const orderExchangeSimulation = ref<{ binance: boolean; okx: boolean }>({ binance: true, okx: true });
+const okxOrderReady = ref(false);
+const okxOrderSimulation = ref(true);
 const orderSubmitting = ref(false);
 const orderPreview = ref<CryptoStancePreview['plan'] | null>(null);
 const orderPreviewBusy = ref(false);
@@ -316,7 +313,7 @@ const orderDistancePct = computed(() => {
   const price = orderPreviewPrice.value;
   return last > 0 && Number.isFinite(price) ? ((price - last) / last * 100) : null;
 });
-const orderLeverage = computed(() => 5);
+const orderLeverage = computed(() => 10);
 
 function stanceOrderInput(): CryptoStanceOrderInput | null {
   const leg = orderTarget.value?.leg;
@@ -344,16 +341,14 @@ async function refreshOrderPreview() {
   orderPreview.value = null;
   orderPreviewError.value = '';
   const payload = stanceOrderInput();
-  if (!payload || !availableOrderExchanges.value.includes(selectedOrderExchange.value)) return;
+  if (!payload || !okxOrderReady.value) return;
   if (!(payload.amountUsd > 0) || payload.amountUsd > 100) {
     orderPreviewError.value = '本金必须在 0～100 USDT 之间';
     return;
   }
   orderPreviewBusy.value = true;
   try {
-    const response = selectedOrderExchange.value === 'binance'
-      ? await previewBinanceStanceOrder(payload)
-      : await previewOkxStanceOrder(payload);
+    const response = await previewOkxStanceOrder(payload);
     if (seq === orderPreviewSeq) orderPreview.value = response.plan;
   } catch (err) {
     if (seq === orderPreviewSeq) orderPreviewError.value = err instanceof Error ? err.message : '无法预览订单';
@@ -362,7 +357,7 @@ async function refreshOrderPreview() {
   }
 }
 
-watch([orderAmount, selectedOrderExchange], () => {
+watch(orderAmount, () => {
   if (orderDialogVisible.value) void refreshOrderPreview();
 });
 
@@ -440,14 +435,10 @@ async function openOrderDialog(card: {
   orderAmount.value = '10';
   try {
     const keys = await fetchOkxKeys();
-    availableOrderExchanges.value = ([
-      ...(keys.binance?.ready ? ['binance' as const] : []),
-      ...(keys.okx?.ready ? ['okx' as const] : []),
-    ]);
-    orderExchangeSimulation.value = { binance: Boolean(keys.binance?.simulated), okx: Boolean(keys.okx?.simulated) };
-    selectedOrderExchange.value = availableOrderExchanges.value[0] || 'binance';
+    okxOrderReady.value = Boolean(keys.okx?.ready);
+    okxOrderSimulation.value = Boolean(keys.okx?.simulated);
   } catch (err) {
-    availableOrderExchanges.value = [];
+    okxOrderReady.value = false;
     ElMessage.warning(err instanceof Error ? err.message : '读取交易所配置失败');
   }
   orderDialogVisible.value = true;
@@ -460,8 +451,8 @@ async function confirmStanceOrder() {
   const coin = result.value?.coin;
   if (!card?.leg || !coin) return;
   const payload = stanceOrderInput();
-  if (!availableOrderExchanges.value.includes(selectedOrderExchange.value)) {
-    ElMessage.warning('请先在左下角「API 设置」配置币安或 OKX API 密钥');
+  if (!okxOrderReady.value) {
+    ElMessage.warning('请先在左下角「API 设置」配置 OKX API 密钥');
     return;
   }
   if (!payload || !(payload.amountUsd > 0) || payload.amountUsd > 100) {
@@ -474,11 +465,10 @@ async function confirmStanceOrder() {
   }
   const previewPrice = orderPreviewPrice.value;
   const previewLoss = Number(orderPreview.value.estimatedLossUsdt);
-  const exchange = selectedOrderExchange.value;
   orderSubmitting.value = true;
   try {
     await ElMessageBox.confirm(
-      `交易所 ${exchange === 'binance' ? '币安' : 'OKX'} · ${orderExchangeSimulation.value[exchange] ? '演示盘' : '实盘'}\n${coin} · ${card.leg.action} · ${card.header}\n实际委托价 ${fmtStancePrice(previewPrice)} · 本金 ${payload.amountUsd} USDT · 杠杆 ${payload.leverage}x\n止损 ${fmtStancePrice(card.leg.stop)} · 止盈 ${fmtStancePrice(card.leg.take_profit)}\n预计到止损亏损 ${Number.isFinite(previewLoss) ? previewLoss.toFixed(2) : '—'} USDT（未计手续费与滑点）${orderMode.value === 'pending' ? '\n挂单会立即提交交易所，价格触及时即可成交，不等待复合条件确认。' : ''}`,
+      `交易所 OKX · ${okxOrderSimulation.value ? '演示盘' : '实盘'}\n${coin} · ${card.leg.action} · ${card.header}\n实际委托价 ${fmtStancePrice(previewPrice)} · 本金 ${payload.amountUsd} USDT · 杠杆 ${payload.leverage}x\n止损 ${fmtStancePrice(card.leg.stop)} · 止盈 ${fmtStancePrice(card.leg.take_profit)}\n预计到止损亏损 ${Number.isFinite(previewLoss) ? previewLoss.toFixed(2) : '—'} USDT（未计手续费与滑点）${orderMode.value === 'pending' ? '\n挂单会立即提交交易所，价格触及时即可成交，不等待复合条件确认。' : ''}`,
       orderMode.value === 'pending' ? '确认交易所限价挂单' : '确认挂单开仓',
       { type: 'warning', confirmButtonText: '开始挂单', cancelButtonText: '取消' },
     );
@@ -494,15 +484,6 @@ async function confirmStanceOrder() {
 
   try {
     payload.expectedPrice = previewPrice;
-    if (exchange === 'binance') {
-      applyOrderStage({ id: 'price', status: 'running', progress: 15, message: '读取币安行情与合约规则…' });
-      const data = await placeBinanceStanceOrder(payload);
-      orderProgress.value = 100;
-      orderProgressDone.value = true;
-      orderProgressSteps.value = orderProgressSteps.value.map((step) => ({ ...step, status: 'done' as const }));
-      ElMessage.success(`${data.simulated ? '币安演示盘' : '币安实盘'}挂单成功 ${String(data.order?.orderId || '')}`);
-      return;
-    }
     await streamOkxStanceOrder(
       payload,
       {
@@ -1202,10 +1183,8 @@ onUnmounted(() => {
         </p>
         <label class="order-amount-label">保证金金额（USDT，最大 100）</label>
         <el-input v-model="orderAmount" type="number" min="1" max="100" step="1" />
-        <div v-if="availableOrderExchanges.length" class="order-exchange-picker">
-          <button v-for="exchange in availableOrderExchanges" :key="exchange" type="button" :class="{ selected: selectedOrderExchange === exchange }" @click="selectedOrderExchange = exchange">{{ exchange === 'binance' ? '币安' : 'OKX' }}</button>
-        </div>
-        <el-alert v-else type="info" :closable="false" title="请先在左下角「API 设置」配置币安或 OKX API 密钥" />
+        <p v-if="okxOrderReady" class="order-meta">交易账户 OKX · {{ okxOrderSimulation ? '演示盘' : '实盘' }}</p>
+        <el-alert v-else type="info" :closable="false" title="请先在左下角「API 设置」配置 OKX API 密钥" />
         <p v-if="orderPreviewBusy" class="order-hint">正在读取实时行情并核算订单…</p>
         <el-alert v-if="orderPreviewError" type="error" :closable="false" :title="orderPreviewError" />
         <p v-if="orderPreview" class="order-hint">预计到止损亏损 {{ Number(orderPreview.estimatedLossUsdt || 0).toFixed(2) }} USDT（未计费用与滑点）。止盈止损必须被交易所接受。</p>
@@ -1215,7 +1194,7 @@ onUnmounted(() => {
         <button
           type="button"
           class="dlg-btn primary"
-          :disabled="orderSubmitting || orderPreviewBusy || !orderPreview || !availableOrderExchanges.length"
+          :disabled="orderSubmitting || orderPreviewBusy || !orderPreview || !okxOrderReady"
           @click="confirmStanceOrder"
         >
           {{ orderSubmitting ? '挂单中…' : '确认挂单' }}

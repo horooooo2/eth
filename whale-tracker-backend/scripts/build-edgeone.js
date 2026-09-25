@@ -187,7 +187,7 @@ const libFiles = [
   'lib/tradfiWhales.js',
   'lib/tradfiRangeStrategy.js',
   'lib/binanceTradfiTrade.js',
-  'lib/binanceCryptoTrade.js',
+  'lib/binanceAiAccountBook.js',
   'lib/okxTradeClient.js',
   'lib/analysisResult.js',
   'lib/cryptoAiOrderGate.js',
@@ -209,7 +209,6 @@ const libFiles = [
   'routes/whales.js',
   'routes/news.js',
   'routes/whaleAi.js',
-  'routes/binanceTrade.js',
   'routes/okxTrade.js',
   'server.js',
 ];

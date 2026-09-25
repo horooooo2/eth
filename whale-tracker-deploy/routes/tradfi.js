@@ -4,7 +4,7 @@ const { getIntel } = require('../lib/tradfiIntel');
 const { getWhaleActivity, getAllWhaleActivity } = require('../lib/tradfiWhales');
 const { requireUser } = require('../lib/authStore');
 const { getBinanceCredentialsForUser } = require('../lib/userExchangeKeys');
-const { accountBook } = require('../lib/binanceCryptoTrade');
+const { accountBook } = require('../lib/binanceAiAccountBook');
 const rangeStrategy = require('../lib/tradfiRangeStrategy');
 
 const router = express.Router();

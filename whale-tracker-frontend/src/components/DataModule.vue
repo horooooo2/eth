@@ -24,13 +24,13 @@ const emit = defineEmits<{
 }>();
 
 const tab = ref<DataTab>('macro');
-const accountExchange = ref<'binance' | 'okx'>('binance');
-const accountKeys = ref<{ binance: boolean; okx: boolean }>({ binance: false, okx: false });
+const accountExchange = ref<'okx'>('okx');
+const accountKeys = ref<{ okx: boolean }>({ okx: false });
 const accountKeysError = ref('');
 async function loadAccountKeys() {
   try {
     const keys = await fetchOkxKeys();
-    accountKeys.value = { binance: Boolean(keys.binance?.ready), okx: Boolean(keys.okx?.ready) };
+    accountKeys.value = { okx: Boolean(keys.okx?.ready) };
     accountKeysError.value = '';
   } catch (err) {
     accountKeysError.value = err instanceof Error ? err.message : '读取 API 配置失败';
@@ -212,11 +212,8 @@ watch(
       </div>
 
       <div v-show="tab === 'flow'" class="tab-panel transfer-panel">
-        <div class="account-exchange-tabs">
-          <button v-for="item in (['binance', 'okx'] as const)" :key="item" type="button" :class="{ selected: accountExchange === item }" @click="accountExchange = item; loadAccountKeys()">{{ item === 'binance' ? '币安' : 'OKX' }}</button>
-        </div>
         <el-alert v-if="accountKeysError" type="warning" :closable="false" :title="accountKeysError" />
-        <el-alert v-else-if="!accountKeys[accountExchange]" type="info" :closable="false" :title="`请先在左下角「API 设置」配置${accountExchange === 'binance' ? '币安' : ' OKX'} API 密钥`" />
+        <el-alert v-else-if="!accountKeys.okx" type="info" :closable="false" title="请先在左下角「API 设置」配置 OKX API 密钥" />
         <OkxAccountPanel v-else :exchange="accountExchange" :boot-ready="bootReady" :active="tab === 'flow'" />
       </div>
     </div>

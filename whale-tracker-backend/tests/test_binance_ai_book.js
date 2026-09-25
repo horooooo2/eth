@@ -47,7 +47,7 @@ stub('../lib/binanceTradfiTrade', {
   stepped: (value) => String(value),
 });
 
-const { accountBook } = require('../lib/binanceCryptoTrade');
+const { accountBook } = require('../lib/binanceAiAccountBook');
 
 test('币安交易账户只展示 AI 挂单和 AI 对应的仓位份额', async () => {
   const book = await accountBook({ simulated: false }, 'u1', 'crypto');

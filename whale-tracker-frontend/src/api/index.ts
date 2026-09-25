@@ -1627,18 +1627,8 @@ export async function fetchOkxAiBook() {
   return data;
 }
 
-export async function fetchBinanceAccountBook() {
-  const { data } = await http.get<OkxAiBook>('/binance/trade/ai-book', { timeout: 30_000 });
-  return data;
-}
-
 export async function fetchTradfiAccountBook() {
   const { data } = await http.get<OkxAiBook>('/tradfi/account', { timeout: 30_000 });
-  return data;
-}
-
-export async function cancelBinanceOrder(body: { symbol: string; orderId: string }) {
-  const { data } = await http.post<{ ok: boolean }>('/binance/trade/cancel', body);
   return data;
 }
 
@@ -1653,18 +1643,8 @@ export type CryptoStancePreview = {
   plan: { price?: string; entry?: number; last?: number; orderMode?: 'direct' | 'pending'; leverage: number; marginUsdt?: number; amountUsd?: number; estimatedLossUsdt?: number; stopPrice?: string; takePrice?: string; stop?: number; takeProfit?: number; notionalUsdt?: number; notional?: number };
 };
 
-export async function previewBinanceStanceOrder(body: CryptoStanceOrderInput) {
-  const { data } = await http.post<CryptoStancePreview>('/binance/trade/stance-preview', body, { timeout: 30_000 });
-  return data;
-}
-
 export async function previewOkxStanceOrder(body: CryptoStanceOrderInput) {
   const { data } = await http.post<CryptoStancePreview>('/okx/trade/stance-preview', body, { timeout: 30_000 });
-  return data;
-}
-
-export async function placeBinanceStanceOrder(body: CryptoStanceOrderInput) {
-  const { data } = await http.post<OkxStanceOrderResult>('/binance/trade/stance-order', body, { timeout: 90_000 });
   return data;
 }
 

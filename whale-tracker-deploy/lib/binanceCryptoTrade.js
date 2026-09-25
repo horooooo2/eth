@@ -4,6 +4,27 @@ const { listBinanceAiOrders, isAiClientId } = require('./binanceAiLedger');
 
 function invalid(message) { const err = new Error(message); err.status = 400; return err; }
 function finitePositive(value) { const n = Number(value); return Number.isFinite(n) && n > 0 ? n : null; }
+function isMissingOrder(err) {
+  return Number(err?.code) === -2013 || /order does not exist/i.test(String(err?.message || ''));
+}
+function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+// Binance's conditional-order index can briefly lag a successful POST.  Treat a
+// transient -2013 as a pending replication rather than as proof that the order
+// was rejected.
+async function getAlgoOrderConfirmed(creds, algoId) {
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await signedRequest(creds, 'GET', '/fapi/v1/algoOrder', { algoId: String(algoId) });
+    } catch (err) {
+      lastError = err;
+      if (!isMissingOrder(err) || attempt === 2) throw err;
+      await wait(250 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
 function actionSide(action) {
   const value = String(action || '');
   if (/做多|^long$|^buy$/i.test(value)) return 'BUY';
@@ -23,7 +44,7 @@ async function planStance(input) {
   const stop = finitePositive(input.stop);
   const take = finitePositive(input.takeProfit);
   if (!margin || margin > 100) throw invalid('保证金需在 0–100 USDT 之间');
-  if (leverage !== 5) throw invalid('虚拟币 AI 策略固定使用 5 倍杠杆');
+  if (leverage !== 10) throw invalid('虚拟币 AI 策略固定使用 10 倍杠杆');
   if (!stop || !take) throw invalid('止损和止盈价格无效');
   const [rules, ticker, book] = await Promise.all([
     symbolRules(symbol),
@@ -94,7 +115,7 @@ async function placeStance(creds, input) {
     });
     protection.push(await signedRequest(creds, 'POST', '/fapi/v1/algoOrder', { ...base, type: 'STOP_MARKET', triggerPrice: plan.stopPrice, clientAlgoId: `wtai_${groupId}_s` }));
     protection.push(await signedRequest(creds, 'POST', '/fapi/v1/algoOrder', { ...base, type: 'TAKE_PROFIT_MARKET', triggerPrice: plan.takePrice, clientAlgoId: `wtai_${groupId}_t` }));
-    const verified = await Promise.all(protection.map((item) => signedRequest(creds, 'GET', '/fapi/v1/algoOrder', { algoId: String(item.algoId) })));
+    const verified = await Promise.all(protection.map((item) => getAlgoOrderConfirmed(creds, item.algoId)));
     if (verified.some((item) => String(item.algoStatus) !== 'NEW' || item.side !== opposite || Number(item.quantity) !== Number(plan.quantity))) throw invalid('止盈止损保护单未被交易所确认');
   } catch (err) {
     try {
@@ -107,10 +128,25 @@ async function placeStance(creds, input) {
         }
       }
       if (placed?.orderId) {
+        let cancelled;
         if (!['FILLED', 'CANCELED', 'EXPIRED', 'REJECTED'].includes(String(placed.status))) {
-          await signedRequest(creds, 'DELETE', '/fapi/v1/order', { symbol: plan.symbol, orderId: String(placed.orderId) });
+          try {
+            cancelled = await signedRequest(creds, 'DELETE', '/fapi/v1/order', { symbol: plan.symbol, orderId: String(placed.orderId) });
+          } catch (cancelErr) {
+            // A matching order may have been filled, expired, or removed between
+            // the check and cancellation. It is handled by the status lookup.
+            if (!isMissingOrder(cancelErr)) throw cancelErr;
+          }
         }
-        const latest = await signedRequest(creds, 'GET', '/fapi/v1/order', { symbol: plan.symbol, orderId: String(placed.orderId) });
+        let latest;
+        try {
+          latest = await signedRequest(creds, 'GET', '/fapi/v1/order', { symbol: plan.symbol, orderId: String(placed.orderId) });
+        } catch (queryErr) {
+          if (!isMissingOrder(queryErr)) throw queryErr;
+          // The cancel response includes final executedQty on Binance. Use it
+          // when the order endpoint has already dropped the cancelled order.
+          latest = cancelled || placed;
+        }
         const filled = Number(latest.executedQty || 0);
         if (filled > 0) {
           const close = { symbol: plan.symbol, side: opposite, positionSide, type: 'MARKET', quantity: String(filled) };
@@ -118,10 +154,23 @@ async function placeStance(creds, input) {
           await signedRequest(creds, 'POST', '/fapi/v1/order', close);
         }
       }
-      await Promise.all(protection.map((item) => signedRequest(creds, 'DELETE', '/fapi/v1/algoOrder', { algoId: String(item.algoId) })));
+      await Promise.all(protection.map(async (item) => {
+        try {
+          await signedRequest(creds, 'DELETE', '/fapi/v1/algoOrder', { algoId: String(item.algoId) });
+        } catch (cancelErr) {
+          // A conditional order can be removed by Binance while its companion
+          // request is being rolled back. It is already absent, so cleanup is done.
+          if (!isMissingOrder(cancelErr)) throw cancelErr;
+        }
+      }));
     } catch (cleanupErr) {
       const failure = invalid(`开仓保护失败，自动清理未确认；请立即在币安检查 ${plan.symbol} 的持仓和条件单。原因：${cleanupErr.message}；原错误：${err.message}`);
       failure.status = 502;
+      throw failure;
+    }
+    if (isMissingOrder(err)) {
+      const failure = invalid(`币安未确认 ${plan.symbol} 的保护单，本次入场委托已撤销。请重新预览订单后再提交。`);
+      failure.code = -2013;
       throw failure;
     }
     throw err;

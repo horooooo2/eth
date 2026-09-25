@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
-import { cancelBinanceOrder, cancelOkxOrder, fetchBinanceAccountBook, fetchOkxAiBook, fetchTradfiAccountBook, type OkxAiBook, type OkxAiOrderRecord } from '@/api';
+import { cancelOkxOrder, fetchOkxAiBook, fetchTradfiAccountBook, type OkxAiBook, type OkxAiOrderRecord } from '@/api';
 import { formatSignedUsd, formatTimeShort, formatUsd } from '@/utils/format';
 
 const props = defineProps<{
   bootReady?: boolean;
   active?: boolean;
-  exchange?: 'binance' | 'okx' | 'tradfi';
+  exchange?: 'okx' | 'tradfi';
 }>();
 const emit = defineEmits<{ loaded: [book: OkxAiBook] }>();
 
@@ -91,7 +91,7 @@ async function load(silent = false) {
   if (!silent) loading.value = true;
   error.value = '';
   try {
-    const data = await (props.exchange === 'tradfi' ? fetchTradfiAccountBook() : props.exchange === 'binance' ? fetchBinanceAccountBook() : fetchOkxAiBook());
+    const data = await (props.exchange === 'tradfi' ? fetchTradfiAccountBook() : fetchOkxAiBook());
     if (seq !== reqSeq) return;
     book.value = data;
     emit('loaded', data);
@@ -108,8 +108,7 @@ async function cancelRow(row: OkxAiOrderRecord) {
   cancelingId.value = row.ordId;
   error.value = '';
   try {
-    if (props.exchange === 'binance') await cancelBinanceOrder({ symbol: row.instId, orderId: row.ordId });
-    else await cancelOkxOrder({ instId: row.instId, ordId: row.ordId });
+    await cancelOkxOrder({ instId: row.instId, ordId: row.ordId });
     await load(true);
   } catch (err) {
     error.value = err instanceof Error ? err.message : '取消挂单失败';
