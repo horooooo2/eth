@@ -173,7 +173,7 @@ function status(userId, symbol) {
 function enable(userId, symbol, simulated, input = {}) {
   const sym = cleanSymbol(symbol);
   const existing = rowFor(userId, sym);
-  if (existing?.enabled) throw invalid('策略运行中，暂停后才能修改金额或杠杆');
+  if (existing?.enabled) throw invalid('策略运行中，停止后才能修改金额或杠杆');
   const existingState = parseState(existing);
   const savedPosition = existing?.status === 'paused' && (existingState.resumeEligible
     || Number(existingState.expectedLong || 0) > 0 || Number(existingState.expectedShort || 0) > 0);
@@ -185,7 +185,7 @@ function enable(userId, symbol, simulated, input = {}) {
   getDb().prepare(`INSERT INTO tradfi_range_strategies (user_id,symbol,enabled,status,simulated,additions,state_json,last_error,started_at,updated_at)
     VALUES (?,?,1,'initializing',?,0,?,'',?,?) ON CONFLICT(user_id,symbol) DO UPDATE SET enabled=1,status='initializing',simulated=excluded.simulated,additions=0,state_json=excluded.state_json,last_error='',started_at=excluded.started_at,updated_at=excluded.updated_at`)
     .run(String(userId), sym, simulated ? 1 : 0, JSON.stringify(initialState), now, now);
-  log(userId, sym, savedPosition ? '准备恢复并接管暂停前的策略仓位' : input.adoptExisting ? '用户已确认，准备接管现有仓位' : `准备启动震荡交易：单边 ${config.marginUsdt}U × ${config.leverage}倍`, 'info', { phase: 'startup', progress: 5 });
+  log(userId, sym, savedPosition ? '准备恢复并接管停止前的策略仓位' : input.adoptExisting ? '用户已确认，准备接管现有仓位' : `准备启动震荡交易：单边 ${config.marginUsdt}U × ${config.leverage}倍`, 'info', { phase: 'startup', progress: 5 });
   return status(userId, sym);
 }
 async function disable(userId, symbol) {
@@ -205,7 +205,7 @@ async function disable(userId, symbol) {
   }
   const resumeEligible = Boolean((pausedPositions?.long.quantity || 0) > 0 || (pausedPositions?.short.quantity || 0) > 0);
   save(row, { enabled: 0, status: 'paused' }, { pending: null, pausedPositions, resumeEligible, pausedAt: Date.now(), adoptionPositions: null });
-  log(userId, row.symbol, resumeEligible ? '震荡交易已暂停，仓位已保留；下次启动将按币安实际仓位恢复接管' : '震荡交易已暂停，当前没有需要接管的策略仓位', 'warn');
+  log(userId, row.symbol, resumeEligible ? '震荡交易已停止，仓位已保留；下次启动将按币安实际仓位恢复接管' : '震荡交易已停止，当前没有需要接管的策略仓位', 'warn');
   return status(userId, row.symbol);
 }
 function ema(values, period) {
@@ -556,7 +556,7 @@ async function initializeStrategy(row, creds) {
     const counts = sideAdditions({ ...state, ...patch });
     const latest = rowFor(row.user_id, row.symbol);
     save(latest, { status: 'active', additions: counts.longAdditions + counts.shortAdditions, last_error: '' }, patch);
-    log(row.user_id, row.symbol, state.resumeEligible ? '已按币安实际数量和均价恢复接管暂停前仓位' : '已按用户确认接管现有仓位', 'success', { phase: 'startup', progress: 100, positions: summary });
+    log(row.user_id, row.symbol, state.resumeEligible ? '已按币安实际数量和均价恢复接管停止前仓位' : '已按用户确认接管现有仓位', 'success', { phase: 'startup', progress: 100, positions: summary });
     return;
   }
 

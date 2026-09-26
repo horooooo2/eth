@@ -134,7 +134,7 @@ const strategyError = ref('');
 const strategyData = ref<TradfiRangeResponse | null>(null);
 const strategyMargin = ref(10);
 const strategyLeverage = ref(10);
-const showStartupProgress = ref(false);
+const startupOpen = ref(false);
 const closingAll = ref(false);
 const accountBook = ref<OkxAiBook | null>(null);
 const accountPanel = ref<{ reload: () => void } | null>(null);
@@ -154,7 +154,10 @@ const strategySupported = computed(() => selected.value === 'XAUUSDT' || selecte
 const tradeRows = computed(() => (accountBook.value?.trades || []).filter((row) => row.instId === selected.value).slice(0, 50));
 const historyTab = ref<'trades' | 'logs'>('trades');
 const strategyLogs = computed(() => strategyData.value?.events || []);
-const startupLogs = computed(() => strategyLogs.value.filter((row) => row.details?.phase === 'startup').slice().reverse());
+const startupLogs = computed(() => {
+  const startedAt = Number(strategyData.value?.strategy.startedAt || 0);
+  return strategyLogs.value.filter((row) => row.details?.phase === 'startup' && (!startedAt || Number(row.created_at) >= startedAt)).slice().reverse();
+});
 const startupProgress = computed(() => Math.max(0, Math.min(100, Number(strategyData.value?.strategy.startupProgress || 0))));
 const accountWeekendMode = computed(() => Boolean(accountBook.value?.weekendMode ?? strategyData.value?.strategy.weekendMode));
 
@@ -266,6 +269,7 @@ async function openStrategy() {
   }
 }
 function closeStrategy() { if (!strategyBusy.value) strategyOpen.value = false; }
+function closeStartup() { if (!strategyBusy.value) startupOpen.value = false; }
 function onAccountLoaded(book: OkxAiBook) { accountBook.value = book; }
 function tradeDirection(row: BinanceAiTradeRecord) {
   const direction = row.posSide === 'short' ? '空' : row.posSide === 'long' ? '多' : row.side === 'sell' ? '空' : '多';
@@ -314,9 +318,11 @@ async function toggleStrategy() {
   try {
     if (strategyData.value?.strategy.enabled) {
       strategyData.value = await stopTradfiRange(selected.value);
-      showStartupProgress.value = false;
+      void accountPanel.value?.reload();
     } else {
-      showStartupProgress.value = true;
+      startupOpen.value = true;
+      strategyOpen.value = false;
+      strategyData.value = null;
       let adoptExisting = false;
       for (let pass = 0; pass < 2; pass += 1) {
         strategyData.value = await startTradfiRangeWithConfig(selected.value, { marginUsdt: Number(strategyMargin.value), leverage: Number(strategyLeverage.value), adoptExisting });
@@ -331,9 +337,16 @@ async function toggleStrategy() {
           await ElMessageBox.confirm(`检测到来源不明确的现有仓位：\n${summary}\n\n确认后，策略将按币安实际仓位继续补仓与止盈。`, '确认接管现有仓位', { type: 'warning', confirmButtonText: '确认接管', cancelButtonText: '取消' });
         } catch {
           strategyError.value = '已取消接管，现有仓位保持人工管理';
+          startupOpen.value = false;
+          strategyOpen.value = true;
           break;
         }
         adoptExisting = true;
+      }
+      if (strategyData.value?.strategy.enabled && strategyData.value.strategy.status !== 'initializing') {
+        await new Promise((resolve) => window.setTimeout(resolve, 500));
+        startupOpen.value = false;
+        void accountPanel.value?.reload();
       }
     }
   }
@@ -513,20 +526,10 @@ async function closeAllPositions() {
               <strong>{{ strategyData?.strategy.status === 'initializing' ? '启动检查中' : strategyData?.strategy.enabled ? '服务器运行中' : strategyData?.strategy.status === 'adoption_required' ? '等待确认接管' : strategyData?.strategy.status === 'manual' ? '人工接管' : '未运行' }}</strong>
               <span>{{ strategyData?.strategy.simulated == null ? '币安账户待核对' : strategyData.strategy.simulated ? '演示盘' : '实盘' }}</span>
             </section>
-            <section v-if="showStartupProgress || strategyData?.strategy.status === 'initializing'" class="startup-progress" aria-live="polite">
-              <div class="startup-progress-head"><strong>启动检查进度</strong><span>{{ startupProgress }}%</span></div>
-              <div class="startup-progress-track"><div class="startup-progress-fill" :style="{ width: `${startupProgress}%` }" /></div>
-              <div class="startup-current">{{ strategyData?.strategy.startupStep || '等待服务器开始检查' }}</div>
-              <div class="startup-log-list">
-                <div v-for="row in startupLogs" :key="row.id" class="startup-log-item" :class="`level-${row.level}`">
-                  <i /> <span>{{ row.message }}</span><time>{{ tradeClock(row.created_at) }}</time>
-                </div>
-              </div>
-            </section>
             <div class="strategy-config">
               <label>单边保证金 <input v-model.number="strategyMargin" type="number" min="1" max="20" step="1" :disabled="strategyData?.strategy.enabled || strategyData?.strategy.resumeEligible || strategyBusy" /><b>USDT</b></label>
               <label>杠杆 <input v-model.number="strategyLeverage" type="number" min="1" max="50" step="1" :disabled="strategyData?.strategy.enabled || strategyData?.strategy.resumeEligible || strategyBusy" /><b>×</b></label>
-              <span>{{ strategyData?.strategy.enabled ? '策略运行中，参数已锁定' : strategyData?.strategy.resumeEligible ? '恢复接管时沿用暂停前参数' : '启动后参数锁定' }}</span>
+              <span>{{ strategyData?.strategy.enabled ? '策略运行中，参数已锁定' : strategyData?.strategy.resumeEligible ? '恢复接管时沿用停止前参数' : '启动后参数锁定' }}</span>
             </div>
             <div class="strategy-metrics">
               <div><span>单笔保证金</span><b>{{ strategyData?.strategy.marginPerOrder ?? strategyMargin }} USDT</b></div><div><span>杠杆</span><b>{{ strategyData?.strategy.leverage ?? strategyLeverage }}×</b></div>
@@ -539,7 +542,29 @@ async function closeAllPositions() {
             <p v-if="strategyData?.strategy.range" class="market-meta">当前参考区间：{{ strategyData.strategy.range.low }} – {{ strategyData.strategy.range.high }} · 最新价 {{ strategyData.strategy.lastPrice ?? '—' }}</p>
             <p v-if="strategyData?.strategy.lastError || strategyError" class="order-error">{{ strategyError || strategyData?.strategy.lastError }}</p>
           </div>
-          <footer class="dialog-footer"><p class="footer-hint">暂停策略会撤销已知挂单并保留已成交仓位；再次启动时按实际仓位恢复接管。</p><div class="footer-actions"><button class="btn" :disabled="strategyBusy" @click="closeStrategy">关闭</button><button class="btn primary" :disabled="strategyBusy" @click="toggleStrategy">{{ strategyBusy ? '处理中…' : strategyData?.strategy.enabled ? '暂停策略' : strategyData?.strategy.resumeEligible ? '恢复并接管仓位' : '启动24H策略' }}</button></div></footer>
+          <footer class="dialog-footer"><p class="footer-hint">停止策略会撤销已知挂单并保留已成交仓位；再次启动时按实际仓位恢复接管。</p><div class="footer-actions"><button class="btn" :disabled="strategyBusy" @click="closeStrategy">关闭</button><button class="btn primary" :disabled="strategyBusy" @click="toggleStrategy">{{ strategyBusy ? '处理中…' : strategyData?.strategy.enabled ? '停止策略' : strategyData?.strategy.resumeEligible ? '恢复并接管仓位' : '启动24H策略' }}</button></div></footer>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div v-if="startupOpen" class="modal-cover">
+        <div class="dialog startup-dialog-modal" role="dialog" aria-modal="true" aria-label="策略启动进度">
+          <header class="dialog-head"><div class="dialog-title">策略启动检查 <span class="dialog-symbol">· {{ selected }}</span></div><button type="button" class="dialog-close" :disabled="strategyBusy" @click="closeStartup">×</button></header>
+          <div class="dialog-scroll startup-dialog-body">
+            <section class="startup-progress" :class="{ complete: startupProgress >= 100 && strategyData?.strategy.status !== 'initializing' }" aria-live="polite">
+              <div class="startup-progress-head"><strong>启动检查进度</strong><span>{{ startupProgress }}%</span></div>
+              <div class="startup-progress-track"><div class="startup-progress-fill" :style="{ width: `${startupProgress}%` }" /></div>
+              <div class="startup-current">{{ strategyData?.strategy.startupStep || '等待服务器开始检查' }}</div>
+              <div class="startup-log-list">
+                <div v-for="row in startupLogs" :key="row.id" class="startup-log-item" :class="`level-${row.level}`">
+                  <i /> <span>{{ row.message }}</span><time>{{ tradeClock(row.created_at) }}</time>
+                </div>
+              </div>
+            </section>
+            <p v-if="strategyError || strategyData?.strategy.lastError" class="order-error">{{ strategyError || strategyData?.strategy.lastError }}</p>
+          </div>
+          <footer v-if="!strategyBusy" class="dialog-footer"><div class="footer-actions"><button class="btn primary" @click="closeStartup">关闭</button></div></footer>
         </div>
       </div>
     </Teleport>
@@ -762,6 +787,9 @@ async function closeAllPositions() {
 .startup-progress-head span { color: var(--yellow); font-variant-numeric: tabular-nums; }
 .startup-progress-track { height: 6px; overflow: hidden; border-radius: 999px; background: var(--panel); }
 .startup-progress-fill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, #dba91f, var(--yellow)); transition: width .25s ease; }
+.startup-progress.complete { border-color: color-mix(in srgb, var(--green) 42%, var(--border)); background: color-mix(in srgb, var(--green) 5%, var(--panel-2)); }
+.startup-progress.complete .startup-progress-head span { color: var(--green); }
+.startup-progress.complete .startup-progress-fill { background: linear-gradient(90deg, color-mix(in srgb, var(--green) 72%, #1f9d68), var(--green)); }
 .startup-current { margin-top: 9px; color: var(--muted); font-size: 11px; }
 .startup-log-list { max-height: 150px; margin-top: 10px; overflow-y: auto; border-top: 1px solid var(--border); }
 .startup-log-item { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 7px 1px; color: var(--muted); font-size: 11px; border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent); }
@@ -778,6 +806,9 @@ async function closeAllPositions() {
 .strategy-metrics div { padding: 13px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
 .strategy-metrics span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 7px; }
 .strategy-dialog { height: auto; min-height: 470px; }
+.startup-dialog-modal { width: min(680px, 100%); height: auto; min-height: 360px; max-height: 82vh; }
+.startup-dialog-body { padding: 18px; }
+.startup-dialog-body .startup-progress { margin-top: 0; }
 .feed-tools { padding: 12px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .chips { display: flex; gap: 5px; flex-wrap: wrap; }
 .chip { border: 1px solid transparent; background: var(--panel-2); border-radius: 5px; color: var(--muted); padding: 6px 10px; font-size: 10px; }

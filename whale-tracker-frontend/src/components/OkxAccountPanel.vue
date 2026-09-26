@@ -34,8 +34,9 @@ const tradfiGroups = computed<TradfiGroup[]>(() => {
     bySymbol.set(key, group);
   }
   for (const strategy of book.value?.strategies || []) {
-    if (!strategy.enabled) continue;
-    const group = bySymbol.get(strategy.symbol) || {
+    const existing = bySymbol.get(strategy.symbol);
+    if (!strategy.enabled && !existing) continue;
+    const group = existing || {
       instId: strategy.symbol,
       coin: strategy.symbol === 'XAUUSDT' ? '黄金（GOLD）' : strategy.symbol === 'XAGUSDT' ? '白银（SILVER）' : strategy.symbol,
     };
@@ -93,6 +94,7 @@ function entryPrice(row?: OkxAiOrderRecord) {
 
 function groupMode(group: TradfiGroup) {
   const strategy = group.strategy;
+  if (strategy && !strategy.enabled && (group.long?.kind === 'position' || group.short?.kind === 'position')) return '策略已停止';
   if (strategy?.status === 'waiting') {
     const remaining = Number(strategy.cooldownUntil || 0) - clock.value;
     if (remaining > 0) return `冷却检查 · ${countdown(remaining)} 后检查开仓`;
@@ -130,6 +132,7 @@ function sideMask(group: TradfiGroup, side: 'long' | 'short') {
   const strategy = group.strategy;
   const leg = legStatus(group, side);
   if (!strategy) return '';
+  if (!strategy.enabled && group[side]?.kind === 'position') return '策略已停止';
   if (leg?.phase === 'close_pending') return '止盈挂单中';
   if (leg?.phase === 'reentry_wait') return '止盈后冷却，等待重建';
   if (leg?.phase === 'reentry_pending') return '正在重建底仓';
