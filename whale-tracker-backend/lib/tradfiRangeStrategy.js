@@ -29,6 +29,9 @@ let timer = null;
 let busy = false;
 
 function invalid(message, status = 400) { return Object.assign(new Error(message), { status }); }
+function adoptionRequired(positions) {
+  return Object.assign(new Error('检测到来源不明确的现有仓位，请确认是否交由策略接管'), { status: 409, adoptionRequired: true, positions });
+}
 function isPostOnlyReject(error) { return Number(error?.code) === -5022 || /Post Only|could not be executed as maker/i.test(error?.message || ''); }
 function scalpProfitTarget(notional) { return Math.max(SCALP_MIN_PROFIT, Number(notional || 0) * SCALP_NOTIONAL_RATE); }
 function commissionRate(value, fallback) {
@@ -151,6 +154,8 @@ function publicRow(row) {
     costs: s.costs || null, addStep: s.addStep ?? null, lastPrice: s.lastPrice ?? null, range: s.range || null,
     cooldownUntil: s.cooldownUntil ?? null, cycleStartedAt: s.cycleStartedAt ?? null,
     startupProgress: s.startupProgress ?? null, startupStep: s.startupStep || '',
+    resumeEligible: Boolean(s.resumeEligible), adoptionPositions: s.adoptionPositions || null,
+    adoptedAt: s.adoptedAt ?? null, adoptedLongQty: Number(s.adoptedLongQty || 0), adoptedShortQty: Number(s.adoptedShortQty || 0),
     recovery: Boolean(s.recovery), recoveryArmed: Boolean(s.recoveryArmed),
     recoveryPeakNetPnl: s.recoveryPeakNetPnl ?? null, recoveryTrail: s.recoveryTrail ?? null,
     weekendMode: isCommodityWeekendMode(),
@@ -169,12 +174,18 @@ function enable(userId, symbol, simulated, input = {}) {
   const sym = cleanSymbol(symbol);
   const existing = rowFor(userId, sym);
   if (existing?.enabled) throw invalid('策略运行中，暂停后才能修改金额或杠杆');
-  const config = requestedConfig(input);
+  const existingState = parseState(existing);
+  const savedPosition = existing?.status === 'paused' && (existingState.resumeEligible
+    || Number(existingState.expectedLong || 0) > 0 || Number(existingState.expectedShort || 0) > 0);
+  const config = savedPosition ? strategyConfig(existing) : requestedConfig(input);
   const now = Date.now();
+  const initialState = savedPosition || input.adoptExisting
+    ? { ...existingState, config, resumeEligible: savedPosition, adoptExisting: Boolean(input.adoptExisting), startupProgress: 5, startupStep: '准备检查现有仓位' }
+    : { config, resumeEligible: false, adoptExisting: false, startupProgress: 5, startupStep: '准备启动检查' };
   getDb().prepare(`INSERT INTO tradfi_range_strategies (user_id,symbol,enabled,status,simulated,additions,state_json,last_error,started_at,updated_at)
     VALUES (?,?,1,'initializing',?,0,?,'',?,?) ON CONFLICT(user_id,symbol) DO UPDATE SET enabled=1,status='initializing',simulated=excluded.simulated,additions=0,state_json=excluded.state_json,last_error='',started_at=excluded.started_at,updated_at=excluded.updated_at`)
-    .run(String(userId), sym, simulated ? 1 : 0, JSON.stringify({ config, startupProgress: 5, startupStep: '准备启动检查' }), now, now);
-  log(userId, sym, `准备启动震荡交易：单边 ${config.marginUsdt}U × ${config.leverage}倍`, 'info', { phase: 'startup', progress: 5 });
+    .run(String(userId), sym, simulated ? 1 : 0, JSON.stringify(initialState), now, now);
+  log(userId, sym, savedPosition ? '准备恢复并接管暂停前的策略仓位' : input.adoptExisting ? '用户已确认，准备接管现有仓位' : `准备启动震荡交易：单边 ${config.marginUsdt}U × ${config.leverage}倍`, 'info', { phase: 'startup', progress: 5 });
   return status(userId, sym);
 }
 async function disable(userId, symbol) {
@@ -182,9 +193,19 @@ async function disable(userId, symbol) {
   if (!row) return status(userId, symbol);
   const state = parseState(row);
   const creds = getBinanceCredentialsForUser(userId);
-  if (creds) await cancelKnown(creds, row.symbol, state);
-  save(row, { enabled: 0, status: 'paused' }, { pending: null });
-  log(userId, row.symbol, '震荡交易已暂停，已有持仓保留并交由人工处理', 'warn');
+  let pausedPositions = null;
+  if (creds) {
+    await cancelKnown(creds, row.symbol, state);
+    const risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: row.symbol });
+    const pos = positionsOf(risk, row.symbol);
+    pausedPositions = {
+      long: { quantity: qty(pos.long), entryPrice: Number(pos.long?.entryPrice || 0), leverage: Number(pos.long?.leverage || 0) },
+      short: { quantity: qty(pos.short), entryPrice: Number(pos.short?.entryPrice || 0), leverage: Number(pos.short?.leverage || 0) },
+    };
+  }
+  const resumeEligible = Boolean((pausedPositions?.long.quantity || 0) > 0 || (pausedPositions?.short.quantity || 0) > 0);
+  save(row, { enabled: 0, status: 'paused' }, { pending: null, pausedPositions, resumeEligible, pausedAt: Date.now(), adoptionPositions: null });
+  log(userId, row.symbol, resumeEligible ? '震荡交易已暂停，仓位已保留；下次启动将按币安实际仓位恢复接管' : '震荡交易已暂停，当前没有需要接管的策略仓位', 'warn');
   return status(userId, row.symbol);
 }
 function ema(values, period) {
@@ -297,14 +318,13 @@ async function pauseWeekendNewOrders(row, creds, state) {
   const long = legSnapshot(state, 'long'); const short = legSnapshot(state, 'short');
   const groups = [
     ...(state.entries || []).map((order, index) => ({ kind: 'entry', index, order })),
-    ...(state.pending ? [{ kind: 'addition', order: state.pending }] : []),
     ...(long.reentryOrder ? [{ kind: 'reentry', direction: 'long', order: long.reentryOrder }] : []),
     ...(short.reentryOrder ? [{ kind: 'reentry', direction: 'short', order: short.reentryOrder }] : []),
   ];
   const orders = groups.map((item) => item.order);
   if (!orders.length) {
     save(row, {}, { weekendMode: true });
-    log(row.user_id, row.symbol, '周末流动性模式已开启：暂停新开仓、补仓与止盈后的重建；已有 Maker 平仓单保持原价', 'info');
+    log(row.user_id, row.symbol, '周末流动性模式已开启：暂停新建底仓和止盈后的重建；已有仓位继续补仓与止盈', 'info');
     return true;
   }
   await Promise.all(orders.map((order) => cancelOrder(creds, row.symbol, order)));
@@ -322,11 +342,11 @@ async function pauseWeekendNewOrders(row, creds, state) {
     return true;
   }
   const statePatch = {
-    weekendMode: true, entries: [], pending: null,
+    weekendMode: true, entries: [],
     ...legPatch('long', long.phase === 'reentry_pending' ? { Phase: 'reentry_wait', ReentryOrder: null, ReentryAt: 0 } : {}),
     ...legPatch('short', short.phase === 'reentry_pending' ? { Phase: 'reentry_wait', ReentryOrder: null, ReentryAt: 0 } : {}),
   };
-  let status = row.status === 'entry_pending' ? 'waiting' : row.status === 'add_pending' ? 'active' : row.status;
+  let status = row.status === 'entry_pending' ? 'waiting' : row.status;
   if (entryPairFullyFilled) {
     const expectedLong = filledQty(entries[0]); const expectedShort = filledQty(entries[1]);
     Object.assign(statePatch, { expectedLong, expectedShort,
@@ -334,26 +354,13 @@ async function pauseWeekendNewOrders(row, creds, state) {
       ...resetLeg('short', expectedShort, Number(entries[1].current.avgPrice || entries[1].order.price)) });
     status = 'active';
   }
-  const addition = settled.find((item) => item.kind === 'addition');
-  if (addition && fullyFilled(addition)) {
-    const isLong = addition.order.side === 'BUY'; const direction = isLong ? 'long' : 'short';
-    const counted = countedAdditions(state, isLong, true); const filled = filledQty(addition);
-    const leg = isLong ? long : short;
-    Object.assign(statePatch, {
-      longAdditions: counted.longAdditions, shortAdditions: counted.shortAdditions,
-      expectedLong: Number(state.expectedLong || 0) + (isLong ? filled : 0),
-      expectedShort: Number(state.expectedShort || 0) + (isLong ? 0 : filled),
-      ...legPatch(direction, { ExpectedQty: leg.expectedQty + filled, Additions: counted.next,
-        LastAddPrice: Number(addition.current.avgPrice || addition.order.price) }),
-    });
-  }
   for (const item of settled.filter((candidate) => candidate.kind === 'reentry' && fullyFilled(candidate))) {
     const filled = filledQty(item); const side = item.direction === 'long' ? 'LONG' : 'SHORT';
     Object.assign(statePatch, resetLeg(item.direction, filled, Number(item.current.avgPrice || item.order.price)),
       side === 'LONG' ? { expectedLong: filled } : { expectedShort: filled });
   }
   save(row, { status }, statePatch);
-  log(row.user_id, row.symbol, '周末流动性模式已开启：已撤销未成交的开仓类委托；已有 Maker 平仓单保持原价', 'info');
+  log(row.user_id, row.symbol, '周末流动性模式已开启：已撤销未成交的新建底仓或重建委托；已有仓位继续补仓与止盈', 'info');
   return true;
 }
 function remember(userId, row, order, clientId, side, price, quantity) {
@@ -480,6 +487,27 @@ function startupUpdate(row, progress, step, level = 'info', details = {}) {
   save(latest, { last_error: '' }, { startupProgress: progress, startupStep: step });
   log(row.user_id, row.symbol, step, level, { ...details, phase: 'startup', progress });
 }
+function positionAdoptionSummary(pos) {
+  return {
+    long: { quantity: qty(pos.long), entryPrice: Number(pos.long?.entryPrice || 0), leverage: Number(pos.long?.leverage || 0), unrealizedPnl: Number(pos.long?.unRealizedProfit || 0) },
+    short: { quantity: qty(pos.short), entryPrice: Number(pos.short?.entryPrice || 0), leverage: Number(pos.short?.leverage || 0), unrealizedPnl: Number(pos.short?.unRealizedProfit || 0) },
+  };
+}
+function adoptedLegState(state, direction, position) {
+  const previous = legSnapshot(state, direction); const quantity = qty(position);
+  if (!(quantity > 0)) return legPatch(direction, {
+    Phase: 'reentry_wait', ExpectedQty: 0, CloseOrders: [], ClosePlacedAt: 0, CloseGuardPrice: 0,
+    ReentryAt: isCommodityWeekendMode() ? 0 : Date.now() + COOLDOWN_MS, ReentryOrder: null,
+  });
+  return legPatch(direction, {
+    Phase: 'active', ExpectedQty: quantity, Additions: previous.additions,
+    LastAddPrice: previous.lastAddPrice || Number(position.entryPrice || 0),
+    MinPnl: Math.min(previous.minPnl, Number(position.unRealizedProfit || 0)),
+    Recovery: previous.recovery, RecoveryArmed: previous.recoveryArmed,
+    RecoveryPeakNetPnl: previous.recoveryPeakNetPnl, RecoveryTrail: previous.recoveryTrail,
+    CloseOrders: [], ClosePlacedAt: 0, CloseGuardPrice: 0, FundingStartedAt: Date.now(), ReentryAt: 0, ReentryOrder: null,
+  });
+}
 async function initializeStrategy(row, creds) {
   const config = strategyConfig(row);
   startupUpdate(row, 12, '正在验证币安 API 与账户环境');
@@ -505,14 +533,38 @@ async function initializeStrategy(row, creds) {
     signedRequest(creds, 'GET', '/fapi/v1/positionSide/dual'),
   ]);
   const positions = positionsOf(risk, row.symbol);
-  if (qty(positions.long) || qty(positions.short)) throw invalid('检测到已有黄金或白银仓位，策略转人工接管', 409);
   if (!(mode.dualSidePosition === true || mode.dualSidePosition === 'true')) throw invalid('请先在币安开启双向持仓模式', 409);
   startupUpdate(row, 90, '仓位与双向持仓模式检查完成', 'success');
+
+  const hasPosition = qty(positions.long) > 0 || qty(positions.short) > 0;
+  const state = parseState(rowFor(row.user_id, row.symbol));
+  if (hasPosition) {
+    const summary = positionAdoptionSummary(positions);
+    if (!state.resumeEligible && !state.adoptExisting) throw adoptionRequired(summary);
+    const actualLeverage = Number(positions.long?.leverage || positions.short?.leverage || config.leverage);
+    const resumedConfig = state.resumeEligible ? config : { ...config, leverage: actualLeverage || config.leverage };
+    const adoptedAt = Date.now();
+    const patch = {
+      config: resumedConfig, resumeEligible: false, adoptExisting: false, adoptionPositions: null, pausedPositions: null,
+      startupProgress: 100, startupStep: '现有仓位已接管，策略恢复运行',
+      cycleId: state.cycleId || crypto.randomUUID().replace(/-/g, '').slice(0, 10),
+      cycleStartedAt: state.cycleStartedAt || adoptedAt, fundingStartedAt: adoptedAt, adoptedAt,
+      adoptedLongQty: qty(positions.long), adoptedShortQty: qty(positions.short), entries: [], pending: null, closeOrders: [],
+      expectedLong: qty(positions.long), expectedShort: qty(positions.short),
+      ...adoptedLegState(state, 'long', positions.long), ...adoptedLegState(state, 'short', positions.short),
+    };
+    const counts = sideAdditions({ ...state, ...patch });
+    const latest = rowFor(row.user_id, row.symbol);
+    save(latest, { status: 'active', additions: counts.longAdditions + counts.shortAdditions, last_error: '' }, patch);
+    log(row.user_id, row.symbol, state.resumeEligible ? '已按币安实际数量和均价恢复接管暂停前仓位' : '已按用户确认接管现有仓位', 'success', { phase: 'startup', progress: 100, positions: summary });
+    return;
+  }
 
   startupUpdate(row, 95, `正在设置 ${config.leverage} 倍杠杆`);
   await signedRequest(creds, 'POST', '/fapi/v1/leverage', { symbol: row.symbol, leverage: String(config.leverage) });
   const latest = rowFor(row.user_id, row.symbol);
-  save(latest, { status: 'waiting', last_error: '' }, { startupProgress: 100, startupStep: isCommodityWeekendMode() ? '启动检查完成，等待常规交易时段' : '启动检查完成，进入行情监控' });
+  save(latest, { status: 'waiting', last_error: '' }, { resumeEligible: false, adoptExisting: false, adoptionPositions: null, pausedPositions: null,
+    startupProgress: 100, startupStep: isCommodityWeekendMode() ? '启动检查完成，等待常规交易时段' : '启动检查完成，进入行情监控' });
   log(row.user_id, row.symbol, isCommodityWeekendMode() ? '启动检查完成；当前为周末流动性模式，等待常规交易时段后开仓' : '启动检查完成，服务器已进入行情监控', 'success', { phase: 'startup', progress: 100 });
 }
 async function costState(creds, row, state, totalNotional, comboPnl) {
@@ -754,7 +806,8 @@ async function reconcileRow(row) {
     await initializeStrategy(row, creds);
     return;
   }
-  if (isCommodityWeekendMode()) {
+  const weekendMode = isCommodityWeekendMode();
+  if (weekendMode) {
     if (row.status === 'close_pending' && state.stopAfterClose) {
       const progress = await closeOrderProgress(creds, row.symbol, state.closeOrders || [], state.closeRemaining || {});
       if (progress.complete) finishClose(row, true);
@@ -763,10 +816,12 @@ async function reconcileRow(row) {
     }
     if (!state.weekendMode) {
       await pauseWeekendNewOrders(row, creds, state);
+      row = rowFor(row.user_id, row.symbol);
+      state = parseState(row);
     }
-    return;
+    if (!row.enabled || row.status === 'waiting' || row.status === 'entry_pending') return;
   }
-  if (state.weekendMode) {
+  if (!weekendMode && state.weekendMode) {
     save(row, {}, { weekendMode: false });
     log(row.user_id, row.symbol, '常规交易时段已恢复，震荡策略继续执行', 'success');
     row = rowFor(row.user_id, row.symbol);
@@ -824,16 +879,20 @@ async function reconcileRow(row) {
     const direction = legName(side); const orderSide = side === 'LONG' ? 'BUY' : 'SELL';
     if (leg.phase === 'close_pending') {
       if (!qty(position)) {
-        save(row, {}, { ...legPatch(direction, { Phase: 'reentry_wait', CloseOrders: [], ReentryAt: Date.now() + COOLDOWN_MS }) });
-        log(row.user_id, row.symbol, `${side === 'LONG' ? '多头' : '空头'}止盈已成交，10 秒后重建同方向底仓`, 'success'); return;
+        save(row, {}, { ...legPatch(direction, { Phase: 'reentry_wait', CloseOrders: [], ReentryAt: weekendMode ? 0 : Date.now() + COOLDOWN_MS }) });
+        log(row.user_id, row.symbol, weekendMode
+          ? `${side === 'LONG' ? '多头' : '空头'}止盈已成交，周末暂停重建该方向底仓`
+          : `${side === 'LONG' ? '多头' : '空头'}止盈已成交，10 秒后重建同方向底仓`, 'success'); return;
       }
       if (Date.now() - leg.closePlacedAt >= ORDER_TTL_MS) {
         const replacement = await replaceCloseOrders(row, creds, leg.closeOrders || [], side, leg.closeGuardPrice);
         if (replacement.waiting) { save(row, {}, { ...legPatch(direction, { CloseOrders: replacement.orders }) }); return; }
         const closeOrders = replacement.orders;
         if (!closeOrders.length) {
-          save(row, {}, { ...legPatch(direction, { Phase: 'reentry_wait', CloseOrders: [], ReentryAt: Date.now() + COOLDOWN_MS }) });
-          log(row.user_id, row.symbol, `${side === 'LONG' ? '多头' : '空头'}止盈已成交，10 秒后重建同方向底仓`, 'success'); return;
+          save(row, {}, { ...legPatch(direction, { Phase: 'reentry_wait', CloseOrders: [], ReentryAt: weekendMode ? 0 : Date.now() + COOLDOWN_MS }) });
+          log(row.user_id, row.symbol, weekendMode
+            ? `${side === 'LONG' ? '多头' : '空头'}止盈已成交，周末暂停重建该方向底仓`
+            : `${side === 'LONG' ? '多头' : '空头'}止盈已成交，10 秒后重建同方向底仓`, 'success'); return;
         }
         save(row, {}, { ...legPatch(direction, { CloseOrders: closeOrders, ClosePlacedAt: Date.now() }) });
         log(row.user_id, row.symbol, `${side === 'LONG' ? '多头' : '空头'}止盈 Maker 单未成交，已重新挂单`, 'warn'); return;
@@ -841,6 +900,7 @@ async function reconcileRow(row) {
       return;
     }
     if (leg.phase === 'reentry_wait') {
+      if (weekendMode) continue;
       if (Date.now() < leg.reentryAt) return;
       const order = await placeLimit(creds, row, orderSide, side === 'LONG' ? market.bid : market.ask, `roll_${direction}`);
       save(row, {}, { ...legPatch(direction, { Phase: 'reentry_pending', ReentryOrder: order }) });
@@ -871,7 +931,8 @@ async function reconcileRow(row) {
       return;
     }
   }
-  if (!qty(pos.long) || !qty(pos.short)) throw invalid('检测到手动修改仓位，策略转人工接管', 409);
+  const longManaged = longLeg.phase !== 'reentry_wait'; const shortManaged = shortLeg.phase !== 'reentry_wait';
+  if ((longManaged && !qty(pos.long)) || (shortManaged && !qty(pos.short))) throw invalid('检测到手动修改仓位，策略转人工接管', 409);
   if (row.status === 'add_pending' && state.pending) {
     const current = await orderState(creds, row.symbol, state.pending);
     if (current.status === 'FILLED') {
@@ -894,7 +955,7 @@ async function reconcileRow(row) {
     }
     return;
   }
-  if (!closeEnough(qty(pos.long), longLeg.expectedQty) || !closeEnough(qty(pos.short), shortLeg.expectedQty)) throw invalid('检测到手动修改仓位，策略转人工接管', 409);
+  if ((longManaged && !closeEnough(qty(pos.long), longLeg.expectedQty)) || (shortManaged && !closeEnough(qty(pos.short), shortLeg.expectedQty))) throw invalid('检测到手动修改仓位，策略转人工接管', 409);
   const comboPnl = Number(pos.long.unRealizedProfit || 0) + Number(pos.short.unRealizedProfit || 0);
   const longNotional = Math.abs(Number(pos.long.notional || 0)); const shortNotional = Math.abs(Number(pos.short.notional || 0));
   const nextLong = { ...longLeg, minPnl: Math.min(longLeg.minPnl, Number(pos.long.unRealizedProfit || 0)) };
@@ -908,6 +969,7 @@ async function reconcileRow(row) {
   const shortCosts = await legCostState(creds, row, nextShort, shortNotional, Number(pos.short.unRealizedProfit || 0), funding.short);
   const legUpdates = {};
   for (const [side, leg, position, costs] of [['LONG', nextLong, pos.long, longCosts], ['SHORT', nextShort, pos.short, shortCosts]]) {
+    if (!(qty(position) > 0)) continue;
     const direction = legName(side); const recovery = costs.recovery;
     const peak = recovery ? Math.max(leg.recoveryPeakNetPnl, costs.netPnl) : 0;
     const armed = recovery && peak >= costs.profitTarget;
@@ -926,10 +988,21 @@ async function reconcileRow(row) {
     }
   }
   save(row, {}, { ...legUpdates, comboPnl, netPnl: longCosts.netPnl + shortCosts.netPnl, costs: { long: longCosts, short: shortCosts } });
-  if (nextLong.recovery && market.trend || nextShort.recovery && market.trend) return;
+  if ((longManaged && nextLong.recovery && market.trend) || (shortManaged && nextShort.recovery && market.trend)) return;
   if (market.trend) throw invalid('震荡结构已转为明显趋势，策略转人工接管', 409);
   const step = market.addStep;
-  const longLosing = Number(pos.long.unRealizedProfit || 0) < Number(pos.short.unRealizedProfit || 0);
+  const canAddLong = longManaged && qty(pos.long) > 0;
+  const canAddShort = shortManaged && qty(pos.short) > 0;
+  if (!canAddLong && !canAddShort) return;
+  let longLosing;
+  if (canAddLong && canAddShort) longLosing = Number(pos.long.unRealizedProfit || 0) < Number(pos.short.unRealizedProfit || 0);
+  else if (canAddLong) {
+    if (Number(pos.long.unRealizedProfit || 0) >= 0) return;
+    longLosing = true;
+  } else {
+    if (Number(pos.short.unRealizedProfit || 0) >= 0) return;
+    longLosing = false;
+  }
   const anchor = Number((longLosing ? longLeg.lastAddPrice : shortLeg.lastAddPrice) || market.last);
   const decision = additionDecision(state, longLosing);
   const trigger = longLosing ? market.last <= anchor - step : market.last >= anchor + step;
@@ -949,6 +1022,11 @@ async function reconcile() {
       try { await reconcileRow(row); }
       catch (err) {
         const latest = rowFor(row.user_id, row.symbol);
+        if (err.adoptionRequired) {
+          save(latest, { enabled: 0, status: 'adoption_required', last_error: err.message }, { adoptionPositions: err.positions, adoptExisting: false, resumeEligible: false });
+          log(row.user_id, row.symbol, err.message, 'warn', { positions: err.positions });
+          continue;
+        }
         const manual = Number(err.status) === 409;
         save(latest, { enabled: manual ? 0 : latest.enabled, status: manual ? 'manual' : latest.status, last_error: err.message });
         log(row.user_id, row.symbol, err.message, 'error');
@@ -958,4 +1036,4 @@ async function reconcile() {
 }
 function start() { if (timer) return; timer = setInterval(() => { void reconcile(); }, POLL_MS); timer.unref?.(); void reconcile(); }
 
-module.exports = { start, reconcile, status, enable, disable, closeAll, closeClientId, closeOrderRemaining, additionDecision, marketState, atr, ladderStep, costState, scalpProfitTarget, commissionRate, isCommodityWeekendMode, orderFillState, profitGuardPrice, allocateFundingCharge, strategyConfig, requestedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, SYMBOLS, MAX_ADDITIONS, MARGIN, LEVERAGE, MAX_MARGIN, MAX_LEVERAGE };
+module.exports = { start, reconcile, status, enable, disable, closeAll, closeClientId, closeOrderRemaining, additionDecision, marketState, atr, ladderStep, costState, scalpProfitTarget, commissionRate, isCommodityWeekendMode, orderFillState, profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState, strategyConfig, requestedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, SYMBOLS, MAX_ADDITIONS, MARGIN, LEVERAGE, MAX_MARGIN, MAX_LEVERAGE };

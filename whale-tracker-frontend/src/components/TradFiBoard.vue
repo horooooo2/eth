@@ -317,10 +317,23 @@ async function toggleStrategy() {
       showStartupProgress.value = false;
     } else {
       showStartupProgress.value = true;
-      strategyData.value = await startTradfiRangeWithConfig(selected.value, { marginUsdt: Number(strategyMargin.value), leverage: Number(strategyLeverage.value) });
-      for (let attempt = 0; attempt < 90 && strategyData.value?.strategy.status === 'initializing'; attempt += 1) {
-        await new Promise((resolve) => window.setTimeout(resolve, 500));
-        strategyData.value = await fetchTradfiRangeStatus(selected.value);
+      let adoptExisting = false;
+      for (let pass = 0; pass < 2; pass += 1) {
+        strategyData.value = await startTradfiRangeWithConfig(selected.value, { marginUsdt: Number(strategyMargin.value), leverage: Number(strategyLeverage.value), adoptExisting });
+        for (let attempt = 0; attempt < 90 && strategyData.value?.strategy.status === 'initializing'; attempt += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 500));
+          strategyData.value = await fetchTradfiRangeStatus(selected.value);
+        }
+        if (strategyData.value?.strategy.status !== 'adoption_required') break;
+        const positions = strategyData.value.strategy.adoptionPositions;
+        const summary = `多仓 ${positions?.long.quantity || 0}（均价 ${positions?.long.entryPrice || '—'}）\n空仓 ${positions?.short.quantity || 0}（均价 ${positions?.short.entryPrice || '—'}）`;
+        try {
+          await ElMessageBox.confirm(`检测到来源不明确的现有仓位：\n${summary}\n\n确认后，策略将按币安实际仓位继续补仓与止盈。`, '确认接管现有仓位', { type: 'warning', confirmButtonText: '确认接管', cancelButtonText: '取消' });
+        } catch {
+          strategyError.value = '已取消接管，现有仓位保持人工管理';
+          break;
+        }
+        adoptExisting = true;
       }
     }
   }
@@ -435,8 +448,8 @@ async function closeAllPositions() {
             <div>
               <div class="account-title-line">
                 <div class="panel-title">交易账户</div>
-                <span v-if="accountWeekendMode" class="weekend-warning" title="周末流动性模式：暂停新开仓、补仓和止盈后的重建；">
-                  <b>?</b> 周末流动性模式：暂停新开仓、补仓和止盈后的重建；
+                <span v-if="accountWeekendMode" class="weekend-warning" title="周末流动性模式：暂停新建底仓和止盈后的仓位重建；已有仓位继续补仓与止盈。">
+                  <b>?</b> 周末流动性模式：暂停新建底仓和止盈后的仓位重建；已有仓位继续补仓与止盈。
                 </span>
               </div>
               <div class="panel-sub">币安 · TradFi 自动策略持仓与挂单</div>
@@ -497,7 +510,7 @@ async function closeAllPositions() {
           <header class="dialog-head"><div class="dialog-title">震荡交易 <span class="dialog-symbol">· {{ selected }}</span></div><button type="button" class="dialog-close" :disabled="strategyBusy" @click="closeStrategy">×</button></header>
           <div class="dialog-scroll">
             <section class="strategy-state">
-              <strong>{{ strategyData?.strategy.status === 'initializing' ? '启动检查中' : strategyData?.strategy.enabled ? '服务器运行中' : strategyData?.strategy.status === 'manual' ? '人工接管' : '未运行' }}</strong>
+              <strong>{{ strategyData?.strategy.status === 'initializing' ? '启动检查中' : strategyData?.strategy.enabled ? '服务器运行中' : strategyData?.strategy.status === 'adoption_required' ? '等待确认接管' : strategyData?.strategy.status === 'manual' ? '人工接管' : '未运行' }}</strong>
               <span>{{ strategyData?.strategy.simulated == null ? '币安账户待核对' : strategyData.strategy.simulated ? '演示盘' : '实盘' }}</span>
             </section>
             <section v-if="showStartupProgress || strategyData?.strategy.status === 'initializing'" class="startup-progress" aria-live="polite">
@@ -511,22 +524,22 @@ async function closeAllPositions() {
               </div>
             </section>
             <div class="strategy-config">
-              <label>单边保证金 <input v-model.number="strategyMargin" type="number" min="1" max="20" step="1" :disabled="strategyData?.strategy.enabled || strategyBusy" /><b>USDT</b></label>
-              <label>杠杆 <input v-model.number="strategyLeverage" type="number" min="1" max="50" step="1" :disabled="strategyData?.strategy.enabled || strategyBusy" /><b>×</b></label>
-              <span>{{ strategyData?.strategy.enabled ? '策略运行中，参数已锁定' : '启动后参数锁定' }}</span>
+              <label>单边保证金 <input v-model.number="strategyMargin" type="number" min="1" max="20" step="1" :disabled="strategyData?.strategy.enabled || strategyData?.strategy.resumeEligible || strategyBusy" /><b>USDT</b></label>
+              <label>杠杆 <input v-model.number="strategyLeverage" type="number" min="1" max="50" step="1" :disabled="strategyData?.strategy.enabled || strategyData?.strategy.resumeEligible || strategyBusy" /><b>×</b></label>
+              <span>{{ strategyData?.strategy.enabled ? '策略运行中，参数已锁定' : strategyData?.strategy.resumeEligible ? '恢复接管时沿用暂停前参数' : '启动后参数锁定' }}</span>
             </div>
             <div class="strategy-metrics">
               <div><span>单笔保证金</span><b>{{ strategyData?.strategy.marginPerOrder ?? strategyMargin }} USDT</b></div><div><span>杠杆</span><b>{{ strategyData?.strategy.leverage ?? strategyLeverage }}×</b></div>
               <div><span>已补仓</span><b v-if="strategyData?.strategy.longAdditions == null && strategyData?.strategy.shortAdditions == null">{{ strategyData?.strategy.additions || 0 }} / 20</b><b v-else>多 {{ strategyData?.strategy.longAdditions || 0 }}/20 · 空 {{ strategyData?.strategy.shortAdditions || 0 }}/20</b></div><div><span>下一档间距</span><b>{{ strategyData?.strategy.addStep == null ? '—' : `${Number(strategyData.strategy.addStep).toFixed(2)}` }}</b></div>
               <div><span>多头净盈亏</span><b>{{ strategyData?.strategy.long?.costs == null ? '—' : `${Number(strategyData.strategy.long.costs.netPnl).toFixed(2)} U` }}</b></div><div><span>空头净盈亏</span><b>{{ strategyData?.strategy.short?.costs == null ? '—' : `${Number(strategyData.strategy.short.costs.netPnl).toFixed(2)} U` }}</b></div>
             </div>
-            <p v-if="strategyData?.strategy.weekendMode" class="market-meta">周末流动性模式：暂停新开仓、补仓和止盈后的重建；已有 Maker 平仓单维持原价。</p>
+            <p v-if="strategyData?.strategy.weekendMode" class="market-meta">周末流动性模式：暂停新建底仓和止盈后的仓位重建；已有仓位继续补仓与止盈。</p>
             <p class="dialog-intro">服务器24小时识别震荡结构，建立双向底仓；补仓间距为 15 分钟 ATR 的 0.6 倍，并限制在现价的 0.08%～0.35%。多头、空头各自最多补仓 20 次。任一侧达到单边净利润目标后以 Maker 平仓，10 秒后按初始金额和杠杆建立同方向新底仓；另一侧状态保留。</p>
             <p v-if="strategyData?.strategy.long?.costs || strategyData?.strategy.short?.costs" class="market-meta">多头：{{ strategyData.strategy.long?.recovery ? `恢复中，目标 ${Number(strategyData.strategy.long.costs?.profitTarget || 0).toFixed(2)}U，ATR 回撤 ${Number(strategyData.strategy.long.recoveryTrail || 0).toFixed(2)}U` : `常规目标 ${Number(strategyData.strategy.long?.costs?.profitTarget || 0).toFixed(2)}U` }}。空头：{{ strategyData.strategy.short?.recovery ? `恢复中，目标 ${Number(strategyData.strategy.short.costs?.profitTarget || 0).toFixed(2)}U，ATR 回撤 ${Number(strategyData.strategy.short.recoveryTrail || 0).toFixed(2)}U` : `常规目标 ${Number(strategyData.strategy.short?.costs?.profitTarget || 0).toFixed(2)}U` }}。</p>
             <p v-if="strategyData?.strategy.range" class="market-meta">当前参考区间：{{ strategyData.strategy.range.low }} – {{ strategyData.strategy.range.high }} · 最新价 {{ strategyData.strategy.lastPrice ?? '—' }}</p>
             <p v-if="strategyData?.strategy.lastError || strategyError" class="order-error">{{ strategyError || strategyData?.strategy.lastError }}</p>
           </div>
-          <footer class="dialog-footer"><p class="footer-hint">暂停策略会撤销已知挂单并保留已成交仓位。</p><div class="footer-actions"><button class="btn" :disabled="strategyBusy" @click="closeStrategy">关闭</button><button class="btn primary" :disabled="strategyBusy" @click="toggleStrategy">{{ strategyBusy ? '处理中…' : strategyData?.strategy.enabled ? '暂停策略' : '启动24H策略' }}</button></div></footer>
+          <footer class="dialog-footer"><p class="footer-hint">暂停策略会撤销已知挂单并保留已成交仓位；再次启动时按实际仓位恢复接管。</p><div class="footer-actions"><button class="btn" :disabled="strategyBusy" @click="closeStrategy">关闭</button><button class="btn primary" :disabled="strategyBusy" @click="toggleStrategy">{{ strategyBusy ? '处理中…' : strategyData?.strategy.enabled ? '暂停策略' : strategyData?.strategy.resumeEligible ? '恢复并接管仓位' : '启动24H策略' }}</button></div></footer>
         </div>
       </div>
     </Teleport>

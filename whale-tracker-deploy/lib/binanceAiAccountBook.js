@@ -123,7 +123,7 @@ function attributeFundingIncome(fundingRows, exposureEvents) {
   return attributed;
 }
 
-async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol = {}) {
+async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol = {}, ownershipBySymbol = {}) {
   const [balances, positions, orders] = await Promise.all([
     signedRequest(creds, 'GET', '/fapi/v2/balance'),
     signedRequest(creds, 'GET', '/fapi/v2/positionRisk'),
@@ -190,7 +190,8 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
   }
   const pos = allPositions.map((row) => {
     const direction = row.positionSide === 'BOTH' ? (Number(row.positionAmt) < 0 ? 'SHORT' : 'LONG') : row.positionSide;
-    const aiQty = aiQtyByPosition.get(`${row.symbol}|${direction}`) || 0;
+    const owned = Number(ownershipBySymbol?.[row.symbol]?.[direction === 'SHORT' ? 'short' : 'long'] || 0);
+    const aiQty = Math.max(aiQtyByPosition.get(`${row.symbol}|${direction}`) || 0, owned);
     const totalQty = Math.abs(Number(row.positionAmt));
     const share = totalQty > 0 ? Math.min(1, aiQty / totalQty) : 0;
     return { row, share, aiQty: Math.min(totalQty, aiQty) };
@@ -232,6 +233,12 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
     manualClosures.push({ ...trade, qty: String(attributedQty), quoteQty: Number(trade.quoteQty || 0) * share,
       realizedPnl: Number(trade.realizedPnl || 0) * share, commission: Number(trade.commission || 0) * share, manualStrategyClose: true });
   }
+  for (const [symbol, ownership] of Object.entries(ownershipBySymbol || {})) {
+    const time = Number(ownership.adoptedAt || 0);
+    if (!(time > 0)) continue;
+    if (Number(ownership.adoptedLongQty || 0) > 0) fundingExposureEvents.push({ symbol, direction: 'LONG', time, totalDelta: 0, aiDelta: Number(ownership.adoptedLongQty) });
+    if (Number(ownership.adoptedShortQty || 0) > 0) fundingExposureEvents.push({ symbol, direction: 'SHORT', time, totalDelta: 0, aiDelta: Number(ownership.adoptedShortQty) });
+  }
   for (const trade of manualClosures) rememberManualStrategyClosure(userId, trade);
   const storedManual = scope === 'tradfi' ? storedManualStrategyClosures(userId).map((trade) => ({
     id: trade.trade_id, orderId: trade.order_id, symbol: trade.symbol, side: trade.side, positionSide: trade.position_side,
@@ -271,7 +278,7 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
   for (const trade of allTrades) {
     if (trade.commissionAsset !== 'USDT') continue;
     const fees = feesBySymbol[trade.instId] || (feesBySymbol[trade.instId] = { tradingFees: 0, fundingFees: 0, netCost: 0 });
-    fees.tradingFees += Number(trade.commission) || 0;
+    fees.tradingFees += Math.max(0, Number(trade.commission) || 0);
   }
   for (const income of attributeFundingIncome(fundingRows, fundingExposureEvents)) {
     const symbol = String(income.symbol || '');

@@ -1558,6 +1558,9 @@ export type TradfiRangeStatus = {
   netPnl?: number | null; closeTrigger?: number | null; addStep?: number | null;
   weekendMode?: boolean;
   startupProgress?: number | null; startupStep?: string;
+  resumeEligible?: boolean;
+  adoptedAt?: number | null; adoptedLongQty?: number; adoptedShortQty?: number;
+  adoptionPositions?: { long: { quantity: number; entryPrice: number; leverage: number; unrealizedPnl: number }; short: { quantity: number; entryPrice: number; leverage: number; unrealizedPnl: number } } | null;
   recovery?: boolean; recoveryArmed?: boolean; recoveryPeakNetPnl?: number | null; recoveryTrail?: number | null;
   long?: TradfiLegStatus; short?: TradfiLegStatus;
   costs?: { entryFee?: number; exitFee?: number; slippage?: number; fundingNet?: number; estimatedCosts?: number; profitTarget?: number; closeTrigger?: number; netPnl?: number; long?: TradfiLegStatus['costs']; short?: TradfiLegStatus['costs'] } | null;
@@ -1572,7 +1575,7 @@ export async function startTradfiRange(symbol: string) {
   const { data } = await http.post<TradfiRangeResponse>('/tradfi/range/start', { symbol }, { timeout: 20_000 });
   return data;
 }
-export async function startTradfiRangeWithConfig(symbol: string, body: { marginUsdt: number; leverage: number }) {
+export async function startTradfiRangeWithConfig(symbol: string, body: { marginUsdt: number; leverage: number; adoptExisting?: boolean }) {
   const { data } = await http.post<TradfiRangeResponse>('/tradfi/range/start', { symbol, ...body }, { timeout: 20_000 });
   return data;
 }

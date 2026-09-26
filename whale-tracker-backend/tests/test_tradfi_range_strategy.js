@@ -8,7 +8,7 @@ function candles(start, count, step, spread = 2) {
   });
 }
 
-const { marketState, ladderStep, requestedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, closeClientId, closeOrderRemaining, additionDecision, scalpProfitTarget, commissionRate, isCommodityWeekendMode, orderFillState, profitGuardPrice, allocateFundingCharge, MAX_ADDITIONS, MARGIN, LEVERAGE } = require('../lib/tradfiRangeStrategy');
+const { marketState, ladderStep, requestedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, closeClientId, closeOrderRemaining, additionDecision, scalpProfitTarget, commissionRate, isCommodityWeekendMode, orderFillState, profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState, MAX_ADDITIONS, MARGIN, LEVERAGE } = require('../lib/tradfiRangeStrategy');
 
 test('黄金窄幅结构允许震荡监控，明显单边结构识别为趋势', () => {
   const range15 = candles(1800, 48, 0.02, 2);
@@ -47,7 +47,7 @@ test('币安返回零 Maker 费率时，止盈计算保留零费率', () => {
   assert.equal(commissionRate(undefined, 0.0002), 0.0002);
 });
 
-test('商品 TradFi 在美东周五收市至周日开市期间暂停策略动作', () => {
+test('商品 TradFi 能识别周末流动性时段', () => {
   assert.equal(isCommodityWeekendMode(new Date('2026-09-25T20:59:00Z')), false);
   assert.equal(isCommodityWeekendMode(new Date('2026-09-25T21:00:00Z')), true);
   assert.equal(isCommodityWeekendMode(new Date('2026-09-27T21:59:00Z')), true);
@@ -72,6 +72,20 @@ test('合约级资金费只计入一次，并由当前盈利较高的一侧承�
   assert.deepEqual(allocateFundingCharge(-1.2, 3, -2), { long: -1.2, short: 0 });
   assert.deepEqual(allocateFundingCharge(-1.2, -2, 3), { long: 0, short: -1.2 });
   assert.deepEqual(allocateFundingCharge(0.8, 3, -2), { long: 0, short: 0 });
+});
+
+test('恢复接管以交易所实际数量为准并保留原补仓状态', () => {
+  const positions = {
+    long: { positionAmt: '0.35', entryPrice: '4800', leverage: '20', unRealizedProfit: '-3.2' },
+    short: { positionAmt: '-0.2', entryPrice: '4820', leverage: '20', unRealizedProfit: '1.1' },
+  };
+  assert.deepEqual(positionAdoptionSummary(positions).long, { quantity: 0.35, entryPrice: 4800, leverage: 20, unrealizedPnl: -3.2 });
+  const patch = adoptedLegState({ longAdditions: 6, longExpectedQty: 0.3, longLastAddPrice: 4790, longMinPnl: -8 }, 'long', positions.long);
+  assert.equal(patch.longExpectedQty, 0.35);
+  assert.equal(patch.longAdditions, 6);
+  assert.equal(patch.longLastAddPrice, 4790);
+  assert.equal(patch.longMinPnl, -8);
+  assert.equal(patch.longPhase, 'active');
 });
 
 test('平仓重挂只使用策略委托尚未成交的数量', () => {

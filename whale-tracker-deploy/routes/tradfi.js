@@ -67,7 +67,11 @@ router.get('/account', async (req, res) => {
     const fundingSinceBySymbol = Object.fromEntries(strategies
       .filter((row) => Number(row.cycleStartedAt) > 0)
       .map((row) => [row.symbol, Number(row.cycleStartedAt)]));
-    const book = await accountBook(creds, user.user.id, 'tradfi', fundingSinceBySymbol);
+    const ownershipBySymbol = Object.fromEntries(strategies.map((row) => [row.symbol, {
+      long: Number(row.long?.expectedQty || row.adoptedLongQty || 0), short: Number(row.short?.expectedQty || row.adoptedShortQty || 0),
+      adoptedAt: Number(row.adoptedAt || 0), adoptedLongQty: Number(row.adoptedLongQty || 0), adoptedShortQty: Number(row.adoptedShortQty || 0),
+    }]));
+    const book = await accountBook(creds, user.user.id, 'tradfi', fundingSinceBySymbol, ownershipBySymbol);
     const symbols = new Set(catalog.symbols.map((row) => row.symbol));
     const records = book.records.filter((row) => symbols.has(row.instId));
     res.json({ ...book, scope: 'tradfi', records, strategies, weekendMode: rangeStrategy.isCommodityWeekendMode(), openPnl: records.filter((row) => row.kind === 'position').reduce((sum, row) => sum + Number(row.openUpl || 0), 0) });

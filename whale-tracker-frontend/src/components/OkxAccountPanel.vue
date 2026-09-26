@@ -231,9 +231,9 @@ defineExpose({ reload: () => load(true) });
         <div class="data-sub">{{ props.exchange === 'okx' ? 'AI 已平' : '暂未统计' }}</div>
       </div>
       <div v-if="props.exchange === 'tradfi'" class="data-card">
-        <div class="data-label">资金费用</div>
-        <div class="data-value" :class="valueClass(book?.costs?.fundingFees)">{{ formatSignedUsd(book?.costs?.fundingFees) }}</div>
-        <div class="data-sub">交易手续费 {{ preciseUsd(book?.costs?.tradingFees) }} · 费用合计 {{ formatSignedUsd(book?.costs?.netCost) }}</div>
+        <div class="data-label">手续费</div>
+        <div class="data-value" :class="valueClass(-(book?.costs?.tradingFees || 0))">{{ formatSignedUsd(-(book?.costs?.tradingFees || 0)) }}</div>
+        <div class="data-sub">只统计 AI 策略实际产生损耗的交易手续费</div>
       </div>
     </div>
 
@@ -247,7 +247,7 @@ defineExpose({ reload: () => load(true) });
         <div class="asset-header">
           <span>{{ group.coin }} <b class="asset-pnl" :class="valueClass(groupPnl(group))">{{ formatSignedUsd(groupPnl(group)) }}</b></span>
           <span v-if="group.strategy" class="asset-config">单笔：{{ group.strategy.marginPerOrder }}U · 倍数：{{ group.strategy.leverage }}X</span>
-          <span class="asset-fees">手续费 {{ preciseUsd(groupFees(group).tradingFees) }} · 资金费 {{ formatSignedUsd(groupFees(group).fundingFees) }}</span>
+          <span class="asset-fees">手续费损耗 {{ preciseUsd(groupFees(group).tradingFees) }}</span>
           <span class="asset-mode">{{ groupMode(group) }}</span>
         </div>
         <div class="position-row">
