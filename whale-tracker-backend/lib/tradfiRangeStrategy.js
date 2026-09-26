@@ -71,6 +71,13 @@ function requestedConfig(input = {}) {
   if (!Number.isInteger(leverage) || leverage < 1 || leverage > MAX_LEVERAGE) throw invalid(`杠杆需在 1–${MAX_LEVERAGE} 倍之间`);
   return { marginUsdt, leverage };
 }
+function resumedConfig(current, input = {}) {
+  const saved = current || { marginUsdt: MARGIN, leverage: LEVERAGE };
+  return requestedConfig({
+    marginUsdt: input.marginUsdt ?? saved.marginUsdt,
+    leverage: saved.leverage,
+  });
+}
 function log(userId, symbol, message, level = 'info', details = {}) {
   getDb().prepare('INSERT INTO tradfi_range_events (user_id,symbol,level,message,details_json,created_at) VALUES (?,?,?,?,?,?)')
     .run(String(userId), symbol, level, message, JSON.stringify(details), Date.now());
@@ -177,7 +184,8 @@ function enable(userId, symbol, simulated, input = {}) {
   const existingState = parseState(existing);
   const savedPosition = existing?.status === 'paused' && (existingState.resumeEligible
     || Number(existingState.expectedLong || 0) > 0 || Number(existingState.expectedShort || 0) > 0);
-  const config = savedPosition ? strategyConfig(existing) : requestedConfig(input);
+  const savedConfig = strategyConfig(existing);
+  const config = savedPosition ? resumedConfig(savedConfig, input) : requestedConfig(input);
   const now = Date.now();
   const initialState = savedPosition || input.adoptExisting
     ? { ...existingState, config, resumeEligible: savedPosition, adoptExisting: Boolean(input.adoptExisting), startupProgress: 5, startupStep: '准备检查现有仓位' }
@@ -185,7 +193,7 @@ function enable(userId, symbol, simulated, input = {}) {
   getDb().prepare(`INSERT INTO tradfi_range_strategies (user_id,symbol,enabled,status,simulated,additions,state_json,last_error,started_at,updated_at)
     VALUES (?,?,1,'initializing',?,0,?,'',?,?) ON CONFLICT(user_id,symbol) DO UPDATE SET enabled=1,status='initializing',simulated=excluded.simulated,additions=0,state_json=excluded.state_json,last_error='',started_at=excluded.started_at,updated_at=excluded.updated_at`)
     .run(String(userId), sym, simulated ? 1 : 0, JSON.stringify(initialState), now, now);
-  log(userId, sym, savedPosition ? '准备恢复并接管停止前的策略仓位' : input.adoptExisting ? '用户已确认，准备接管现有仓位' : `准备启动震荡交易：单边 ${config.marginUsdt}U × ${config.leverage}倍`, 'info', { phase: 'startup', progress: 5 });
+  log(userId, sym, savedPosition ? `准备恢复并接管停止前的策略仓位；后续单笔 ${config.marginUsdt}U × ${config.leverage}倍` : input.adoptExisting ? '用户已确认，准备接管现有仓位' : `准备启动震荡交易：单边 ${config.marginUsdt}U × ${config.leverage}倍`, 'info', { phase: 'startup', progress: 5, marginUsdt: config.marginUsdt, leverage: config.leverage });
   return status(userId, sym);
 }
 async function disable(userId, symbol) {
@@ -1036,4 +1044,4 @@ async function reconcile() {
 }
 function start() { if (timer) return; timer = setInterval(() => { void reconcile(); }, POLL_MS); timer.unref?.(); void reconcile(); }
 
-module.exports = { start, reconcile, status, enable, disable, closeAll, closeClientId, closeOrderRemaining, additionDecision, marketState, atr, ladderStep, costState, scalpProfitTarget, commissionRate, isCommodityWeekendMode, orderFillState, profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState, strategyConfig, requestedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, SYMBOLS, MAX_ADDITIONS, MARGIN, LEVERAGE, MAX_MARGIN, MAX_LEVERAGE };
+module.exports = { start, reconcile, status, enable, disable, closeAll, closeClientId, closeOrderRemaining, additionDecision, marketState, atr, ladderStep, costState, scalpProfitTarget, commissionRate, isCommodityWeekendMode, orderFillState, profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState, strategyConfig, requestedConfig, resumedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, SYMBOLS, MAX_ADDITIONS, MARGIN, LEVERAGE, MAX_MARGIN, MAX_LEVERAGE };

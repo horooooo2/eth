@@ -8,7 +8,7 @@ function candles(start, count, step, spread = 2) {
   });
 }
 
-const { marketState, ladderStep, requestedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, closeClientId, closeOrderRemaining, additionDecision, scalpProfitTarget, commissionRate, isCommodityWeekendMode, orderFillState, profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState, MAX_ADDITIONS, MARGIN, LEVERAGE } = require('../lib/tradfiRangeStrategy');
+const { marketState, ladderStep, requestedConfig, resumedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, closeClientId, closeOrderRemaining, additionDecision, scalpProfitTarget, commissionRate, isCommodityWeekendMode, orderFillState, profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState, MAX_ADDITIONS, MARGIN, LEVERAGE } = require('../lib/tradfiRangeStrategy');
 
 test('黄金窄幅结构允许震荡监控，明显单边结构识别为趋势', () => {
   const range15 = candles(1800, 48, 0.02, 2);
@@ -35,6 +35,12 @@ test('启动前允许设置单边保证金和杠杆，并限制最大值', () =>
   assert.deepEqual(requestedConfig({ marginUsdt: 20, leverage: 50 }), { marginUsdt: 20, leverage: 50 });
   assert.throws(() => requestedConfig({ marginUsdt: 20.1, leverage: 10 }), /20 USDT/);
   assert.throws(() => requestedConfig({ marginUsdt: 10, leverage: 51 }), /50 倍/);
+});
+
+test('恢复接管时允许修改后续单笔本金，并强制保留原杠杆', () => {
+  assert.deepEqual(resumedConfig({ marginUsdt: 20, leverage: 25 }, { marginUsdt: 8, leverage: 50 }), { marginUsdt: 8, leverage: 25 });
+  assert.deepEqual(resumedConfig({ marginUsdt: 20, leverage: 25 }, {}), { marginUsdt: 20, leverage: 25 });
+  assert.throws(() => resumedConfig({ marginUsdt: 20, leverage: 25 }, { marginUsdt: 21 }), /20 USDT/);
 });
 
 test('震荡高频止盈以 0.4U 或单边名义价值的 0.02% 为净利润缓冲', () => {
