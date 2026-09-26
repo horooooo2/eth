@@ -232,8 +232,8 @@ defineExpose({ reload: () => load(true) });
       </div>
       <div v-if="props.exchange === 'tradfi'" class="data-card">
         <div class="data-label">资金费用</div>
-        <div class="data-value" :class="valueClass(book?.costs?.netCost)">{{ formatSignedUsd(book?.costs?.netCost) }}</div>
-        <div class="data-sub">资金费 {{ formatSignedUsd(book?.costs?.fundingFees) }} · 手续费 {{ preciseUsd(book?.costs?.tradingFees) }}</div>
+        <div class="data-value" :class="valueClass(book?.costs?.fundingFees)">{{ formatSignedUsd(book?.costs?.fundingFees) }}</div>
+        <div class="data-sub">交易手续费 {{ preciseUsd(book?.costs?.tradingFees) }} · 费用合计 {{ formatSignedUsd(book?.costs?.netCost) }}</div>
       </div>
     </div>
 

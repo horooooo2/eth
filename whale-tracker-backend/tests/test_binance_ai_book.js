@@ -58,7 +58,7 @@ stub('../lib/binanceTradfiTrade', {
   stepped: (value) => String(value),
 });
 
-const { accountBook, isStrategyClose, allOrdersSince, userTradesSince } = require('../lib/binanceAiAccountBook');
+const { accountBook, isStrategyClose, allOrdersSince, userTradesSince, attributeFundingIncome } = require('../lib/binanceAiAccountBook');
 
 test('TradFi 的 wtf_c_ 委托识别为策略平仓', () => {
   assert.equal(isStrategyClose({ clientOrderId: 'wtf_c_cycle_L1234' }), true);
@@ -118,4 +118,18 @@ test('订单和成交历史超过1000条时继续分页并去重', async () => {
   } finally {
     pagingHistory = false;
   }
+});
+
+test('资金费只按结算时的 AI 仓位占比归因，并排除策略空仓时段', () => {
+  const rows = attributeFundingIncome([
+    { symbol: 'XAUUSDT', time: 30, income: '-1' },
+    { symbol: 'XAUUSDT', time: 50, income: '-1' },
+  ], [
+    { symbol: 'XAUUSDT', direction: 'LONG', time: 10, totalDelta: 9, aiDelta: 0 },
+    { symbol: 'XAUUSDT', direction: 'LONG', time: 20, totalDelta: 1, aiDelta: 1 },
+    { symbol: 'XAUUSDT', direction: 'LONG', time: 40, totalDelta: -1, aiDelta: -1 },
+  ]);
+  assert.equal(rows.length, 1);
+  assert.ok(Math.abs(Number(rows[0].income) + 0.1) < 1e-12);
+  assert.equal(rows[0].aiShare, 0.1);
 });

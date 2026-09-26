@@ -89,6 +89,40 @@ async function userTradesSince(creds, symbol) {
   return rows;
 }
 
+function attributeFundingIncome(fundingRows, exposureEvents) {
+  const eventsBySymbol = new Map(); const fundingBySymbol = new Map();
+  for (const event of exposureEvents || []) {
+    const symbol = String(event.symbol || '');
+    if (!eventsBySymbol.has(symbol)) eventsBySymbol.set(symbol, []);
+    eventsBySymbol.get(symbol).push(event);
+  }
+  for (const income of fundingRows || []) {
+    const symbol = String(income.symbol || '');
+    if (!fundingBySymbol.has(symbol)) fundingBySymbol.set(symbol, []);
+    fundingBySymbol.get(symbol).push(income);
+  }
+  const attributed = [];
+  for (const [symbol, rows] of fundingBySymbol) {
+    const events = (eventsBySymbol.get(symbol) || []).sort((a, b) => Number(a.time || 0) - Number(b.time || 0));
+    const total = new Map([['LONG', 0], ['SHORT', 0]]); const ai = new Map([['LONG', 0], ['SHORT', 0]]);
+    let eventIndex = 0;
+    for (const income of rows.sort((a, b) => Number(a.time || 0) - Number(b.time || 0))) {
+      const fundingTime = Number(income.time || 0);
+      while (eventIndex < events.length && Number(events[eventIndex].time || 0) <= fundingTime) {
+        const event = events[eventIndex++]; const direction = event.direction === 'SHORT' ? 'SHORT' : 'LONG';
+        total.set(direction, Math.max(0, (total.get(direction) || 0) + Number(event.totalDelta || 0)));
+        ai.set(direction, Math.max(0, (ai.get(direction) || 0) + Number(event.aiDelta || 0)));
+        ai.set(direction, Math.min(ai.get(direction) || 0, total.get(direction) || 0));
+      }
+      const totalQty = (total.get('LONG') || 0) + (total.get('SHORT') || 0);
+      const aiQty = (ai.get('LONG') || 0) + (ai.get('SHORT') || 0);
+      const share = totalQty > 0 ? Math.min(1, aiQty / totalQty) : 0;
+      if (share > 0) attributed.push({ ...income, income: Number(income.income || 0) * share, aiShare: share });
+    }
+  }
+  return attributed;
+}
+
 async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol = {}) {
   const [balances, positions, orders] = await Promise.all([
     signedRequest(creds, 'GET', '/fapi/v2/balance'),
@@ -167,6 +201,7 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
   ];
   const strategyQty = new Map();
   const manualClosures = [];
+  const fundingExposureEvents = [];
   const orderedTrades = [...userTrades].sort((a, b) => Number(a.time || 0) - Number(b.time || 0));
   for (const trade of orderedTrades) {
     const positionSide = String(trade.positionSide || 'BOTH').toUpperCase();
@@ -177,14 +212,22 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
       : positionSide;
     const key = `${trade.symbol}|${direction}`;
     const quantity = Number(trade.qty || 0);
+    const exposureEvent = { symbol: trade.symbol, direction, time: Number(trade.time || 0), totalDelta: closes ? -quantity : quantity, aiDelta: 0 };
     if (aiOrderIds.has(String(trade.orderId))) {
       strategyQty.set(key, Math.max(0, (strategyQty.get(key) || 0) + (closes ? -quantity : quantity)));
+      exposureEvent.aiDelta = closes ? -quantity : quantity;
+      if (quantity > 0) fundingExposureEvents.push(exposureEvent);
       continue;
     }
-    if (!closes || !(quantity > 0)) continue;
+    if (!closes || !(quantity > 0)) {
+      if (quantity > 0) fundingExposureEvents.push(exposureEvent);
+      continue;
+    }
     const attributedQty = Math.min(quantity, strategyQty.get(key) || 0);
-    if (!(attributedQty > 0)) continue;
+    if (!(attributedQty > 0)) { fundingExposureEvents.push(exposureEvent); continue; }
     strategyQty.set(key, (strategyQty.get(key) || 0) - attributedQty);
+    exposureEvent.aiDelta = -attributedQty;
+    fundingExposureEvents.push(exposureEvent);
     const share = attributedQty / quantity;
     manualClosures.push({ ...trade, qty: String(attributedQty), quoteQty: Number(trade.quoteQty || 0) * share,
       realizedPnl: Number(trade.realizedPnl || 0) * share, commission: Number(trade.commission || 0) * share, manualStrategyClose: true });
@@ -230,7 +273,7 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
     const fees = feesBySymbol[trade.instId] || (feesBySymbol[trade.instId] = { tradingFees: 0, fundingFees: 0, netCost: 0 });
     fees.tradingFees += Number(trade.commission) || 0;
   }
-  for (const income of fundingRows) {
+  for (const income of attributeFundingIncome(fundingRows, fundingExposureEvents)) {
     const symbol = String(income.symbol || '');
     if (!feesBySymbol[symbol]) continue;
     feesBySymbol[symbol].fundingFees += Number(income.income) || 0;
@@ -247,4 +290,4 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
   return { ok: true, configured: true, simulated: creds.simulated, scope: 'ai-only', balance: { totalEq: Number(usdt?.balance) || null, usdtEq: Number(usdt?.balance) || null, availBal: Number(usdt?.availableBalance) || null }, openPnl, realizedPnl, historyPnl, records, trades, costs, feesBySymbol };
 }
 
-module.exports = { accountBook, isStrategyClose, allOrdersSince, userTradesSince };
+module.exports = { accountBook, isStrategyClose, allOrdersSince, userTradesSince, attributeFundingIncome };
