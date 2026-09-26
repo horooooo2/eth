@@ -8,6 +8,7 @@ function stub(path, exports) {
 
 let closedThenManual = false;
 let hideManualTrade = false;
+let pagingHistory = false;
 
 stub('../lib/binanceAiLedger', {
   listBinanceAiOrders: (_userId, scope) => [{ order_id: '101', client_order_id: scope === 'tradfi' ? 'wtf_rg_cycle_base_l_0' : 'wtai_group_e', symbol: 'BTCUSDT', leverage: 5 }],
@@ -15,6 +16,14 @@ stub('../lib/binanceAiLedger', {
 });
 stub('../lib/binanceTradfiTrade', {
   signedRequest: async (_creds, _method, path, params = {}) => {
+    if (pagingHistory && path.endsWith('/allOrders')) {
+      if (!params.orderId) return Array.from({ length: 1000 }, (_, index) => ({ orderId: index + 1 }));
+      return [{ orderId: 1001 }, { orderId: 1002 }];
+    }
+    if (pagingHistory && path.endsWith('/userTrades')) {
+      if (!params.fromId) return Array.from({ length: 1000 }, (_, index) => ({ id: index + 1 }));
+      return [{ id: 1001 }, { id: 1002 }];
+    }
     if (path.endsWith('/balance')) return [{ asset: 'USDT', balance: '500', availableBalance: '420' }];
     if (closedThenManual) {
       if (path.endsWith('/positionRisk')) return [{ symbol: 'BTCUSDT', positionSide: 'BOTH', positionAmt: '0.2', entryPrice: '110', notional: '22', leverage: '5', unRealizedProfit: '1', updateTime: 40 }];
@@ -49,7 +58,12 @@ stub('../lib/binanceTradfiTrade', {
   stepped: (value) => String(value),
 });
 
-const { accountBook } = require('../lib/binanceAiAccountBook');
+const { accountBook, isStrategyClose, allOrdersSince, userTradesSince } = require('../lib/binanceAiAccountBook');
+
+test('TradFi 的 wtf_c_ 委托识别为策略平仓', () => {
+  assert.equal(isStrategyClose({ clientOrderId: 'wtf_c_cycle_L1234' }), true);
+  assert.equal(isStrategyClose({ clientOrderId: 'wtf_rg_cycle_base_l_0' }), false);
+});
 
 test('币安交易账户只展示 AI 挂单和 AI 对应的仓位份额', async () => {
   const book = await accountBook({ simulated: false }, 'u1', 'crypto');
@@ -66,8 +80,8 @@ test('TradFi 交易记录来自本站策略订单的币安成交明细', async (
   assert.equal(book.trades.find((row) => row.source === 'ai').amountUsd, 10);
   assert.equal(book.trades.find((row) => row.source === 'manual').action, 'close');
   assert.equal(book.trades.find((row) => row.source === 'manual').realizedPnl, 0.5);
-  assert.equal(book.costs.tradingFees, 0.004);
-  assert.equal(book.costs.netCost, -0.004);
+  assert.equal(book.costs.tradingFees, 0.006);
+  assert.equal(book.costs.netCost, -0.006);
   assert.equal(book.realizedPnl, 0.5);
 });
 
@@ -89,5 +103,19 @@ test('AI 仓位平仓后手动重开不会再次显示为 AI 仓位', async () =
     assert.equal(book.openPnl, 0);
   } finally {
     closedThenManual = false;
+  }
+});
+
+test('订单和成交历史超过1000条时继续分页并去重', async () => {
+  pagingHistory = true;
+  try {
+    const orders = await allOrdersSince({}, 'XAUUSDT');
+    const trades = await userTradesSince({}, 'XAUUSDT');
+    assert.equal(orders.length, 1002);
+    assert.equal(trades.length, 1002);
+    assert.equal(orders.at(-1).orderId, 1002);
+    assert.equal(trades.at(-1).id, 1002);
+  } finally {
+    pagingHistory = false;
   }
 });

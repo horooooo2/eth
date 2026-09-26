@@ -2,6 +2,11 @@ const { signedRequest } = require('./binanceTradfiTrade');
 const { listBinanceAiOrders, isAiClientId } = require('./binanceAiLedger');
 const { getDb } = require('./db');
 
+function isStrategyClose(order) {
+  return order?.reduceOnly === true || order?.reduceOnly === 'true' || order?.closePosition === true
+    || String(order?.clientOrderId || '').startsWith('wtf_c_') || /_close_/.test(String(order?.clientOrderId || ''));
+}
+
 function rememberManualStrategyClosure(userId, trade) {
   if (!userId || !trade?.id) return;
   try {
@@ -24,6 +29,66 @@ function storedManualStrategyClosures(userId) {
   } catch { return []; }
 }
 
+async function fundingIncomeSince(creds, symbol, startedAt) {
+  const rows = []; let cursor = Number(startedAt);
+  for (let page = 0; page < 50; page += 1) {
+    const batch = await signedRequest(creds, 'GET', '/fapi/v1/income', {
+      symbol, incomeType: 'FUNDING_FEE', startTime: String(cursor), limit: '1000',
+    }).catch(() => []);
+    if (!Array.isArray(batch) || !batch.length) break;
+    rows.push(...batch);
+    if (batch.length < 1000) break;
+    const next = Math.max(...batch.map((item) => Number(item.time || 0))) + 1;
+    if (!(next > cursor)) break;
+    cursor = next;
+  }
+  return rows;
+}
+
+async function allOrdersSince(creds, symbol, firstOrderId) {
+  const rows = []; const seen = new Set();
+  let cursor = Number(firstOrderId) || 0;
+  for (let page = 0; page < 100; page += 1) {
+    const params = { symbol, limit: '1000' };
+    if (cursor > 0) params.orderId = String(cursor);
+    let batch;
+    try { batch = await signedRequest(creds, 'GET', '/fapi/v1/allOrders', params); }
+    catch (err) { if (!rows.length) throw err; break; }
+    if (!Array.isArray(batch) || !batch.length) break;
+    for (const order of batch) {
+      const key = String(order.orderId);
+      if (!seen.has(key)) { seen.add(key); rows.push(order); }
+    }
+    if (batch.length < 1000) break;
+    const next = Math.max(...batch.map((order) => Number(order.orderId || 0))) + 1;
+    if (!(next > cursor)) break;
+    cursor = next;
+  }
+  return rows;
+}
+
+async function userTradesSince(creds, symbol) {
+  const rows = []; const seen = new Set();
+  let cursor = 0;
+  for (let page = 0; page < 100; page += 1) {
+    const params = { symbol, limit: '1000' };
+    if (cursor > 0) params.fromId = String(cursor);
+    let batch;
+    try { batch = await signedRequest(creds, 'GET', '/fapi/v1/userTrades', params); }
+    catch (err) { if (!rows.length) throw err; break; }
+    if (!Array.isArray(batch) || !batch.length) break;
+    for (const trade of batch) {
+      const key = String(trade.id);
+      if (!seen.has(key)) { seen.add(key); rows.push(trade); }
+    }
+    if (batch.length < 1000) break;
+    const next = Math.max(...batch.map((trade) => Number(trade.id || 0))) + 1;
+    if (!(next > cursor)) break;
+    cursor = next;
+  }
+  return rows;
+}
+
 async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol = {}) {
   const [balances, positions, orders] = await Promise.all([
     signedRequest(creds, 'GET', '/fapi/v2/balance'),
@@ -34,24 +99,25 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
   const ledger = userId ? listBinanceAiOrders(userId, scope) : [];
   const ledgerIds = new Set(ledger.map((row) => String(row.order_id)));
   const ledgerClients = new Set(ledger.map((row) => String(row.client_order_id)).filter(Boolean));
+  const firstAiOrderAtBySymbol = ledger.reduce((map, row) => {
+    const at = Number(row.created_at || 0);
+    if (at > 0 && (!map[row.symbol] || at < map[row.symbol])) map[row.symbol] = at;
+    return map;
+  }, {});
   const allPositions = (Array.isArray(positions) ? positions : []).filter((r) => Number(r.positionAmt) !== 0 && r.symbol?.endsWith('USDT'));
-  const candidateSymbols = [...new Set([...ledger.map((row) => row.symbol), ...allPositions.map((row) => row.symbol)])].slice(0, 10);
+  const candidateSymbols = [...new Set([...ledger.map((row) => row.symbol), ...allPositions.map((row) => row.symbol)])];
   const orderHistory = (await Promise.all(candidateSymbols.map((symbol) => {
     const firstLedgerId = ledger.filter((row) => row.symbol === symbol)
       .map((row) => Number(row.order_id)).filter(Number.isFinite).sort((a, b) => a - b)[0];
-    const params = { symbol, limit: '1000' };
-    if (firstLedgerId) params.orderId = String(firstLedgerId);
-    return signedRequest(creds, 'GET', '/fapi/v1/allOrders', params).catch(() => []);
+    return allOrdersSince(creds, symbol, firstLedgerId).catch(() => []);
   }))).flat();
   const userTrades = scope === 'tradfi' ? (await Promise.all(candidateSymbols.map((symbol) =>
-    signedRequest(creds, 'GET', '/fapi/v1/userTrades', { symbol, limit: '1000' }).catch(() => []),
+    userTradesSince(creds, symbol).catch(() => []),
   ))).flat() : [];
   const fundingRows = scope === 'tradfi' ? (await Promise.all(candidateSymbols.map((symbol) => {
-    const cycleStartedAt = Number(fundingSinceBySymbol[symbol]);
+    const cycleStartedAt = Number(firstAiOrderAtBySymbol[symbol] || fundingSinceBySymbol[symbol]);
     if (!(cycleStartedAt > 0)) return [];
-    const params = { symbol, incomeType: 'FUNDING_FEE', limit: '1000' };
-    params.startTime = String(cycleStartedAt);
-    return signedRequest(creds, 'GET', '/fapi/v1/income', params).catch(() => []);
+    return fundingIncomeSince(creds, symbol, cycleStartedAt);
   }))).flat() : [];
   const aiOrderIds = new Set(orderHistory.filter((order) =>
     isAiClientId(order.clientOrderId, scope)
@@ -74,8 +140,7 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
     if (isAiEntry) {
       // Strategy exits share the same AI client-id prefix. Count them as a
       // reduction or a completed cycle will keep appearing as an AI position.
-      const isClosing = order.reduceOnly === true || order.reduceOnly === 'true'
-        || order.closePosition === true || /_close_/.test(String(order.clientOrderId || ''));
+      const isClosing = isStrategyClose(order);
       aiQtyByPosition.set(key, Math.max(0, (aiQtyByPosition.get(key) || 0) + (isClosing ? -filled : filled)));
       continue;
     }
@@ -161,7 +226,6 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
   const feesBySymbol = {};
   for (const symbol of candidateSymbols) feesBySymbol[symbol] = { tradingFees: 0, fundingFees: 0, netCost: 0 };
   for (const trade of allTrades) {
-    if (trade.source !== 'ai' || trade.action !== 'open') continue;
     if (trade.commissionAsset !== 'USDT') continue;
     const fees = feesBySymbol[trade.instId] || (feesBySymbol[trade.instId] = { tradingFees: 0, fundingFees: 0, netCost: 0 });
     fees.tradingFees += Number(trade.commission) || 0;
@@ -183,4 +247,4 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
   return { ok: true, configured: true, simulated: creds.simulated, scope: 'ai-only', balance: { totalEq: Number(usdt?.balance) || null, usdtEq: Number(usdt?.balance) || null, availBal: Number(usdt?.availableBalance) || null }, openPnl, realizedPnl, historyPnl, records, trades, costs, feesBySymbol };
 }
 
-module.exports = { accountBook };
+module.exports = { accountBook, isStrategyClose, allOrdersSince, userTradesSince };

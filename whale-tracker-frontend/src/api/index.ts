@@ -1556,6 +1556,7 @@ export type TradfiRangeStatus = {
   longAdditions?: number; shortAdditions?: number; maxTotalAdditions?: number;
   marginPerOrder: number; leverage: number; comboPnl?: number | null; lastPrice?: number | null;
   netPnl?: number | null; closeTrigger?: number | null; addStep?: number | null;
+  weekendMode?: boolean;
   recovery?: boolean; recoveryArmed?: boolean; recoveryPeakNetPnl?: number | null; recoveryTrail?: number | null;
   long?: TradfiLegStatus; short?: TradfiLegStatus;
   costs?: { entryFee?: number; exitFee?: number; slippage?: number; fundingNet?: number; estimatedCosts?: number; profitTarget?: number; closeTrigger?: number; netPnl?: number; long?: TradfiLegStatus['costs']; short?: TradfiLegStatus['costs'] } | null;

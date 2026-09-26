@@ -8,7 +8,7 @@ function candles(start, count, step, spread = 2) {
   });
 }
 
-const { marketState, ladderStep, requestedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, closeClientId, additionDecision, scalpProfitTarget, MAX_ADDITIONS, MARGIN, LEVERAGE } = require('../lib/tradfiRangeStrategy');
+const { marketState, ladderStep, requestedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, closeClientId, closeOrderRemaining, additionDecision, scalpProfitTarget, commissionRate, isCommodityWeekendMode, orderFillState, profitGuardPrice, allocateFundingCharge, MAX_ADDITIONS, MARGIN, LEVERAGE } = require('../lib/tradfiRangeStrategy');
 
 test('黄金窄幅结构允许震荡监控，明显单边结构识别为趋势', () => {
   const range15 = candles(1800, 48, 0.02, 2);
@@ -40,6 +40,43 @@ test('启动前允许设置单边保证金和杠杆，并限制最大值', () =>
 test('震荡高频止盈以 0.4U 或单边名义价值的 0.02% 为净利润缓冲', () => {
   assert.equal(scalpProfitTarget(200), 0.4);
   assert.equal(scalpProfitTarget(3000), 0.6);
+});
+
+test('币安返回零 Maker 费率时，止盈计算保留零费率', () => {
+  assert.equal(commissionRate('0', 0.0002), 0);
+  assert.equal(commissionRate(undefined, 0.0002), 0.0002);
+});
+
+test('商品 TradFi 在美东周五收市至周日开市期间暂停策略动作', () => {
+  assert.equal(isCommodityWeekendMode(new Date('2026-09-25T20:59:00Z')), false);
+  assert.equal(isCommodityWeekendMode(new Date('2026-09-25T21:00:00Z')), true);
+  assert.equal(isCommodityWeekendMode(new Date('2026-09-27T21:59:00Z')), true);
+  assert.equal(isCommodityWeekendMode(new Date('2026-09-27T22:00:00Z')), false);
+});
+
+test('周末切换能区分完整成交、部分成交与未成交', () => {
+  assert.equal(orderFillState({ status: 'FILLED', executedQty: '0.1', origQty: '0.1' }), 'filled');
+  assert.equal(orderFillState({ status: 'PARTIALLY_FILLED', executedQty: '0.04', origQty: '0.1' }), 'partial');
+  assert.equal(orderFillState({ status: 'CANCELED', executedQty: '0', origQty: '0.1' }), 'unfilled');
+  assert.equal(orderFillState({ status: 'NEW', executedQty: '0', origQty: '0.1' }), 'open');
+});
+
+test('止盈保护价覆盖目标净利润和预估成本', () => {
+  const position = { positionAmt: '0.1', entryPrice: '4800' };
+  const costs = { profitTarget: 0.4, estimatedCosts: 0.2 };
+  assert.equal(profitGuardPrice(position, 'LONG', costs), 4806);
+  assert.equal(profitGuardPrice(position, 'SHORT', costs), 4794);
+});
+
+test('合约级资金费只计入一次，并由当前盈利较高的一侧承担', () => {
+  assert.deepEqual(allocateFundingCharge(-1.2, 3, -2), { long: -1.2, short: 0 });
+  assert.deepEqual(allocateFundingCharge(-1.2, -2, 3), { long: 0, short: -1.2 });
+  assert.deepEqual(allocateFundingCharge(0.8, 3, -2), { long: 0, short: 0 });
+});
+
+test('平仓重挂只使用策略委托尚未成交的数量', () => {
+  assert.ok(Math.abs(closeOrderRemaining({ quantity: '0.1' }, { executedQty: '0.04' }) - 0.06) < 1e-12);
+  assert.equal(closeOrderRemaining({ quantity: '0.1' }, { executedQty: '0.1' }), 0);
 });
 
 test('补仓按多空分别计数，单侧满 20 次后只停止该侧', () => {

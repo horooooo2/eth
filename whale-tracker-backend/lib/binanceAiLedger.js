@@ -25,13 +25,14 @@ function recordBinanceAiOrder(userId, scope, row = {}) {
   return orderId;
 }
 
-function listBinanceAiOrders(userId, scope, limit = 120) {
-  return getDb().prepare(`
+function listBinanceAiOrders(userId, scope, limit = null) {
+  const baseSql = `
     SELECT order_id, client_order_id, symbol, scope, side, position_side,
            price, quantity, margin_usdt, leverage, simulated, created_at
     FROM binance_ai_orders WHERE user_id = ? AND scope = ?
-    ORDER BY created_at DESC LIMIT ?
-  `).all(String(userId), scopeOf(scope), Math.max(1, Math.min(300, Number(limit) || 120)));
+    ORDER BY created_at DESC`;
+  if (limit == null) return getDb().prepare(baseSql).all(String(userId), scopeOf(scope));
+  return getDb().prepare(`${baseSql} LIMIT ?`).all(String(userId), scopeOf(scope), Math.max(1, Math.min(10000, Number(limit) || 120)));
 }
 
 function isAiClientId(value, scope) {
