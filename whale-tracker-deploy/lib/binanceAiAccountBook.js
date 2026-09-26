@@ -267,8 +267,10 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
     .sort((a, b) => b.createdAt - a.createdAt);
   // The sidebar is scoped to the selected symbol. Retain 50 rows per symbol so
   // XAU activity cannot push XAG history out of the UI (or vice versa).
+  const financiallyRelevantTrades = allTrades.filter((trade) => Math.abs(Number(trade.realizedPnl || 0)) > 1e-12
+    || Math.max(0, Number(trade.commission || 0)) > 1e-12);
   const perSymbolCount = new Map();
-  const trades = allTrades.filter((trade) => {
+  const trades = financiallyRelevantTrades.filter((trade) => {
     const count = perSymbolCount.get(trade.instId) || 0;
     perSymbolCount.set(trade.instId, count + 1);
     return count < 50;

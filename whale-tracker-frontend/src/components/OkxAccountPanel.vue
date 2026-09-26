@@ -69,7 +69,10 @@ function stateLabel(state: string) {
 
 function plainAmount(n: number | null | undefined) {
   if (n == null || !Number.isFinite(Number(n))) return '--';
-  return `${Number(n).toLocaleString('zh-CN', { maximumFractionDigits: 8 })} USDT`;
+  const digits = props.exchange === 'tradfi'
+    ? { minimumFractionDigits: 2, maximumFractionDigits: 2 }
+    : { maximumFractionDigits: 8 };
+  return `${Number(n).toLocaleString('zh-CN', digits)} USDT`;
 }
 
 function notionalAmount(row: OkxAiOrderRecord) {
@@ -89,7 +92,14 @@ function rowPnl(row?: OkxAiOrderRecord) {
 
 function entryPrice(row?: OkxAiOrderRecord) {
   if (!row || row.px == null || !Number.isFinite(Number(row.px))) return '—';
-  return Number(row.px).toLocaleString('zh-CN', { maximumFractionDigits: 8 });
+  return Number(row.px).toLocaleString('zh-CN', props.exchange === 'tradfi'
+    ? { minimumFractionDigits: 2, maximumFractionDigits: 2 }
+    : { maximumFractionDigits: 8 });
+}
+
+function twoDecimals(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(Number(value))) return '--';
+  return Number(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function groupMode(group: TradfiGroup) {
@@ -249,7 +259,7 @@ defineExpose({ reload: () => load(true) });
       <article v-for="group in tradfiGroups" :key="group.instId" class="asset-card">
         <div class="asset-header">
           <span>{{ group.coin }} <b class="asset-pnl" :class="valueClass(groupPnl(group))">{{ formatSignedUsd(groupPnl(group)) }}</b></span>
-          <span v-if="group.strategy" class="asset-config">单笔：{{ group.strategy.marginPerOrder }}U · 倍数：{{ group.strategy.leverage }}X</span>
+          <span v-if="group.strategy" class="asset-config">单笔：{{ twoDecimals(group.strategy.marginPerOrder) }}U · 倍数：{{ group.strategy.leverage }}X</span>
           <span class="asset-fees">手续费损耗 {{ preciseUsd(groupFees(group).tradingFees) }}</span>
           <span class="asset-mode">{{ groupMode(group) }}</span>
         </div>

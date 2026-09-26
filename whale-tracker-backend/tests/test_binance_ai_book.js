@@ -44,6 +44,7 @@ stub('../lib/binanceTradfiTrade', {
     ];
     if (path.endsWith('/userTrades') && params.symbol === 'BTCUSDT') return [
       { id: 1, orderId: 101, symbol: 'BTCUSDT', side: 'BUY', positionSide: 'BOTH', price: '100', qty: '0.1', quoteQty: '10', realizedPnl: '0', commission: '0.004', commissionAsset: 'USDT', time: 10 },
+      { id: 3, orderId: 101, symbol: 'BTCUSDT', side: 'BUY', positionSide: 'BOTH', price: '101', qty: '0.01', quoteQty: '1.01', realizedPnl: '0', commission: '0', commissionAsset: 'USDT', time: 11 },
       ...(hideManualTrade ? [] : [{ id: 2, orderId: 102, symbol: 'BTCUSDT', side: 'SELL', positionSide: 'BOTH', price: '110', qty: '0.05', quoteQty: '5.5', realizedPnl: '0.5', commission: '0.002', commissionAsset: 'USDT', time: 20 }]),
     ];
     if (path.endsWith('/userTrades')) return [];
@@ -77,6 +78,7 @@ test('币安交易账户只展示 AI 挂单和 AI 对应的仓位份额', async 
 test('TradFi 交易记录来自本站策略订单的币安成交明细', async () => {
   const book = await accountBook({ simulated: false }, 'u1', 'tradfi');
   assert.equal(book.trades.length, 2);
+  assert.equal(book.trades.some((row) => row.tradeId === '3'), false);
   assert.equal(book.trades.find((row) => row.source === 'ai').amountUsd, 10);
   assert.equal(book.trades.find((row) => row.source === 'manual').action, 'close');
   assert.equal(book.trades.find((row) => row.source === 'manual').realizedPnl, 0.5);

@@ -179,7 +179,7 @@ function quoteFor(symbol: string) { return quotes.value[symbol]; }
 function quotePrice(symbol: string) {
   const value = Number(quoteFor(symbol)?.lastPrice);
   if (!quoteFor(symbol)?.lastPrice || !Number.isFinite(value)) return '—';
-  return value.toLocaleString('en-US', { maximumFractionDigits: value < 10 ? 6 : 4 });
+  return value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 function quoteChange(symbol: string) {
   const raw = quoteFor(symbol)?.priceChangePercent;
@@ -278,13 +278,26 @@ function tradeDirection(row: BinanceAiTradeRecord) {
 function tradeTagClass(row: BinanceAiTradeRecord) {
   return row.posSide === 'short' || (row.posSide !== 'long' && row.side === 'sell') ? 'short' : 'long';
 }
-function tradeAmount(value: number | null) { return value == null ? '—' : `${value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })} U`; }
+function formatTwo(value: unknown) {
+  const amount = Number(value);
+  return Number.isFinite(amount)
+    ? amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : '—';
+}
+function tradeAmount(value: number | null) { return value == null ? '—' : `${formatTwo(value)} U`; }
+function tradeQuantity(value: string | number | null) { return formatTwo(value); }
 function tradeFee(row: BinanceAiTradeRecord) {
   const fee = Number(row.commission);
   if (!Number.isFinite(fee)) return '—';
-  return `-${fee.toLocaleString('zh-CN', { maximumFractionDigits: 8 })} ${row.commissionAsset || 'USDT'}`;
+  return `${fee > 0 ? '-' : ''}${formatTwo(fee)} ${row.commissionAsset || 'USDT'}`;
 }
-function tradePrice(value: number | null) { return value == null ? '—' : value.toLocaleString('zh-CN', { maximumFractionDigits: 6 }); }
+function tradePrice(value: number | null) { return value == null ? '—' : formatTwo(value); }
+function tradePnlPercent(row: BinanceAiTradeRecord) {
+  const pnl = Number(row.realizedPnl);
+  const amount = Math.abs(Number(row.amountUsd));
+  if (!Number.isFinite(pnl) || !Number.isFinite(amount) || amount <= 0) return '—';
+  return `${(pnl / amount * 100).toFixed(2)}%`;
+}
 function tradeTime(raw: number | null) {
   if (!raw) return '—';
   const date = new Date(raw);
@@ -429,7 +442,7 @@ async function closeAllPositions() {
                 <button type="button" :class="{ active: historyTab === 'trades' }" @click="historyTab = 'trades'">交易记录</button>
                 <button type="button" :class="{ active: historyTab === 'logs' }" @click="historyTab = 'logs'">运行日志</button>
               </div>
-              <div class="panel-sub">{{ historyTab === 'trades' ? '币安成功成交明细' : '当前标的策略运行记录' }}</div>
+              <div class="panel-sub">{{ historyTab === 'trades' ? '产生盈亏或手续费的成功成交' : '当前标的策略运行记录' }}</div>
             </div>
             <div class="panel-count">{{ historyTab === 'trades' ? `${tradeRows.length} 条` : `${strategyLogs.length} 条` }}</div>
           </div>
@@ -440,13 +453,13 @@ async function closeAllPositions() {
             <article v-for="row in tradeRows" :key="row.tradeId" class="record-row">
               <div class="record-symbol"><span>{{ row.coin }}</span><span class="tag" :class="tradeTagClass(row)">{{ tradeDirection(row) }}</span></div>
               <div class="record-price">{{ tradePrice(row.px) }}</div>
-              <div class="record-amount">{{ row.sz }} / {{ tradeAmount(row.amountUsd) }}</div>
+              <div class="record-amount">{{ tradeQuantity(row.sz) }} / {{ tradeAmount(row.amountUsd) }}</div>
               <div class="record-pnl" :class="pnlClass(row.realizedPnl)" :title="`交易费用 ${tradeFee(row)}`">
-                <span>{{ tradeAmount(row.realizedPnl) }}</span><small>{{ tradeFee(row) }}</small>
+                <span>{{ tradeAmount(row.realizedPnl) }}（{{ tradePnlPercent(row) }}）</span><small>{{ tradeFee(row) }}</small>
               </div>
               <div class="record-time" :title="tradeTime(row.createdAt)">{{ tradeClock(row.createdAt) }}</div>
             </article>
-            <div v-if="!tradeRows.length" class="empty">暂无该标的策略成交记录</div>
+            <div v-if="!tradeRows.length" class="empty">暂无产生盈亏或手续费的策略成交</div>
           </div>
           <div v-show="historyTab === 'logs'" class="history-list log-list">
             <article v-for="row in strategyLogs" :key="row.id" class="strategy-log-row" :class="`level-${row.level}`">
@@ -532,14 +545,14 @@ async function closeAllPositions() {
               <span>{{ strategyData?.strategy.enabled ? '策略运行中，参数已锁定' : strategyData?.strategy.resumeEligible ? '恢复接管时沿用停止前参数' : '启动后参数锁定' }}</span>
             </div>
             <div class="strategy-metrics">
-              <div><span>单笔保证金</span><b>{{ strategyData?.strategy.marginPerOrder ?? strategyMargin }} USDT</b></div><div><span>杠杆</span><b>{{ strategyData?.strategy.leverage ?? strategyLeverage }}×</b></div>
+              <div><span>单笔保证金</span><b>{{ formatTwo(strategyData?.strategy.marginPerOrder ?? strategyMargin) }} USDT</b></div><div><span>杠杆</span><b>{{ strategyData?.strategy.leverage ?? strategyLeverage }}×</b></div>
               <div><span>已补仓</span><b v-if="strategyData?.strategy.longAdditions == null && strategyData?.strategy.shortAdditions == null">{{ strategyData?.strategy.additions || 0 }} / 20</b><b v-else>多 {{ strategyData?.strategy.longAdditions || 0 }}/20 · 空 {{ strategyData?.strategy.shortAdditions || 0 }}/20</b></div><div><span>下一档间距</span><b>{{ strategyData?.strategy.addStep == null ? '—' : `${Number(strategyData.strategy.addStep).toFixed(2)}` }}</b></div>
               <div><span>多头净盈亏</span><b>{{ strategyData?.strategy.long?.costs == null ? '—' : `${Number(strategyData.strategy.long.costs.netPnl).toFixed(2)} U` }}</b></div><div><span>空头净盈亏</span><b>{{ strategyData?.strategy.short?.costs == null ? '—' : `${Number(strategyData.strategy.short.costs.netPnl).toFixed(2)} U` }}</b></div>
             </div>
             <p v-if="strategyData?.strategy.weekendMode" class="market-meta">周末流动性模式：暂停新建底仓和止盈后的仓位重建；已有仓位继续补仓与止盈。</p>
             <p class="dialog-intro">服务器24小时识别震荡结构，建立双向底仓；补仓间距为 15 分钟 ATR 的 0.6 倍，并限制在现价的 0.08%～0.35%。多头、空头各自最多补仓 20 次。任一侧达到单边净利润目标后以 Maker 平仓，10 秒后按初始金额和杠杆建立同方向新底仓；另一侧状态保留。</p>
             <p v-if="strategyData?.strategy.long?.costs || strategyData?.strategy.short?.costs" class="market-meta">多头：{{ strategyData.strategy.long?.recovery ? `恢复中，目标 ${Number(strategyData.strategy.long.costs?.profitTarget || 0).toFixed(2)}U，ATR 回撤 ${Number(strategyData.strategy.long.recoveryTrail || 0).toFixed(2)}U` : `常规目标 ${Number(strategyData.strategy.long?.costs?.profitTarget || 0).toFixed(2)}U` }}。空头：{{ strategyData.strategy.short?.recovery ? `恢复中，目标 ${Number(strategyData.strategy.short.costs?.profitTarget || 0).toFixed(2)}U，ATR 回撤 ${Number(strategyData.strategy.short.recoveryTrail || 0).toFixed(2)}U` : `常规目标 ${Number(strategyData.strategy.short?.costs?.profitTarget || 0).toFixed(2)}U` }}。</p>
-            <p v-if="strategyData?.strategy.range" class="market-meta">当前参考区间：{{ strategyData.strategy.range.low }} – {{ strategyData.strategy.range.high }} · 最新价 {{ strategyData.strategy.lastPrice ?? '—' }}</p>
+            <p v-if="strategyData?.strategy.range" class="market-meta">当前参考区间：{{ formatTwo(strategyData.strategy.range.low) }} – {{ formatTwo(strategyData.strategy.range.high) }} · 最新价 {{ formatTwo(strategyData.strategy.lastPrice) }}</p>
             <p v-if="strategyData?.strategy.lastError || strategyError" class="order-error">{{ strategyError || strategyData?.strategy.lastError }}</p>
           </div>
           <footer class="dialog-footer"><p class="footer-hint">停止策略会撤销已知挂单并保留已成交仓位；再次启动时按实际仓位恢复接管。</p><div class="footer-actions"><button class="btn" :disabled="strategyBusy" @click="closeStrategy">关闭</button><button class="btn primary" :disabled="strategyBusy" @click="toggleStrategy">{{ strategyBusy ? '处理中…' : strategyData?.strategy.enabled ? '停止策略' : strategyData?.strategy.resumeEligible ? '恢复并接管仓位' : '启动24H策略' }}</button></div></footer>
@@ -685,7 +698,7 @@ async function closeAllPositions() {
 .record-table-head,
 .record-row {
   display: grid;
-  grid-template-columns: 88px 64px minmax(92px, 1fr) 70px 40px;
+  grid-template-columns: 78px 58px minmax(84px, 1fr) 105px 38px;
   column-gap: 4px;
   align-items: center;
   font-variant-numeric: tabular-nums;
@@ -733,6 +746,7 @@ async function closeAllPositions() {
 .record-price { color: var(--text); }
 .record-amount { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .record-pnl { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; font-weight: 600; }
+.record-pnl > span { white-space: nowrap; }
 .record-pnl small { color: var(--muted); font-size: 10px; font-weight: 400; }
 .record-time { color: var(--muted); font-size: 11px; }
 .log-list { padding: 0 10px; gap: 0; }
