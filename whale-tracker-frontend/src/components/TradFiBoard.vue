@@ -134,6 +134,7 @@ const strategyError = ref('');
 const strategyData = ref<TradfiRangeResponse | null>(null);
 const strategyMargin = ref(10);
 const strategyLeverage = ref(10);
+const showStartupProgress = ref(false);
 const closingAll = ref(false);
 const accountBook = ref<OkxAiBook | null>(null);
 const accountPanel = ref<{ reload: () => void } | null>(null);
@@ -153,6 +154,9 @@ const strategySupported = computed(() => selected.value === 'XAUUSDT' || selecte
 const tradeRows = computed(() => (accountBook.value?.trades || []).filter((row) => row.instId === selected.value).slice(0, 50));
 const historyTab = ref<'trades' | 'logs'>('trades');
 const strategyLogs = computed(() => strategyData.value?.events || []);
+const startupLogs = computed(() => strategyLogs.value.filter((row) => row.details?.phase === 'startup').slice().reverse());
+const startupProgress = computed(() => Math.max(0, Math.min(100, Number(strategyData.value?.strategy.startupProgress || 0))));
+const accountWeekendMode = computed(() => Boolean(accountBook.value?.weekendMode ?? strategyData.value?.strategy.weekendMode));
 
 const catalogBySymbol = computed(() => new Map(catalog.value.map((item) => [item.symbol, item])));
 function assetFor(symbol: string): Asset {
@@ -308,8 +312,17 @@ async function toggleStrategy() {
   if (!strategySupported.value || strategyBusy.value) return;
   strategyBusy.value = true; strategyError.value = '';
   try {
-    if (strategyData.value?.strategy.enabled) strategyData.value = await stopTradfiRange(selected.value);
-    else strategyData.value = await startTradfiRangeWithConfig(selected.value, { marginUsdt: Number(strategyMargin.value), leverage: Number(strategyLeverage.value) });
+    if (strategyData.value?.strategy.enabled) {
+      strategyData.value = await stopTradfiRange(selected.value);
+      showStartupProgress.value = false;
+    } else {
+      showStartupProgress.value = true;
+      strategyData.value = await startTradfiRangeWithConfig(selected.value, { marginUsdt: Number(strategyMargin.value), leverage: Number(strategyLeverage.value) });
+      for (let attempt = 0; attempt < 90 && strategyData.value?.strategy.status === 'initializing'; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 500));
+        strategyData.value = await fetchTradfiRangeStatus(selected.value);
+      }
+    }
   }
   catch (err) { strategyError.value = err instanceof Error ? err.message : '震荡策略操作失败'; }
   finally { strategyBusy.value = false; }
@@ -420,7 +433,12 @@ async function closeAllPositions() {
         <section class="panel account-panel">
           <div class="panel-head">
             <div>
-              <div class="panel-title">交易账户</div>
+              <div class="account-title-line">
+                <div class="panel-title">交易账户</div>
+                <span v-if="accountWeekendMode" class="weekend-warning" title="周末流动性模式：暂停新开仓、补仓和止盈后的重建；">
+                  <b>?</b> 周末流动性模式：暂停新开仓、补仓和止盈后的重建；
+                </span>
+              </div>
               <div class="panel-sub">币安 · TradFi 自动策略持仓与挂单</div>
             </div>
             <button type="button" class="btn-close-all" :disabled="closingAll" @click="closeAllPositions">{{ closingAll ? '提交中…' : '一键平仓' }}</button>
@@ -479,8 +497,18 @@ async function closeAllPositions() {
           <header class="dialog-head"><div class="dialog-title">震荡交易 <span class="dialog-symbol">· {{ selected }}</span></div><button type="button" class="dialog-close" :disabled="strategyBusy" @click="closeStrategy">×</button></header>
           <div class="dialog-scroll">
             <section class="strategy-state">
-              <strong>{{ strategyData?.strategy.enabled ? '服务器运行中' : strategyData?.strategy.status === 'manual' ? '人工接管' : '未运行' }}</strong>
+              <strong>{{ strategyData?.strategy.status === 'initializing' ? '启动检查中' : strategyData?.strategy.enabled ? '服务器运行中' : strategyData?.strategy.status === 'manual' ? '人工接管' : '未运行' }}</strong>
               <span>{{ strategyData?.strategy.simulated == null ? '币安账户待核对' : strategyData.strategy.simulated ? '演示盘' : '实盘' }}</span>
+            </section>
+            <section v-if="showStartupProgress || strategyData?.strategy.status === 'initializing'" class="startup-progress" aria-live="polite">
+              <div class="startup-progress-head"><strong>启动检查进度</strong><span>{{ startupProgress }}%</span></div>
+              <div class="startup-progress-track"><div class="startup-progress-fill" :style="{ width: `${startupProgress}%` }" /></div>
+              <div class="startup-current">{{ strategyData?.strategy.startupStep || '等待服务器开始检查' }}</div>
+              <div class="startup-log-list">
+                <div v-for="row in startupLogs" :key="row.id" class="startup-log-item" :class="`level-${row.level}`">
+                  <i /> <span>{{ row.message }}</span><time>{{ tradeClock(row.created_at) }}</time>
+                </div>
+              </div>
             </section>
             <div class="strategy-config">
               <label>单边保证金 <input v-model.number="strategyMargin" type="number" min="1" max="20" step="1" :disabled="strategyData?.strategy.enabled || strategyBusy" /><b>USDT</b></label>
@@ -584,6 +612,9 @@ async function closeAllPositions() {
 .panel { background: var(--card); border: 1px solid var(--border); border-radius: 8px; min-width: 0; overflow: hidden; }
 .panel-head { padding: 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 15px; }
 .panel-title { font-size: 16px; font-weight: 600; }
+.account-title-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.weekend-warning { display: inline-flex; align-items: center; gap: 5px; color: var(--yellow); font-size: 11px; font-weight: 600; line-height: 1.4; }
+.weekend-warning b { width: 15px; height: 15px; display: inline-grid; place-items: center; border: 1px solid currentColor; border-radius: 50%; font-size: 10px; }
 .panel-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .panel-count { font-size: 12px; color: var(--muted); margin: 0; }
 .history-tabs { display: inline-flex; align-items: center; gap: 4px; }
@@ -713,6 +744,18 @@ async function closeAllPositions() {
 .account-panel :deep(.tradfi-order-list) { padding: 16px; gap: 16px; }
 .strategy-state { display: flex; justify-content: space-between; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); }
 .strategy-state span { color: var(--muted); }
+.startup-progress { margin-top: 14px; padding: 14px; border: 1px solid color-mix(in srgb, var(--yellow) 34%, var(--border)); border-radius: 9px; background: color-mix(in srgb, var(--yellow) 5%, var(--panel-2)); }
+.startup-progress-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; font-size: 12px; }
+.startup-progress-head span { color: var(--yellow); font-variant-numeric: tabular-nums; }
+.startup-progress-track { height: 6px; overflow: hidden; border-radius: 999px; background: var(--panel); }
+.startup-progress-fill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, #dba91f, var(--yellow)); transition: width .25s ease; }
+.startup-current { margin-top: 9px; color: var(--muted); font-size: 11px; }
+.startup-log-list { max-height: 150px; margin-top: 10px; overflow-y: auto; border-top: 1px solid var(--border); }
+.startup-log-item { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 7px 1px; color: var(--muted); font-size: 11px; border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent); }
+.startup-log-item i { width: 6px; height: 6px; border-radius: 50%; background: var(--yellow); }
+.startup-log-item.level-success i { background: var(--green); }
+.startup-log-item.level-warn i, .startup-log-item.level-error i { background: var(--red); }
+.startup-log-item time { color: var(--muted); font-variant-numeric: tabular-nums; }
 .strategy-config { display: flex; align-items: end; gap: 12px; margin: 14px 0; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel-2); }
 .strategy-config label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 .strategy-config input { width: 66px; padding: 6px 7px; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 5px; }

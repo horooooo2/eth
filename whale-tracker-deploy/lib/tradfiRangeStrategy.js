@@ -150,6 +150,7 @@ function publicRow(row) {
     comboPnl: s.comboPnl ?? null, netPnl: s.netPnl ?? null, closeTrigger: s.closeTrigger ?? null,
     costs: s.costs || null, addStep: s.addStep ?? null, lastPrice: s.lastPrice ?? null, range: s.range || null,
     cooldownUntil: s.cooldownUntil ?? null, cycleStartedAt: s.cycleStartedAt ?? null,
+    startupProgress: s.startupProgress ?? null, startupStep: s.startupStep || '',
     recovery: Boolean(s.recovery), recoveryArmed: Boolean(s.recoveryArmed),
     recoveryPeakNetPnl: s.recoveryPeakNetPnl ?? null, recoveryTrail: s.recoveryTrail ?? null,
     weekendMode: isCommodityWeekendMode(),
@@ -171,9 +172,9 @@ function enable(userId, symbol, simulated, input = {}) {
   const config = requestedConfig(input);
   const now = Date.now();
   getDb().prepare(`INSERT INTO tradfi_range_strategies (user_id,symbol,enabled,status,simulated,additions,state_json,last_error,started_at,updated_at)
-    VALUES (?,?,1,'waiting',?,0,?,'',?,?) ON CONFLICT(user_id,symbol) DO UPDATE SET enabled=1,status='waiting',simulated=excluded.simulated,additions=0,state_json=excluded.state_json,last_error='',started_at=excluded.started_at,updated_at=excluded.updated_at`)
-    .run(String(userId), sym, simulated ? 1 : 0, JSON.stringify({ config }), now, now);
-  log(userId, sym, `震荡交易已开启：单边 ${config.marginUsdt}U × ${config.leverage}倍，服务器开始24小时监控`);
+    VALUES (?,?,1,'initializing',?,0,?,'',?,?) ON CONFLICT(user_id,symbol) DO UPDATE SET enabled=1,status='initializing',simulated=excluded.simulated,additions=0,state_json=excluded.state_json,last_error='',started_at=excluded.started_at,updated_at=excluded.updated_at`)
+    .run(String(userId), sym, simulated ? 1 : 0, JSON.stringify({ config, startupProgress: 5, startupStep: '准备启动检查' }), now, now);
+  log(userId, sym, `准备启动震荡交易：单边 ${config.marginUsdt}U × ${config.leverage}倍`, 'info', { phase: 'startup', progress: 5 });
   return status(userId, sym);
 }
 async function disable(userId, symbol) {
@@ -465,13 +466,54 @@ async function commissionRates(creds, symbol) {
     const value = {
       maker: commissionRate(row.makerCommissionRate, DEFAULT_MAKER_FEE),
       taker: commissionRate(row.takerCommissionRate, DEFAULT_TAKER_FEE),
-      at: Date.now(),
+      at: Date.now(), fallback: false,
     };
     feeCache.set(symbol, value);
     return value;
   } catch {
-    return { maker: DEFAULT_MAKER_FEE, taker: DEFAULT_TAKER_FEE, at: Date.now() };
+    return { maker: DEFAULT_MAKER_FEE, taker: DEFAULT_TAKER_FEE, at: Date.now(), fallback: true };
   }
+}
+function startupUpdate(row, progress, step, level = 'info', details = {}) {
+  const latest = rowFor(row.user_id, row.symbol);
+  if (!latest?.enabled || latest.status !== 'initializing') throw invalid('策略启动已取消', 409);
+  save(latest, { last_error: '' }, { startupProgress: progress, startupStep: step });
+  log(row.user_id, row.symbol, step, level, { ...details, phase: 'startup', progress });
+}
+async function initializeStrategy(row, creds) {
+  const config = strategyConfig(row);
+  startupUpdate(row, 12, '正在验证币安 API 与账户环境');
+  const balances = await signedRequest(creds, 'GET', '/fapi/v2/balance');
+  const usdt = (Array.isArray(balances) ? balances : []).find((item) => item.asset === 'USDT');
+  if (!usdt) throw invalid('币安合约账户未找到 USDT 余额，请检查 API 权限', 409);
+  startupUpdate(row, 28, `账户连接成功，可用余额 ${Number(usdt.availableBalance || 0).toFixed(2)} USDT`, 'success');
+
+  startupUpdate(row, 40, '正在获取当前合约手续费率');
+  const fees = await commissionRates(creds, row.symbol);
+  startupUpdate(row, 52, fees.fallback
+    ? `手续费接口暂不可用，采用保守费率：Maker ${(fees.maker * 100).toFixed(4)}% · Taker ${(fees.taker * 100).toFixed(4)}%`
+    : `手续费率已获取：Maker ${(fees.maker * 100).toFixed(4)}% · Taker ${(fees.taker * 100).toFixed(4)}%`, fees.fallback ? 'warn' : 'success', { maker: fees.maker, taker: fees.taker, fallback: fees.fallback });
+
+  startupUpdate(row, 62, '正在检查合约价格与数量规则');
+  const rules = await symbolRules(row.symbol);
+  if (!Array.isArray(rules?.filters) || !rules.filters.length) throw invalid('无法读取合约交易规则', 503);
+  startupUpdate(row, 72, '合约交易规则检查完成', 'success');
+
+  startupUpdate(row, 80, '正在检查现有仓位与双向持仓模式');
+  const [risk, mode] = await Promise.all([
+    signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: row.symbol }),
+    signedRequest(creds, 'GET', '/fapi/v1/positionSide/dual'),
+  ]);
+  const positions = positionsOf(risk, row.symbol);
+  if (qty(positions.long) || qty(positions.short)) throw invalid('检测到已有黄金或白银仓位，策略转人工接管', 409);
+  if (!(mode.dualSidePosition === true || mode.dualSidePosition === 'true')) throw invalid('请先在币安开启双向持仓模式', 409);
+  startupUpdate(row, 90, '仓位与双向持仓模式检查完成', 'success');
+
+  startupUpdate(row, 95, `正在设置 ${config.leverage} 倍杠杆`);
+  await signedRequest(creds, 'POST', '/fapi/v1/leverage', { symbol: row.symbol, leverage: String(config.leverage) });
+  const latest = rowFor(row.user_id, row.symbol);
+  save(latest, { status: 'waiting', last_error: '' }, { startupProgress: 100, startupStep: isCommodityWeekendMode() ? '启动检查完成，等待常规交易时段' : '启动检查完成，进入行情监控' });
+  log(row.user_id, row.symbol, isCommodityWeekendMode() ? '启动检查完成；当前为周末流动性模式，等待常规交易时段后开仓' : '启动检查完成，服务器已进入行情监控', 'success', { phase: 'startup', progress: 100 });
 }
 async function costState(creds, row, state, totalNotional, comboPnl) {
   const rates = await commissionRates(creds, row.symbol);
@@ -708,6 +750,10 @@ async function reconcileRow(row) {
   const creds = getBinanceCredentialsForUser(row.user_id);
   if (!creds || Number(creds.simulated) !== Number(row.simulated)) throw new Error('币安密钥缺失或交易环境已变化');
   let state = parseState(row);
+  if (row.status === 'initializing') {
+    await initializeStrategy(row, creds);
+    return;
+  }
   if (isCommodityWeekendMode()) {
     if (row.status === 'close_pending' && state.stopAfterClose) {
       const progress = await closeOrderProgress(creds, row.symbol, state.closeOrders || [], state.closeRemaining || {});

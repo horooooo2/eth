@@ -1557,6 +1557,7 @@ export type TradfiRangeStatus = {
   marginPerOrder: number; leverage: number; comboPnl?: number | null; lastPrice?: number | null;
   netPnl?: number | null; closeTrigger?: number | null; addStep?: number | null;
   weekendMode?: boolean;
+  startupProgress?: number | null; startupStep?: string;
   recovery?: boolean; recoveryArmed?: boolean; recoveryPeakNetPnl?: number | null; recoveryTrail?: number | null;
   long?: TradfiLegStatus; short?: TradfiLegStatus;
   costs?: { entryFee?: number; exitFee?: number; slippage?: number; fundingNet?: number; estimatedCosts?: number; profitTarget?: number; closeTrigger?: number; netPnl?: number; long?: TradfiLegStatus['costs']; short?: TradfiLegStatus['costs'] } | null;
@@ -1621,6 +1622,7 @@ export type OkxAiBook = {
   records: OkxAiOrderRecord[];
   trades?: BinanceAiTradeRecord[];
   strategies?: TradfiRangeStatus[];
+  weekendMode?: boolean;
   costs?: { tradingFees: number; fundingFees: number; netCost: number };
   feesBySymbol?: Record<string, { tradingFees: number; fundingFees: number; netCost: number }>;
 };
