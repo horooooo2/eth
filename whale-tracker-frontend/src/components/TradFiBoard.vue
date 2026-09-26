@@ -682,7 +682,7 @@ async function closeAllPositions() {
 .history-tabs button:hover { color: var(--text); background: var(--panel-2); }
 .history-tabs button.active { color: var(--yellow); background: color-mix(in srgb, var(--yellow) 12%, transparent); }
 .section-tag { color: var(--yellow); font-size: 10px; font-weight: 700; }
-.main-grid { display: grid; grid-template-columns: minmax(520px, 580px) minmax(0, 1.65fr) minmax(320px, .9fr); gap: 16px; flex: 1; min-height: 0; }
+.main-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.65fr) minmax(0, 1fr); gap: 16px; flex: 1; min-height: 0; }
 .main-grid > .panel { display: flex; flex-direction: column; min-height: 0; }
 .main-grid .panel-head, .main-grid .feed-tools, .main-grid .panel-foot { flex-shrink: 0; }
 .history-panel { min-width: 0; }
@@ -698,8 +698,8 @@ async function closeAllPositions() {
 .record-table-head,
 .record-row {
   display: grid;
-  grid-template-columns: 104px 74px minmax(108px, 1fr) 124px 44px;
-  column-gap: 6px;
+  grid-template-columns: 90px 66px minmax(96px, 1fr) 112px 40px;
+  column-gap: 4px;
   align-items: center;
   justify-items: center;
   font-variant-numeric: tabular-nums;
@@ -864,7 +864,7 @@ async function closeAllPositions() {
 .footer-actions .btn { min-height: 36px; font-size: 12px; }
 .footer-actions .btn.primary { background: linear-gradient(135deg, #6366f1, #a855f7); color: #fff; border-color: transparent; }
 .footer-actions .btn:disabled { opacity: .5; cursor: not-allowed; }
-@media (max-width: 1180px) {
+@media (max-width: 1380px) {
   .content { overflow-y: auto; }
   .main-grid { flex: none; grid-template-columns: minmax(500px, .95fr) minmax(0, 1.3fr); grid-template-rows: minmax(420px, 60vh) minmax(320px, 45vh); }
   .main-grid > .panel:last-child { grid-column: 1 / -1; }
