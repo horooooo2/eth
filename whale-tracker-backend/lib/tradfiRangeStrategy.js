@@ -10,7 +10,8 @@ const LEVERAGE = 10;
 const MAX_MARGIN = 20;
 const MAX_LEVERAGE = 50;
 const MAX_ADDITIONS = 20;
-const POLL_MS = 10_000;
+// 高频止盈检查与补仓触发；平仓后的下一轮仍由 COOLDOWN_MS 控制为 10 秒。
+const POLL_MS = 3_000;
 const ORDER_TTL_MS = 90_000;
 const COOLDOWN_MS = 10_000;
 const MIN_STEP_PCT = 0.0008;
@@ -19,12 +20,15 @@ const ATR_MULTIPLIER = 0.6;
 const DEFAULT_MAKER_FEE = 0.0002;
 const DEFAULT_TAKER_FEE = 0.0005;
 const SLIPPAGE_RATE = 0.0001;
+const SCALP_MIN_PROFIT = 0.4;
+const SCALP_NOTIONAL_RATE = 0.0002;
 const feeCache = new Map();
 let timer = null;
 let busy = false;
 
 function invalid(message, status = 400) { return Object.assign(new Error(message), { status }); }
 function isPostOnlyReject(error) { return Number(error?.code) === -5022 || /Post Only|could not be executed as maker/i.test(error?.message || ''); }
+function scalpProfitTarget(notional) { return Math.max(SCALP_MIN_PROFIT, Number(notional || 0) * SCALP_NOTIONAL_RATE); }
 function recoveryExitState({ recovery, armed, netPnl, peakNetPnl, trail, trend, target }) {
   if (!recovery || !armed) return { shouldClose: false, reason: '' };
   if (netPnl <= peakNetPnl - trail) return { shouldClose: true, reason: '恢复模式利润回撤触发' };
@@ -335,7 +339,7 @@ async function costState(creds, row, state, totalNotional, comboPnl) {
   const entryFee = totalNotional * rates.maker;
   const exitFee = totalNotional * rates.maker;
   const slippage = 0;
-  const scalpTarget = Math.max(1.5, totalNotional * 0.0005);
+  const scalpTarget = scalpProfitTarget(totalNotional);
   const worstLeg = Math.abs(Math.min(0, Number(state.minLongPnl || 0), Number(state.minShortPnl || 0)));
   const recovery = Boolean(state.recovery) || worstLeg >= Math.max(5, totalNotional * 0.002);
   // In recovery, this is the point at which trailing begins, rather than an
@@ -358,7 +362,7 @@ async function legCostState(creds, row, leg, notional, pnl, fundingNet) {
   const entryFee = notional * rates.maker;
   const exitFee = notional * rates.maker;
   const estimatedCosts = entryFee + exitFee - fundingNet;
-  const scalpTarget = Math.max(1.5, notional * 0.0005);
+  const scalpTarget = scalpProfitTarget(notional);
   const worstLoss = Math.abs(Math.min(0, Number(leg.minPnl || 0)));
   const recovery = leg.recovery || worstLoss >= Math.max(5, notional * 0.002);
   const profitTarget = recovery ? Math.max(scalpTarget * 3, worstLoss * 0.25) : scalpTarget;
@@ -591,4 +595,4 @@ async function reconcile() {
 }
 function start() { if (timer) return; timer = setInterval(() => { void reconcile(); }, POLL_MS); timer.unref?.(); void reconcile(); }
 
-module.exports = { start, reconcile, status, enable, disable, closeAll, closeClientId, additionDecision, marketState, atr, ladderStep, costState, strategyConfig, requestedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, SYMBOLS, MAX_ADDITIONS, MARGIN, LEVERAGE, MAX_MARGIN, MAX_LEVERAGE };
+module.exports = { start, reconcile, status, enable, disable, closeAll, closeClientId, additionDecision, marketState, atr, ladderStep, costState, scalpProfitTarget, strategyConfig, requestedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, SYMBOLS, MAX_ADDITIONS, MARGIN, LEVERAGE, MAX_MARGIN, MAX_LEVERAGE };
