@@ -682,7 +682,7 @@ async function closeAllPositions() {
 .history-tabs button:hover { color: var(--text); background: var(--panel-2); }
 .history-tabs button.active { color: var(--yellow); background: color-mix(in srgb, var(--yellow) 12%, transparent); }
 .section-tag { color: var(--yellow); font-size: 10px; font-weight: 700; }
-.main-grid { display: grid; grid-template-columns: minmax(420px, 460px) minmax(0, 1.65fr) minmax(320px, .9fr); gap: 16px; flex: 1; min-height: 0; }
+.main-grid { display: grid; grid-template-columns: minmax(520px, 580px) minmax(0, 1.65fr) minmax(320px, .9fr); gap: 16px; flex: 1; min-height: 0; }
 .main-grid > .panel { display: flex; flex-direction: column; min-height: 0; }
 .main-grid .panel-head, .main-grid .feed-tools, .main-grid .panel-foot { flex-shrink: 0; }
 .history-panel { min-width: 0; }
@@ -698,9 +698,10 @@ async function closeAllPositions() {
 .record-table-head,
 .record-row {
   display: grid;
-  grid-template-columns: 78px 58px minmax(84px, 1fr) 105px 38px;
-  column-gap: 4px;
+  grid-template-columns: 104px 74px minmax(108px, 1fr) 124px 44px;
+  column-gap: 6px;
   align-items: center;
+  justify-items: center;
   font-variant-numeric: tabular-nums;
 }
 .record-table-head {
@@ -713,7 +714,7 @@ async function closeAllPositions() {
   color: var(--muted);
   font-size: 11px;
 }
-.record-table-head > span:not(:first-child) { text-align: right; }
+.record-table-head > span { width: 100%; text-align: center; white-space: nowrap; }
 .record-row {
   min-height: 48px;
   padding: 8px 10px;
@@ -725,10 +726,12 @@ async function closeAllPositions() {
 .record-symbol {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 5px;
   font-size: 13px;
   font-weight: 600;
   min-width: 0;
+  width: 100%;
 }
 .tag {
   padding: 2px 6px;
@@ -739,13 +742,14 @@ async function closeAllPositions() {
 }
 .tag.long { background: color-mix(in srgb, var(--green) 10%, transparent); color: var(--green); }
 .tag.short { background: color-mix(in srgb, var(--red) 10%, transparent); color: var(--red); }
+.record-symbol .tag { margin-left: 0; white-space: nowrap; }
 .record-price,
 .record-amount,
 .record-pnl,
-.record-time { text-align: right; min-width: 0; }
+.record-time { width: 100%; text-align: center; min-width: 0; }
 .record-price { color: var(--text); }
 .record-amount { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.record-pnl { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; font-weight: 600; }
+.record-pnl { display: flex; flex-direction: column; align-items: center; gap: 1px; font-weight: 600; }
 .record-pnl > span { white-space: nowrap; }
 .record-pnl small { color: var(--muted); font-size: 10px; font-weight: 400; }
 .record-time { color: var(--muted); font-size: 11px; }
@@ -862,13 +866,15 @@ async function closeAllPositions() {
 .footer-actions .btn:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 1180px) {
   .content { overflow-y: auto; }
-  .main-grid { flex: none; grid-template-columns: minmax(400px, .85fr) minmax(0, 1.3fr); grid-template-rows: minmax(420px, 60vh) minmax(320px, 45vh); }
+  .main-grid { flex: none; grid-template-columns: minmax(500px, .95fr) minmax(0, 1.3fr); grid-template-rows: minmax(420px, 60vh) minmax(320px, 45vh); }
   .main-grid > .panel:last-child { grid-column: 1 / -1; }
 }
 @media (max-width: 760px) {
   .content { padding: 12px 0; }
   .main-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(360px, 50vh) minmax(420px, 55vh) minmax(320px, 45vh); }
   .main-grid > .panel:last-child { grid-column: auto; }
+  .record-table-head,
+  .record-row { grid-template-columns: 86px 64px minmax(88px, 1fr) 112px 40px; column-gap: 3px; }
   .account-panel :deep(.account-summary) { grid-template-columns: 1fr; }
   .account-panel :deep(.position-row) { grid-template-columns: 1fr; }
   .account-panel :deep(.position-side:first-child) { border-right: 0; border-bottom: 1px solid var(--border); }
