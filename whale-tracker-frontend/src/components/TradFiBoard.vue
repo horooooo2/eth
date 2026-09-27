@@ -132,8 +132,8 @@ const strategyOpen = ref(false);
 const strategyBusy = ref(false);
 const strategyError = ref('');
 const strategyData = ref<TradfiRangeResponse | null>(null);
-const strategyMargin = ref(10);
-const strategyLeverage = ref(10);
+const strategyMargin = ref(20);
+const strategyLeverage = ref(20);
 const startupOpen = ref(false);
 const closingAll = ref(false);
 const accountBook = ref<OkxAiBook | null>(null);
@@ -151,6 +151,9 @@ const intel = ref<TradFiIntelResponse | null>(null);
 const intelLoading = ref(false);
 const intelError = ref('');
 const strategySupported = computed(() => selected.value === 'XAUUSDT' || selected.value === 'XAGUSDT');
+const ladderDescription = computed(() => selected.value === 'XAGUSDT'
+  ? '第 1–10 档 5U · 11–20 档 7.5U · 21–30 档 12.5U · 31–40 档 15U（单边合计 400U）'
+  : '第 1–10 档 10U · 11–20 档 15U · 21–30 档 25U · 31–40 档 30U（单边合计 800U）');
 const tradeRows = computed(() => (accountBook.value?.trades || []).filter((row) => row.instId === selected.value).slice(0, 50));
 const historyTab = ref<'trades' | 'logs'>('trades');
 const strategyLogs = computed(() => strategyData.value?.events || []);
@@ -264,8 +267,8 @@ async function openStrategy() {
   strategyOpen.value = true;
   await loadStrategy();
   if (!strategyData.value?.strategy.enabled) {
-    strategyMargin.value = Number(strategyData.value?.strategy.marginPerOrder || 10);
-    strategyLeverage.value = Number(strategyData.value?.strategy.leverage || 10);
+    strategyMargin.value = Number(strategyData.value?.strategy.marginPerOrder || (selected.value === 'XAGUSDT' ? 10 : 20));
+    strategyLeverage.value = Number(strategyData.value?.strategy.leverage || (selected.value === 'XAGUSDT' ? 10 : 20));
   }
 }
 function closeStrategy() { if (!strategyBusy.value) strategyOpen.value = false; }
@@ -546,11 +549,11 @@ async function closeAllPositions() {
             </div>
             <div class="strategy-metrics">
               <div><span>单笔保证金</span><b>{{ formatTwo(strategyData?.strategy.enabled ? strategyData.strategy.marginPerOrder : strategyMargin) }} USDT</b></div><div><span>杠杆</span><b>{{ strategyData?.strategy.leverage ?? strategyLeverage }}×</b></div>
-              <div><span>已补仓</span><b v-if="strategyData?.strategy.longAdditions == null && strategyData?.strategy.shortAdditions == null">{{ strategyData?.strategy.additions || 0 }} / 20</b><b v-else>多 {{ strategyData?.strategy.longAdditions || 0 }}/20 · 空 {{ strategyData?.strategy.shortAdditions || 0 }}/20</b></div><div><span>下一档间距</span><b>{{ strategyData?.strategy.addStep == null ? '—' : `${Number(strategyData.strategy.addStep).toFixed(2)}` }}</b></div>
+              <div><span>已补仓</span><b v-if="strategyData?.strategy.longAdditions == null && strategyData?.strategy.shortAdditions == null">{{ strategyData?.strategy.additions || 0 }} / 40</b><b v-else>多 {{ strategyData?.strategy.longAdditions || 0 }}/40 · 空 {{ strategyData?.strategy.shortAdditions || 0 }}/40</b></div><div><span>下一档间距</span><b>{{ strategyData?.strategy.addStep == null ? '—' : `${Number(strategyData.strategy.addStep).toFixed(2)}` }}</b></div>
               <div><span>多头净盈亏</span><b>{{ strategyData?.strategy.long?.costs == null ? '—' : `${Number(strategyData.strategy.long.costs.netPnl).toFixed(2)} U` }}</b></div><div><span>空头净盈亏</span><b>{{ strategyData?.strategy.short?.costs == null ? '—' : `${Number(strategyData.strategy.short.costs.netPnl).toFixed(2)} U` }}</b></div>
             </div>
             <p v-if="strategyData?.strategy.weekendMode" class="market-meta">周末流动性模式：暂停新建底仓和止盈后的仓位重建；已有仓位继续补仓与止盈。</p>
-            <p class="dialog-intro">服务器24小时识别震荡结构，建立双向底仓；补仓间距为 15 分钟 ATR 的 0.6 倍，并限制在现价的 0.08%～0.35%。多头、空头各自最多补仓 20 次。任一侧达到单边净利润目标后以 Maker 平仓，10 秒后按初始金额和杠杆建立同方向新底仓；另一侧状态保留。</p>
+            <p class="dialog-intro">服务器24小时识别震荡结构，建立双向底仓；补仓间距为 15 分钟 ATR 的 0.6 倍，并限制在现价的 0.08%～0.35%。多头、空头各自最多补仓 40 档；每 10 档调整单笔补仓保证金：{{ ladderDescription }}。任一侧达到单边净利润目标后以 Maker 平仓，10 秒后按初始金额和杠杆建立同方向新底仓；另一侧状态保留。</p>
             <p v-if="strategyData?.strategy.long?.costs || strategyData?.strategy.short?.costs" class="market-meta">多头：{{ strategyData.strategy.long?.recovery ? `恢复中，目标 ${Number(strategyData.strategy.long.costs?.profitTarget || 0).toFixed(2)}U，ATR 回撤 ${Number(strategyData.strategy.long.recoveryTrail || 0).toFixed(2)}U` : `常规目标 ${Number(strategyData.strategy.long?.costs?.profitTarget || 0).toFixed(2)}U` }}。空头：{{ strategyData.strategy.short?.recovery ? `恢复中，目标 ${Number(strategyData.strategy.short.costs?.profitTarget || 0).toFixed(2)}U，ATR 回撤 ${Number(strategyData.strategy.short.recoveryTrail || 0).toFixed(2)}U` : `常规目标 ${Number(strategyData.strategy.short?.costs?.profitTarget || 0).toFixed(2)}U` }}。</p>
             <p v-if="strategyData?.strategy.range" class="market-meta">当前参考区间：{{ formatTwo(strategyData.strategy.range.low) }} – {{ formatTwo(strategyData.strategy.range.high) }} · 最新价 {{ formatTwo(strategyData.strategy.lastPrice) }}</p>
             <p v-if="strategyData?.strategy.lastError || strategyError" class="order-error">{{ strategyError || strategyData?.strategy.lastError }}</p>

@@ -1550,9 +1550,10 @@ export async function deleteBinanceKeys() {
 }
 
 export type TradfiRangeEvent = { id: number; level: string; message: string; details: Record<string, unknown>; created_at: number };
-export type TradfiLegStatus = { phase: string; additions: number; expectedQty: number; lastAddPrice: number; minPnl: number; recovery: boolean; recoveryArmed: boolean; recoveryPeakNetPnl: number; recoveryTrail: number; costs?: { entryFee: number; exitFee: number; fundingNet: number; estimatedCosts: number; profitTarget: number; closeTrigger: number; netPnl: number; recovery: boolean } | null };
+export type TradfiLegStatus = { phase: string; additions: number; manualMarginUsdt?: number; expectedQty: number; lastAddPrice: number; minPnl: number; recovery: boolean; recoveryArmed: boolean; recoveryPeakNetPnl: number; recoveryTrail: number; costs?: { entryFee: number; exitFee: number; fundingNet: number; estimatedCosts: number; profitTarget: number; closeTrigger: number; netPnl: number; recovery: boolean } | null };
 export type TradfiRangeStatus = {
   symbol: string; enabled: boolean; status: string; simulated: boolean | null; additions: number; maxAdditions: number;
+  manualAddThreshold?: number; manualAddPending?: boolean;
   longAdditions?: number; shortAdditions?: number; maxTotalAdditions?: number;
   marginPerOrder: number; leverage: number; comboPnl?: number | null; lastPrice?: number | null;
   netPnl?: number | null; closeTrigger?: number | null; addStep?: number | null;
@@ -1581,6 +1582,15 @@ export async function startTradfiRangeWithConfig(symbol: string, body: { marginU
 }
 export async function stopTradfiRange(symbol: string) {
   const { data } = await http.post<TradfiRangeResponse>('/tradfi/range/stop', { symbol }, { timeout: 20_000 });
+  return data;
+}
+export type TradfiManualAddPreview = { symbol: string; side: 'long' | 'short'; marginUsdt: number; leverage: number; currentQty: number; currentEntryPrice: number; currentPnl: number; price: number; quantity: number; projectedQty: number; projectedEntryPrice: number; manualMarginUsdt: number };
+export async function previewTradfiManualAdd(symbol: string, side: 'long' | 'short', marginUsdt: number) {
+  const { data } = await http.post<{ ok: boolean; preview: TradfiManualAddPreview }>('/tradfi/range/manual-add/preview', { symbol, side, marginUsdt }, { timeout: 20_000 });
+  return data.preview;
+}
+export async function submitTradfiManualAdd(symbol: string, side: 'long' | 'short', marginUsdt: number, expected: { price: number; quantity: number }) {
+  const { data } = await http.post<{ ok: boolean; order: { orderId: string; price: number; quantity: string; marginUsdt: number }; preview: TradfiManualAddPreview }>('/tradfi/range/manual-add', { symbol, side, marginUsdt, expected }, { timeout: 30_000 });
   return data;
 }
 export async function closeTradfiPositions() {

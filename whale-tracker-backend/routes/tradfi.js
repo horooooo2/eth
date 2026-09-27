@@ -95,6 +95,22 @@ router.post('/range/start', async (req, res) => {
   } catch (err) { res.status(err.status || 500).json({ error: err.message || '震荡策略启动失败', code: err.code }); }
 });
 
+router.post('/range/manual-add/preview', async (req, res) => {
+  try {
+    const user = requireUser(req);
+    res.json({ ok: true, preview: await rangeStrategy.manualAddPreview(user.user.id, req.body?.symbol, req.body?.side, req.body?.marginUsdt) });
+  } catch (err) { res.status(err.status || 502).json({ error: err.message || '手动补仓预估失败', code: err.code }); }
+});
+
+router.post('/range/manual-add', async (req, res) => {
+  try {
+    const user = requireUser(req);
+    const result = await rangeStrategy.manualAdd(user.user.id, req.body?.symbol, req.body?.side, req.body?.marginUsdt, req.body?.expected || {});
+    res.json({ ok: true, ...result });
+    void rangeStrategy.reconcile();
+  } catch (err) { res.status(err.status || 502).json({ error: err.message || '手动补仓提交失败', code: err.code }); }
+});
+
 router.post('/range/stop', async (req, res) => {
   try {
     const user = requireUser(req);

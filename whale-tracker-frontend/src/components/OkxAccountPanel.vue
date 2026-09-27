@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
-import { cancelOkxOrder, fetchOkxAiBook, fetchTradfiAccountBook, type OkxAiBook, type OkxAiOrderRecord } from '@/api';
+import { cancelOkxOrder, fetchOkxAiBook, fetchTradfiAccountBook, previewTradfiManualAdd, submitTradfiManualAdd, type OkxAiBook, type OkxAiOrderRecord, type TradfiManualAddPreview } from '@/api';
 import { formatSignedUsd, formatTimeShort } from '@/utils/format';
+import { ElMessage } from 'element-plus';
 
 const props = defineProps<{
   bootReady?: boolean;
@@ -14,6 +15,13 @@ const loading = ref(false);
 const error = ref('');
 const book = ref<OkxAiBook | null>(null);
 const cancelingId = ref('');
+const manualDialog = ref(false);
+const manualSymbol = ref('');
+const manualSide = ref<'long' | 'short'>('long');
+const manualMargin = ref(20);
+const manualPreview = ref<TradfiManualAddPreview | null>(null);
+const manualBusy = ref(false);
+const manualError = ref('');
 let timer: ReturnType<typeof setInterval> | null = null;
 let reqSeq = 0;
 
@@ -114,10 +122,10 @@ function groupMode(group: TradfiGroup) {
   if (strategy?.long?.phase === 'close_pending' || strategy?.short?.phase === 'close_pending') return '单边止盈挂单中';
   if (strategy?.long?.phase === 'reentry_wait' || strategy?.short?.phase === 'reentry_wait') return '单边止盈后冷却，等待重建底仓';
   if (strategy?.long?.phase === 'reentry_pending' || strategy?.short?.phase === 'reentry_pending') return '正在重建单边底仓';
-  if (strategy?.status === 'add_pending') return `补仓挂单中 · 多${strategy.longAdditions ?? '—'}/20 · 空${strategy.shortAdditions ?? '—'}/20`;
+  if (strategy?.status === 'add_pending') return `${strategy.manualAddPending ? '手动补仓挂单中' : '补仓挂单中'} · 多${strategy.longAdditions ?? '—'}/40 · 空${strategy.shortAdditions ?? '—'}/40`;
   if (strategy?.status === 'active') {
     if (strategy.longAdditions == null && strategy.shortAdditions == null) return `策略运行中 · 已补 ${strategy.additions || 0} 档`;
-    return `策略运行中 · 多${strategy.longAdditions || 0}/20 · 空${strategy.shortAdditions || 0}/20`;
+    return `策略运行中 · 多${strategy.longAdditions || 0}/40 · 空${strategy.shortAdditions || 0}/40`;
   }
   if (group.long?.kind === 'pending' || group.short?.kind === 'pending') return '含挂单';
   if (group.long && group.short) return '双向持仓';
@@ -138,6 +146,38 @@ function sideRealized(group: TradfiGroup, side: 'long' | 'short') {
 }
 
 function legStatus(group: TradfiGroup, side: 'long' | 'short') { return group.strategy?.[side]; }
+function manualAddAvailable(group: TradfiGroup, side: 'long' | 'short') {
+  const strategy = group.strategy; const leg = legStatus(group, side); const position = group[side];
+  return props.exchange === 'tradfi' && Boolean(strategy?.enabled) && strategy?.status === 'active'
+    && !strategy.manualAddPending && leg?.phase === 'active'
+    && Number(leg.additions || 0) >= Number(strategy.manualAddThreshold || 20)
+    && position?.kind === 'position' && Number(rowPnl(position)) < 0;
+}
+function openManualAdd(group: TradfiGroup, side: 'long' | 'short') {
+  manualSymbol.value = group.instId; manualSide.value = side;
+  manualMargin.value = group.instId === 'XAGUSDT' ? 10 : 20;
+  manualPreview.value = null; manualError.value = ''; manualDialog.value = true;
+}
+function manualDirectionLabel() { return manualSide.value === 'long' ? '多头' : '空头'; }
+async function calculateManualPreview() {
+  if (manualBusy.value || !(manualMargin.value > 0)) return;
+  manualBusy.value = true; manualError.value = ''; manualPreview.value = null;
+  try { manualPreview.value = await previewTradfiManualAdd(manualSymbol.value, manualSide.value, Number(manualMargin.value)); }
+  catch (err) { manualError.value = err instanceof Error ? err.message : '补仓预估失败'; }
+  finally { manualBusy.value = false; }
+}
+async function confirmManualAdd() {
+  const preview = manualPreview.value;
+  if (!preview || manualBusy.value) return;
+  manualBusy.value = true; manualError.value = '';
+  try {
+    const result = await submitTradfiManualAdd(manualSymbol.value, manualSide.value, preview.marginUsdt, { price: preview.price, quantity: preview.quantity });
+    ElMessage.success(`Maker 补仓单已提交，成交后按币安实际均价接管（${twoDecimals(Number(result.order.quantity))} 张）`);
+    manualDialog.value = false; manualPreview.value = null;
+    await load(true);
+  } catch (err) { manualError.value = err instanceof Error ? err.message : '手动补仓提交失败'; }
+  finally { manualBusy.value = false; }
+}
 function sideMask(group: TradfiGroup, side: 'long' | 'short') {
   const strategy = group.strategy;
   const leg = legStatus(group, side);
@@ -266,7 +306,7 @@ defineExpose({ reload: () => load(true) });
         <div class="position-row">
           <section class="position-side">
             <div v-if="sideMask(group, 'long')" class="position-mask">{{ sideMask(group, 'long') }}</div>
-            <div class="side-header"><span class="side-badge long">多头</span></div>
+            <div class="side-header"><span class="side-badge long">多头</span><button v-if="manualAddAvailable(group, 'long')" type="button" class="manual-add-btn" @click="openManualAdd(group, 'long')">补仓</button></div>
             <div class="position-details">
               <span class="label">持仓价</span>
               <span class="value">{{ group.long ? entryPrice(group.long) : '—' }}</span>
@@ -277,12 +317,12 @@ defineExpose({ reload: () => load(true) });
               <span class="label">已实现</span>
               <span class="value" :class="valueClass(sideRealized(group, 'long'))">{{ formatSignedUsd(sideRealized(group, 'long')) }}</span>
               <span class="label">状态</span>
-              <span class="value">{{ legStatus(group, 'long')?.recovery ? `恢复中 · ${legStatus(group, 'long')?.additions || 0}/20` : `常规 · ${legStatus(group, 'long')?.additions || 0}/20` }}</span>
+              <span class="value">{{ legStatus(group, 'long')?.recovery ? `恢复中 · ${legStatus(group, 'long')?.additions || 0}/40` : `常规 · ${legStatus(group, 'long')?.additions || 0}/40` }}<span v-if="Number(legStatus(group, 'long')?.manualMarginUsdt || 0) > 0" class="manual-amount"> 手动 · {{ twoDecimals(legStatus(group, 'long')?.manualMarginUsdt) }}U</span></span>
             </div>
           </section>
           <section class="position-side">
             <div v-if="sideMask(group, 'short')" class="position-mask">{{ sideMask(group, 'short') }}</div>
-            <div class="side-header"><span class="side-badge short">空头</span></div>
+            <div class="side-header"><span class="side-badge short">空头</span><button v-if="manualAddAvailable(group, 'short')" type="button" class="manual-add-btn" @click="openManualAdd(group, 'short')">补仓</button></div>
             <div class="position-details">
               <span class="label">持仓价</span>
               <span class="value">{{ group.short ? entryPrice(group.short) : '—' }}</span>
@@ -293,7 +333,7 @@ defineExpose({ reload: () => load(true) });
               <span class="label">已实现</span>
               <span class="value" :class="valueClass(sideRealized(group, 'short'))">{{ formatSignedUsd(sideRealized(group, 'short')) }}</span>
               <span class="label">状态</span>
-              <span class="value">{{ legStatus(group, 'short')?.recovery ? `恢复中 · ${legStatus(group, 'short')?.additions || 0}/20` : `常规 · ${legStatus(group, 'short')?.additions || 0}/20` }}</span>
+              <span class="value">{{ legStatus(group, 'short')?.recovery ? `恢复中 · ${legStatus(group, 'short')?.additions || 0}/40` : `常规 · ${legStatus(group, 'short')?.additions || 0}/40` }}<span v-if="Number(legStatus(group, 'short')?.manualMarginUsdt || 0) > 0" class="manual-amount"> 手动 · {{ twoDecimals(legStatus(group, 'short')?.manualMarginUsdt) }}U</span></span>
             </div>
           </section>
         </div>
@@ -338,6 +378,28 @@ defineExpose({ reload: () => load(true) });
         </div>
       </article>
     </div>
+    <Teleport to="body">
+      <div v-if="manualDialog" class="manual-modal-cover" @click.self="!manualBusy && (manualDialog = false)">
+        <section class="manual-dialog" role="dialog" aria-modal="true" aria-label="手动补仓">
+          <header class="manual-dialog-head"><strong>{{ manualSymbol === 'XAUUSDT' ? '黄金' : '白银' }}{{ manualDirectionLabel() }}手动补仓</strong><button type="button" :disabled="manualBusy" @click="manualDialog = false">×</button></header>
+          <div class="manual-dialog-body">
+            <label class="manual-input-label">补仓保证金 <span><input v-model.number="manualMargin" type="number" min="0.01" step="0.01" :disabled="manualBusy" @input="manualPreview = null" /> USDT</span></label>
+            <p class="manual-help">使用当前策略杠杆和 Post Only 挂单逻辑。手动补仓不占自动补仓档位；仅成交部分计入仓位和累计金额。</p>
+            <button type="button" class="manual-preview-btn" :disabled="manualBusy || !(manualMargin > 0)" @click="calculateManualPreview">{{ manualBusy && !manualPreview ? '计算中…' : '计算补仓后均价' }}</button>
+            <div v-if="manualPreview" class="manual-preview">
+              <div><span>当前均价</span><b>{{ twoDecimals(manualPreview.currentEntryPrice) }}</b></div>
+              <div><span>挂单估价</span><b>{{ twoDecimals(manualPreview.price) }}</b></div>
+              <div><span>预计数量</span><b>{{ twoDecimals(manualPreview.quantity) }}</b></div>
+              <div><span>当前浮亏</span><b class="loss">{{ formatSignedUsd(manualPreview.currentPnl) }}</b></div>
+              <div class="projected"><span>补仓后预计均价</span><b>{{ twoDecimals(manualPreview.projectedEntryPrice) }}</b></div>
+              <small>估算值；成交后以币安实际成交均价和数量更新。</small>
+            </div>
+            <p v-if="manualError" class="manual-error">{{ manualError }}</p>
+          </div>
+          <footer class="manual-dialog-footer"><button type="button" :disabled="manualBusy" @click="manualDialog = false">取消</button><button type="button" class="confirm" :disabled="manualBusy || !manualPreview" @click="confirmManualAdd">{{ manualBusy ? '处理中…' : '再次确认并挂单' }}</button></footer>
+        </section>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -583,4 +645,65 @@ defineExpose({ reload: () => load(true) });
   background: color-mix(in srgb, var(--panel-2) 83%, transparent);
   backdrop-filter: blur(2px);
 }
+.manual-add-btn {
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--yellow) 45%, var(--border));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--yellow) 10%, transparent);
+  color: var(--yellow);
+  font-size: 11px;
+  cursor: pointer;
+}
+.manual-add-btn:hover { background: color-mix(in srgb, var(--yellow) 18%, transparent); }
+.manual-amount { color: var(--yellow); font-size: 11px; white-space: nowrap; }
+.manual-modal-cover {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgb(0 0 0 / 64%);
+}
+.manual-dialog {
+  width: min(460px, 100%);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 20px 70px rgb(0 0 0 / 40%);
+}
+.manual-dialog-head, .manual-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+}
+.manual-dialog-head { border-bottom: 1px solid var(--border); }
+.manual-dialog-head button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 22px;
+  cursor: pointer;
+}
+.manual-dialog-body { padding: 18px; }
+.manual-input-label { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+.manual-input-label span { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.manual-input-label input { width: 130px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2); color: var(--text); }
+.manual-help, .manual-preview small { color: var(--muted); font-size: 11px; line-height: 1.55; }
+.manual-preview-btn { width: 100%; margin: 8px 0; padding: 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2); color: var(--text); cursor: pointer; }
+.manual-preview-btn:disabled, .manual-dialog-footer button:disabled { opacity: .55; cursor: default; }
+.manual-preview { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; margin-top: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; }
+.manual-preview > div { display: flex; flex-direction: column; gap: 4px; color: var(--muted); }
+.manual-preview b { color: var(--text); font-variant-numeric: tabular-nums; }
+.manual-preview b.loss { color: var(--red); }
+.manual-preview .projected { grid-column: 1 / -1; padding-top: 8px; border-top: 1px solid var(--border); }
+.manual-preview .projected b { color: var(--yellow); font-size: 17px; }
+.manual-error { color: var(--red); font-size: 12px; }
+.manual-dialog-footer { justify-content: flex-end; border-top: 1px solid var(--border); }
+.manual-dialog-footer button { padding: 8px 13px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--text); cursor: pointer; }
+.manual-dialog-footer .confirm { border-color: var(--yellow); background: var(--yellow); color: #171717; font-weight: 600; }
 </style>

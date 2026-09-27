@@ -8,7 +8,7 @@ function candles(start, count, step, spread = 2) {
   });
 }
 
-const { marketState, ladderStep, requestedConfig, resumedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, closeClientId, closeOrderRemaining, additionDecision, scalpProfitTarget, commissionRate, isCommodityWeekendMode, orderFillState, profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState, MAX_ADDITIONS, MARGIN, LEVERAGE } = require('../lib/tradfiRangeStrategy');
+const { marketState, ladderStep, ladderMargin, defaultConfig, requestedConfig, resumedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, closeClientId, closeOrderRemaining, additionDecision, scalpProfitTarget, commissionRate, isCommodityWeekendMode, orderFillState, profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState, MAX_ADDITIONS, MANUAL_ADD_THRESHOLD, MARGIN, LEVERAGE } = require('../lib/tradfiRangeStrategy');
 
 test('黄金窄幅结构允许震荡监控，明显单边结构识别为趋势', () => {
   const range15 = candles(1800, 48, 0.02, 2);
@@ -19,10 +19,20 @@ test('黄金窄幅结构允许震荡监控，明显单边结构识别为趋势',
   assert.equal(marketState(trend15, trend60).trend, true);
 });
 
-test('策略固定为10U、10倍、单边最多20次补仓', () => {
-  assert.equal(MARGIN, 10);
-  assert.equal(LEVERAGE, 10);
-  assert.equal(MAX_ADDITIONS, 20);
+test('黄金与白银使用各自默认本金和杠杆，单边最多40档', () => {
+  assert.equal(MARGIN, 20);
+  assert.equal(LEVERAGE, 20);
+  assert.equal(MAX_ADDITIONS, 40);
+  assert.equal(MANUAL_ADD_THRESHOLD, 20);
+  assert.deepEqual(defaultConfig('XAUUSDT'), { marginUsdt: 20, leverage: 20, ladder: [10, 15, 25, 30] });
+  assert.deepEqual(defaultConfig('XAGUSDT'), { marginUsdt: 10, leverage: 10, ladder: [5, 7.5, 12.5, 15] });
+});
+
+test('阶梯补仓每10档调整保证金且40档总预算保持800U', () => {
+  assert.deepEqual([1, 10, 11, 20, 21, 30, 31, 40].map((level) => ladderMargin('XAUUSDT', level)), [10, 10, 15, 15, 25, 25, 30, 30]);
+  assert.deepEqual([1, 11, 21, 31].map((level) => ladderMargin('XAGUSDT', level)), [5, 7.5, 12.5, 15]);
+  assert.equal(Array.from({ length: 40 }, (_, i) => ladderMargin('XAUUSDT', i + 1)).reduce((a, b) => a + b, 0), 800);
+  assert.equal(Array.from({ length: 40 }, (_, i) => ladderMargin('XAGUSDT', i + 1)).reduce((a, b) => a + b, 0), 400);
 });
 
 test('补仓间距使用15分钟 ATR 的 0.6 倍，并限制在现价的 0.08% 到 0.35%', () => {
@@ -99,12 +109,12 @@ test('平仓重挂只使用策略委托尚未成交的数量', () => {
   assert.equal(closeOrderRemaining({ quantity: '0.1' }, { executedQty: '0.1' }), 0);
 });
 
-test('补仓按多空分别计数，单侧满 20 次后只停止该侧', () => {
-  assert.equal(additionDecision({ longAdditions: 19, shortAdditions: 20 }, true).action, 'add');
-  assert.equal(additionDecision({ longAdditions: 20, shortAdditions: 3 }, true).action, 'wait');
-  assert.equal(additionDecision({ longAdditions: 20, shortAdditions: 3 }, false).action, 'add');
-  assert.equal(additionDecision({ longAdditions: 20, shortAdditions: 20 }, true).action, 'manual');
-  assert.equal(additionDecision({ longAdditions: 20, shortAdditions: 20 }, false).action, 'manual');
+test('补仓按多空分别计数，单侧满40档后只停止该侧', () => {
+  assert.equal(additionDecision({ longAdditions: 39, shortAdditions: 40 }, true).action, 'add');
+  assert.equal(additionDecision({ longAdditions: 40, shortAdditions: 3 }, true).action, 'wait');
+  assert.equal(additionDecision({ longAdditions: 40, shortAdditions: 3 }, false).action, 'add');
+  assert.equal(additionDecision({ longAdditions: 40, shortAdditions: 40 }, true).action, 'manual');
+  assert.equal(additionDecision({ longAdditions: 40, shortAdditions: 40 }, false).action, 'manual');
 });
 
 test('每次平仓使用新的客户订单号，避免币安报 ClientOrderId 重复', () => {

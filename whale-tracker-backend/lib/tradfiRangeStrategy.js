@@ -5,11 +5,16 @@ const { signedRequest, publicGet, symbolRules, stepped } = require('./binanceTra
 const { recordBinanceAiOrder } = require('./binanceAiLedger');
 
 const SYMBOLS = new Set(['XAUUSDT', 'XAGUSDT']);
-const MARGIN = 10;
-const LEVERAGE = 10;
+const MARGIN = 20;
+const LEVERAGE = 20;
 const MAX_MARGIN = 20;
 const MAX_LEVERAGE = 50;
-const MAX_ADDITIONS = 20;
+const MAX_ADDITIONS = 40;
+const MANUAL_ADD_THRESHOLD = 20;
+const SYMBOL_DEFAULTS = Object.freeze({
+  XAUUSDT: Object.freeze({ marginUsdt: 20, leverage: 20, ladder: Object.freeze([10, 15, 25, 30]) }),
+  XAGUSDT: Object.freeze({ marginUsdt: 10, leverage: 10, ladder: Object.freeze([5, 7.5, 12.5, 15]) }),
+});
 // 高频止盈检查与补仓触发；平仓后的下一轮仍由 COOLDOWN_MS 控制为 10 秒。
 const POLL_MS = 3_000;
 const ORDER_TTL_MS = 90_000;
@@ -55,18 +60,25 @@ function cleanSymbol(value) {
   if (!SYMBOLS.has(symbol)) throw invalid('震荡交易仅支持黄金和白银');
   return symbol;
 }
+function defaultConfig(symbol) { return SYMBOL_DEFAULTS[symbol] || SYMBOL_DEFAULTS.XAUUSDT; }
+function ladderMargin(symbol, additionNumber) {
+  const level = Math.max(1, Number(additionNumber) || 1);
+  return defaultConfig(symbol).ladder[Math.min(3, Math.floor((level - 1) / 10))];
+}
 function strategyConfig(row) {
   const raw = parseState(row).config || {};
   const marginUsdt = Number(raw.marginUsdt);
   const leverage = Number(raw.leverage);
+  const defaults = defaultConfig(row?.symbol);
   return {
-    marginUsdt: Number.isFinite(marginUsdt) && marginUsdt > 0 ? marginUsdt : MARGIN,
-    leverage: Number.isInteger(leverage) && leverage > 0 ? leverage : LEVERAGE,
+    marginUsdt: Number.isFinite(marginUsdt) && marginUsdt > 0 ? marginUsdt : defaults.marginUsdt,
+    leverage: Number.isInteger(leverage) && leverage > 0 ? leverage : defaults.leverage,
   };
 }
-function requestedConfig(input = {}) {
-  const marginUsdt = Number(input.marginUsdt ?? MARGIN);
-  const leverage = Number(input.leverage ?? LEVERAGE);
+function requestedConfig(input = {}, symbol = input.symbol) {
+  const defaults = defaultConfig(symbol);
+  const marginUsdt = Number(input.marginUsdt ?? defaults.marginUsdt);
+  const leverage = Number(input.leverage ?? defaults.leverage);
   if (!Number.isFinite(marginUsdt) || marginUsdt <= 0 || marginUsdt > MAX_MARGIN) throw invalid(`单边保证金需在 0–${MAX_MARGIN} USDT 之间`);
   if (!Number.isInteger(leverage) || leverage < 1 || leverage > MAX_LEVERAGE) throw invalid(`杠杆需在 1–${MAX_LEVERAGE} 倍之间`);
   return { marginUsdt, leverage };
@@ -129,6 +141,7 @@ function legSnapshot(state, side) {
   return {
     phase: legValue(state, side, 'Phase', 'active'),
     additions: Number(legValue(state, side, 'Additions', 0)) || 0,
+    manualMarginUsdt: Number(legValue(state, side, 'ManualMarginUsdt', 0)) || 0,
     expectedQty: Number(legValue(state, side, 'ExpectedQty', isLong ? state?.expectedLong : state?.expectedShort)) || 0,
     lastAddPrice: Number(legValue(state, side, 'LastAddPrice', state?.lastAddPrice)) || 0,
     minPnl: Number(legValue(state, side, 'MinPnl', isLong ? state?.minLongPnl : state?.minShortPnl)) || 0,
@@ -145,7 +158,7 @@ function legSnapshot(state, side) {
   };
 }
 function resetLeg(side, expectedQty, lastAddPrice) {
-  return legPatch(side, { Phase: 'active', Additions: 0, ExpectedQty: expectedQty, LastAddPrice: lastAddPrice, MinPnl: 0,
+  return legPatch(side, { Phase: 'active', Additions: 0, ManualMarginUsdt: 0, ExpectedQty: expectedQty, LastAddPrice: lastAddPrice, MinPnl: 0,
     Recovery: false, RecoveryArmed: false, RecoveryPeakNetPnl: 0, RecoveryTrail: 0, CloseOrders: [], ClosePlacedAt: 0,
     CloseGuardPrice: 0, FundingStartedAt: Date.now(), ReentryAt: 0, ReentryOrder: null });
 }
@@ -156,7 +169,9 @@ function publicRow(row) {
   const counts = sideAdditions(s);
   return { symbol: row.symbol, enabled: Boolean(row.enabled), status: row.status, simulated: Boolean(row.simulated),
     additions: counts.longAdditions + counts.shortAdditions, longAdditions: counts.longAdditions, shortAdditions: counts.shortAdditions,
-    maxAdditions: MAX_ADDITIONS, maxTotalAdditions: MAX_ADDITIONS * 2, marginPerOrder: config.marginUsdt, leverage: config.leverage, cycleId: s.cycleId || null,
+    maxAdditions: MAX_ADDITIONS, maxTotalAdditions: MAX_ADDITIONS * 2, manualAddThreshold: MANUAL_ADD_THRESHOLD,
+    manualAddPending: s.pending?.kind === 'manual',
+    marginPerOrder: config.marginUsdt, leverage: config.leverage, cycleId: s.cycleId || null,
     comboPnl: s.comboPnl ?? null, netPnl: s.netPnl ?? null, closeTrigger: s.closeTrigger ?? null,
     costs: s.costs || null, addStep: s.addStep ?? null, lastPrice: s.lastPrice ?? null, range: s.range || null,
     cooldownUntil: s.cooldownUntil ?? null, cycleStartedAt: s.cycleStartedAt ?? null,
@@ -175,7 +190,8 @@ function status(userId, symbol) {
   const row = rowFor(userId, sym);
   const events = getDb().prepare('SELECT id,level,message,details_json,created_at FROM tradfi_range_events WHERE user_id=? AND symbol=? ORDER BY created_at DESC LIMIT 80').all(String(userId), sym)
     .map((e) => ({ ...e, details: (() => { try { return JSON.parse(e.details_json); } catch { return {}; } })() }));
-  return { strategy: publicRow(row) || { symbol: sym, enabled: false, status: 'stopped', simulated: null, additions: 0, longAdditions: 0, shortAdditions: 0, maxAdditions: MAX_ADDITIONS, maxTotalAdditions: MAX_ADDITIONS * 2, marginPerOrder: MARGIN, leverage: LEVERAGE }, events };
+  const defaults = defaultConfig(sym);
+  return { strategy: publicRow(row) || { symbol: sym, enabled: false, status: 'stopped', simulated: null, additions: 0, longAdditions: 0, shortAdditions: 0, maxAdditions: MAX_ADDITIONS, maxTotalAdditions: MAX_ADDITIONS * 2, manualAddThreshold: MANUAL_ADD_THRESHOLD, marginPerOrder: defaults.marginUsdt, leverage: defaults.leverage, long: { manualMarginUsdt: 0 }, short: { manualMarginUsdt: 0 } }, events };
 }
 function enable(userId, symbol, simulated, input = {}) {
   const sym = cleanSymbol(symbol);
@@ -185,11 +201,11 @@ function enable(userId, symbol, simulated, input = {}) {
   const savedPosition = existing?.status === 'paused' && (existingState.resumeEligible
     || Number(existingState.expectedLong || 0) > 0 || Number(existingState.expectedShort || 0) > 0);
   const savedConfig = strategyConfig(existing);
-  const config = savedPosition ? resumedConfig(savedConfig, input) : requestedConfig(input);
+  const config = savedPosition ? resumedConfig(savedConfig, input) : requestedConfig(input, sym);
   const now = Date.now();
   const initialState = savedPosition || input.adoptExisting
     ? { ...existingState, config, resumeEligible: savedPosition, adoptExisting: Boolean(input.adoptExisting), startupProgress: 5, startupStep: '准备检查现有仓位' }
-    : { config, resumeEligible: false, adoptExisting: false, startupProgress: 5, startupStep: '准备启动检查' };
+    : { config, resumeEligible: false, adoptExisting: false, longManualMarginUsdt: 0, shortManualMarginUsdt: 0, startupProgress: 5, startupStep: '准备启动检查' };
   getDb().prepare(`INSERT INTO tradfi_range_strategies (user_id,symbol,enabled,status,simulated,additions,state_json,last_error,started_at,updated_at)
     VALUES (?,?,1,'initializing',?,0,?,'',?,?) ON CONFLICT(user_id,symbol) DO UPDATE SET enabled=1,status='initializing',simulated=excluded.simulated,additions=0,state_json=excluded.state_json,last_error='',started_at=excluded.started_at,updated_at=excluded.updated_at`)
     .run(String(userId), sym, simulated ? 1 : 0, JSON.stringify(initialState), now, now);
@@ -284,11 +300,11 @@ async function findOrderByClientId(creds, symbol, clientId, attempts = 4) {
   }
   return null;
 }
-async function orderQty(symbol, price, config) {
+async function orderQty(symbol, price, config, marginUsdt = config.marginUsdt) {
   const rules = await symbolRules(symbol);
   const lot = new Map((rules?.filters || []).map((f) => [f.filterType, f])).get('LOT_SIZE');
   if (!lot) throw new Error('合约数量规则缺失');
-  const quantity = stepped(config.marginUsdt * config.leverage / price, lot.stepSize);
+  const quantity = stepped(Number(marginUsdt) * config.leverage / price, lot.stepSize);
   if (!(Number(quantity) >= Number(lot.minQty || 0))) throw new Error('当前保证金和杠杆低于币安最小下单数量');
   return quantity;
 }
@@ -371,15 +387,16 @@ async function pauseWeekendNewOrders(row, creds, state) {
   log(row.user_id, row.symbol, '周末流动性模式已开启：已撤销未成交的新建底仓或重建委托；已有仓位继续补仓与止盈', 'info');
   return true;
 }
-function remember(userId, row, order, clientId, side, price, quantity) {
+function remember(userId, row, order, clientId, side, price, quantity, marginUsdt = null) {
   const config = strategyConfig(row);
   try {
     recordBinanceAiOrder(userId, 'tradfi', { orderId: order.orderId, clientOrderId: clientId, symbol: row.symbol,
-      side, positionSide: side === 'BUY' ? 'LONG' : 'SHORT', price, quantity, marginUsdt: config.marginUsdt, leverage: config.leverage, simulated: Boolean(row.simulated) });
+      side, positionSide: side === 'BUY' ? 'LONG' : 'SHORT', price, quantity, marginUsdt: Number(marginUsdt) > 0 ? marginUsdt : config.marginUsdt, leverage: config.leverage, simulated: Boolean(row.simulated) });
   } catch (err) { console.warn('[tradfi-range] ledger:', err.message); }
 }
-async function placeLimit(creds, row, side, price, suffix) {
+async function placeLimit(creds, row, side, price, suffix, marginUsdt = null) {
   const config = strategyConfig(row);
+  const orderMargin = Number(marginUsdt) > 0 ? Number(marginUsdt) : config.marginUsdt;
   const rules = await symbolRules(row.symbol);
   const tick = Number(new Map((rules?.filters || []).map((f) => [f.filterType, f])).get('PRICE_FILTER')?.tickSize);
   if (!(tick > 0)) throw new Error('合约价格规则缺失');
@@ -390,7 +407,7 @@ async function placeLimit(creds, row, side, price, suffix) {
     const cushion = tick * attempt;
     const raw = side === 'BUY' ? Math.min(Number(price), bid - cushion) : Math.max(Number(price), ask + cushion);
     makerPrice = stepped(raw, tick, side === 'BUY' ? 'floor' : 'ceil');
-    quantity = await orderQty(row.symbol, Number(makerPrice), config);
+    quantity = await orderQty(row.symbol, Number(makerPrice), config, orderMargin);
     clientId = `wtf_rg_${parseState(row).cycleId}_${suffix}_${attempt}`.slice(0, 36);
     try {
       order = await signedRequest(creds, 'POST', '/fapi/v1/order', { symbol: row.symbol, side, positionSide: side === 'BUY' ? 'LONG' : 'SHORT', type: 'LIMIT', timeInForce: 'GTX', price: makerPrice, quantity, newClientOrderId: clientId });
@@ -405,8 +422,59 @@ async function placeLimit(creds, row, side, price, suffix) {
     }
   }
   if (!order?.orderId) throw invalid('币安未返回订单编号，本轮停止提交', 409);
-  remember(row.user_id, row, order, clientId, side, Number(makerPrice), quantity);
-  return { orderId: String(order.orderId), clientOrderId: clientId, side, price: Number(makerPrice), quantity, placedAt: Date.now() };
+  remember(row.user_id, row, order, clientId, side, Number(makerPrice), quantity, orderMargin);
+  return { orderId: String(order.orderId), clientOrderId: clientId, side, price: Number(makerPrice), quantity, marginUsdt: orderMargin, placedAt: Date.now() };
+}
+async function manualAddPreview(userId, symbol, sideValue, marginValue) {
+  const row = rowFor(userId, symbol);
+  const side = String(sideValue || '').toLowerCase();
+  if (!['long', 'short'].includes(side)) throw invalid('补仓方向无效');
+  const marginUsdt = Number(marginValue);
+  if (!Number.isFinite(marginUsdt) || marginUsdt <= 0) throw invalid('请输入大于 0 的补仓保证金');
+  if (!row.enabled || row.status !== 'active') throw invalid('策略当前未处于可补仓状态', 409);
+  const state = parseState(row); const counts = sideAdditions(state); const leg = legSnapshot(state, side);
+  if (counts[`${side}Additions`] < MANUAL_ADD_THRESHOLD) throw invalid(`该方向至少自动补仓 ${MANUAL_ADD_THRESHOLD} 档后才能手动补仓`, 409);
+  if (state.pending || leg.phase !== 'active') throw invalid('该方向有未完成的委托或状态切换，请稍后再试', 409);
+  const creds = getBinanceCredentialsForUser(userId);
+  if (!creds || Number(creds.simulated) !== Number(row.simulated)) throw invalid('币安密钥缺失或交易环境已变化', 409);
+  const risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: row.symbol });
+  const pos = positionsOf(risk, row.symbol); const position = pos[side];
+  const currentQty = qty(position); const currentEntryPrice = Number(position?.entryPrice || 0);
+  if (!(currentQty > 0) || !(currentEntryPrice > 0)) throw invalid('币安当前没有该方向的持仓', 409);
+  if (Number(position.unRealizedProfit || 0) >= 0) throw invalid('仅亏损中的仓位可以手动补仓', 409);
+  if (!closeEnough(currentQty, leg.expectedQty)) throw invalid('策略记录与币安仓位数量不一致，请先核对仓位', 409);
+  const balances = await signedRequest(creds, 'GET', '/fapi/v2/balance');
+  const usdt = (Array.isArray(balances) ? balances : []).find((item) => item.asset === 'USDT');
+  if (!usdt || Number(usdt.availableBalance || 0) < marginUsdt) throw invalid('可用保证金不足以提交这笔补仓', 409);
+  const [book, rules] = await Promise.all([
+    publicGet('/fapi/v1/ticker/bookTicker', { symbol: row.symbol }),
+    symbolRules(row.symbol),
+  ]);
+  const tick = Number(new Map((rules?.filters || []).map((f) => [f.filterType, f])).get('PRICE_FILTER')?.tickSize);
+  if (!(tick > 0)) throw invalid('合约价格规则缺失');
+  const orderSide = side === 'long' ? 'BUY' : 'SELL';
+  const reference = side === 'long' ? Number(book.bidPrice) : Number(book.askPrice);
+  const price = Number(stepped(reference, tick, side === 'long' ? 'floor' : 'ceil'));
+  const config = strategyConfig(row); const quantity = await orderQty(row.symbol, price, config, marginUsdt);
+  const projectedEntryPrice = (currentQty * currentEntryPrice + Number(quantity) * price) / (currentQty + Number(quantity));
+  return { symbol: row.symbol, side, marginUsdt, leverage: config.leverage, currentQty, currentEntryPrice,
+    currentPnl: Number(position.unRealizedProfit || 0), price, quantity: Number(quantity),
+    projectedQty: currentQty + Number(quantity), projectedEntryPrice, manualMarginUsdt: leg.manualMarginUsdt };
+}
+async function manualAdd(userId, symbol, side, marginUsdt, expected = {}) {
+  const preview = await manualAddPreview(userId, symbol, side, marginUsdt);
+  const expectedPrice = Number(expected.price); const expectedQuantity = Number(expected.quantity);
+  if (!(expectedPrice > 0) || !(expectedQuantity > 0)) throw invalid('补仓预估已失效，请重新计算后确认', 409);
+  if (preview.price !== expectedPrice || !closeEnough(preview.quantity, expectedQuantity)) {
+    throw invalid('盘口价格或下单数量已变化，请重新计算补仓均价并再次确认', 409);
+  }
+  const row = rowFor(userId, symbol);
+  const orderSide = preview.side === 'long' ? 'BUY' : 'SELL';
+  const suffix = `man_${preview.side[0]}_${Date.now().toString(36)}`;
+  const order = await placeLimit(getBinanceCredentialsForUser(userId), row, orderSide, preview.price, suffix, preview.marginUsdt);
+  save(row, { status: 'add_pending', last_error: '' }, { pending: { ...order, kind: 'manual', marginUsdt: preview.marginUsdt, direction: preview.side } });
+  log(userId, row.symbol, `${preview.side === 'long' ? '多头' : '空头'}手动补仓挂单已提交：保证金 ${preview.marginUsdt}U，${preview.leverage}x`, 'trade', { side: preview.side, marginUsdt: preview.marginUsdt, leverage: preview.leverage, price: order.price, quantity: order.quantity, projectedEntryPrice: (preview.currentQty * preview.currentEntryPrice + Number(order.quantity) * Number(order.price)) / (preview.currentQty + Number(order.quantity)), manual: true });
+  return { order, preview: { ...preview, price: order.price, quantity: Number(order.quantity), projectedEntryPrice: (preview.currentQty * preview.currentEntryPrice + Number(order.quantity) * Number(order.price)) / (preview.currentQty + Number(order.quantity)) } };
 }
 async function startCycle(row, creds, market) {
   const config = strategyConfig(row);
@@ -945,6 +1013,20 @@ async function reconcileRow(row) {
     const current = await orderState(creds, row.symbol, state.pending);
     if (current.status === 'FILLED') {
       const filled = Number(current.executedQty); const isLong = state.pending.side === 'BUY';
+      if (state.pending.kind === 'manual') {
+        const direction = state.pending.direction === 'short' ? 'short' : 'long';
+        const leg = legSnapshot(state, direction); const fillPrice = Number(current.avgPrice || state.pending.price);
+        const nextQty = Number(leg.expectedQty || 0) + filled;
+        const manualMarginUsdt = leg.manualMarginUsdt + (filled * fillPrice / strategyConfig(row).leverage);
+        save(row, { status: 'active', last_error: '' }, {
+          pending: null,
+          expectedLong: Number(state.expectedLong || 0) + (isLong ? filled : 0),
+          expectedShort: Number(state.expectedShort || 0) + (isLong ? 0 : filled),
+          lastAddPrice: fillPrice,
+          ...legPatch(direction, { ExpectedQty: nextQty, LastAddPrice: fillPrice, ManualMarginUsdt: manualMarginUsdt }),
+        });
+        log(row.user_id, row.symbol, `${direction === 'long' ? '多头' : '空头'}手动补仓已成交，实际保证金累计 ${manualMarginUsdt.toFixed(2)}U`, 'success', { side: direction, quantity: filled, avgPrice: fillPrice, manualMarginUsdt }); return;
+      }
       const counted = countedAdditions(state, isLong, true);
       const direction = isLong ? 'long' : 'short'; const nextQty = (isLong ? longLeg.expectedQty : shortLeg.expectedQty) + filled;
       save(row, { status: 'active', additions: counted.total }, { pending: null, longAdditions: counted.longAdditions, shortAdditions: counted.shortAdditions, expectedLong: state.expectedLong + (isLong ? filled : 0), expectedShort: state.expectedShort + (isLong ? 0 : filled), lastAddPrice: Number(current.avgPrice || state.pending.price), ...legPatch(direction, { ExpectedQty: nextQty, Additions: counted.next, LastAddPrice: Number(current.avgPrice || state.pending.price) }) });
@@ -954,6 +1036,22 @@ async function reconcileRow(row) {
       await cancelOrder(creds, row.symbol, state.pending);
       const latestOrder = await orderState(creds, row.symbol, state.pending);
       const filled = Number(latestOrder.executedQty || 0); const isLong = state.pending.side === 'BUY';
+      if (state.pending.kind === 'manual') {
+        const direction = state.pending.direction === 'short' ? 'short' : 'long';
+        const leg = legSnapshot(state, direction); const fillPrice = Number(latestOrder.avgPrice || state.pending.price);
+        const nextQty = Number(leg.expectedQty || 0) + filled;
+        const manualMarginUsdt = leg.manualMarginUsdt + (filled > 0 ? filled * fillPrice / strategyConfig(row).leverage : 0);
+        save(row, { status: 'active', last_error: '' }, {
+          pending: null,
+          expectedLong: Number(state.expectedLong || 0) + (isLong ? filled : 0),
+          expectedShort: Number(state.expectedShort || 0) + (isLong ? 0 : filled),
+          lastAddPrice: filled > 0 ? fillPrice : state.lastAddPrice,
+          ...legPatch(direction, { ExpectedQty: nextQty, LastAddPrice: filled > 0 ? fillPrice : leg.lastAddPrice, ManualMarginUsdt: manualMarginUsdt }),
+        });
+        if (filled > 0) log(row.user_id, row.symbol, `${direction === 'long' ? '多头' : '空头'}手动补仓部分成交，剩余已撤销；保证金累计 ${manualMarginUsdt.toFixed(2)}U`, 'trade', { side: direction, quantity: filled, avgPrice: fillPrice, manualMarginUsdt });
+        else log(row.user_id, row.symbol, '手动补仓挂单超时未成交，已撤销', 'warn');
+        return;
+      }
       const counted = countedAdditions(state, isLong, filled > 0);
       const direction = isLong ? 'long' : 'short'; const nextQty = (isLong ? longLeg.expectedQty : shortLeg.expectedQty) + filled;
       save(row, { status: 'active', additions: counted.total }, { pending: null, longAdditions: counted.longAdditions, shortAdditions: counted.shortAdditions,
@@ -1015,12 +1113,13 @@ async function reconcileRow(row) {
   const decision = additionDecision(state, longLosing);
   const trigger = longLosing ? market.last <= anchor - step : market.last >= anchor + step;
   if (!trigger) return;
-  if (decision.action === 'manual') throw invalid('多空两侧都已达到20次自动补仓上限，策略转人工接管', 409);
+  if (decision.action === 'manual') throw invalid(`多空两侧都已达到${MAX_ADDITIONS}次自动补仓上限，策略转人工接管`, 409);
   if (decision.action === 'wait') return;
   const side = longLosing ? 'BUY' : 'SELL'; const price = longLosing ? market.bid : market.ask;
-  const pending = await placeLimit(creds, row, side, price, `${longLosing ? 'l' : 's'}${decision.next}`);
+  const marginUsdt = ladderMargin(row.symbol, decision.next);
+  const pending = await placeLimit(creds, row, side, price, `${longLosing ? 'l' : 's'}${decision.next}`, marginUsdt);
   save(row, { status: 'add_pending' }, { pending });
-  log(row.user_id, row.symbol, `已提交${longLosing ? '多头' : '空头'}第 ${decision.next}/${MAX_ADDITIONS} 档补仓`, 'trade', { price, step, longAdditions: decision.longAdditions, shortAdditions: decision.shortAdditions });
+  log(row.user_id, row.symbol, `已提交${longLosing ? '多头' : '空头'}第 ${decision.next}/${MAX_ADDITIONS} 档补仓：保证金 ${marginUsdt}U`, 'trade', { price, step, marginUsdt, longAdditions: decision.longAdditions, shortAdditions: decision.shortAdditions });
 }
 async function reconcile() {
   if (busy) return; busy = true;
@@ -1044,4 +1143,4 @@ async function reconcile() {
 }
 function start() { if (timer) return; timer = setInterval(() => { void reconcile(); }, POLL_MS); timer.unref?.(); void reconcile(); }
 
-module.exports = { start, reconcile, status, enable, disable, closeAll, closeClientId, closeOrderRemaining, additionDecision, marketState, atr, ladderStep, costState, scalpProfitTarget, commissionRate, isCommodityWeekendMode, orderFillState, profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState, strategyConfig, requestedConfig, resumedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, SYMBOLS, MAX_ADDITIONS, MARGIN, LEVERAGE, MAX_MARGIN, MAX_LEVERAGE };
+module.exports = { start, reconcile, status, enable, disable, closeAll, manualAddPreview, manualAdd, closeClientId, closeOrderRemaining, additionDecision, marketState, atr, ladderStep, ladderMargin, defaultConfig, costState, scalpProfitTarget, commissionRate, isCommodityWeekendMode, orderFillState, profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState, strategyConfig, requestedConfig, resumedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState, SYMBOLS, MAX_ADDITIONS, MANUAL_ADD_THRESHOLD, MARGIN, LEVERAGE, MAX_MARGIN, MAX_LEVERAGE };
