@@ -61,9 +61,12 @@ function cleanSymbol(value) {
   return symbol;
 }
 function defaultConfig(symbol) { return SYMBOL_DEFAULTS[symbol] || SYMBOL_DEFAULTS.XAUUSDT; }
-function ladderMargin(symbol, additionNumber) {
+function ladderMargin(symbol, additionNumber, initialMargin = defaultConfig(symbol).marginUsdt) {
   const level = Math.max(1, Number(additionNumber) || 1);
-  return defaultConfig(symbol).ladder[Math.min(3, Math.floor((level - 1) / 10))];
+  const defaults = defaultConfig(symbol);
+  const baseMargin = Number(initialMargin);
+  const tier = defaults.ladder[Math.min(3, Math.floor((level - 1) / 10))];
+  return tier * (Number.isFinite(baseMargin) && baseMargin > 0 ? baseMargin / defaults.marginUsdt : 1);
 }
 function strategyConfig(row) {
   const raw = parseState(row).config || {};
@@ -1116,7 +1119,7 @@ async function reconcileRow(row) {
   if (decision.action === 'manual') throw invalid(`多空两侧都已达到${MAX_ADDITIONS}次自动补仓上限，策略转人工接管`, 409);
   if (decision.action === 'wait') return;
   const side = longLosing ? 'BUY' : 'SELL'; const price = longLosing ? market.bid : market.ask;
-  const marginUsdt = ladderMargin(row.symbol, decision.next);
+  const marginUsdt = ladderMargin(row.symbol, decision.next, strategyConfig(row).marginUsdt);
   const pending = await placeLimit(creds, row, side, price, `${longLosing ? 'l' : 's'}${decision.next}`, marginUsdt);
   save(row, { status: 'add_pending' }, { pending });
   log(row.user_id, row.symbol, `已提交${longLosing ? '多头' : '空头'}第 ${decision.next}/${MAX_ADDITIONS} 档补仓：保证金 ${marginUsdt}U`, 'trade', { price, step, marginUsdt, longAdditions: decision.longAdditions, shortAdditions: decision.shortAdditions });

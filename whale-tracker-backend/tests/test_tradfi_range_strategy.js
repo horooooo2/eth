@@ -33,6 +33,8 @@ test('阶梯补仓每10档调整保证金且40档总预算保持800U', () => {
   assert.deepEqual([1, 11, 21, 31].map((level) => ladderMargin('XAGUSDT', level)), [5, 7.5, 12.5, 15]);
   assert.equal(Array.from({ length: 40 }, (_, i) => ladderMargin('XAUUSDT', i + 1)).reduce((a, b) => a + b, 0), 800);
   assert.equal(Array.from({ length: 40 }, (_, i) => ladderMargin('XAGUSDT', i + 1)).reduce((a, b) => a + b, 0), 400);
+  assert.deepEqual([1, 11, 21, 31].map((level) => ladderMargin('XAUUSDT', level, 50)), [25, 37.5, 62.5, 75]);
+  assert.equal(Array.from({ length: 40 }, (_, i) => ladderMargin('XAUUSDT', i + 1, 50)).reduce((a, b) => a + b, 0), 2000);
 });
 
 test('补仓间距使用15分钟 ATR 的 0.6 倍，并限制在现价的 0.08% 到 0.35%', () => {

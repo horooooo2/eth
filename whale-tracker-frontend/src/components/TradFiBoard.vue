@@ -151,9 +151,16 @@ const intel = ref<TradFiIntelResponse | null>(null);
 const intelLoading = ref(false);
 const intelError = ref('');
 const strategySupported = computed(() => selected.value === 'XAUUSDT' || selected.value === 'XAGUSDT');
-const ladderDescription = computed(() => selected.value === 'XAGUSDT'
-  ? '第 1–10 档 5U · 11–20 档 7.5U · 21–30 档 12.5U · 31–40 档 15U（单边合计 400U）'
-  : '第 1–10 档 10U · 11–20 档 15U · 21–30 档 25U · 31–40 档 30U（单边合计 800U）');
+const ladderDescription = computed(() => {
+  const initialMargin = Number(strategyData.value?.strategy.enabled
+    ? strategyData.value.strategy.marginPerOrder
+    : strategyMargin.value);
+  const base = Number.isFinite(initialMargin) && initialMargin > 0
+    ? initialMargin
+    : selected.value === 'XAGUSDT' ? 10 : 20;
+  const tiers = [0.5, 0.75, 1.25, 1.5].map((ratio) => formatTwo(base * ratio));
+  return `第 1–10 档 ${tiers[0]}U · 11–20 档 ${tiers[1]}U · 21–30 档 ${tiers[2]}U · 31–40 档 ${tiers[3]}U（单边合计 ${formatTwo(base * 40)}U）`;
+});
 const tradeRows = computed(() => (accountBook.value?.trades || []).filter((row) => row.instId === selected.value).slice(0, 50));
 const historyTab = ref<'trades' | 'logs'>('trades');
 const strategyLogs = computed(() => strategyData.value?.events || []);
