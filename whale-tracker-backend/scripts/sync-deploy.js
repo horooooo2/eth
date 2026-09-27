@@ -36,6 +36,7 @@ const FILES = [
   'lib/binanceAiAccountBook.js',
   'lib/binanceAiLedger.js',
   'lib/cryptoAiOrderGate.js',
+  'lib/tradfiRangeCore.cjs',
   'lib/tradfiRangeStrategy.js',
   'lib/hyperliquid.js',
   'lib/onchain.js',
@@ -119,7 +120,7 @@ function collectLocalRequires(abs) {
 
 function resolveLocal(fromAbs, spec) {
   const base = path.resolve(path.dirname(fromAbs), spec);
-  return [base, `${base}.js`, `${base}.json`, path.join(base, 'index.js')].find((candidate) =>
+  return [base, `${base}.js`, `${base}.cjs`, `${base}.json`, path.join(base, 'index.js')].find((candidate) =>
     fs.existsSync(candidate),
   );
 }
