@@ -11,7 +11,7 @@ function candles(start, count, step, spread = 2) {
 const { marketState, ladderStep, sparseLadderStep, sparseModeDecision, sparseGroupCount, sparseGroupMargin, sparseGroupTrigger,
   ladderMargin, defaultConfig, requestedConfig, resumedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState,
   closeClientId, closeOrderRemaining, additionDecision, countedAdditions, scalpProfitTarget, commissionRate,
-  isCommodityWeekendMode, orderFillState, profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState,
+  isCommodityWeekendMode, orderFillState, marketDataFreshness, profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState,
   MAX_ADDITIONS, MAX_LONG_ADDITIONS, MAX_SHORT_ADDITIONS, MANUAL_ADD_THRESHOLD, MARGIN, LEVERAGE } = require('../lib/tradfiRangeStrategy');
 
 test('黄金窄幅结构允许震荡监控，明显单边结构识别为趋势', () => {
@@ -112,6 +112,18 @@ test('订单状态识别完整成交、部分成交与未成交', () => {
   assert.equal(orderFillState({ status: 'PARTIALLY_FILLED', executedQty: '0.04', origQty: '0.1' }), 'partial');
   assert.equal(orderFillState({ status: 'CANCELED', executedQty: '0', origQty: '0.1' }), 'unfilled');
   assert.equal(orderFillState({ status: 'NEW', executedQty: '0', origQty: '0.1' }), 'open');
+});
+
+test('行情新鲜度要求15分钟K线不超过30分钟、1小时K线不超过2小时', () => {
+  const now = 10_000_000;
+  const recent15m = [[0, 1, 1, 1, 1, 1, now - 15 * 60_000]];
+  const recent1h = [[0, 1, 1, 1, 1, 1, now - 60 * 60_000]];
+  assert.equal(marketDataFreshness(recent15m, recent1h, now).fresh, true);
+  const stale15m = [[0, 1, 1, 1, 1, 1, now - 31 * 60_000]];
+  assert.equal(marketDataFreshness(stale15m, recent1h, now).fresh, false);
+  const stale1h = [[0, 1, 1, 1, 1, 1, now - 121 * 60_000]];
+  assert.equal(marketDataFreshness(recent15m, stale1h, now).fresh, false);
+  assert.equal(marketDataFreshness([[0, 1, 1, 1, 1, 1]], recent1h, now).fresh, false);
 });
 
 test('止盈保护价覆盖目标净利润和预估成本', () => {

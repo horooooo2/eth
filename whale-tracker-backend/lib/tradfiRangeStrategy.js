@@ -38,6 +38,8 @@ const SLIPPAGE_RATE = 0.0001;
 const SCALP_MIN_PROFIT = 0.4;
 const SCALP_NOTIONAL_RATE = 0.0002;
 const UNCERTAIN_ORDER_WAIT_MS = 30_000;
+const MAX_15M_CANDLE_AGE_MS = 30 * 60_000;
+const MAX_1H_CANDLE_AGE_MS = 2 * 60 * 60_000;
 const feeCache = new Map();
 const NEW_YORK_TIME = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', hour: '2-digit', hourCycle: 'h23' });
 let timer = null;
@@ -270,6 +272,20 @@ function clamp(value, min, max) { return Math.min(max, Math.max(min, value)); }
 function closedKlines(rows, now = Date.now()) {
   return (Array.isArray(rows) ? rows : []).filter((row) => !Number.isFinite(Number(row?.[6])) || Number(row[6]) <= now);
 }
+function marketDataFreshness(rows15, rows60, now = Date.now()) {
+  const latestClose = (rows) => {
+    const closed = closedKlines(rows, now);
+    const timestamp = Number(closed.at(-1)?.[6]);
+    return Number.isFinite(timestamp) ? timestamp : null;
+  };
+  const close15m = latestClose(rows15);
+  const close1h = latestClose(rows60);
+  const age15m = close15m == null ? Infinity : now - close15m;
+  const age1h = close1h == null ? Infinity : now - close1h;
+  const fresh15m = age15m >= 0 && age15m <= MAX_15M_CANDLE_AGE_MS;
+  const fresh1h = age1h >= 0 && age1h <= MAX_1H_CANDLE_AGE_MS;
+  return { fresh: fresh15m && fresh1h, fresh15m, fresh1h, age15m, age1h };
+}
 function atr(rows, period = 20) {
   const window = rows.slice(-(period + 1));
   if (window.length < period + 1) throw new Error('K线数据不足');
@@ -339,13 +355,30 @@ function marketState(rows15, rows60) {
   return { last, atr: atrValue, atr1h, addStep: ladderStep(last, atrValue), range, rangeReady,
     trend: !rangeReady && (hourMove > 0.025 || slope > 0.012), trendDirection, trendBars, upWeakBars, downWeakBars };
 }
-async function snapshot(symbol) {
-  const [rows15, rows60, book] = await Promise.all([
+async function snapshot(symbol, fallback = {}) {
+  const [fifteen, hourly, bookResult] = await Promise.allSettled([
     publicGet('/fapi/v1/klines', { symbol, interval: '15m', limit: 48 }),
     publicGet('/fapi/v1/klines', { symbol, interval: '1h', limit: 30 }),
     publicGet('/fapi/v1/ticker/bookTicker', { symbol }),
   ]);
-  return { ...marketState(closedKlines(rows15), closedKlines(rows60)), bid: Number(book.bidPrice), ask: Number(book.askPrice) };
+  const book = bookResult.status === 'fulfilled' ? bookResult.value : null;
+  const bid = Number(book?.bidPrice); const ask = Number(book?.askPrice);
+  const hasBook = Number.isFinite(bid) && bid > 0 && Number.isFinite(ask) && ask > 0 && ask >= bid;
+  const mid = hasBook ? (bid + ask) / 2 : Number(fallback.lastPrice || 0);
+  const base = { last: mid, bid: hasBook ? bid : 0, ask: hasBook ? ask : 0,
+    atr: Number(fallback.atr || 0), atr1h: Number(fallback.atr1h || 0), addStep: Number(fallback.addStep || 0),
+    range: fallback.range || null, rangeReady: false, trend: true, trendDirection: 'neutral',
+    trendBars: 0, upWeakBars: 0, downWeakBars: 0, dataFresh: false };
+  if (!hasBook || fifteen.status !== 'fulfilled' || hourly.status !== 'fulfilled') return base;
+  try {
+    const rows15 = closedKlines(fifteen.value);
+    const rows60 = closedKlines(hourly.value);
+    const dataState = marketState(rows15, rows60);
+    const freshness = marketDataFreshness(fifteen.value, hourly.value);
+    return { ...dataState, ...freshness, last: mid, bid, ask, dataFresh: freshness.fresh };
+  } catch {
+    return base;
+  }
 }
 function positionsOf(rows, symbol) {
   const list = Array.isArray(rows) ? rows : [];
@@ -390,6 +423,19 @@ async function cancelOrder(creds, symbol, order) {
     const current = await signedRequest(creds, 'GET', '/fapi/v1/order', { symbol, orderId: String(order.orderId) });
     if (!['FILLED', 'CANCELED', 'EXPIRED', 'REJECTED'].includes(String(current.status))) await signedRequest(creds, 'DELETE', '/fapi/v1/order', { symbol, orderId: String(order.orderId) });
   } catch (err) { if (Number(err.code) !== -2013) throw err; }
+}
+async function cancelAndVerifyOrder(creds, symbol, order) {
+  let current = order?.orderId
+    ? await orderState(creds, symbol, order)
+    : await findOrderByClientId(creds, symbol, order?.clientOrderId, 6);
+  if (!current) return { resolved: false, order };
+  const resolvedOrder = { ...order, orderId: String(current.orderId), uncertain: false };
+  if (!['FILLED', 'CANCELED', 'EXPIRED', 'REJECTED'].includes(String(current.status))) {
+    await signedRequest(creds, 'DELETE', '/fapi/v1/order', { symbol, orderId: String(current.orderId) });
+    current = await orderState(creds, symbol, resolvedOrder);
+  }
+  const terminal = ['FILLED', 'CANCELED', 'EXPIRED', 'REJECTED'].includes(String(current.status));
+  return { resolved: terminal, order: resolvedOrder, current };
 }
 function closeClientId(cycleId, positionSide) {
   const side = positionSide === 'LONG' ? 'L' : 'S';
@@ -445,10 +491,19 @@ async function placeLimit(creds, row, side, price, suffix, marginUsdt = null) {
       if (postOnlyRejected) throw invalid('盘口连续变化，Maker 挂单重试后仍被币安拒绝；本轮未创建订单，稍后自动重试', 503);
       order = await findOrderByClientId(creds, row.symbol, clientId);
       if (order) break;
-      throw invalid(`订单提交结果无法确认，请立即在币安核对 ${clientId}；策略不会重复提交`, 409);
+      const uncertainOrder = { orderId: null, clientOrderId: clientId, symbol: row.symbol, side,
+        price: Number(makerPrice), quantity, marginUsdt: orderMargin, placedAt: Date.now(), uncertain: true };
+      const failure = invalid(`订单提交结果无法确认，请立即在币安核对 ${clientId}；策略不会重复提交`, 409);
+      failure.uncertainOrder = uncertainOrder;
+      throw failure;
     }
   }
-  if (!order?.orderId) throw invalid('币安未返回订单编号，本轮停止提交', 409);
+  if (!order?.orderId) {
+    const failure = invalid('币安未返回订单编号，本轮停止提交并核对委托状态', 409);
+    failure.uncertainOrder = { orderId: null, clientOrderId: clientId, symbol: row.symbol, side,
+      price: Number(makerPrice), quantity, marginUsdt: orderMargin, placedAt: Date.now(), uncertain: true };
+    throw failure;
+  }
   remember(row.user_id, row, order, clientId, side, Number(makerPrice), quantity, orderMargin);
   return { orderId: String(order.orderId), clientOrderId: clientId, side, price: Number(makerPrice), quantity, marginUsdt: orderMargin, placedAt: Date.now() };
 }
@@ -521,15 +576,34 @@ async function startCycle(row, creds, market) {
     entries.push(await placeLimit(creds, fresh, 'SELL', market.ask, 'base_s'));
     save(rowFor(row.user_id, row.symbol), { status: 'entry_pending' }, { entries: [...entries], pending: null, entryDeadline: Date.now() + ORDER_TTL_MS });
   } catch (err) {
-    try { await Promise.all(entries.map((order) => cancelOrder(creds, row.symbol, order))); }
-    catch (cancelErr) {
-      const latest = rowFor(row.user_id, row.symbol);
-      save(latest, { enabled: 0, status: 'manual', last_error: `底仓撤单失败：${cancelErr.message}` }, { entries: [...entries], pending: null });
-      throw cancelErr;
-    }
     const latest = rowFor(row.user_id, row.symbol);
+    const currentState = parseState(latest);
+    let tracked = [...entries, ...(err.uncertainOrder ? [err.uncertainOrder] : [])];
+    let settled = [];
+    let settleError = null;
+    try {
+      const recovered = await recoverBaseOrders(creds, latest, currentState);
+      const byClientId = new Map();
+      for (const order of [...tracked, ...recovered]) byClientId.set(String(order.clientOrderId || order.orderId), order);
+      tracked = [...byClientId.values()];
+      settled = await Promise.all(tracked.map((order) => cancelAndVerifyOrder(creds, row.symbol, order)));
+    } catch (cancelErr) { settleError = cancelErr; }
+    const unresolved = settleError || settled.some((item) => !item.resolved);
+    if (unresolved) {
+      const message = `底仓委托状态或撤销结果无法确认${settleError ? `：${settleError.message}` : ''}，策略已停止自动提交；请立即在币安核对这些委托`;
+      save(latest, { enabled: 0, status: 'manual', last_error: message }, { entries: tracked, pending: null });
+      log(row.user_id, row.symbol, message, 'error', { orders: tracked.map((order) => ({ clientOrderId: order.clientOrderId, orderId: order.orderId || null })) });
+      return;
+    }
     const riskAfterCancel = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: row.symbol });
     const positionAfterCancel = positionsOf(riskAfterCancel, row.symbol);
+    const hadFill = settled.some((item) => Number(item.current?.executedQty || 0) > 0);
+    if (hadFill && !qty(positionAfterCancel.long) && !qty(positionAfterCancel.short)) {
+      const message = '底仓委托已成交，但币安仓位暂未反映该成交；策略已停止自动提交，请核对账户';
+      save(latest, { enabled: 0, status: 'manual', last_error: message }, { entries: tracked, pending: null });
+      log(row.user_id, row.symbol, message, 'error');
+      return;
+    }
     if (qty(positionAfterCancel.long) || qty(positionAfterCancel.short)) {
       const closeOrders = await closePositions(latest, creds, positionAfterCancel);
       save(rowFor(row.user_id, row.symbol), { enabled: 1, status: 'close_pending', last_error: err.message }, {
@@ -538,7 +612,7 @@ async function startCycle(row, creds, market) {
       log(row.user_id, row.symbol, '双向底仓提交未完成，已按实际成交数量提交 Maker 平仓', 'warn');
       return;
     }
-    const manual = Number(err.status) === 409;
+    const manual = Number(err.status) === 409 && !err.uncertainOrder;
     save(latest, { enabled: manual ? 0 : latest.enabled, status: manual ? 'manual' : 'waiting', last_error: err.message }, { entries: [], pending: null, cooldownUntil: Date.now() + COOLDOWN_MS });
     if (manual) throw err;
     log(row.user_id, row.symbol, `双向底仓提交失败，本轮已安全撤销：${err.message}`, 'warn');
@@ -901,6 +975,48 @@ function finishClose(row, stopped) {
   });
   log(row.user_id, row.symbol, stopped ? '一键平仓已全部成交，策略已停止' : 'Maker 平仓已成交，10 秒后检查下一轮开仓', 'success');
 }
+async function reconcileEntryPending(row, creds, state) {
+  const entries = (state.entries || []).length < 2 ? await recoverBaseOrders(creds, row, state) : state.entries;
+  if (entries.length !== (state.entries || []).length) save(row, {}, { entries });
+  const states = await Promise.all(entries.map((order) => orderState(creds, row.symbol, order)));
+  const longIndex = entries.findIndex((order) => order.side === 'BUY');
+  const shortIndex = entries.findIndex((order) => order.side === 'SELL');
+  if (states.length === 2 && states.every((order) => order.status === 'FILLED') && longIndex >= 0 && shortIndex >= 0) {
+    const expectedLong = Number(states[longIndex].executedQty);
+    const expectedShort = Number(states[shortIndex].executedQty);
+    const longPrice = Number(states[longIndex].avgPrice || entries[longIndex].price);
+    const shortPrice = Number(states[shortIndex].avgPrice || entries[shortIndex].price);
+    save(row, { status: 'active' }, { expectedLong, expectedShort, entries: [], lastAddPrice: longPrice,
+      ...resetLeg('long', expectedLong, longPrice), ...resetLeg('short', expectedShort, shortPrice) });
+    log(row.user_id, row.symbol, '双向底仓已成交，进入震荡管理', 'trade'); return;
+  }
+  if (Date.now() < Number(state.entryDeadline || 0)) return;
+  await cancelKnown(creds, row.symbol, { ...state, entries });
+  const risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: row.symbol });
+  const pos = positionsOf(risk, row.symbol);
+  if (qty(pos.long) || qty(pos.short)) {
+    const closeOrders = await closePositions(row, creds, pos);
+    save(row, { status: 'close_pending' }, { entries: [], closeOrders, closeReason: '底仓未同时成交', closePlacedAt: Date.now() });
+    log(row.user_id, row.symbol, '双向底仓未能同时成交，已提交 Maker 平仓单', 'warn'); return;
+  }
+  save(row, { status: 'waiting' }, { entries: [], cooldownUntil: Date.now() + COOLDOWN_MS });
+}
+async function reconcileClosePending(row, creds, state) {
+  const risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: row.symbol });
+  const pos = positionsOf(risk, row.symbol);
+  const stopped = Boolean(state.stopAfterClose);
+  const closeComplete = stopped
+    ? (await closeOrderProgress(creds, row.symbol, state.closeOrders || [], state.closeRemaining || {})).complete
+    : !qty(pos.long) && !qty(pos.short);
+  if (closeComplete) { finishClose(row, stopped); return; }
+  if (Date.now() - Number(state.closePlacedAt || 0) >= ORDER_TTL_MS) {
+    const replacement = await replaceCloseOrders(row, creds, state.closeOrders || [], null, 0, state.closeRemaining || {});
+    if (replacement.waiting) { save(row, {}, { closeOrders: replacement.orders }); return; }
+    const closeOrders = replacement.orders;
+    save(row, {}, { closeOrders, closeRemaining: closeTargetsFromOrders(closeOrders), closePlacedAt: Date.now() });
+    log(row.user_id, row.symbol, 'Maker 平仓单未成交，已按最新盘口重新挂单', 'warn');
+  }
+}
 async function reconcileRow(row) {
   const creds = getBinanceCredentialsForUser(row.user_id);
   if (!creds || Number(creds.simulated) !== Number(row.simulated)) throw new Error('币安密钥缺失或交易环境已变化');
@@ -918,19 +1034,30 @@ async function reconcileRow(row) {
     row = rowFor(row.user_id, row.symbol);
     state = parseState(row);
   }
-  const market = await snapshot(row.symbol);
-  save(row, {}, { lastPrice: market.last, addStep: market.addStep, atr1h: market.atr1h,
-    trend: market.trend, trendDirection: market.trendDirection, trendBars: market.trendBars, range: market.range });
+  // Existing exchange orders must continue to be reconciled even if market
+  // candles are delayed or unavailable.
+  if (row.status === 'entry_pending') { await reconcileEntryPending(row, creds, state); return; }
+  if (row.status === 'close_pending') { await reconcileClosePending(row, creds, state); return; }
+  const market = await snapshot(row.symbol, state);
+  if (market.dataFresh !== Boolean(state.marketDataFresh)) {
+    log(row.user_id, row.symbol, market.dataFresh
+      ? 'K 线数据已恢复新鲜，自动开仓与补仓恢复'
+      : `K 线数据过期或不可用（15m ${Number.isFinite(market.age15m) ? `${Math.round(market.age15m / 60_000)} 分钟` : '无数据'}；1h ${Number.isFinite(market.age1h) ? `${Math.round(market.age1h / 60_000)} 分钟` : '无数据'}），暂停新增委托并继续管理已有仓位`,
+    market.dataFresh ? 'success' : 'warn');
+  }
+  save(row, {}, { lastPrice: market.last, addStep: market.addStep, atr: market.atr, atr1h: market.atr1h,
+    trend: market.trend, trendDirection: market.trendDirection, trendBars: market.trendBars, range: market.range,
+    marketDataFresh: market.dataFresh });
   row = rowFor(row.user_id, row.symbol);
   state = parseState(row);
-  if (row.status === 'add_pending' && state.pending && state.pending.kind !== 'manual') {
+  if (market.dataFresh && row.status === 'add_pending' && state.pending && state.pending.kind !== 'manual') {
     const risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: row.symbol });
     const positions = positionsOf(risk, row.symbol);
     const direction = state.pending.direction || (state.pending.side === 'BUY' ? 'long' : 'short');
     const position = positions[direction]; const leg = legSnapshot(state, direction);
-    const sparse = sparseModeDecision({ active: leg.sparseMode, side: direction, entryPrice: Number(position?.entryPrice || 0),
+    const sparse = market.dataFresh ? sparseModeDecision({ active: leg.sparseMode, side: direction, entryPrice: Number(position?.entryPrice || 0),
       price: market.last, atr1h: market.atr1h, trendDirection: market.trendDirection, trendBars: market.trendBars,
-      trendWeakBars: direction === 'long' ? market.downWeakBars : market.upWeakBars });
+      trendWeakBars: direction === 'long' ? market.downWeakBars : market.upWeakBars }) : { active: leg.sparseMode };
     const pendingIsSparse = Boolean(state.pending.sparse);
     if (sparse.active !== pendingIsSparse) {
       const current = await orderState(creds, row.symbol, state.pending);
@@ -952,44 +1079,9 @@ async function reconcileRow(row) {
     }
   }
   if (row.status === 'waiting') {
+    if (!market.dataFresh) return;
     if (state.cooldownUntil && Date.now() < state.cooldownUntil) return;
     if (market.rangeReady) await startCycle(row, creds, market);
-    return;
-  }
-  if (row.status === 'entry_pending') {
-    const entries = (state.entries || []).length < 2 ? await recoverBaseOrders(creds, row, state) : state.entries;
-    if (entries.length !== (state.entries || []).length) save(row, {}, { entries });
-    const states = await Promise.all(entries.map((o) => orderState(creds, row.symbol, o)));
-    if (states.length === 2 && states.every((o) => o.status === 'FILLED')) {
-      const expectedLong = Number(states[0].executedQty); const expectedShort = Number(states[1].executedQty);
-      save(row, { status: 'active' }, { expectedLong, expectedShort, entries: [], lastAddPrice: market.last,
-        ...resetLeg('long', expectedLong, market.last), ...resetLeg('short', expectedShort, market.last) });
-      log(row.user_id, row.symbol, '双向底仓已成交，进入震荡管理', 'trade'); return;
-    }
-    if (Date.now() < Number(state.entryDeadline || 0)) return;
-    await cancelKnown(creds, row.symbol, { ...state, entries });
-    const risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: row.symbol });
-    const pos = positionsOf(risk, row.symbol);
-    if (qty(pos.long) || qty(pos.short)) {
-      const closeOrders = await closePositions(row, creds, pos);
-      save(row, { status: 'close_pending' }, { entries: [], closeOrders, closeReason: '底仓未同时成交', closePlacedAt: Date.now() });
-      log(row.user_id, row.symbol, '双向底仓未能同时成交，已提交 Maker 平仓单', 'warn'); return;
-    }
-    save(row, { status: 'waiting' }, { entries: [], cooldownUntil: Date.now() + COOLDOWN_MS }); return;
-  }
-  if (row.status === 'close_pending') {
-    const risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: row.symbol });
-    const pos = positionsOf(risk, row.symbol);
-    const stopped = Boolean(state.stopAfterClose);
-    const closeComplete = stopped ? (await closeOrderProgress(creds, row.symbol, state.closeOrders || [], state.closeRemaining || {})).complete : !qty(pos.long) && !qty(pos.short);
-    if (closeComplete) { finishClose(row, stopped); return; }
-    if (Date.now() - Number(state.closePlacedAt || 0) >= ORDER_TTL_MS) {
-      const replacement = await replaceCloseOrders(row, creds, state.closeOrders || [], null, 0, state.closeRemaining || {});
-      if (replacement.waiting) { save(row, {}, { closeOrders: replacement.orders }); return; }
-      const closeOrders = replacement.orders;
-      save(row, {}, { closeOrders, closeRemaining: closeTargetsFromOrders(closeOrders), closePlacedAt: Date.now() });
-      log(row.user_id, row.symbol, 'Maker 平仓单未成交，已按最新盘口重新挂单', 'warn');
-    }
     return;
   }
   const risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: row.symbol });
@@ -1152,10 +1244,12 @@ async function reconcileRow(row) {
   const longNotional = Math.abs(Number(pos.long.notional || 0)); const shortNotional = Math.abs(Number(pos.short.notional || 0));
   const nextLong = { ...longLeg, minPnl: Math.min(longLeg.minPnl, Number(pos.long.unRealizedProfit || 0)) };
   const nextShort = { ...shortLeg, minPnl: Math.min(shortLeg.minPnl, Number(pos.short.unRealizedProfit || 0)) };
-  const longSparse = sparseModeDecision({ active: longLeg.sparseMode, side: 'long', entryPrice: Number(pos.long.entryPrice || 0),
-    price: market.last, atr1h: market.atr1h, trendDirection: market.trendDirection, trendBars: market.trendBars, trendWeakBars: market.downWeakBars });
-  const shortSparse = sparseModeDecision({ active: shortLeg.sparseMode, side: 'short', entryPrice: Number(pos.short.entryPrice || 0),
-    price: market.last, atr1h: market.atr1h, trendDirection: market.trendDirection, trendBars: market.trendBars, trendWeakBars: market.upWeakBars });
+  const longSparse = market.dataFresh ? sparseModeDecision({ active: longLeg.sparseMode, side: 'long', entryPrice: Number(pos.long.entryPrice || 0),
+    price: market.last, atr1h: market.atr1h, trendDirection: market.trendDirection, trendBars: market.trendBars, trendWeakBars: market.downWeakBars })
+    : { active: longLeg.sparseMode, distanceAtr: longLeg.sparseDistanceAtr };
+  const shortSparse = market.dataFresh ? sparseModeDecision({ active: shortLeg.sparseMode, side: 'short', entryPrice: Number(pos.short.entryPrice || 0),
+    price: market.last, atr1h: market.atr1h, trendDirection: market.trendDirection, trendBars: market.trendBars, trendWeakBars: market.upWeakBars })
+    : { active: shortLeg.sparseMode, distanceAtr: shortLeg.sparseDistanceAtr };
   nextLong.sparseMode = longSparse.active; nextLong.sparseDistanceAtr = longSparse.distanceAtr;
   nextShort.sparseMode = shortSparse.active; nextShort.sparseDistanceAtr = shortSparse.distanceAtr;
   // Binance reports hedge-mode funding at symbol level, so charge it once to
@@ -1192,6 +1286,9 @@ async function reconcileRow(row) {
     }
   }
   save(row, {}, { ...legUpdates, comboPnl, netPnl: longCosts.netPnl + shortCosts.netPnl, costs: { long: longCosts, short: shortCosts } });
+  // Keep PnL and take-profit management alive, but never add exposure from
+  // stale candles or a missing book quote.
+  if (!market.dataFresh) return;
   const canAddLong = longManaged && qty(pos.long) > 0;
   const canAddShort = shortManaged && qty(pos.short) > 0;
   if (!canAddLong && !canAddShort) return;
@@ -1269,7 +1366,7 @@ function start() { if (timer) return; timer = setInterval(() => { void reconcile
 
 module.exports = { start, reconcile, status, enable, disable, closeAll, manualAddPreview, manualAdd, closeClientId, closeOrderRemaining, additionDecision, countedAdditions,
   marketState, closedKlines, atr, ladderStep, sparseLadderStep, sparseModeDecision, sparseGroupCount, sparseGroupMargin, sparseGroupTrigger,
-  ladderMargin, defaultConfig, costState, scalpProfitTarget, commissionRate, isCommodityWeekendMode, orderFillState,
+  ladderMargin, defaultConfig, costState, scalpProfitTarget, commissionRate, isCommodityWeekendMode, orderFillState, marketDataFreshness,
   profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState, strategyConfig, requestedConfig, resumedConfig,
   isPostOnlyReject, isRequestTimeout, recoveryExitState, SYMBOLS, MAX_ADDITIONS, MAX_LONG_ADDITIONS, MAX_SHORT_ADDITIONS,
   MANUAL_ADD_THRESHOLD, MARGIN, LEVERAGE, MAX_MARGIN, MAX_LEVERAGE };
