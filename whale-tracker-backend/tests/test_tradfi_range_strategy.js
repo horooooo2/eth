@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { takeProfitNetPnl } = require('../lib/tradfiRangeCore.cjs');
 
 function candles(start, count, step, spread = 2) {
   return Array.from({ length: count }, (_, i) => {
@@ -93,6 +94,12 @@ test('恢复接管时允许修改后续单笔本金，并强制保留原杠杆',
 test('震荡高频止盈以 0.4U 或单边名义价值的 0.02% 为净利润缓冲', () => {
   assert.equal(scalpProfitTarget(200), 0.4);
   assert.equal(scalpProfitTarget(3000), 0.6);
+});
+
+test('回放止盈只把资金费支出计入触发门槛，资金费收入仍保留在结算盈亏', () => {
+  const pricePnl = 100;
+  assert.equal(takeProfitNetPnl({ pricePnl, funding: 700, entryFee: 10, exitFee: 10 }), 80);
+  assert.equal(takeProfitNetPnl({ pricePnl, funding: -30, entryFee: 10, exitFee: 10 }), 50);
 });
 
 test('币安返回零 Maker 费率时，止盈计算保留零费率', () => {

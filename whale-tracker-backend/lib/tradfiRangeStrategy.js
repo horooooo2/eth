@@ -3,40 +3,29 @@ const { getDb } = require('./db');
 const { getBinanceCredentialsForUser } = require('./userExchangeKeys');
 const { signedRequest, publicGet, symbolRules, stepped } = require('./binanceTradfiTrade');
 const { recordBinanceAiOrder } = require('./binanceAiLedger');
+const STRATEGY_CORE = require('./tradfiRangeCore.cjs');
+const { MAX_LONG_ADDITIONS, MAX_SHORT_ADDITIONS, SYMBOL_DEFAULTS, MIN_STEP_PCT, MAX_STEP_PCT,
+  SPARSE_MAX_STEP_PCT, ATR_MULTIPLIER, SPARSE_ATR_MULTIPLIER, SPARSE_NORMAL_STEP_MULTIPLIER,
+  SPARSE_GROUP_SIZE, SPARSE_ENTER_ATR_DISTANCE, SPARSE_EXIT_ATR_DISTANCE, TREND_CONFIRM_BARS,
+  SCALP_MIN_PROFIT, SCALP_NOTIONAL_RATE, clamp, atr, defaultConfig, ladderMargin, sideAdditions,
+  additionDecision, countedAdditions, ladderStep, sparseLadderStep, sparseModeDecision, sparseGroupCount,
+  sparseGroupMargin, sparseGroupTrigger, marketState, scalpProfitTarget, recoveryExitState } = STRATEGY_CORE;
 
 const SYMBOLS = new Set(['XAUUSDT', 'XAGUSDT']);
 const MARGIN = 20;
 const LEVERAGE = 20;
 const MAX_MARGIN = 20;
 const MAX_LEVERAGE = 50;
-const MAX_LONG_ADDITIONS = 100;
-const MAX_SHORT_ADDITIONS = 50;
 // Kept as the largest per-side cap for older callers.
 const MAX_ADDITIONS = MAX_LONG_ADDITIONS;
 const MANUAL_ADD_THRESHOLD = 20;
-const SYMBOL_DEFAULTS = Object.freeze({
-  XAUUSDT: Object.freeze({ marginUsdt: 20, leverage: 20, ladder: Object.freeze([10, 15, 25, 30]) }),
-  XAGUSDT: Object.freeze({ marginUsdt: 10, leverage: 10, ladder: Object.freeze([5, 7.5, 12.5, 15]) }),
-});
 // 高频止盈检查与补仓触发；平仓后的下一轮仍由 COOLDOWN_MS 控制为 10 秒。
 const POLL_MS = 3_000;
 const ORDER_TTL_MS = 90_000;
 const COOLDOWN_MS = 10_000;
-const MIN_STEP_PCT = 0.0008;
-const MAX_STEP_PCT = 0.0035;
-const SPARSE_MAX_STEP_PCT = 0.007;
-const ATR_MULTIPLIER = 0.6;
-const SPARSE_ATR_MULTIPLIER = 0.3;
-const SPARSE_NORMAL_STEP_MULTIPLIER = 1.5;
-const SPARSE_GROUP_SIZE = 5;
-const SPARSE_ENTER_ATR_DISTANCE = 2;
-const SPARSE_EXIT_ATR_DISTANCE = 1.5;
-const TREND_CONFIRM_BARS = 3;
 const DEFAULT_MAKER_FEE = 0.0002;
 const DEFAULT_TAKER_FEE = 0.0005;
 const SLIPPAGE_RATE = 0.0001;
-const SCALP_MIN_PROFIT = 0.4;
-const SCALP_NOTIONAL_RATE = 0.0002;
 const UNCERTAIN_ORDER_WAIT_MS = 30_000;
 const MAX_15M_CANDLE_AGE_MS = 30 * 60_000;
 const MAX_1H_CANDLE_AGE_MS = 2 * 60 * 60_000;
@@ -50,7 +39,6 @@ function adoptionRequired(positions) {
   return Object.assign(new Error('检测到来源不明确的现有仓位，请确认是否交由策略接管'), { status: 409, adoptionRequired: true, positions });
 }
 function isPostOnlyReject(error) { return Number(error?.code) === -5022 || /Post Only|could not be executed as maker/i.test(error?.message || ''); }
-function scalpProfitTarget(notional) { return Math.max(SCALP_MIN_PROFIT, Number(notional || 0) * SCALP_NOTIONAL_RATE); }
 function commissionRate(value, fallback) {
   const rate = Number(value);
   return Number.isFinite(rate) && rate >= 0 ? rate : fallback;
@@ -60,25 +48,11 @@ function isCommodityWeekendMode(date = new Date()) {
   const hour = Number(parts.hour);
   return parts.weekday === 'Sat' || (parts.weekday === 'Fri' && hour >= 17) || (parts.weekday === 'Sun' && hour < 18);
 }
-function recoveryExitState({ recovery, armed, netPnl, peakNetPnl, trail, trend, target }) {
-  if (!recovery || !armed) return { shouldClose: false, reason: '' };
-  if (netPnl <= peakNetPnl - trail) return { shouldClose: true, reason: '恢复模式利润回撤触发' };
-  if (!trend && netPnl >= target) return { shouldClose: true, reason: '恢复模式目标达成' };
-  return { shouldClose: false, reason: '' };
-}
 function parseState(row) { try { return JSON.parse(row?.state_json || '{}'); } catch { return {}; } }
 function cleanSymbol(value) {
   const symbol = String(value || '').trim().toUpperCase();
   if (!SYMBOLS.has(symbol)) throw invalid('震荡交易仅支持黄金和白银');
   return symbol;
-}
-function defaultConfig(symbol) { return SYMBOL_DEFAULTS[symbol] || SYMBOL_DEFAULTS.XAUUSDT; }
-function ladderMargin(symbol, additionNumber, initialMargin = defaultConfig(symbol).marginUsdt) {
-  const level = Math.max(1, Number(additionNumber) || 1);
-  const defaults = defaultConfig(symbol);
-  const baseMargin = Number(initialMargin);
-  const tier = defaults.ladder[Math.min(3, Math.floor((level - 1) / 10))];
-  return tier * (Number.isFinite(baseMargin) && baseMargin > 0 ? baseMargin / defaults.marginUsdt : 1);
 }
 function strategyConfig(row) {
   const raw = parseState(row).config || {};
@@ -118,31 +92,6 @@ function save(row, patch = {}, statePatch = null) {
 }
 function rowFor(userId, symbol) {
   return getDb().prepare('SELECT * FROM tradfi_range_strategies WHERE user_id=? AND symbol=?').get(String(userId), cleanSymbol(symbol));
-}
-function sideAdditions(state) {
-  const longAdditions = Number(state?.longAdditions);
-  const shortAdditions = Number(state?.shortAdditions);
-  return {
-    longAdditions: Number.isFinite(longAdditions) && longAdditions > 0 ? longAdditions : 0,
-    shortAdditions: Number.isFinite(shortAdditions) && shortAdditions > 0 ? shortAdditions : 0,
-  };
-}
-function additionDecision(state, longLosing) {
-  const counts = sideAdditions(state);
-  const sideCount = longLosing ? counts.longAdditions : counts.shortAdditions;
-  const otherCount = longLosing ? counts.shortAdditions : counts.longAdditions;
-  const sideMax = longLosing ? MAX_LONG_ADDITIONS : MAX_SHORT_ADDITIONS;
-  const otherMax = longLosing ? MAX_SHORT_ADDITIONS : MAX_LONG_ADDITIONS;
-  if (sideCount >= sideMax && otherCount >= otherMax) return { action: 'manual', ...counts };
-  if (sideCount >= sideMax) return { action: 'wait', ...counts };
-  return { action: 'add', side: longLosing ? 'long' : 'short', next: sideCount + 1, ...counts };
-}
-function countedAdditions(state, isLong, increment) {
-  const counts = sideAdditions(state);
-  const amount = Math.max(0, Number(increment) || 0);
-  const longAdditions = counts.longAdditions + (isLong ? amount : 0);
-  const shortAdditions = counts.shortAdditions + (!isLong ? amount : 0);
-  return { longAdditions, shortAdditions, total: longAdditions + shortAdditions, next: isLong ? longAdditions : shortAdditions };
 }
 function legName(side) { return side === 'LONG' || side === 'long' ? 'long' : 'short'; }
 function legValue(state, side, key, fallback) {
@@ -263,12 +212,6 @@ async function disable(userId, symbol) {
   log(userId, row.symbol, resumeEligible ? '震荡交易已停止，仓位已保留；下次启动将按币安实际仓位恢复接管' : '震荡交易已停止，当前没有需要接管的策略仓位', 'warn');
   return status(userId, row.symbol);
 }
-function ema(values, period) {
-  const k = 2 / (period + 1); let out = values[0];
-  for (let i = 1; i < values.length; i += 1) out = values[i] * k + out * (1 - k);
-  return out;
-}
-function clamp(value, min, max) { return Math.min(max, Math.max(min, value)); }
 function closedKlines(rows, now = Date.now()) {
   return (Array.isArray(rows) ? rows : []).filter((row) => !Number.isFinite(Number(row?.[6])) || Number(row[6]) <= now);
 }
@@ -285,75 +228,6 @@ function marketDataFreshness(rows15, rows60, now = Date.now()) {
   const fresh15m = age15m >= 0 && age15m <= MAX_15M_CANDLE_AGE_MS;
   const fresh1h = age1h >= 0 && age1h <= MAX_1H_CANDLE_AGE_MS;
   return { fresh: fresh15m && fresh1h, fresh15m, fresh1h, age15m, age1h };
-}
-function atr(rows, period = 20) {
-  const window = rows.slice(-(period + 1));
-  if (window.length < period + 1) throw new Error('K线数据不足');
-  let total = 0;
-  for (let i = 1; i < window.length; i += 1) {
-    const high = Number(window[i][2]); const low = Number(window[i][3]); const previousClose = Number(window[i - 1][4]);
-    total += Math.max(high - low, Math.abs(high - previousClose), Math.abs(low - previousClose));
-  }
-  return total / period;
-}
-function ladderStep(last, atrValue) { return clamp(atrValue * ATR_MULTIPLIER, last * MIN_STEP_PCT, last * MAX_STEP_PCT); }
-function sparseLadderStep(last, normalStep, atr1h) {
-  const upper = Number(last) * SPARSE_MAX_STEP_PCT;
-  const candidate = Math.max(Number(normalStep) || 0, (Number(normalStep) || 0) * SPARSE_NORMAL_STEP_MULTIPLIER,
-    (Number(atr1h) || 0) * SPARSE_ATR_MULTIPLIER);
-  return Math.min(upper, candidate);
-}
-function sparseModeDecision({ active = false, side, entryPrice, price, atr1h, trendDirection, trendBars, trendWeakBars }) {
-  const atrValue = Number(atr1h) || 0;
-  const distance = side === 'long' ? Number(entryPrice) - Number(price) : Number(price) - Number(entryPrice);
-  const adverseDirection = side === 'long' ? 'down' : 'up';
-  const adverseTrend = trendDirection === adverseDirection && Number(trendBars) >= TREND_CONFIRM_BARS;
-  const enter = atrValue > 0 && distance >= atrValue * SPARSE_ENTER_ATR_DISTANCE && adverseTrend;
-  const exit = atrValue > 0 && distance <= atrValue * SPARSE_EXIT_ATR_DISTANCE && Number(trendWeakBars) >= TREND_CONFIRM_BARS;
-  return { active: active ? !exit : enter, enter, exit, distance: Math.max(0, distance), distanceAtr: atrValue > 0 ? Math.max(0, distance) / atrValue : 0 };
-}
-function sparseGroupCount(sideCount, sideMax) { return Math.min(SPARSE_GROUP_SIZE, Math.max(0, Number(sideMax) - Number(sideCount))); }
-function sparseGroupMargin(symbol, firstTier, count, initialMargin) {
-  return Array.from({ length: Math.max(0, Number(count) || 0) }, (_, index) => ladderMargin(symbol, Number(firstTier) + index, initialMargin))
-    .reduce((sum, margin) => sum + margin, 0);
-}
-function sparseGroupTrigger(anchor, step, count, isLong) {
-  return Number(anchor) + (isLong ? -1 : 1) * Number(step) * Number(count);
-}
-function marketState(rows15, rows60) {
-  const c15 = rows15.map((r) => Number(r[4])).filter(Number.isFinite);
-  const h15 = rows15.map((r) => Number(r[2]));
-  const l15 = rows15.map((r) => Number(r[3]));
-  const c60 = rows60.map((r) => Number(r[4])).filter(Number.isFinite);
-  if (c15.length < 30 || c60.length < 20) throw new Error('K线数据不足');
-  const last = c15.at(-1); const atrValue = atr(rows15, 20);
-  const atr1h = atr(rows60, 14);
-  const fastNow = ema(c15.slice(-20), 10); const fastOld = ema(c15.slice(-24, -4), 10);
-  const hourMove = Math.abs(c60.at(-1) / c60.at(-8) - 1);
-  const slope = Math.abs(fastNow / fastOld - 1);
-  const directionSignal = (i, direction) => {
-    const currentEma = ema(c60.slice(Math.max(0, i - 19), i + 1), 20);
-    const previousEma = ema(c60.slice(Math.max(0, i - 20), i), 20);
-    return direction === 'up' ? c60[i] > currentEma && currentEma > previousEma : c60[i] < currentEma && currentEma < previousEma;
-  };
-  const consecutive = (predicate) => {
-    let count = 0;
-    for (let i = c60.length - 1; i >= Math.max(20, c60.length - 6); i -= 1) {
-      if (!predicate(i)) break;
-      count += 1;
-    }
-    return count;
-  };
-  const upTrendBars = consecutive((i) => directionSignal(i, 'up'));
-  const downTrendBars = consecutive((i) => directionSignal(i, 'down'));
-  const downWeakBars = consecutive((i) => !directionSignal(i, 'down'));
-  const upWeakBars = consecutive((i) => !directionSignal(i, 'up'));
-  const trendBars = Math.max(upTrendBars, downTrendBars);
-  const trendDirection = trendBars >= TREND_CONFIRM_BARS ? (upTrendBars > downTrendBars ? 'up' : 'down') : 'neutral';
-  const range = { low: Math.min(...l15.slice(-24)), high: Math.max(...h15.slice(-24)) };
-  const rangeReady = hourMove <= 0.018 && slope <= 0.008 && atrValue / last >= 0.00045 && atrValue / last <= 0.012;
-  return { last, atr: atrValue, atr1h, addStep: ladderStep(last, atrValue), range, rangeReady,
-    trend: !rangeReady && (hourMove > 0.025 || slope > 0.012), trendDirection, trendBars, upWeakBars, downWeakBars };
 }
 async function snapshot(symbol, fallback = {}) {
   const [fifteen, hourly, bookResult] = await Promise.allSettled([

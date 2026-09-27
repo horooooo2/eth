@@ -440,6 +440,7 @@ async function closeAllPositions() {
           <div><span>关联大户市场</span><b>Hyperliquid HIP-3</b></div>
         </div>
         <div class="focus-actions">
+          <a class="btn" href="#/tradfi-replay">策略回放</a>
           <button v-if="strategySupported" type="button" class="btn primary" @click="openStrategy">震荡交易</button>
         </div>
       </section>
