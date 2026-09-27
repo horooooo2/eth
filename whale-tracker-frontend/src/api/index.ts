@@ -1550,7 +1550,7 @@ export async function deleteBinanceKeys() {
 }
 
 export type TradfiRangeEvent = { id: number; level: string; message: string; details: Record<string, unknown>; created_at: number };
-export type TradfiLegStatus = { phase: string; additions: number; manualMarginUsdt?: number; expectedQty: number; lastAddPrice: number; minPnl: number; recovery: boolean; recoveryArmed: boolean; recoveryPeakNetPnl: number; recoveryTrail: number; sparseMode?: boolean; sparseStep?: number; sparseDistanceAtr?: number; costs?: { entryFee: number; exitFee: number; fundingNet: number; estimatedCosts: number; profitTarget: number; closeTrigger: number; netPnl: number; recovery: boolean } | null };
+export type TradfiLegStatus = { phase: string; additions: number; manualMarginUsdt?: number; expectedQty: number; lastAddPrice: number; minPnl: number; recovery: boolean; recoveryArmed: boolean; recoveryPeakNetPnl: number; recoveryTrail: number; reentryAt?: number; sparseMode?: boolean; sparseStep?: number; sparseDistanceAtr?: number; costs?: { entryFee: number; exitFee: number; fundingNet: number; estimatedCosts: number; profitTarget: number; closeTrigger: number; netPnl: number; recovery: boolean } | null };
 export type TradfiRangeStatus = {
   symbol: string; enabled: boolean; status: string; simulated: boolean | null; additions: number; maxAdditions: number;
   maxLongAdditions?: number; maxShortAdditions?: number;

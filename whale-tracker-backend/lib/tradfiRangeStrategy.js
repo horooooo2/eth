@@ -414,55 +414,6 @@ async function cancelOpenCloses(creds, symbol) {
   const closes = (Array.isArray(open) ? open : []).filter((order) => isCloseClientId(order.clientOrderId));
   await Promise.all(closes.map((order) => cancelOrder(creds, symbol, order)));
 }
-async function pauseWeekendNewOrders(row, creds, state) {
-  const long = legSnapshot(state, 'long'); const short = legSnapshot(state, 'short');
-  const groups = [
-    ...(state.entries || []).map((order, index) => ({ kind: 'entry', index, order })),
-    ...(long.reentryOrder ? [{ kind: 'reentry', direction: 'long', order: long.reentryOrder }] : []),
-    ...(short.reentryOrder ? [{ kind: 'reentry', direction: 'short', order: short.reentryOrder }] : []),
-  ];
-  const orders = groups.map((item) => item.order);
-  if (!orders.length) {
-    save(row, {}, { weekendMode: true });
-    log(row.user_id, row.symbol, '周末流动性模式已开启：暂停新建底仓和止盈后的重建；已有仓位继续补仓与止盈', 'info');
-    return true;
-  }
-  await Promise.all(orders.map((order) => cancelOrder(creds, row.symbol, order)));
-  const settled = await Promise.all(groups.map(async (item) => ({ ...item, current: await orderState(creds, row.symbol, item.order).catch(() => null) })));
-  const filledQty = (item) => Number(item.current?.executedQty || 0);
-  const fillState = (item) => orderFillState(item.current, item.order?.quantity);
-  const fullyFilled = (item) => fillState(item) === 'filled';
-  const uncertainOrPartial = settled.some((item) => ['unknown', 'partial', 'open'].includes(fillState(item)));
-  const entries = settled.filter((item) => item.kind === 'entry');
-  const entryPairFullyFilled = entries.length === 2 && entries.every(fullyFilled);
-  const entryMismatch = entries.length > 0 && !(entryPairFullyFilled || entries.every((item) => filledQty(item) === 0));
-  if (uncertainOrPartial || entryMismatch) {
-    save(row, { enabled: 0, status: 'manual', last_error: '周末切换时订单部分成交或状态无法确认，请人工核对仓位后再启动策略' }, { weekendMode: true, entries: [], pending: null });
-    log(row.user_id, row.symbol, '周末切换时检测到开仓类委托部分成交或状态不确定，策略已转人工接管', 'warn');
-    return true;
-  }
-  const statePatch = {
-    weekendMode: true, entries: [],
-    ...legPatch('long', long.phase === 'reentry_pending' ? { Phase: 'reentry_wait', ReentryOrder: null, ReentryAt: 0 } : {}),
-    ...legPatch('short', short.phase === 'reentry_pending' ? { Phase: 'reentry_wait', ReentryOrder: null, ReentryAt: 0 } : {}),
-  };
-  let status = row.status === 'entry_pending' ? 'waiting' : row.status;
-  if (entryPairFullyFilled) {
-    const expectedLong = filledQty(entries[0]); const expectedShort = filledQty(entries[1]);
-    Object.assign(statePatch, { expectedLong, expectedShort,
-      ...resetLeg('long', expectedLong, Number(entries[0].current.avgPrice || entries[0].order.price)),
-      ...resetLeg('short', expectedShort, Number(entries[1].current.avgPrice || entries[1].order.price)) });
-    status = 'active';
-  }
-  for (const item of settled.filter((candidate) => candidate.kind === 'reentry' && fullyFilled(candidate))) {
-    const filled = filledQty(item); const side = item.direction === 'long' ? 'LONG' : 'SHORT';
-    Object.assign(statePatch, resetLeg(item.direction, filled, Number(item.current.avgPrice || item.order.price)),
-      side === 'LONG' ? { expectedLong: filled } : { expectedShort: filled });
-  }
-  save(row, { status }, statePatch);
-  log(row.user_id, row.symbol, '周末流动性模式已开启：已撤销未成交的新建底仓或重建委托；已有仓位继续补仓与止盈', 'info');
-  return true;
-}
 function remember(userId, row, order, clientId, side, price, quantity, marginUsdt = null) {
   const config = strategyConfig(row);
   try {
@@ -649,7 +600,7 @@ function adoptedLegState(state, direction, position) {
   const previous = legSnapshot(state, direction); const quantity = qty(position);
   if (!(quantity > 0)) return legPatch(direction, {
     Phase: 'reentry_wait', ExpectedQty: 0, CloseOrders: [], ClosePlacedAt: 0, CloseGuardPrice: 0,
-    ReentryAt: isCommodityWeekendMode() ? 0 : Date.now() + COOLDOWN_MS, ReentryOrder: null,
+    ReentryAt: Date.now() + COOLDOWN_MS, ReentryOrder: null,
   });
   return legPatch(direction, {
     Phase: 'active', ExpectedQty: quantity, Additions: previous.additions,
@@ -716,8 +667,8 @@ async function initializeStrategy(row, creds) {
   await signedRequest(creds, 'POST', '/fapi/v1/leverage', { symbol: row.symbol, leverage: String(config.leverage) });
   const latest = rowFor(row.user_id, row.symbol);
   save(latest, { status: 'waiting', last_error: '' }, { resumeEligible: false, adoptExisting: false, adoptionPositions: null, pausedPositions: null,
-    startupProgress: 100, startupStep: isCommodityWeekendMode() ? '启动检查完成，等待常规交易时段' : '启动检查完成，进入行情监控' });
-  log(row.user_id, row.symbol, isCommodityWeekendMode() ? '启动检查完成；当前为周末流动性模式，等待常规交易时段后开仓' : '启动检查完成，服务器已进入行情监控', 'success', { phase: 'startup', progress: 100 });
+    startupProgress: 100, startupStep: '启动检查完成，进入行情监控' });
+  log(row.user_id, row.symbol, '启动检查完成，服务器已进入行情监控', 'success', { phase: 'startup', progress: 100 });
 }
 async function costState(creds, row, state, totalNotional, comboPnl) {
   const rates = await commissionRates(creds, row.symbol);
@@ -959,23 +910,11 @@ async function reconcileRow(row) {
     return;
   }
   const weekendMode = isCommodityWeekendMode();
-  if (weekendMode) {
-    if (row.status === 'close_pending' && state.stopAfterClose) {
-      const progress = await closeOrderProgress(creds, row.symbol, state.closeOrders || [], state.closeRemaining || {});
-      if (progress.complete) finishClose(row, true);
-      else if (!state.weekendMode) save(row, {}, { weekendMode: true });
-      return;
-    }
-    if (!state.weekendMode) {
-      await pauseWeekendNewOrders(row, creds, state);
-      row = rowFor(row.user_id, row.symbol);
-      state = parseState(row);
-    }
-    if (!row.enabled || row.status === 'waiting' || row.status === 'entry_pending') return;
-  }
-  if (!weekendMode && state.weekendMode) {
-    save(row, {}, { weekendMode: false });
-    log(row.user_id, row.symbol, '常规交易时段已恢复，震荡策略继续执行', 'success');
+  if (weekendMode !== Boolean(state.weekendMode)) {
+    save(row, {}, { weekendMode });
+    log(row.user_id, row.symbol, weekendMode
+      ? '进入周末报价模式，策略继续执行开仓、补仓、止盈与重建'
+      : '常规报价模式恢复，策略继续执行', 'info');
     row = rowFor(row.user_id, row.symbol);
     state = parseState(row);
   }
@@ -1062,20 +1001,16 @@ async function reconcileRow(row) {
     const direction = legName(side); const orderSide = side === 'LONG' ? 'BUY' : 'SELL';
     if (leg.phase === 'close_pending') {
       if (!qty(position)) {
-        save(row, {}, { ...legPatch(direction, { Phase: 'reentry_wait', CloseOrders: [], ReentryAt: weekendMode ? 0 : Date.now() + COOLDOWN_MS }) });
-        log(row.user_id, row.symbol, weekendMode
-          ? `${side === 'LONG' ? '多头' : '空头'}止盈已成交，周末暂停重建该方向底仓`
-          : `${side === 'LONG' ? '多头' : '空头'}止盈已成交，10 秒后重建同方向底仓`, 'success'); return;
+        save(row, {}, { ...legPatch(direction, { Phase: 'reentry_wait', CloseOrders: [], ReentryAt: Date.now() + COOLDOWN_MS }) });
+        log(row.user_id, row.symbol, `${side === 'LONG' ? '多头' : '空头'}止盈已成交，10 秒后重建同方向底仓`, 'success'); return;
       }
       if (Date.now() - leg.closePlacedAt >= ORDER_TTL_MS) {
         const replacement = await replaceCloseOrders(row, creds, leg.closeOrders || [], side, leg.closeGuardPrice);
         if (replacement.waiting) { save(row, {}, { ...legPatch(direction, { CloseOrders: replacement.orders }) }); return; }
         const closeOrders = replacement.orders;
         if (!closeOrders.length) {
-          save(row, {}, { ...legPatch(direction, { Phase: 'reentry_wait', CloseOrders: [], ReentryAt: weekendMode ? 0 : Date.now() + COOLDOWN_MS }) });
-          log(row.user_id, row.symbol, weekendMode
-            ? `${side === 'LONG' ? '多头' : '空头'}止盈已成交，周末暂停重建该方向底仓`
-            : `${side === 'LONG' ? '多头' : '空头'}止盈已成交，10 秒后重建同方向底仓`, 'success'); return;
+          save(row, {}, { ...legPatch(direction, { Phase: 'reentry_wait', CloseOrders: [], ReentryAt: Date.now() + COOLDOWN_MS }) });
+          log(row.user_id, row.symbol, `${side === 'LONG' ? '多头' : '空头'}止盈已成交，10 秒后重建同方向底仓`, 'success'); return;
         }
         save(row, {}, { ...legPatch(direction, { CloseOrders: closeOrders, ClosePlacedAt: Date.now() }) });
         log(row.user_id, row.symbol, `${side === 'LONG' ? '多头' : '空头'}止盈 Maker 单未成交，已重新挂单`, 'warn'); return;
@@ -1083,7 +1018,11 @@ async function reconcileRow(row) {
       return;
     }
     if (leg.phase === 'reentry_wait') {
-      if (weekendMode) continue;
+      // Older weekend-paused states can have ReentryAt=0; resume their normal cooldown once.
+      if (!(Number(leg.reentryAt) > 0)) {
+        save(row, {}, { ...legPatch(direction, { ReentryAt: Date.now() + COOLDOWN_MS }) });
+        return;
+      }
       if (Date.now() < leg.reentryAt) return;
       const order = await placeLimit(creds, row, orderSide, side === 'LONG' ? market.bid : market.ask, `roll_${direction}`);
       save(row, {}, { ...legPatch(direction, { Phase: 'reentry_pending', ReentryOrder: order }) });

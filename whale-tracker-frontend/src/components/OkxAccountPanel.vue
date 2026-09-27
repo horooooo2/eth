@@ -120,7 +120,10 @@ function groupMode(group: TradfiGroup) {
   }
   if (strategy?.status === 'entry_pending') return '等待双向底仓成交';
   if (strategy?.long?.phase === 'close_pending' || strategy?.short?.phase === 'close_pending') return '单边止盈挂单中';
-  if (strategy?.long?.phase === 'reentry_wait' || strategy?.short?.phase === 'reentry_wait') return '单边止盈后冷却，等待重建底仓';
+  if (strategy?.long?.phase === 'reentry_wait' || strategy?.short?.phase === 'reentry_wait') {
+    const waitingLeg = strategy.long?.phase === 'reentry_wait' ? strategy.long : strategy.short;
+    return reentryWaitLabel(waitingLeg).replace('止盈后冷却，等待重建', '单边止盈后冷却，等待重建底仓');
+  }
   if (strategy?.long?.phase === 'reentry_pending' || strategy?.short?.phase === 'reentry_pending') return '正在重建单边底仓';
   if (strategy?.status === 'add_pending') {
     const orderLabel = strategy.manualAddPending ? '手动补仓挂单中'
@@ -200,7 +203,7 @@ function sideMask(group: TradfiGroup, side: 'long' | 'short') {
   if (!strategy) return '';
   if (!strategy.enabled && group[side]?.kind === 'position') return '策略已停止';
   if (leg?.phase === 'close_pending') return '止盈挂单中';
-  if (leg?.phase === 'reentry_wait') return '止盈后冷却，等待重建';
+  if (leg?.phase === 'reentry_wait') return reentryWaitLabel(leg);
   if (leg?.phase === 'reentry_pending') return '正在重建底仓';
   if (strategy.status === 'waiting') return '等待震荡条件';
   if (strategy.status === 'entry_pending' || group[side]?.kind === 'pending') return '等待成交';
@@ -216,6 +219,14 @@ function preciseUsd(value: number | null | undefined) {
 function countdown(ms: number) {
   const seconds = Math.max(0, Math.ceil(ms / 1000));
   return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+function reentryWaitLabel(leg?: TradfiStrategy['long']) {
+  const reentryAt = Number(leg?.reentryAt || 0);
+  if (reentryAt <= 0) return '止盈后冷却，等待重建 · 等待开市';
+  const remaining = reentryAt - clock.value;
+  if (remaining > 0) return `止盈后冷却，等待重建 · 重建倒计时 ${countdown(remaining)}`;
+  return '止盈后冷却，等待重建 · 正在重建';
 }
 
 async function load(silent = false) {

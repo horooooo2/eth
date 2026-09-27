@@ -107,7 +107,7 @@ test('商品 TradFi 能识别周末流动性时段', () => {
   assert.equal(isCommodityWeekendMode(new Date('2026-09-27T22:00:00Z')), false);
 });
 
-test('周末切换能区分完整成交、部分成交与未成交', () => {
+test('订单状态识别完整成交、部分成交与未成交', () => {
   assert.equal(orderFillState({ status: 'FILLED', executedQty: '0.1', origQty: '0.1' }), 'filled');
   assert.equal(orderFillState({ status: 'PARTIALLY_FILLED', executedQty: '0.04', origQty: '0.1' }), 'partial');
   assert.equal(orderFillState({ status: 'CANCELED', executedQty: '0', origQty: '0.1' }), 'unfilled');
@@ -139,6 +139,13 @@ test('恢复接管以交易所实际数量为准并保留原补仓状态', () =>
   assert.equal(patch.longLastAddPrice, 4790);
   assert.equal(patch.longMinPnl, -8);
   assert.equal(patch.longPhase, 'active');
+});
+
+test('接管时空仓方向始终安排重建冷却，不因周末将其挂起', () => {
+  const now = Date.now();
+  const patch = adoptedLegState({}, 'short', { positionAmt: '0', entryPrice: '0' });
+  assert.equal(patch.shortPhase, 'reentry_wait');
+  assert.ok(patch.shortReentryAt >= now + 9_000);
 });
 
 test('平仓重挂只使用策略委托尚未成交的数量', () => {
