@@ -30,3 +30,4 @@ whale-tracker-backend/tmp_*/
 *.db-wal
 *.db-shm
 *.jsonl
+market-data/

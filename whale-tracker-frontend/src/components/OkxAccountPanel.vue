@@ -122,10 +122,14 @@ function groupMode(group: TradfiGroup) {
   if (strategy?.long?.phase === 'close_pending' || strategy?.short?.phase === 'close_pending') return '单边止盈挂单中';
   if (strategy?.long?.phase === 'reentry_wait' || strategy?.short?.phase === 'reentry_wait') return '单边止盈后冷却，等待重建底仓';
   if (strategy?.long?.phase === 'reentry_pending' || strategy?.short?.phase === 'reentry_pending') return '正在重建单边底仓';
-  if (strategy?.status === 'add_pending') return `${strategy.manualAddPending ? '手动补仓挂单中' : '补仓挂单中'} · 多${strategy.longAdditions ?? '—'}/40 · 空${strategy.shortAdditions ?? '—'}/40`;
+  if (strategy?.status === 'add_pending') {
+    const orderLabel = strategy.manualAddPending ? '手动补仓挂单中'
+      : strategy.pendingSparse ? `稀疏组单 ${strategy.pendingTierStart}-${strategy.pendingTierEnd} 档挂单中` : '补仓挂单中';
+    return `${orderLabel} · 多${strategy.longAdditions ?? '—'}/${strategy.maxLongAdditions ?? 100} · 空${strategy.shortAdditions ?? '—'}/${strategy.maxShortAdditions ?? 50}`;
+  }
   if (strategy?.status === 'active') {
     if (strategy.longAdditions == null && strategy.shortAdditions == null) return `策略运行中 · 已补 ${strategy.additions || 0} 档`;
-    return `策略运行中 · 多${strategy.longAdditions || 0}/40 · 空${strategy.shortAdditions || 0}/40`;
+    return `策略运行中 · 多${strategy.longAdditions || 0}/${strategy.maxLongAdditions ?? 100} · 空${strategy.shortAdditions || 0}/${strategy.maxShortAdditions ?? 50}`;
   }
   if (group.long?.kind === 'pending' || group.short?.kind === 'pending') return '含挂单';
   if (group.long && group.short) return '双向持仓';
@@ -146,6 +150,18 @@ function sideRealized(group: TradfiGroup, side: 'long' | 'short') {
 }
 
 function legStatus(group: TradfiGroup, side: 'long' | 'short') { return group.strategy?.[side]; }
+function legModeLabel(group: TradfiGroup, side: 'long' | 'short') {
+  const strategy = group.strategy; const leg = legStatus(group, side);
+  const additions = Number(leg?.additions || 0); const max = side === 'long'
+    ? Number(strategy?.maxLongAdditions || 100) : Number(strategy?.maxShortAdditions || 50);
+  if (leg?.sparseMode) {
+    if (strategy?.pendingSparse && strategy.pendingDirection === side) return `稀疏补仓 · ${strategy.pendingTierStart}-${strategy.pendingTierEnd}档挂单 · ${additions}/${max}`;
+    if (additions >= max) return `稀疏补仓 · 已达上限 ${additions}/${max}`;
+    const first = additions + 1; const last = Math.min(max, additions + 5);
+    return `稀疏补仓 · 下一组${first}-${last}档 · ${additions}/${max}`;
+  }
+  return `${leg?.recovery ? '恢复中' : '常规'} · ${additions}/${max}`;
+}
 function manualAddAvailable(group: TradfiGroup, side: 'long' | 'short') {
   const strategy = group.strategy; const leg = legStatus(group, side); const position = group[side];
   return props.exchange === 'tradfi' && Boolean(strategy?.enabled) && strategy?.status === 'active'
@@ -317,7 +333,7 @@ defineExpose({ reload: () => load(true) });
               <span class="label">已实现</span>
               <span class="value" :class="valueClass(sideRealized(group, 'long'))">{{ formatSignedUsd(sideRealized(group, 'long')) }}</span>
               <span class="label">状态</span>
-              <span class="value">{{ legStatus(group, 'long')?.recovery ? `恢复中 · ${legStatus(group, 'long')?.additions || 0}/40` : `常规 · ${legStatus(group, 'long')?.additions || 0}/40` }}<span v-if="Number(legStatus(group, 'long')?.manualMarginUsdt || 0) > 0" class="manual-amount"> 手动 · {{ twoDecimals(legStatus(group, 'long')?.manualMarginUsdt) }}U</span></span>
+              <span class="value">{{ legModeLabel(group, 'long') }}<span v-if="Number(legStatus(group, 'long')?.manualMarginUsdt || 0) > 0" class="manual-amount"> 手动 · {{ twoDecimals(legStatus(group, 'long')?.manualMarginUsdt) }}U</span></span>
             </div>
           </section>
           <section class="position-side">
@@ -333,7 +349,7 @@ defineExpose({ reload: () => load(true) });
               <span class="label">已实现</span>
               <span class="value" :class="valueClass(sideRealized(group, 'short'))">{{ formatSignedUsd(sideRealized(group, 'short')) }}</span>
               <span class="label">状态</span>
-              <span class="value">{{ legStatus(group, 'short')?.recovery ? `恢复中 · ${legStatus(group, 'short')?.additions || 0}/40` : `常规 · ${legStatus(group, 'short')?.additions || 0}/40` }}<span v-if="Number(legStatus(group, 'short')?.manualMarginUsdt || 0) > 0" class="manual-amount"> 手动 · {{ twoDecimals(legStatus(group, 'short')?.manualMarginUsdt) }}U</span></span>
+              <span class="value">{{ legModeLabel(group, 'short') }}<span v-if="Number(legStatus(group, 'short')?.manualMarginUsdt || 0) > 0" class="manual-amount"> 手动 · {{ twoDecimals(legStatus(group, 'short')?.manualMarginUsdt) }}U</span></span>
             </div>
           </section>
         </div>

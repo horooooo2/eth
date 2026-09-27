@@ -1550,13 +1550,16 @@ export async function deleteBinanceKeys() {
 }
 
 export type TradfiRangeEvent = { id: number; level: string; message: string; details: Record<string, unknown>; created_at: number };
-export type TradfiLegStatus = { phase: string; additions: number; manualMarginUsdt?: number; expectedQty: number; lastAddPrice: number; minPnl: number; recovery: boolean; recoveryArmed: boolean; recoveryPeakNetPnl: number; recoveryTrail: number; costs?: { entryFee: number; exitFee: number; fundingNet: number; estimatedCosts: number; profitTarget: number; closeTrigger: number; netPnl: number; recovery: boolean } | null };
+export type TradfiLegStatus = { phase: string; additions: number; manualMarginUsdt?: number; expectedQty: number; lastAddPrice: number; minPnl: number; recovery: boolean; recoveryArmed: boolean; recoveryPeakNetPnl: number; recoveryTrail: number; sparseMode?: boolean; sparseStep?: number; sparseDistanceAtr?: number; costs?: { entryFee: number; exitFee: number; fundingNet: number; estimatedCosts: number; profitTarget: number; closeTrigger: number; netPnl: number; recovery: boolean } | null };
 export type TradfiRangeStatus = {
   symbol: string; enabled: boolean; status: string; simulated: boolean | null; additions: number; maxAdditions: number;
+  maxLongAdditions?: number; maxShortAdditions?: number;
   manualAddThreshold?: number; manualAddPending?: boolean;
+  pendingSparse?: boolean; pendingDirection?: 'long' | 'short'; pendingTierStart?: number | null; pendingTierEnd?: number | null; pendingTriggerPrice?: number | null;
   longAdditions?: number; shortAdditions?: number; maxTotalAdditions?: number;
   marginPerOrder: number; leverage: number; comboPnl?: number | null; lastPrice?: number | null;
-  netPnl?: number | null; closeTrigger?: number | null; addStep?: number | null;
+  netPnl?: number | null; closeTrigger?: number | null; addStep?: number | null; atr1h?: number | null;
+  trendDirection?: 'up' | 'down' | 'neutral'; trendBars?: number;
   weekendMode?: boolean;
   startupProgress?: number | null; startupStep?: string;
   resumeEligible?: boolean;
