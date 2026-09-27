@@ -115,7 +115,7 @@ router.post('/range/stop', async (req, res) => {
   try {
     const user = requireUser(req);
     res.json({ ok: true, ...await rangeStrategy.disable(user.user.id, req.body?.symbol) });
-  } catch (err) { res.status(err.status || 500).json({ error: err.message || '震荡策略暂停失败', code: err.code }); }
+  } catch (err) { res.status(err.status || 500).json({ error: err.message || '震荡策略停止失败', code: err.code }); }
 });
 
 router.post('/close-all', async (req, res) => {

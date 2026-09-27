@@ -112,7 +112,7 @@ function twoDecimals(value: number | null | undefined) {
 
 function groupMode(group: TradfiGroup) {
   const strategy = group.strategy;
-  if (strategy && !strategy.enabled && (group.long?.kind === 'position' || group.short?.kind === 'position')) return '策略已停止';
+  if (strategy && !strategy.enabled) return '策略已停止';
   if (strategy?.status === 'waiting') {
     const remaining = Number(strategy.cooldownUntil || 0) - clock.value;
     if (remaining > 0) return `冷却检查 · ${countdown(remaining)} 后检查开仓`;
@@ -201,7 +201,7 @@ function sideMask(group: TradfiGroup, side: 'long' | 'short') {
   const strategy = group.strategy;
   const leg = legStatus(group, side);
   if (!strategy) return '';
-  if (!strategy.enabled && group[side]?.kind === 'position') return '策略已停止';
+  if (!strategy.enabled) return '策略已停止';
   if (leg?.phase === 'close_pending') return '止盈挂单中';
   if (leg?.phase === 'reentry_wait') return reentryWaitLabel(leg);
   if (leg?.phase === 'reentry_pending') return '正在重建底仓';

@@ -21,6 +21,7 @@ let warmupCloseTimer: number | undefined;
 let chunkAckTimer: number | undefined;
 const transferState = { rows: [] as Candle[], offset: 0, chunkSize: 4_000, settings: null as any, funding: [] as { t: number; rate: number }[] };
 const symbolDefaults = computed(() => symbol.value === 'XAUUSDT' ? { margin: 20, leverage: 20, tick: 0.01 } : symbol.value === 'XAGUSDT' ? { margin: 10, leverage: 10, tick: 0.001 } : { margin: 20, leverage: 20, tick: 0.01 });
+const maxMargin = computed(() => symbol.value === 'XAUUSDT' ? 100 : 20);
 const progress = computed(() => Math.min(100, Math.round((snapshot.value?.progress || 0) * 100)));
 const filteredLogs = computed(() => allLogs.value.filter((row) => Number(row.pnl) >= 10));
 const chartPath = computed(() => {
@@ -105,7 +106,7 @@ async function startReplay() {
   symbol.value = symbol.value.trim().toUpperCase();
   if (!symbol.value) { status.value = '请填写回放标的'; return; }
   if (candles.value.length < 1200) { status.value = '请先导入至少 1,200 根连续分钟K线'; return; }
-  if (!(margin.value > 0 && margin.value <= 20) || !(leverage.value >= 1 && leverage.value <= 50) || !(tickSize.value > 0) || !(qtyStep.value > 0) || !(makerFeePct.value >= 0)) { ElMessage.warning('参数无效：保证金 0–20U、杠杆 1–50×，Tick/数量步进需大于 0'); return; }
+  if (!(margin.value > 0 && margin.value <= maxMargin.value) || !(leverage.value >= 1 && leverage.value <= 50) || !(tickSize.value > 0) || !(qtyStep.value > 0) || !(makerFeePct.value >= 0)) { ElMessage.warning(`参数无效：保证金 0–${maxMargin.value}U、杠杆 1–50×，Tick/数量步进需大于 0`); return; }
   allLogs.value = []; ready.value = false; isPlaying.value = false;
   if (warmupCloseTimer) window.clearTimeout(warmupCloseTimer);
   warmupVisible.value = true; warmupProgress.value = 1; warmupStage.value = '准备回放参数…'; status.value = '正在准备策略回放…';
@@ -237,7 +238,7 @@ onBeforeUnmount(() => { if (warmupCloseTimer) window.clearTimeout(warmupCloseTim
           <label class="file-drop compact"><input type="file" accept=".csv,.txt" @change="pickFile('funding', $event)"><el-icon><Upload /></el-icon><b>{{ fundingName || '导入历史资金费' }}</b><small>timestamp, fundingRate（小数）</small></label>
           <p v-if="fundingError" class="error">{{ fundingError }}</p>
           <label class="field-label">单笔保证金 <small>U · 上限 20</small></label>
-          <div class="input-row"><input v-model.number="margin" type="number" min="0.1" max="20" step="0.5"><span>USDT</span></div>
+          <div class="input-row"><input v-model.number="margin" type="number" min="0.1" :max="maxMargin" step="0.5"><span>USDT（上限 {{ maxMargin }}）</span></div>
           <label class="field-label">杠杆</label>
           <div class="input-row"><input v-model.number="leverage" type="number" min="1" max="50" step="1"><span>×</span></div>
           <div class="two-inputs"><div><label class="field-label">Maker 费率</label><div class="input-row"><input v-model.number="makerFeePct" type="number" min="0" step="0.001"><span>%</span></div></div><div><label class="field-label">价格 Tick</label><div class="input-row"><input v-model.number="tickSize" type="number" min="0.000001" step="0.01"></div></div></div>

@@ -15,6 +15,7 @@ const SYMBOLS = new Set(['XAUUSDT', 'XAGUSDT']);
 const MARGIN = 20;
 const LEVERAGE = 20;
 const MAX_MARGIN = 20;
+const MAX_GOLD_MARGIN = 100;
 const MAX_LEVERAGE = 50;
 // Kept as the largest per-side cap for older callers.
 const MAX_ADDITIONS = MAX_LONG_ADDITIONS;
@@ -66,29 +67,37 @@ function strategyConfig(row) {
 }
 function requestedConfig(input = {}, symbol = input.symbol) {
   const defaults = defaultConfig(symbol);
+  const maxMargin = String(symbol || '').toUpperCase() === 'XAUUSDT' ? MAX_GOLD_MARGIN : MAX_MARGIN;
   const marginUsdt = Number(input.marginUsdt ?? defaults.marginUsdt);
   const leverage = Number(input.leverage ?? defaults.leverage);
-  if (!Number.isFinite(marginUsdt) || marginUsdt <= 0 || marginUsdt > MAX_MARGIN) throw invalid(`单边保证金需在 0–${MAX_MARGIN} USDT 之间`);
+  if (!Number.isFinite(marginUsdt) || marginUsdt <= 0 || marginUsdt > maxMargin) throw invalid(`单边保证金需在 0–${maxMargin} USDT 之间`);
   if (!Number.isInteger(leverage) || leverage < 1 || leverage > MAX_LEVERAGE) throw invalid(`杠杆需在 1–${MAX_LEVERAGE} 倍之间`);
   return { marginUsdt, leverage };
 }
-function resumedConfig(current, input = {}) {
+function resumedConfig(current, input = {}, symbol = input.symbol || 'XAGUSDT') {
   const saved = current || { marginUsdt: MARGIN, leverage: LEVERAGE };
   return requestedConfig({
     marginUsdt: input.marginUsdt ?? saved.marginUsdt,
     leverage: saved.leverage,
-  });
+  }, symbol);
 }
 function log(userId, symbol, message, level = 'info', details = {}) {
   getDb().prepare('INSERT INTO tradfi_range_events (user_id,symbol,level,message,details_json,created_at) VALUES (?,?,?,?,?,?)')
     .run(String(userId), symbol, level, message, JSON.stringify(details), Date.now());
 }
 function save(row, patch = {}, statePatch = null) {
+  // An in-flight reconcile may finish after the user stops the strategy. Never
+  // let its stale row snapshot write the strategy back to enabled=1.
+  const current = rowFor(row.user_id, row.symbol);
+  if (ignoreStaleStrategySave(current, patch)) return;
   const state = statePatch == null ? parseState(row) : { ...parseState(row), ...statePatch };
   getDb().prepare(`UPDATE tradfi_range_strategies SET enabled=?,status=?,simulated=?,additions=?,state_json=?,last_error=?,started_at=?,updated_at=? WHERE user_id=? AND symbol=?`)
     .run(patch.enabled ?? row.enabled, patch.status ?? row.status, patch.simulated ?? row.simulated,
       patch.additions ?? row.additions, JSON.stringify(state), patch.last_error ?? row.last_error,
       patch.started_at ?? row.started_at, Date.now(), row.user_id, row.symbol);
+}
+function ignoreStaleStrategySave(current, patch = {}) {
+  return Boolean(current && !current.enabled && patch.enabled !== 0);
 }
 function rowFor(userId, symbol) {
   return getDb().prepare('SELECT * FROM tradfi_range_strategies WHERE user_id=? AND symbol=?').get(String(userId), cleanSymbol(symbol));
@@ -181,7 +190,7 @@ function enable(userId, symbol, simulated, input = {}) {
   const savedPosition = existing?.status === 'paused' && (existingState.resumeEligible
     || Number(existingState.expectedLong || 0) > 0 || Number(existingState.expectedShort || 0) > 0);
   const savedConfig = strategyConfig(existing);
-  const config = savedPosition ? resumedConfig(savedConfig, input) : requestedConfig(input, sym);
+  const config = savedPosition ? resumedConfig(savedConfig, input, sym) : requestedConfig(input, sym);
   const now = Date.now();
   const initialState = savedPosition || input.adoptExisting
     ? { ...existingState, config, resumeEligible: savedPosition, adoptExisting: Boolean(input.adoptExisting), startupProgress: 5, startupStep: '准备检查现有仓位' }
@@ -1242,5 +1251,5 @@ module.exports = { start, reconcile, status, enable, disable, closeAll, manualAd
   marketState, closedKlines, atr, ladderStep, sparseLadderStep, sparseModeDecision, sparseGroupCount, sparseGroupMargin, sparseGroupTrigger,
   ladderMargin, defaultConfig, costState, scalpProfitTarget, commissionRate, isCommodityWeekendMode, orderFillState, marketDataFreshness,
   profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState, strategyConfig, requestedConfig, resumedConfig,
-  isPostOnlyReject, isRequestTimeout, recoveryExitState, SYMBOLS, MAX_ADDITIONS, MAX_LONG_ADDITIONS, MAX_SHORT_ADDITIONS,
-  MANUAL_ADD_THRESHOLD, MARGIN, LEVERAGE, MAX_MARGIN, MAX_LEVERAGE };
+  isPostOnlyReject, isRequestTimeout, recoveryExitState, ignoreStaleStrategySave, SYMBOLS, MAX_ADDITIONS, MAX_LONG_ADDITIONS, MAX_SHORT_ADDITIONS,
+  MANUAL_ADD_THRESHOLD, MARGIN, LEVERAGE, MAX_MARGIN, MAX_GOLD_MARGIN, MAX_LEVERAGE };

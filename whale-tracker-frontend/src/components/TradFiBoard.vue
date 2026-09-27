@@ -151,6 +151,7 @@ const intel = ref<TradFiIntelResponse | null>(null);
 const intelLoading = ref(false);
 const intelError = ref('');
 const strategySupported = computed(() => selected.value === 'XAUUSDT' || selected.value === 'XAGUSDT');
+const strategyMaxMargin = computed(() => selected.value === 'XAUUSDT' ? 100 : 20);
 const ladderDescription = computed(() => {
   const initialMargin = Number(strategyData.value?.strategy.enabled
     ? strategyData.value.strategy.marginPerOrder
@@ -547,11 +548,11 @@ async function closeAllPositions() {
           <header class="dialog-head"><div class="dialog-title">震荡交易 <span class="dialog-symbol">· {{ selected }}</span></div><button type="button" class="dialog-close" :disabled="strategyBusy" @click="closeStrategy">×</button></header>
           <div class="dialog-scroll">
             <section class="strategy-state">
-              <strong>{{ strategyData?.strategy.status === 'initializing' ? '启动检查中' : strategyData?.strategy.enabled ? '服务器运行中' : strategyData?.strategy.status === 'adoption_required' ? '等待确认接管' : strategyData?.strategy.status === 'manual' ? '人工接管' : '未运行' }}</strong>
+              <strong>{{ strategyData?.strategy.status === 'initializing' ? '启动检查中' : strategyData?.strategy.enabled ? '服务器运行中' : strategyData?.strategy.status === 'paused' ? '策略已停止' : strategyData?.strategy.status === 'adoption_required' ? '等待确认接管' : strategyData?.strategy.status === 'manual' ? '人工接管' : '未运行' }}</strong>
               <span>{{ strategyData?.strategy.simulated == null ? '币安账户待核对' : strategyData.strategy.simulated ? '演示盘' : '实盘' }}</span>
             </section>
             <div class="strategy-config">
-              <label>单边保证金 <input v-model.number="strategyMargin" type="number" min="1" max="20" step="1" :disabled="strategyData?.strategy.enabled || strategyBusy" /><b>USDT</b></label>
+              <label>单边保证金 <input v-model.number="strategyMargin" type="number" min="1" :max="strategyMaxMargin" step="1" :disabled="strategyData?.strategy.enabled || strategyBusy" /><b>USDT</b></label>
               <label>杠杆 <input v-model.number="strategyLeverage" type="number" min="1" max="50" step="1" :disabled="strategyData?.strategy.enabled || strategyData?.strategy.resumeEligible || strategyBusy" /><b>×</b></label>
               <span>{{ strategyData?.strategy.enabled ? '策略运行中，参数已锁定' : strategyData?.strategy.resumeEligible ? '恢复接管时可修改后续单笔本金，杠杆保持不变' : '启动后参数锁定' }}</span>
             </div>
