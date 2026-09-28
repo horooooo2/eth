@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { takeProfitNetPnl, shouldPlaceAddition, canManualAddPosition } = require('../lib/tradfiRangeCore.cjs');
-const { canCancelPendingForPositionSync } = require('../lib/tradfiRangeStrategy');
+const { canCancelPendingForPositionSync, pendingForSide, pendingStatePatch, autoPendingOrders, availableAdditionDirection } = require('../lib/tradfiRangeStrategy');
 
 function candles(start, count, step, spread = 2) {
   return Array.from({ length: count }, (_, i) => {
@@ -103,6 +103,27 @@ test('手动同步只允许先撤销普通策略补仓单，不允许绕过开�
   assert.equal(canCancelPendingForPositionSync({ ...row, status: 'entry_pending' }, state), false);
   assert.equal(canCancelPendingForPositionSync(row, { ...state, manualPending: { orderId: 'x' } }), false);
   assert.equal(canCancelPendingForPositionSync(row, { ...state, longPhase: 'close_pending' }), false);
+});
+
+test('多空自动补仓委托分别读取，旧版单委托状态仍按方向兼容', () => {
+  const longOrder = { orderId: 'long-1', side: 'BUY', direction: 'long', sparse: true };
+  const shortOrder = { orderId: 'short-1', side: 'SELL', direction: 'short', sparse: false };
+  const state = { pendingLong: longOrder, pendingShort: shortOrder };
+  assert.equal(pendingForSide(state, 'long'), longOrder);
+  assert.equal(pendingForSide(state, 'short'), shortOrder);
+  assert.deepEqual(autoPendingOrders(state), [longOrder, shortOrder]);
+  assert.equal(pendingForSide({ pending: shortOrder }, 'long'), null);
+  assert.equal(pendingForSide({ pending: shortOrder }, 'short'), shortOrder);
+  const migrated = { pending: shortOrder, ...pendingStatePatch({ pending: shortOrder }, 'long', longOrder) };
+  assert.deepEqual(autoPendingOrders(migrated), [longOrder, shortOrder]);
+});
+
+test('一侧已有补仓委托时，亏损中的另一侧仍可独立触发下一笔自动补仓', () => {
+  const state = { longAdditions: 5, shortAdditions: 0, pendingLong: { orderId: 'long-1', side: 'BUY', direction: 'long' } };
+  assert.equal(availableAdditionDirection(state, 'long', true, true, -180, -0.2), 'short');
+  assert.equal(availableAdditionDirection({ ...state, pendingShort: { orderId: 'short-1', side: 'SELL', direction: 'short' } },
+    'long', true, true, -180, -0.2), null);
+  assert.equal(availableAdditionDirection(state, 'short', true, true, -180, -0.2), 'short');
 });
 
 test('手动同步更新交易所数量与均价，保留恢复状态和自动档位，手动增量单独核算', () => {

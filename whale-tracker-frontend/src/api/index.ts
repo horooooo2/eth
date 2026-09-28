@@ -1560,6 +1560,9 @@ export type TradfiRangeStatus = {
   maxLongAdditions?: number; maxShortAdditions?: number;
   manualAddPending?: boolean; positionSync?: TradfiPositionSync;
   pendingSparse?: boolean; pendingDirection?: 'long' | 'short'; pendingTierStart?: number | null; pendingTierEnd?: number | null; pendingTriggerPrice?: number | null;
+  pendingLongSparse?: boolean; pendingLongTierStart?: number | null; pendingLongTierEnd?: number | null;
+  pendingShortSparse?: boolean; pendingShortTierStart?: number | null; pendingShortTierEnd?: number | null;
+  pendingLongOrder?: boolean; pendingShortOrder?: boolean;
   longAdditions?: number; shortAdditions?: number; maxTotalAdditions?: number;
   marginPerOrder: number; leverage: number; comboPnl?: number | null; lastPrice?: number | null;
   netPnl?: number | null; closeTrigger?: number | null; addStep?: number | null; atr1h?: number | null;

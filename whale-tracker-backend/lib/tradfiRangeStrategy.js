@@ -113,6 +113,34 @@ function legPatch(side, patch) {
   const prefix = legName(side);
   return Object.fromEntries(Object.entries(patch).map(([key, value]) => [`${prefix}${key}`, value]));
 }
+function pendingForSide(state, side) {
+  const key = side === 'long' ? 'pendingLong' : 'pendingShort';
+  const stored = state?.[key];
+  if (stored) return stored;
+  const legacy = state?.pending;
+  if (!legacy || legacy.kind === 'manual') return null;
+  const direction = legacy.direction || (legacy.side === 'BUY' ? 'long' : 'short');
+  return direction === side ? legacy : null;
+}
+function autoPendingOrders(state) {
+  const found = [pendingForSide(state, 'long'), pendingForSide(state, 'short')].filter(Boolean);
+  return [...new Map(found.map((order) => [String(order.orderId || order.clientOrderId || order.clientId), order])).values()];
+}
+function hasAutoPending(state) { return autoPendingOrders(state).length > 0; }
+function pendingStatePatch(state, side, order) {
+  return { pending: null,
+    pendingLong: side === 'long' ? (order || null) : pendingForSide(state, 'long'),
+    pendingShort: side === 'short' ? (order || null) : pendingForSide(state, 'short') };
+}
+function availableAdditionDirection(state, preferred, longCanAdd, shortCanAdd, longPnl, shortPnl) {
+  const other = preferred === 'long' ? 'short' : 'long';
+  if (!pendingForSide(state, preferred)) return preferred;
+  const otherCanAdd = other === 'long' ? longCanAdd : shortCanAdd;
+  const otherPnl = other === 'long' ? Number(longPnl) : Number(shortPnl);
+  if (!pendingForSide(state, other) && otherCanAdd && otherPnl < 0
+    && additionDecision(state, other === 'long').action === 'add') return other;
+  return null;
+}
 function legSnapshot(state, side) {
   const isLong = legName(side) === 'long';
   return {
@@ -154,10 +182,20 @@ function publicRow(row) {
     additions: counts.longAdditions + counts.shortAdditions, longAdditions: counts.longAdditions, shortAdditions: counts.shortAdditions,
     maxAdditions: MAX_ADDITIONS, maxLongAdditions: MAX_LONG_ADDITIONS, maxShortAdditions: MAX_SHORT_ADDITIONS,
     maxTotalAdditions: MAX_LONG_ADDITIONS + MAX_SHORT_ADDITIONS,
-    manualAddPending: Boolean(s.manualPending) || s.pending?.kind === 'manual', pendingSparse: Boolean(s.pending?.sparse),
-    pendingDirection: s.pending?.direction || null,
-    pendingTierStart: s.pending?.tierStart ?? null, pendingTierEnd: s.pending?.tierEnd ?? null,
-    pendingTriggerPrice: s.pending?.triggerPrice ?? null,
+    manualAddPending: Boolean(s.manualPending) || s.pending?.kind === 'manual',
+    pendingSparse: Boolean(s.pending?.sparse || pendingForSide(s, 'long')?.sparse || pendingForSide(s, 'short')?.sparse),
+    pendingDirection: s.pending?.direction || (pendingForSide(s, 'long') ? 'long' : pendingForSide(s, 'short') ? 'short' : null),
+    pendingTierStart: (s.pending || pendingForSide(s, 'long') || pendingForSide(s, 'short'))?.tierStart ?? null,
+    pendingTierEnd: (s.pending || pendingForSide(s, 'long') || pendingForSide(s, 'short'))?.tierEnd ?? null,
+    pendingTriggerPrice: (s.pending || pendingForSide(s, 'long') || pendingForSide(s, 'short'))?.triggerPrice ?? null,
+    pendingLongSparse: Boolean(pendingForSide(s, 'long')?.sparse),
+    pendingLongTierStart: pendingForSide(s, 'long')?.tierStart ?? null,
+    pendingLongTierEnd: pendingForSide(s, 'long')?.tierEnd ?? null,
+    pendingShortSparse: Boolean(pendingForSide(s, 'short')?.sparse),
+    pendingShortTierStart: pendingForSide(s, 'short')?.tierStart ?? null,
+    pendingShortTierEnd: pendingForSide(s, 'short')?.tierEnd ?? null,
+    pendingLongOrder: Boolean(pendingForSide(s, 'long')),
+    pendingShortOrder: Boolean(pendingForSide(s, 'short')),
     marginPerOrder: config.marginUsdt, leverage: config.leverage, cycleId: s.cycleId || null,
     comboPnl: s.comboPnl ?? null, netPnl: s.netPnl ?? null, closeTrigger: s.closeTrigger ?? null,
     costs: s.costs || null, addStep: s.addStep ?? null, atr1h: s.atr1h ?? null,
@@ -221,7 +259,7 @@ async function disable(userId, symbol) {
     };
   }
   const resumeEligible = Boolean((pausedPositions?.long.quantity || 0) > 0 || (pausedPositions?.short.quantity || 0) > 0);
-  save(row, { enabled: 0, status: 'paused' }, { pending: null, pausedPositions, resumeEligible, pausedAt: Date.now(), adoptionPositions: null });
+  save(row, { enabled: 0, status: 'paused' }, { pending: null, pendingLong: null, pendingShort: null, pausedPositions, resumeEligible, pausedAt: Date.now(), adoptionPositions: null });
   log(userId, row.symbol, resumeEligible ? '震荡交易已停止，仓位已保留；下次启动将按币安实际仓位恢复接管' : '震荡交易已停止，当前没有需要接管的策略仓位', 'warn');
   return status(userId, row.symbol);
 }
@@ -336,7 +374,7 @@ function isCloseClientId(value) {
 async function cancelKnown(creds, symbol, state) {
   const long = legSnapshot(state, 'long'); const short = legSnapshot(state, 'short');
   const orders = [
-    ...(state.entries || []), ...(state.closeOrders || []), state.pending, state.manualPending,
+    ...(state.entries || []), ...(state.closeOrders || []), ...autoPendingOrders(state), state.pending, state.manualPending,
     ...(long.closeOrders || []), ...(short.closeOrders || []), long.reentryOrder, short.reentryOrder,
   ].filter(Boolean);
   const unique = [...new Map(orders.map((order) => [String(order.orderId || order.clientOrderId), order])).values()];
@@ -412,8 +450,8 @@ async function manualAddPreview(userId, symbol, sideValue, marginValue) {
   const pos = positionsOf(risk, row.symbol); const position = pos[side];
   const currentQty = qty(position); const currentEntryPrice = Number(position?.entryPrice || 0);
   let expectedWithPendingFill = leg.expectedQty;
-  if (state.pending && state.pending.kind !== 'manual' && (state.pending.direction || (state.pending.side === 'BUY' ? 'long' : 'short')) === side) {
-    const pendingState = await orderState(creds, row.symbol, state.pending);
+  if (pendingForSide(state, side)) {
+    const pendingState = await orderState(creds, row.symbol, pendingForSide(state, side));
     expectedWithPendingFill += Number(pendingState.executedQty || 0);
   }
   if (!canManualAddPosition({ enabled: row.enabled, status: row.status, pending: Boolean(state.manualPending || state.pending?.kind === 'manual'), phase: leg.phase, quantity: currentQty, pnl: position?.unRealizedProfit })) {
@@ -466,7 +504,7 @@ async function startCycle(row, creds, market) {
   await signedRequest(creds, 'POST', '/fapi/v1/leverage', { symbol: row.symbol, leverage: String(config.leverage) });
   const cycleId = crypto.randomUUID().replace(/-/g, '').slice(0, 10);
   const cycleStartedAt = Date.now();
-  save(row, { status: 'entry_pending', additions: 0, last_error: '' }, { cycleId, cycleStartedAt, fundingStartedAt: cycleStartedAt, entries: [], pending: null, longAdditions: 0, shortAdditions: 0, expectedLong: 0, expectedShort: 0, lastAddPrice: market.last, addStep: market.addStep, range: market.range, lastPrice: market.last, minLongPnl: 0, minShortPnl: 0, recovery: false, recoveryArmed: false, recoveryPeakNetPnl: 0, recoveryTrail: 0 });
+  save(row, { status: 'entry_pending', additions: 0, last_error: '' }, { cycleId, cycleStartedAt, fundingStartedAt: cycleStartedAt, entries: [], pending: null, pendingLong: null, pendingShort: null, longAdditions: 0, shortAdditions: 0, expectedLong: 0, expectedShort: 0, lastAddPrice: market.last, addStep: market.addStep, range: market.range, lastPrice: market.last, minLongPnl: 0, minShortPnl: 0, recovery: false, recoveryArmed: false, recoveryPeakNetPnl: 0, recoveryTrail: 0 });
   const fresh = rowFor(row.user_id, row.symbol); const entries = [];
   try {
     entries.push(await placeLimit(creds, fresh, 'BUY', market.bid, 'base_l'));
@@ -617,20 +655,24 @@ function quantitySyncSummary(state, positions) {
   return { required: ['long', 'short'].some((side) => !closeEnough(sides[side].expectedQty, sides[side].actualQty)), sides };
 }
 function hasPendingStrategyOrder(row, state) {
-  if (state.pending || ['initializing', 'entry_pending', 'add_pending', 'close_pending'].includes(row.status)) return true;
+  if (state.pending || hasAutoPending(state) || ['initializing', 'entry_pending', 'add_pending', 'close_pending'].includes(row.status)) return true;
   return ['long', 'short'].some((side) => ['close_pending', 'reentry_pending'].includes(legSnapshot(state, side).phase));
 }
 function canCancelPendingForPositionSync(row, state) {
-  return row.status === 'add_pending' && state.pending?.kind === 'auto' && !state.manualPending
+  return row.status === 'add_pending' && autoPendingOrders(state).length > 0 && autoPendingOrders(state).every((order) => order.kind !== 'manual') && !state.manualPending
     && ['long', 'short'].every((side) => !['close_pending', 'reentry_pending'].includes(legSnapshot(state, side).phase));
 }
 async function positionSyncExpectedState(creds, row, state) {
   if (!canCancelPendingForPositionSync(row, state)) return state;
-  const pending = await orderState(creds, row.symbol, state.pending);
-  const filled = Number(pending.executedQty || 0);
-  const direction = state.pending.direction || (state.pending.side === 'BUY' ? 'long' : 'short');
-  const leg = legSnapshot(state, direction);
-  return { ...state, ...legPatch(direction, { ExpectedQty: leg.expectedQty + filled }) };
+  let expected = { ...state };
+  for (const pending of autoPendingOrders(state)) {
+    const current = await orderState(creds, row.symbol, pending);
+    const filled = Number(current.executedQty || 0);
+    const direction = pending.direction || (pending.side === 'BUY' ? 'long' : 'short');
+    const leg = legSnapshot(expected, direction);
+    expected = { ...expected, ...legPatch(direction, { ExpectedQty: leg.expectedQty + filled }) };
+  }
+  return expected;
 }
 async function positionSyncStatus(userId, symbol) {
   const sym = cleanSymbol(symbol); const row = rowFor(userId, sym);
@@ -676,9 +718,9 @@ async function syncPositions(userId, symbol) {
     if (!summaryBefore.required) throw invalid('策略记录与币安实际仓位已一致，无需同步', 409);
 
     if (pendingCancelable) {
-      const settled = await cancelAndVerifyOrder(creds, sym, state.pending);
+      for (const pending of autoPendingOrders(state)) {
+      const settled = await cancelAndVerifyOrder(creds, sym, pending);
       if (!settled.resolved) throw invalid('策略补仓委托撤销结果暂未确认，请在币安核对后再同步', 409);
-      const pending = state.pending;
       const direction = pending.direction || (pending.side === 'BUY' ? 'long' : 'short');
       const isLong = direction === 'long';
       const leg = legSnapshot(state, direction);
@@ -688,25 +730,26 @@ async function syncPositions(userId, symbol) {
       const counted = countedAdditions(state, isLong, slotCount);
       const qtyAfterFill = Number(leg.expectedQty || 0) + filled;
       const clearedPending = {
-        pending: null,
+        ...pendingStatePatch(state, direction, null),
         longAdditions: counted.longAdditions,
         shortAdditions: counted.shortAdditions,
         expectedLong: Number(state.expectedLong || 0) + (isLong ? filled : 0),
         expectedShort: Number(state.expectedShort || 0) + (isLong ? 0 : filled),
         ...(filled > 0 ? { lastAddPrice: fillPrice, ...legPatch(direction, { Additions: counted.next, ExpectedQty: qtyAfterFill, LastAddPrice: fillPrice }) } : {}),
       };
-      save(row, { status: 'active', additions: counted.total, last_error: '' }, clearedPending);
+      save(row, { status: hasAutoPending({ ...state, ...clearedPending }) ? 'add_pending' : 'active', additions: counted.total, last_error: '' }, clearedPending);
       log(userId, sym, `同步手动仓位前已撤销并核验策略补仓委托（${settled.current?.status || '状态已确认'}）`, 'warn',
         { phase: 'position_sync', orderId: settled.order?.orderId, status: settled.current?.status, filled, fillPrice });
       row = rowFor(userId, sym);
       state = parseState(row);
+      }
     }
 
     const risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: sym });
     const positions = positionsOf(risk, sym);
     const summary = quantitySyncSummary(state, positions);
     if (!summary.required) {
-      if (pendingCancelable) save(row, { status: 'active', last_error: '' }, { pending: null });
+      if (pendingCancelable) save(row, { status: hasAutoPending(state) ? 'add_pending' : 'active', last_error: '' }, { pending: null, pendingLong: null, pendingShort: null });
       throw invalid('策略委托已处理，策略记录与币安实际仓位现已一致，无需同步', 409);
     }
     const now = Date.now(); const anyPosition = summary.sides.long.actualQty > 0 || summary.sides.short.actualQty > 0;
@@ -772,7 +815,7 @@ async function initializeStrategy(row, creds) {
       startupProgress: 100, startupStep: '现有仓位已接管，策略恢复运行',
       cycleId: state.cycleId || crypto.randomUUID().replace(/-/g, '').slice(0, 10),
       cycleStartedAt: state.cycleStartedAt || adoptedAt, fundingStartedAt: adoptedAt, adoptedAt,
-      adoptedLongQty: qty(positions.long), adoptedShortQty: qty(positions.short), entries: [], pending: null, closeOrders: [],
+      adoptedLongQty: qty(positions.long), adoptedShortQty: qty(positions.short), entries: [], pending: null, pendingLong: null, pendingShort: null, closeOrders: [],
       expectedLong: qty(positions.long), expectedShort: qty(positions.short),
       ...adoptedLegState(state, 'long', positions.long), ...adoptedLegState(state, 'short', positions.short),
     };
@@ -964,9 +1007,11 @@ async function strategyQuantitiesForClose(creds, row, state) {
       if (String(current?.side || order.side) === 'SELL') short += filled;
     }
   }
-  if (row.status === 'add_pending' && state.pending) {
-    const current = await read(state.pending); const filled = Number(current?.executedQty || 0);
-    if (state.pending.side === 'BUY') long += filled; else short += filled;
+  if (row.status === 'add_pending') {
+    for (const pending of autoPendingOrders(state)) {
+      const current = await read(pending); const filled = Number(current?.executedQty || 0);
+      if (pending.side === 'BUY') long += filled; else short += filled;
+    }
   }
   if (state.manualPending) {
     const current = await read(state.manualPending); const filled = Number(current?.executedQty || 0);
@@ -993,7 +1038,7 @@ async function closeAll(userId) {
     const longQty = Math.min(qty(pos.long), strategyQty.long);
     const shortQty = Math.min(qty(pos.short), strategyQty.short);
     const closeRemaining = { LONG: longQty, SHORT: shortQty };
-    save(row, { enabled: 1, status: 'close_pending', last_error: '' }, { pending: null, entries: [], closeOrders: [], closeRemaining, closePlacedAt: Date.now(), stopAfterClose: true });
+    save(row, { enabled: 1, status: 'close_pending', last_error: '' }, { pending: null, pendingLong: null, pendingShort: null, entries: [], closeOrders: [], closeRemaining, closePlacedAt: Date.now(), stopAfterClose: true });
     const orders = []; let submissionError = null;
     for (const [side, quantity] of [['LONG', longQty], ['SHORT', shortQty]]) {
       if (!(quantity > 0)) continue;
@@ -1019,7 +1064,7 @@ async function closeAll(userId) {
 }
 function finishClose(row, stopped) {
   save(row, { enabled: stopped ? 0 : row.enabled, status: stopped ? 'paused' : 'waiting', additions: 0 }, {
-    entries: [], pending: null, closeOrders: [], closeRemaining: { LONG: 0, SHORT: 0 }, stopAfterClose: false, longAdditions: 0, shortAdditions: 0,
+    entries: [], pending: null, pendingLong: null, pendingShort: null, closeOrders: [], closeRemaining: { LONG: 0, SHORT: 0 }, stopAfterClose: false, longAdditions: 0, shortAdditions: 0,
     expectedLong: 0, expectedShort: 0, comboPnl: 0, recovery: false, recoveryArmed: false,
     recoveryPeakNetPnl: 0, recoveryTrail: 0, cooldownUntil: Date.now() + COOLDOWN_MS,
   });
@@ -1085,7 +1130,7 @@ async function reconcileManualPending(row, creds, state) {
   const fillPrice = Number(current.avgPrice || pending.price || 0);
   const nextQty = Number(leg.expectedQty || 0) + filled;
   const marginUsdt = Number(leg.manualMarginUsdt || 0) + (filled > 0 && fillPrice > 0 ? filled * fillPrice / strategyConfig(row).leverage : 0);
-  const hasStrategyPending = Boolean(state.pending && state.pending.kind !== 'manual');
+  const hasStrategyPending = hasAutoPending(state);
   save(row, { status: hasStrategyPending ? 'add_pending' : 'active', last_error: '' }, {
     manualPending: null,
     expectedLong: Number(state.expectedLong || 0) + (isLong ? filled : 0),
@@ -1099,10 +1144,79 @@ async function reconcileManualPending(row, creds, state) {
   else log(row.user_id, row.symbol, `手动补仓委托${current.status === 'REJECTED' ? '被拒绝' : '未成交并结束'}`, 'warn', { side: direction, status: current.status });
   return true;
 }
+async function reconcileAutoPendingOrder(row, creds, state, direction, pending) {
+  let current = await orderState(creds, row.symbol, pending);
+  const isLong = direction === 'long'; const leg = legSnapshot(state, direction);
+  const updateFill = (filled, fillPrice, slotCount) => {
+    const counted = countedAdditions(state, isLong, slotCount);
+    const expectedQty = leg.expectedQty + filled;
+    const patch = { ...pendingStatePatch(state, direction, null), longAdditions: counted.longAdditions, shortAdditions: counted.shortAdditions,
+      expectedLong: Number(state.expectedLong || 0) + (isLong ? filled : 0), expectedShort: Number(state.expectedShort || 0) + (isLong ? 0 : filled),
+      lastAddPrice: filled > 0 ? fillPrice : state.lastAddPrice,
+      ...legPatch(direction, { ExpectedQty: expectedQty, Additions: counted.next, LastAddPrice: filled > 0 ? fillPrice : leg.lastAddPrice }) };
+    return { counted, patch };
+  };
+  const persist = (pendingOrder, statePatch = {}, additions = null) => {
+    const nextState = { ...state, ...pendingStatePatch(state, direction, pendingOrder), ...statePatch };
+    const remains = hasAutoPending(nextState);
+    save(row, { status: remains ? 'add_pending' : 'active', ...(additions == null ? {} : { additions }), last_error: '' }, nextState);
+  };
+  if (String(current.status) === 'FILLED') {
+    const filled = Number(current.executedQty || 0); const fillPrice = Number(current.avgPrice || pending.price || 0);
+    const slotCount = Math.max(1, Number(pending.slotCount) || 1);
+    const { counted, patch } = updateFill(filled, fillPrice, slotCount);
+    persist(null, patch, counted.total);
+    log(row.user_id, row.symbol, pending.sparse
+      ? `${isLong ? '多头' : '空头'}稀疏补仓第 ${pending.tierStart}-${pending.tierEnd} 档整组合并委托已成交`
+      : `${isLong ? '多头' : '空头'}第 ${counted.next}/${isLong ? MAX_LONG_ADDITIONS : MAX_SHORT_ADDITIONS} 档补仓已成交`, 'trade',
+    { side: pending.side, quantity: filled, slotCount, longAdditions: counted.longAdditions, shortAdditions: counted.shortAdditions });
+    return true;
+  }
+  if (Date.now() - Number(pending.placedAt || 0) <= ORDER_TTL_MS) return false;
+  await cancelOrder(creds, row.symbol, pending);
+  current = await orderState(creds, row.symbol, pending);
+  if (!['FILLED', 'CANCELED', 'EXPIRED', 'REJECTED'].includes(String(current.status))) return false;
+  const filled = Number(current.executedQty || 0); const fillPrice = Number(current.avgPrice || pending.price || 0);
+  if (pending.sparse) {
+    const marginConsumed = filled > 0 ? filled * fillPrice / strategyConfig(row).leverage : 0;
+    const remainingMarginUsdt = Math.max(0, Number(pending.remainingMarginUsdt || pending.totalMarginUsdt || 0) - marginConsumed);
+    if (remainingMarginUsdt > 0.000001) {
+      const suffix = `s${isLong ? 'l' : 's'}${pending.tierStart}_${pending.tierEnd}_r${Date.now().toString(36)}`;
+      try {
+        const replacement = await placeLimit(creds, row, pending.side, pending.triggerPrice, suffix, remainingMarginUsdt);
+        const patch = { expectedLong: Number(state.expectedLong || 0) + (isLong ? filled : 0), expectedShort: Number(state.expectedShort || 0) + (isLong ? 0 : filled),
+          ...legPatch(direction, { ExpectedQty: leg.expectedQty + filled }) };
+        persist({ ...pending, ...replacement, remainingMarginUsdt, totalMarginUsdt: pending.totalMarginUsdt }, patch);
+        log(row.user_id, row.symbol, `${isLong ? '多头' : '空头'}稀疏组单部分成交 ${filled > 0 ? '，已按剩余金额继续挂同一组' : '未成交，已重挂同一组'}；仍为第 ${pending.tierStart}-${pending.tierEnd} 档`,
+          filled > 0 ? 'warn' : 'info', { filled, marginConsumed, remainingMarginUsdt, tierStart: pending.tierStart, tierEnd: pending.tierEnd });
+        return true;
+      } catch (error) {
+        if (!/最小下单数量/.test(error.message || '')) throw error;
+      }
+    }
+    const slotCount = Math.max(1, Number(pending.slotCount) || SPARSE_GROUP_SIZE);
+    const { counted, patch } = updateFill(filled, fillPrice, slotCount);
+    persist(null, patch, counted.total);
+    log(row.user_id, row.symbol, remainingMarginUsdt > 0.000001
+      ? `稀疏组单剩余金额低于最小下单量，按实际成交结束第 ${pending.tierStart}-${pending.tierEnd} 档`
+      : `稀疏组单第 ${pending.tierStart}-${pending.tierEnd} 档已完成（实际成交保证金 ${marginConsumed.toFixed(2)}U）`, 'trade',
+    { filled, marginConsumed, slotCount, longAdditions: counted.longAdditions, shortAdditions: counted.shortAdditions });
+    return true;
+  }
+  const { counted, patch } = updateFill(filled, fillPrice, filled > 0 ? 1 : 0);
+  persist(null, patch, counted.total);
+  if (filled > 0) log(row.user_id, row.symbol, `${isLong ? '多头' : '空头'}第 ${counted.next}/${isLong ? MAX_LONG_ADDITIONS : MAX_SHORT_ADDITIONS} 档补仓部分成交，剩余已撤销`, 'trade', { side: pending.side, quantity: filled });
+  else log(row.user_id, row.symbol, `${isLong ? '多头' : '空头'}常规补仓委托超时未成交，已撤销`, 'warn', { side: pending.side });
+  return true;
+}
 async function reconcileRow(row) {
   const creds = getBinanceCredentialsForUser(row.user_id);
   if (!creds || Number(creds.simulated) !== Number(row.simulated)) throw new Error('币安密钥缺失或交易环境已变化');
   let state = parseState(row);
+  if (!state.manualPending && state.pending?.kind === 'manual') {
+    save(row, {}, { manualPending: state.pending, pending: null });
+    row = rowFor(row.user_id, row.symbol); state = parseState(row);
+  }
   if (row.status === 'initializing') {
     await initializeStrategy(row, creds);
     return;
@@ -1137,32 +1251,31 @@ async function reconcileRow(row) {
     marketDataFresh: market.dataFresh });
   row = rowFor(row.user_id, row.symbol);
   state = parseState(row);
-  if (market.dataFresh && row.status === 'add_pending' && state.pending && state.pending.kind !== 'manual') {
+  if (market.dataFresh && row.status === 'add_pending' && hasAutoPending(state)) {
     const risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: row.symbol });
     const positions = positionsOf(risk, row.symbol);
-    const direction = state.pending.direction || (state.pending.side === 'BUY' ? 'long' : 'short');
-    const position = positions[direction]; const leg = legSnapshot(state, direction);
-    const sparse = market.dataFresh ? sparseModeDecision({ active: leg.sparseMode, side: direction, entryPrice: Number(position?.entryPrice || 0),
-      price: market.last, atr1h: market.atr1h, trendDirection: market.trendDirection, trendBars: market.trendBars,
-      trendWeakBars: direction === 'long' ? market.downWeakBars : market.upWeakBars }) : { active: leg.sparseMode };
-    const pendingIsSparse = Boolean(state.pending.sparse);
-    if (sparse.active !== pendingIsSparse) {
-      const current = await orderState(creds, row.symbol, state.pending);
-      if (Number(current.executedQty || 0) <= 0 && String(current.status || '') !== 'FILLED') {
-        await cancelOrder(creds, row.symbol, state.pending);
-        const latest = await orderState(creds, row.symbol, state.pending);
-        if (Number(latest.executedQty || 0) <= 0) {
-          const step = sparse.active ? sparseLadderStep(market.last, market.addStep, market.atr1h) : 0;
-          save(row, { status: 'active' }, { pending: null, ...legPatch(direction, { SparseMode: sparse.active,
-            SparseSince: sparse.active ? (leg.sparseSince || Date.now()) : 0, SparseStep: step, SparseDistanceAtr: sparse.distanceAtr,
-            SparseEntryPrice: Number(position?.entryPrice || 0) }) });
-          log(row.user_id, row.symbol, sparse.active
-            ? `${direction === 'long' ? '多头' : '空头'}趋势风险确认，已撤销普通补仓单并切换稀疏补仓`
-            : `${direction === 'long' ? '多头' : '空头'}稀疏条件解除，已撤销未成交组单并恢复常规档距`, 'warn',
-          { distanceAtr: sparse.distanceAtr, trendDirection: market.trendDirection, trendBars: market.trendBars, trendWeakBars: direction === 'long' ? market.downWeakBars : market.upWeakBars });
-          return;
-        }
-      }
+    for (const pending of autoPendingOrders(state)) {
+      const direction = pending.direction || (pending.side === 'BUY' ? 'long' : 'short');
+      const position = positions[direction]; const leg = legSnapshot(state, direction);
+      const sparse = sparseModeDecision({ active: leg.sparseMode, side: direction, entryPrice: Number(position?.entryPrice || 0),
+        price: market.last, atr1h: market.atr1h, trendDirection: market.trendDirection, trendBars: market.trendBars,
+        trendWeakBars: direction === 'long' ? market.downWeakBars : market.upWeakBars });
+      if (sparse.active === Boolean(pending.sparse)) continue;
+      const current = await orderState(creds, row.symbol, pending);
+      if (Number(current.executedQty || 0) > 0 || String(current.status || '') === 'FILLED') continue;
+      await cancelOrder(creds, row.symbol, pending);
+      const latest = await orderState(creds, row.symbol, pending);
+      if (Number(latest.executedQty || 0) > 0) continue;
+      const step = sparse.active ? sparseLadderStep(market.last, market.addStep, market.atr1h) : 0;
+      const stillPending = autoPendingOrders(state).some((item) => item !== pending && item.orderId !== pending.orderId);
+      save(row, { status: stillPending ? 'add_pending' : 'active' }, { ...pendingStatePatch(state, direction, null), ...legPatch(direction, { SparseMode: sparse.active,
+        SparseSince: sparse.active ? (leg.sparseSince || Date.now()) : 0, SparseStep: step, SparseDistanceAtr: sparse.distanceAtr,
+        SparseEntryPrice: Number(position?.entryPrice || 0) }) });
+      log(row.user_id, row.symbol, sparse.active
+        ? `${direction === 'long' ? '多头' : '空头'}趋势风险确认，已撤销普通补仓单并切换稀疏补仓`
+        : `${direction === 'long' ? '多头' : '空头'}稀疏条件解除，已撤销未成交组单并恢复常规档距`, 'warn',
+      { distanceAtr: sparse.distanceAtr, trendDirection: market.trendDirection, trendBars: market.trendBars, trendWeakBars: direction === 'long' ? market.downWeakBars : market.upWeakBars });
+      row = rowFor(row.user_id, row.symbol); state = parseState(row);
     }
   }
   if (row.status === 'waiting') {
@@ -1234,103 +1347,25 @@ async function reconcileRow(row) {
   }
   const longManaged = longLeg.phase !== 'reentry_wait'; const shortManaged = shortLeg.phase !== 'reentry_wait';
   if ((longManaged && !qty(pos.long)) || (shortManaged && !qty(pos.short))) throw invalid('检测到手动修改仓位，策略转人工接管', 409);
-  if (row.status === 'add_pending' && state.pending) {
-    const current = await orderState(creds, row.symbol, state.pending);
-    if (current.status === 'FILLED') {
-      const filled = Number(current.executedQty); const isLong = state.pending.side === 'BUY';
-      if (state.pending.kind === 'manual') {
-        const direction = state.pending.direction === 'short' ? 'short' : 'long';
-        const leg = legSnapshot(state, direction); const fillPrice = Number(current.avgPrice || state.pending.price);
-        const nextQty = Number(leg.expectedQty || 0) + filled;
-        const manualMarginUsdt = leg.manualMarginUsdt + (filled * fillPrice / strategyConfig(row).leverage);
-        save(row, { status: 'active', last_error: '' }, {
-          pending: null,
-          expectedLong: Number(state.expectedLong || 0) + (isLong ? filled : 0),
-          expectedShort: Number(state.expectedShort || 0) + (isLong ? 0 : filled),
-          lastAddPrice: fillPrice,
-          ...legPatch(direction, { ExpectedQty: nextQty, LastAddPrice: fillPrice, ManualMarginUsdt: manualMarginUsdt }),
-        });
-        log(row.user_id, row.symbol, `${direction === 'long' ? '多头' : '空头'}手动补仓已成交，实际保证金累计 ${manualMarginUsdt.toFixed(2)}U`, 'success', { side: direction, quantity: filled, avgPrice: fillPrice, manualMarginUsdt }); return;
-      }
-      const slotCount = Math.max(1, Number(state.pending.slotCount) || 1);
-      const counted = countedAdditions(state, isLong, slotCount);
-      const direction = isLong ? 'long' : 'short'; const nextQty = (isLong ? longLeg.expectedQty : shortLeg.expectedQty) + filled;
-      save(row, { status: 'active', additions: counted.total }, { pending: null, longAdditions: counted.longAdditions, shortAdditions: counted.shortAdditions, expectedLong: Number(state.expectedLong || 0) + (isLong ? filled : 0), expectedShort: Number(state.expectedShort || 0) + (isLong ? 0 : filled), lastAddPrice: Number(current.avgPrice || state.pending.price), ...legPatch(direction, { ExpectedQty: nextQty, Additions: counted.next, LastAddPrice: Number(current.avgPrice || state.pending.price) }) });
-      log(row.user_id, row.symbol, state.pending.sparse
-        ? `${isLong ? '多头' : '空头'}稀疏补仓第 ${state.pending.tierStart}-${state.pending.tierEnd} 档整组合并委托已成交`
-        : `${isLong ? '多头' : '空头'}第 ${counted.next}/${isLong ? MAX_LONG_ADDITIONS : MAX_SHORT_ADDITIONS} 档补仓已成交`, 'trade',
-      { side: state.pending.side, quantity: filled, slotCount, longAdditions: counted.longAdditions, shortAdditions: counted.shortAdditions }); return;
+  if (row.status === 'add_pending' && hasAutoPending(state)) {
+    let pendingUpdated = false;
+    for (const direction of ['long', 'short']) {
+      row = rowFor(row.user_id, row.symbol); state = parseState(row);
+      const pending = pendingForSide(state, direction);
+      if (pending) pendingUpdated = (await reconcileAutoPendingOrder(row, creds, state, direction, pending)) || pendingUpdated;
     }
-    if (Date.now() - state.pending.placedAt > ORDER_TTL_MS) {
-      await cancelOrder(creds, row.symbol, state.pending);
-      const latestOrder = await orderState(creds, row.symbol, state.pending);
-      const filled = Number(latestOrder.executedQty || 0); const isLong = state.pending.side === 'BUY';
-      if (state.pending.kind === 'manual') {
-        const direction = state.pending.direction === 'short' ? 'short' : 'long';
-        const leg = legSnapshot(state, direction); const fillPrice = Number(latestOrder.avgPrice || state.pending.price);
-        const nextQty = Number(leg.expectedQty || 0) + filled;
-        const manualMarginUsdt = leg.manualMarginUsdt + (filled > 0 ? filled * fillPrice / strategyConfig(row).leverage : 0);
-        save(row, { status: 'active', last_error: '' }, {
-          pending: null,
-          expectedLong: Number(state.expectedLong || 0) + (isLong ? filled : 0),
-          expectedShort: Number(state.expectedShort || 0) + (isLong ? 0 : filled),
-          lastAddPrice: filled > 0 ? fillPrice : state.lastAddPrice,
-          ...legPatch(direction, { ExpectedQty: nextQty, LastAddPrice: filled > 0 ? fillPrice : leg.lastAddPrice, ManualMarginUsdt: manualMarginUsdt }),
-        });
-        if (filled > 0) log(row.user_id, row.symbol, `${direction === 'long' ? '多头' : '空头'}手动补仓部分成交，剩余已撤销；保证金累计 ${manualMarginUsdt.toFixed(2)}U`, 'trade', { side: direction, quantity: filled, avgPrice: fillPrice, manualMarginUsdt });
-        else log(row.user_id, row.symbol, '手动补仓挂单超时未成交，已撤销', 'warn');
-        return;
-      }
-      if (state.pending.sparse) {
-        const direction = isLong ? 'long' : 'short'; const leg = isLong ? longLeg : shortLeg;
-        const fillPrice = Number(latestOrder.avgPrice || state.pending.price);
-        const marginConsumed = filled > 0 ? filled * fillPrice / strategyConfig(row).leverage : 0;
-        const remainingMarginUsdt = Math.max(0, Number(state.pending.remainingMarginUsdt || state.pending.totalMarginUsdt || 0) - marginConsumed);
-        const expectedQty = Number(leg.expectedQty || 0) + filled;
-        const expectedLong = Number(state.expectedLong || 0) + (isLong ? filled : 0);
-        const expectedShort = Number(state.expectedShort || 0) + (isLong ? 0 : filled);
-        if (remainingMarginUsdt > 0.000001) {
-          const suffix = `s${isLong ? 'l' : 's'}${state.pending.tierStart}_${state.pending.tierEnd}_r${Date.now().toString(36)}`;
-          try {
-            const replacement = await placeLimit(creds, row, state.pending.side, state.pending.triggerPrice, suffix, remainingMarginUsdt);
-            save(row, { status: 'add_pending', last_error: '' }, { expectedLong, expectedShort,
-              ...legPatch(direction, { ExpectedQty: expectedQty }),
-              pending: { ...state.pending, ...replacement, remainingMarginUsdt, totalMarginUsdt: state.pending.totalMarginUsdt } });
-            log(row.user_id, row.symbol, `${isLong ? '多头' : '空头'}稀疏组单部分成交 ${filled > 0 ? '，已按剩余金额继续挂同一组' : '未成交，已重挂同一组'}；仍为第 ${state.pending.tierStart}-${state.pending.tierEnd} 档`,
-              filled > 0 ? 'warn' : 'info', { filled, marginConsumed, remainingMarginUsdt, tierStart: state.pending.tierStart, tierEnd: state.pending.tierEnd });
-          } catch (error) {
-            if (!/最小下单数量/.test(error.message || '')) throw error;
-            const counted = countedAdditions(state, isLong, Number(state.pending.slotCount) || SPARSE_GROUP_SIZE);
-            save(row, { status: 'active', additions: counted.total }, { pending: null, longAdditions: counted.longAdditions, shortAdditions: counted.shortAdditions,
-              expectedLong, expectedShort, lastAddPrice: filled > 0 ? fillPrice : state.lastAddPrice,
-              ...legPatch(direction, { ExpectedQty: expectedQty, Additions: counted.next, LastAddPrice: filled > 0 ? fillPrice : leg.lastAddPrice }) });
-            log(row.user_id, row.symbol, `稀疏组单剩余金额低于最小下单量，按实际成交结束第 ${state.pending.tierStart}-${state.pending.tierEnd} 档`, 'warn', { filled, remainingMarginUsdt });
-          }
-          return;
-        }
-        const slotCount = Math.max(1, Number(state.pending.slotCount) || 1);
-        const counted = countedAdditions(state, isLong, slotCount);
-        save(row, { status: 'active', additions: counted.total }, { pending: null, longAdditions: counted.longAdditions, shortAdditions: counted.shortAdditions,
-          expectedLong, expectedShort, lastAddPrice: filled > 0 ? fillPrice : state.lastAddPrice,
-          ...legPatch(direction, { ExpectedQty: expectedQty, Additions: counted.next, LastAddPrice: filled > 0 ? fillPrice : leg.lastAddPrice }) });
-        log(row.user_id, row.symbol, `稀疏组单第 ${state.pending.tierStart}-${state.pending.tierEnd} 档已完成（实际成交保证金 ${marginConsumed.toFixed(2)}U）`, 'trade',
-          { filled, marginConsumed, slotCount, longAdditions: counted.longAdditions, shortAdditions: counted.shortAdditions });
-        return;
-      }
-      const counted = countedAdditions(state, isLong, filled > 0);
-      const direction = isLong ? 'long' : 'short'; const nextQty = (isLong ? longLeg.expectedQty : shortLeg.expectedQty) + filled;
-      save(row, { status: 'active', additions: counted.total }, { pending: null, longAdditions: counted.longAdditions, shortAdditions: counted.shortAdditions,
-        expectedLong: state.expectedLong + (isLong ? filled : 0), expectedShort: state.expectedShort + (isLong ? 0 : filled),
-        lastAddPrice: filled > 0 ? Number(latestOrder.avgPrice || state.pending.price) : state.lastAddPrice, ...legPatch(direction, { ExpectedQty: nextQty, Additions: counted.next, LastAddPrice: filled > 0 ? Number(latestOrder.avgPrice || state.pending.price) : (isLong ? longLeg.lastAddPrice : shortLeg.lastAddPrice) }) });
-      if (filled > 0) log(row.user_id, row.symbol, `${isLong ? '多头' : '空头'}第 ${counted.next}/${isLong ? MAX_LONG_ADDITIONS : MAX_SHORT_ADDITIONS} 档补仓部分成交，剩余已撤销`, 'trade', { side: state.pending.side, quantity: filled });
-    }
-    return;
+    if (pendingUpdated) return;
+    row = rowFor(row.user_id, row.symbol); state = parseState(row);
   }
   let pendingLongFill = 0; let pendingShortFill = 0;
-  if (row.status === 'add_pending' && state.pending) {
-    const currentPending = await orderState(creds, row.symbol, state.pending);
-    const filledPending = Number(currentPending.executedQty || 0);
-    if (state.pending.side === 'BUY') pendingLongFill = filledPending; else pendingShortFill = filledPending;
+  if (row.status === 'add_pending') {
+    for (const direction of ['long', 'short']) {
+      const pending = pendingForSide(state, direction);
+      if (!pending) continue;
+      const currentPending = await orderState(creds, row.symbol, pending);
+      const filledPending = Number(currentPending.executedQty || 0);
+      if (direction === 'long') pendingLongFill = filledPending; else pendingShortFill = filledPending;
+    }
   }
   if ((longManaged && !closeEnough(qty(pos.long), longLeg.expectedQty + pendingLongFill))
     || (shortManaged && !closeEnough(qty(pos.short), shortLeg.expectedQty + pendingShortFill))) throw invalid('检测到手动修改仓位，策略转人工接管', 409);
@@ -1375,7 +1410,8 @@ async function reconcileRow(row) {
       const guardPrice = profitGuardPrice(position, side, costs);
       const order = await placeCloseMaker(creds, row, side, qty(position), guardPrice);
       const reason = recovery ? exit.reason : '单边净盈利达到目标';
-      save(row, {}, { ...legUpdates, ...legPatch(direction, { Phase: 'close_pending', CloseOrders: [order], ClosePlacedAt: Date.now(), CloseGuardPrice: guardPrice }), fundingStartedAt: Date.now(), comboPnl, netPnl: longCosts.netPnl + shortCosts.netPnl, costs: { long: longCosts, short: shortCosts } });
+      save(row, { status: 'active' }, { ...legUpdates, pending: null, pendingLong: null, pendingShort: null,
+        ...legPatch(direction, { Phase: 'close_pending', CloseOrders: [order], ClosePlacedAt: Date.now(), CloseGuardPrice: guardPrice }), fundingStartedAt: Date.now(), comboPnl, netPnl: longCosts.netPnl + shortCosts.netPnl, costs: { long: longCosts, short: shortCosts } });
       log(row.user_id, row.symbol, `${side === 'LONG' ? '多头' : '空头'}${reason}，已提交 Maker 止盈单（预估净利 ${costs.netPnl.toFixed(2)}U）`, 'success', costs); return;
     }
   }
@@ -1386,9 +1422,9 @@ async function reconcileRow(row) {
   const canAddLong = longManaged && qty(pos.long) > 0;
   const canAddShort = shortManaged && qty(pos.short) > 0;
   if (!canAddLong && !canAddShort) return;
-  // Keep the strategy's single automatic order plus at most one separately
-  // tracked manual order. Continue PnL/close management above while either rests.
-  if (state.pending || state.manualPending) return;
+  // Each direction can own one automatic order. Manual orders remain tracked
+  // separately and pause further automatic adds until they settle.
+  if (state.manualPending || state.pending?.kind === 'manual') return;
   let longLosing;
   const sparseLongLosing = canAddLong && nextLong.sparseMode && Number(pos.long.unRealizedProfit || 0) < 0;
   const sparseShortLosing = canAddShort && nextShort.sparseMode && Number(pos.short.unRealizedProfit || 0) < 0;
@@ -1409,6 +1445,10 @@ async function reconcileRow(row) {
     const otherPnl = Number(longLosing ? pos.short.unRealizedProfit || 0 : pos.long.unRealizedProfit || 0);
     if (otherCanAdd && otherPnl < 0 && additionDecision(state, !longLosing).action === 'add') longLosing = !longLosing;
   }
+  const selectedDirection = availableAdditionDirection(state, longLosing ? 'long' : 'short', canAddLong, canAddShort,
+    pos.long.unRealizedProfit, pos.short.unRealizedProfit);
+  if (!selectedDirection) return;
+  longLosing = selectedDirection === 'long';
   const activeLeg = longLosing ? nextLong : nextShort;
   const sparseMode = Boolean(activeLeg.sparseMode);
   if ((market.trend || market.trendDirection !== 'neutral') && !sparseMode) return;
@@ -1424,13 +1464,20 @@ async function reconcileRow(row) {
   if (!shouldPlaceAddition({ sparseMode, side: longLosing ? 'long' : 'short', price: market.last, triggerPrice })) return;
   if (decision.action === 'manual') throw invalid(`多头最多${MAX_LONG_ADDITIONS}档、空头最多${MAX_SHORT_ADDITIONS}档自动补仓，策略转人工接管`, 409);
   if (decision.action === 'wait') return;
+  const balances = await signedRequest(creds, 'GET', '/fapi/v2/balance');
+  const availableBalance = Number((Array.isArray(balances) ? balances : []).find((item) => item.asset === 'USDT')?.availableBalance || 0);
+  if (availableBalance + 1e-8 < marginUsdt) {
+    log(row.user_id, row.symbol, `本轮${longLosing ? '多头' : '空头'}补仓未提交：可用保证金 ${availableBalance.toFixed(2)}U，需求 ${marginUsdt.toFixed(2)}U`, 'warn',
+      { side: longLosing ? 'long' : 'short', availableBalance, requiredMarginUsdt: marginUsdt });
+    return;
+  }
   const side = longLosing ? 'BUY' : 'SELL'; const price = sparseMode ? triggerPrice : (longLosing ? market.bid : market.ask);
   const lastTier = decision.next + groupCount - 1;
   const suffix = sparseMode ? `s${longLosing ? 'l' : 's'}${decision.next}_${lastTier}` : `${longLosing ? 'l' : 's'}${decision.next}`;
   const pending = { ...(await placeLimit(creds, row, side, price, suffix, marginUsdt)), kind: 'auto',
     direction: longLosing ? 'long' : 'short', tierStart: decision.next, tierEnd: lastTier,
     slotCount: groupCount, sparse: sparseMode, triggerPrice, totalMarginUsdt: marginUsdt, remainingMarginUsdt: marginUsdt, step };
-  save(row, { status: 'add_pending' }, { ...legUpdates, pending });
+  save(row, { status: 'add_pending' }, { ...legUpdates, ...pendingStatePatch(state, longLosing ? 'long' : 'short', pending) });
   log(row.user_id, row.symbol, sparseMode
     ? `已提交${longLosing ? '多头' : '空头'}稀疏补仓第 ${decision.next}-${lastTier} 档：合并保证金 ${marginUsdt}U，间距 ${step.toFixed(2)}`
     : `已提交${longLosing ? '多头' : '空头'}第 ${decision.next}/${sideMax} 档补仓：保证金 ${marginUsdt}U`, 'trade',
@@ -1471,4 +1518,4 @@ module.exports = { start, reconcile, status, enable, disable, closeAll, manualAd
   profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState, strategyConfig, requestedConfig, resumedConfig,
   isPostOnlyReject, isRequestTimeout, recoveryExitState, ignoreStaleStrategySave, SYMBOLS, MAX_ADDITIONS, MAX_LONG_ADDITIONS, MAX_SHORT_ADDITIONS,
   MARGIN, LEVERAGE, MAX_MARGIN, MAX_GOLD_MARGIN, MAX_LEVERAGE, positionSyncStatus, syncPositions, syncLegState,
-  quantitySyncSummary, canCancelPendingForPositionSync, canManualAddPosition };
+  quantitySyncSummary, canCancelPendingForPositionSync, canManualAddPosition, pendingForSide, pendingStatePatch, autoPendingOrders, availableAdditionDirection };

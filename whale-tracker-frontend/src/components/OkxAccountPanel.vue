@@ -173,11 +173,18 @@ function legModeLabel(group: TradfiGroup, side: 'long' | 'short') {
   const additions = Number(leg?.additions || 0); const max = side === 'long'
     ? Number(strategy?.maxLongAdditions || 100) : Number(strategy?.maxShortAdditions || 50);
   if (leg?.sparseMode) {
-    if (strategy?.pendingSparse && strategy.pendingDirection === side) return `稀疏补仓 · ${strategy.pendingTierStart}-${strategy.pendingTierEnd}档挂单 · ${additions}/${max}`;
+    const pendingOrder = side === 'long' ? strategy?.pendingLongOrder : strategy?.pendingShortOrder;
+    const pendingSparse = side === 'long' ? strategy?.pendingLongSparse : strategy?.pendingShortSparse;
+    const pendingStart = side === 'long' ? strategy?.pendingLongTierStart : strategy?.pendingShortTierStart;
+    const pendingEnd = side === 'long' ? strategy?.pendingLongTierEnd : strategy?.pendingShortTierEnd;
+    if (pendingSparse || (strategy?.pendingSparse && strategy.pendingDirection === side)) return `稀疏补仓 · ${pendingStart ?? strategy?.pendingTierStart}-${pendingEnd ?? strategy?.pendingTierEnd}档挂单 · ${additions}/${max}`;
+    if (pendingOrder) return `稀疏补仓 · 挂单中 · ${additions}/${max}`;
     if (additions >= max) return `稀疏补仓 · 已达上限 ${additions}/${max}`;
     const first = additions + 1; const last = Math.min(max, additions + 5);
     return `稀疏补仓 · 下一组${first}-${last}档 · ${additions}/${max}`;
   }
+  const pendingOrder = side === 'long' ? strategy?.pendingLongOrder : strategy?.pendingShortOrder;
+  if (pendingOrder) return `${leg?.recovery ? '恢复中' : '常规'} · 补仓挂单中 · ${additions}/${max}`;
   return `${leg?.recovery ? '恢复中' : '常规'} · ${additions}/${max}`;
 }
 function manualAddAvailable(group: TradfiGroup, side: 'long' | 'short') {
