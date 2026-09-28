@@ -165,7 +165,9 @@ http.interceptors.response.use(
       return Promise.reject(new Error('TIMEOUT'));
     }
     if (status === 504 || status === 502 || status === 503) {
-      return Promise.reject(new Error(`GATEWAY_${status}`));
+      const gatewayError = new Error(`GATEWAY_${status}`) as Error & { details?: unknown };
+      gatewayError.details = data;
+      return Promise.reject(gatewayError);
     }
     const message =
       status === 429 || /429|过于频繁/.test(raw) ? '查询过于频繁，请稍后再试' : raw;
@@ -1599,7 +1601,7 @@ export async function submitTradfiManualAdd(symbol: string, side: 'long' | 'shor
   return data;
 }
 export async function syncTradfiRangePositions(symbol: string) {
-  const { data } = await http.post<TradfiRangeResponse>('/tradfi/range/sync', { symbol }, { timeout: 30_000 });
+  const { data } = await http.post<TradfiRangeResponse>('/tradfi/range/sync', { symbol }, { timeout: 60_000 });
   return data;
 }
 export async function closeTradfiPositions() {

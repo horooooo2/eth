@@ -678,8 +678,26 @@ async function syncPositions(userId, symbol) {
     if (pendingCancelable) {
       const settled = await cancelAndVerifyOrder(creds, sym, state.pending);
       if (!settled.resolved) throw invalid('策略补仓委托撤销结果暂未确认，请在币安核对后再同步', 409);
+      const pending = state.pending;
+      const direction = pending.direction || (pending.side === 'BUY' ? 'long' : 'short');
+      const isLong = direction === 'long';
+      const leg = legSnapshot(state, direction);
+      const filled = Number(settled.current?.executedQty || 0);
+      const fillPrice = Number(settled.current?.avgPrice || pending.price || 0);
+      const slotCount = filled > 0 ? (pending.sparse ? Number(pending.slotCount) || SPARSE_GROUP_SIZE : 1) : 0;
+      const counted = countedAdditions(state, isLong, slotCount);
+      const qtyAfterFill = Number(leg.expectedQty || 0) + filled;
+      const clearedPending = {
+        pending: null,
+        longAdditions: counted.longAdditions,
+        shortAdditions: counted.shortAdditions,
+        expectedLong: Number(state.expectedLong || 0) + (isLong ? filled : 0),
+        expectedShort: Number(state.expectedShort || 0) + (isLong ? 0 : filled),
+        ...(filled > 0 ? { lastAddPrice: fillPrice, ...legPatch(direction, { Additions: counted.next, ExpectedQty: qtyAfterFill, LastAddPrice: fillPrice }) } : {}),
+      };
+      save(row, { status: 'active', additions: counted.total, last_error: '' }, clearedPending);
       log(userId, sym, `同步手动仓位前已撤销并核验策略补仓委托（${settled.current?.status || '状态已确认'}）`, 'warn',
-        { phase: 'position_sync', orderId: settled.order?.orderId, status: settled.current?.status });
+        { phase: 'position_sync', orderId: settled.order?.orderId, status: settled.current?.status, filled, fillPrice });
       row = rowFor(userId, sym);
       state = parseState(row);
     }

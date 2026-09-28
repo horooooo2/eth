@@ -215,7 +215,11 @@ async function syncGroupPositions(group: TradfiGroup) {
     await syncTradfiRangePositions(group.instId);
     ElMessage.success('币安实际仓位已同步，策略将按当前完整仓位管理');
     await load(true);
-  } catch (err) { ElMessage.error(err instanceof Error ? err.message : '同步币安仓位失败'); }
+  } catch (err) {
+    const details = err && typeof err === 'object' && 'details' in err ? (err as { details?: { error?: string } }).details : undefined;
+    await load(true).catch(() => undefined);
+    ElMessage.error(details?.error || (err instanceof Error ? err.message : '同步请求失败。请检查委托和仓位状态后再操作'));
+  }
   finally { syncingSymbol.value = ''; }
 }
 function openManualAdd(group: TradfiGroup, side: 'long' | 'short') {
