@@ -87,9 +87,10 @@ test('常规补仓需触及触发价，稀疏补仓会提前挂到远端触发�
   assert.equal(shouldPlaceAddition({ sparseMode: true, side: 'long', price: 4950, triggerPrice: 4900 }), true);
 });
 
-test('手动补仓不再受自动档位数限制，但仍要求策略运行、该侧持仓亏损且没有待处理委托', () => {
+test('手动补仓允许与策略挂单并行，但仍要求策略运行、该侧持仓亏损且没有手动补仓待单', () => {
   assert.equal(canManualAddPosition({ enabled: true, status: 'active', pending: false, phase: 'active', quantity: 0.2, pnl: -1 }), true);
   assert.equal(canManualAddPosition({ enabled: true, status: 'active', pending: false, phase: 'active', quantity: 0.2, pnl: 0 }), false);
+  assert.equal(canManualAddPosition({ enabled: true, status: 'add_pending', pending: false, phase: 'active', quantity: 0.2, pnl: -1 }), true);
   assert.equal(canManualAddPosition({ enabled: true, status: 'add_pending', pending: true, phase: 'active', quantity: 0.2, pnl: -1 }), false);
   assert.equal(canManualAddPosition({ enabled: false, status: 'manual', pending: false, phase: 'active', quantity: 0.2, pnl: -1 }), false);
 });

@@ -91,7 +91,7 @@
     return side === 'long' ? Number(price) <= Number(triggerPrice) : Number(price) >= Number(triggerPrice);
   }
   function canManualAddPosition({ enabled, status, pending, phase, quantity, pnl }) {
-    return Boolean(enabled) && status === 'active' && !pending && phase === 'active'
+    return Boolean(enabled) && ['active', 'add_pending'].includes(status) && !pending && phase === 'active'
       && Number(quantity) > 0 && Number(pnl) < 0;
   }
   function marketState(rows15, rows60) {

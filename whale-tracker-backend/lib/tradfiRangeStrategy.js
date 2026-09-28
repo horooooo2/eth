@@ -154,7 +154,7 @@ function publicRow(row) {
     additions: counts.longAdditions + counts.shortAdditions, longAdditions: counts.longAdditions, shortAdditions: counts.shortAdditions,
     maxAdditions: MAX_ADDITIONS, maxLongAdditions: MAX_LONG_ADDITIONS, maxShortAdditions: MAX_SHORT_ADDITIONS,
     maxTotalAdditions: MAX_LONG_ADDITIONS + MAX_SHORT_ADDITIONS,
-    manualAddPending: s.pending?.kind === 'manual', pendingSparse: Boolean(s.pending?.sparse),
+    manualAddPending: Boolean(s.manualPending) || s.pending?.kind === 'manual', pendingSparse: Boolean(s.pending?.sparse),
     pendingDirection: s.pending?.direction || null,
     pendingTierStart: s.pending?.tierStart ?? null, pendingTierEnd: s.pending?.tierEnd ?? null,
     pendingTriggerPrice: s.pending?.triggerPrice ?? null,
@@ -336,7 +336,7 @@ function isCloseClientId(value) {
 async function cancelKnown(creds, symbol, state) {
   const long = legSnapshot(state, 'long'); const short = legSnapshot(state, 'short');
   const orders = [
-    ...(state.entries || []), ...(state.closeOrders || []), state.pending,
+    ...(state.entries || []), ...(state.closeOrders || []), state.pending, state.manualPending,
     ...(long.closeOrders || []), ...(short.closeOrders || []), long.reentryOrder, short.reentryOrder,
   ].filter(Boolean);
   const unique = [...new Map(orders.map((order) => [String(order.orderId || order.clientOrderId), order])).values()];
@@ -400,23 +400,29 @@ async function manualAddPreview(userId, symbol, sideValue, marginValue) {
   if (!['long', 'short'].includes(side)) throw invalid('补仓方向无效');
   const marginUsdt = Number(marginValue);
   if (!Number.isFinite(marginUsdt) || marginUsdt <= 0) throw invalid('请输入大于 0 的补仓保证金');
-  if (!row.enabled || row.status !== 'active') throw invalid('策略当前未处于可补仓状态', 409);
+  if (!row.enabled || !['active', 'add_pending'].includes(row.status)) throw invalid('策略当前未处于可补仓状态', 409);
   const state = parseState(row); const leg = legSnapshot(state, side);
   const rowKey = `${String(userId)}|${row.symbol}`;
   if (lockedRows.has(rowKey) || activeRows.has(rowKey)) throw invalid('策略正在检查或同步该仓位，请稍后再试', 409);
-  if (state.pending || leg.phase !== 'active') throw invalid('该方向有未完成的委托或状态切换，请稍后再试', 409);
+  if (state.manualPending || state.pending?.kind === 'manual') throw invalid('手动补仓委托处理中，请等待该笔委托完成', 409);
+  if (leg.phase !== 'active') throw invalid('该方向正在止盈或重建，请稍后再试', 409);
   const creds = getBinanceCredentialsForUser(userId);
   if (!creds || Number(creds.simulated) !== Number(row.simulated)) throw invalid('币安密钥缺失或交易环境已变化', 409);
   const risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: row.symbol });
   const pos = positionsOf(risk, row.symbol); const position = pos[side];
   const currentQty = qty(position); const currentEntryPrice = Number(position?.entryPrice || 0);
-  if (!canManualAddPosition({ enabled: row.enabled, status: row.status, pending: Boolean(state.pending), phase: leg.phase, quantity: currentQty, pnl: position?.unRealizedProfit })) {
+  let expectedWithPendingFill = leg.expectedQty;
+  if (state.pending && state.pending.kind !== 'manual' && (state.pending.direction || (state.pending.side === 'BUY' ? 'long' : 'short')) === side) {
+    const pendingState = await orderState(creds, row.symbol, state.pending);
+    expectedWithPendingFill += Number(pendingState.executedQty || 0);
+  }
+  if (!canManualAddPosition({ enabled: row.enabled, status: row.status, pending: Boolean(state.manualPending || state.pending?.kind === 'manual'), phase: leg.phase, quantity: currentQty, pnl: position?.unRealizedProfit })) {
     if (!(currentQty > 0) || !(currentEntryPrice > 0)) throw invalid('币安当前没有该方向的持仓', 409);
     if (Number(position.unRealizedProfit || 0) >= 0) throw invalid('仅亏损中的仓位可以手动补仓', 409);
     throw invalid('该方向当前不可手动补仓', 409);
   }
   if (!(currentEntryPrice > 0)) throw invalid('币安当前没有有效持仓均价', 409);
-  if (!closeEnough(currentQty, leg.expectedQty)) throw invalid('策略记录与币安仓位数量不一致，请先核对仓位', 409);
+  if (!closeEnough(currentQty, expectedWithPendingFill)) throw invalid('策略记录与币安仓位数量不一致，请先核对仓位', 409);
   const balances = await signedRequest(creds, 'GET', '/fapi/v2/balance');
   const usdt = (Array.isArray(balances) ? balances : []).find((item) => item.asset === 'USDT');
   if (!usdt || Number(usdt.availableBalance || 0) < marginUsdt) throw invalid('可用保证金不足以提交这笔补仓', 409);
@@ -446,7 +452,7 @@ async function manualAdd(userId, symbol, side, marginUsdt, expected = {}) {
   const orderSide = preview.side === 'long' ? 'BUY' : 'SELL';
   const suffix = `man_${preview.side[0]}_${Date.now().toString(36)}`;
   const order = await placeLimit(getBinanceCredentialsForUser(userId), row, orderSide, preview.price, suffix, preview.marginUsdt);
-  save(row, { status: 'add_pending', last_error: '' }, { pending: { ...order, kind: 'manual', marginUsdt: preview.marginUsdt, direction: preview.side } });
+  save(row, { status: 'add_pending', last_error: '' }, { manualPending: { ...order, kind: 'manual', marginUsdt: preview.marginUsdt, direction: preview.side } });
   log(userId, row.symbol, `${preview.side === 'long' ? '多头' : '空头'}手动补仓挂单已提交：保证金 ${preview.marginUsdt}U，${preview.leverage}x`, 'trade', { side: preview.side, marginUsdt: preview.marginUsdt, leverage: preview.leverage, price: order.price, quantity: order.quantity, projectedEntryPrice: (preview.currentQty * preview.currentEntryPrice + Number(order.quantity) * Number(order.price)) / (preview.currentQty + Number(order.quantity)), manual: true });
   return { order, preview: { ...preview, price: order.price, quantity: Number(order.quantity), projectedEntryPrice: (preview.currentQty * preview.currentEntryPrice + Number(order.quantity) * Number(order.price)) / (preview.currentQty + Number(order.quantity)) } };
 }
@@ -907,6 +913,10 @@ async function strategyQuantitiesForClose(creds, row, state) {
     const current = await read(state.pending); const filled = Number(current?.executedQty || 0);
     if (state.pending.side === 'BUY') long += filled; else short += filled;
   }
+  if (state.manualPending) {
+    const current = await read(state.manualPending); const filled = Number(current?.executedQty || 0);
+    if (state.manualPending.side === 'BUY') long += filled; else short += filled;
+  }
   const longLeg = legSnapshot(state, 'long'); const shortLeg = legSnapshot(state, 'short');
   if (longLeg.phase === 'reentry_pending') long = Number((await read(longLeg.reentryOrder))?.executedQty || 0);
   if (shortLeg.phase === 'reentry_pending') short = Number((await read(shortLeg.reentryOrder))?.executedQty || 0);
@@ -1002,6 +1012,38 @@ async function reconcileClosePending(row, creds, state) {
     log(row.user_id, row.symbol, 'Maker 平仓单未成交，已按最新盘口重新挂单', 'warn');
   }
 }
+async function reconcileManualPending(row, creds, state) {
+  const pending = state.manualPending;
+  if (!pending) return false;
+  let current = await orderState(creds, row.symbol, pending);
+  const terminalStatuses = ['FILLED', 'CANCELED', 'EXPIRED', 'REJECTED'];
+  if (!terminalStatuses.includes(String(current.status)) && Date.now() - Number(pending.placedAt || 0) >= ORDER_TTL_MS) {
+    await cancelOrder(creds, row.symbol, pending);
+    current = await orderState(creds, row.symbol, pending);
+  }
+  if (!terminalStatuses.includes(String(current.status))) return false;
+
+  const direction = pending.direction === 'short' ? 'short' : 'long';
+  const isLong = direction === 'long';
+  const leg = legSnapshot(state, direction);
+  const filled = Number(current.executedQty || 0);
+  const fillPrice = Number(current.avgPrice || pending.price || 0);
+  const nextQty = Number(leg.expectedQty || 0) + filled;
+  const marginUsdt = Number(leg.manualMarginUsdt || 0) + (filled > 0 && fillPrice > 0 ? filled * fillPrice / strategyConfig(row).leverage : 0);
+  const hasStrategyPending = Boolean(state.pending && state.pending.kind !== 'manual');
+  save(row, { status: hasStrategyPending ? 'add_pending' : 'active', last_error: '' }, {
+    manualPending: null,
+    expectedLong: Number(state.expectedLong || 0) + (isLong ? filled : 0),
+    expectedShort: Number(state.expectedShort || 0) + (isLong ? 0 : filled),
+    lastAddPrice: filled > 0 ? fillPrice : state.lastAddPrice,
+    ...legPatch(direction, { ExpectedQty: nextQty, LastAddPrice: filled > 0 ? fillPrice : leg.lastAddPrice, ManualMarginUsdt: marginUsdt }),
+  });
+  if (filled > 0) log(row.user_id, row.symbol,
+    `${direction === 'long' ? '多头' : '空头'}手动补仓${current.status === 'FILLED' ? '已成交' : '部分成交，剩余已结束'}；保证金累计 ${marginUsdt.toFixed(2)}U`,
+    current.status === 'FILLED' ? 'success' : 'trade', { side: direction, quantity: filled, avgPrice: fillPrice, manualMarginUsdt: marginUsdt });
+  else log(row.user_id, row.symbol, `手动补仓委托${current.status === 'REJECTED' ? '被拒绝' : '未成交并结束'}`, 'warn', { side: direction, status: current.status });
+  return true;
+}
 async function reconcileRow(row) {
   const creds = getBinanceCredentialsForUser(row.user_id);
   if (!creds || Number(creds.simulated) !== Number(row.simulated)) throw new Error('币安密钥缺失或交易环境已变化');
@@ -1023,6 +1065,11 @@ async function reconcileRow(row) {
   // candles are delayed or unavailable.
   if (row.status === 'entry_pending') { await reconcileEntryPending(row, creds, state); return; }
   if (row.status === 'close_pending') { await reconcileClosePending(row, creds, state); return; }
+  if (state.manualPending) {
+    await reconcileManualPending(row, creds, state);
+    row = rowFor(row.user_id, row.symbol);
+    state = parseState(row);
+  }
   const market = await snapshot(row.symbol, state);
   if (market.dataFresh !== Boolean(state.marketDataFresh)) {
     log(row.user_id, row.symbol, market.dataFresh
@@ -1224,7 +1271,14 @@ async function reconcileRow(row) {
     }
     return;
   }
-  if ((longManaged && !closeEnough(qty(pos.long), longLeg.expectedQty)) || (shortManaged && !closeEnough(qty(pos.short), shortLeg.expectedQty))) throw invalid('检测到手动修改仓位，策略转人工接管', 409);
+  let pendingLongFill = 0; let pendingShortFill = 0;
+  if (row.status === 'add_pending' && state.pending) {
+    const currentPending = await orderState(creds, row.symbol, state.pending);
+    const filledPending = Number(currentPending.executedQty || 0);
+    if (state.pending.side === 'BUY') pendingLongFill = filledPending; else pendingShortFill = filledPending;
+  }
+  if ((longManaged && !closeEnough(qty(pos.long), longLeg.expectedQty + pendingLongFill))
+    || (shortManaged && !closeEnough(qty(pos.short), shortLeg.expectedQty + pendingShortFill))) throw invalid('检测到手动修改仓位，策略转人工接管', 409);
   const comboPnl = Number(pos.long.unRealizedProfit || 0) + Number(pos.short.unRealizedProfit || 0);
   const longNotional = Math.abs(Number(pos.long.notional || 0)); const shortNotional = Math.abs(Number(pos.short.notional || 0));
   const nextLong = { ...longLeg, minPnl: Math.min(longLeg.minPnl, Number(pos.long.unRealizedProfit || 0)) };
@@ -1277,6 +1331,9 @@ async function reconcileRow(row) {
   const canAddLong = longManaged && qty(pos.long) > 0;
   const canAddShort = shortManaged && qty(pos.short) > 0;
   if (!canAddLong && !canAddShort) return;
+  // Keep the strategy's single automatic order plus at most one separately
+  // tracked manual order. Continue PnL/close management above while either rests.
+  if (state.pending || state.manualPending) return;
   let longLosing;
   const sparseLongLosing = canAddLong && nextLong.sparseMode && Number(pos.long.unRealizedProfit || 0) < 0;
   const sparseShortLosing = canAddShort && nextShort.sparseMode && Number(pos.short.unRealizedProfit || 0) < 0;

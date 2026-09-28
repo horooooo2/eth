@@ -182,8 +182,8 @@ function legModeLabel(group: TradfiGroup, side: 'long' | 'short') {
 }
 function manualAddAvailable(group: TradfiGroup, side: 'long' | 'short') {
   const strategy = group.strategy; const leg = legStatus(group, side); const position = group[side];
-  return props.exchange === 'tradfi' && Boolean(strategy?.enabled) && strategy?.status === 'active'
-    && !strategy.manualAddPending && leg?.phase === 'active'
+  return props.exchange === 'tradfi' && Boolean(strategy?.enabled) && ['active', 'add_pending'].includes(strategy?.status || '')
+    && !strategy?.manualAddPending && leg?.phase === 'active'
     && position?.kind === 'position' && Number(rowPnl(position)) < 0;
 }
 function canShowManualAdd(group: TradfiGroup, side: 'long' | 'short') {
@@ -381,7 +381,7 @@ defineExpose({ reload: () => load(true) });
         <div class="position-row">
           <section class="position-side">
             <div v-if="sideMask(group, 'long')" class="position-mask">{{ sideMask(group, 'long') }}</div>
-            <div class="side-header"><span class="side-badge long">多头</span><button v-if="canShowManualAdd(group, 'long')" type="button" class="manual-add-btn" :disabled="!manualAddAvailable(group, 'long')" :title="manualAddAvailable(group, 'long') ? '使用当前策略杠杆补仓' : '策略运行中且无该方向处理中订单时可补仓'" @click="openManualAdd(group, 'long')">补仓</button></div>
+            <div class="side-header"><span class="side-badge long">多头</span><button v-if="canShowManualAdd(group, 'long')" type="button" class="manual-add-btn" :disabled="!manualAddAvailable(group, 'long')" :title="manualAddAvailable(group, 'long') ? '使用当前策略杠杆补仓，可与策略挂单并行' : '策略运行中且该方向无止盈或重建切换时可补仓'" @click="openManualAdd(group, 'long')">补仓</button></div>
             <div class="position-details">
               <span class="label">持仓价</span>
               <span class="value">{{ group.long ? entryPrice(group.long) : '—' }}</span>
@@ -397,7 +397,7 @@ defineExpose({ reload: () => load(true) });
           </section>
           <section class="position-side">
             <div v-if="sideMask(group, 'short')" class="position-mask">{{ sideMask(group, 'short') }}</div>
-            <div class="side-header"><span class="side-badge short">空头</span><button v-if="canShowManualAdd(group, 'short')" type="button" class="manual-add-btn" :disabled="!manualAddAvailable(group, 'short')" :title="manualAddAvailable(group, 'short') ? '使用当前策略杠杆补仓' : '策略运行中且无该方向处理中订单时可补仓'" @click="openManualAdd(group, 'short')">补仓</button></div>
+            <div class="side-header"><span class="side-badge short">空头</span><button v-if="canShowManualAdd(group, 'short')" type="button" class="manual-add-btn" :disabled="!manualAddAvailable(group, 'short')" :title="manualAddAvailable(group, 'short') ? '使用当前策略杠杆补仓，可与策略挂单并行' : '策略运行中且该方向无止盈或重建切换时可补仓'" @click="openManualAdd(group, 'short')">补仓</button></div>
             <div class="position-details">
               <span class="label">持仓价</span>
               <span class="value">{{ group.short ? entryPrice(group.short) : '—' }}</span>
