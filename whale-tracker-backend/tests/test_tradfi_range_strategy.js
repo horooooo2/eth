@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { takeProfitNetPnl, shouldPlaceAddition, canManualAddPosition } = require('../lib/tradfiRangeCore.cjs');
+const { takeProfitNetPnl, shouldPlaceAddition, canManualAddPosition, shouldCancelTakeProfit } = require('../lib/tradfiRangeCore.cjs');
 const { canCancelPendingForPositionSync, pendingForSide, pendingStatePatch, autoPendingOrders, availableAdditionDirection } = require('../lib/tradfiRangeStrategy');
 
 function candles(start, count, step, spread = 2) {
@@ -95,6 +95,12 @@ test('手动补仓允许与策略挂单并行，但仍要求策略运行、该�
   assert.equal(canManualAddPosition({ enabled: true, status: 'add_pending', pending: false, phase: 'active', quantity: 0.2, pnl: -1 }), true);
   assert.equal(canManualAddPosition({ enabled: true, status: 'add_pending', pending: true, phase: 'active', quantity: 0.2, pnl: -1 }), false);
   assert.equal(canManualAddPosition({ enabled: false, status: 'manual', pending: false, phase: 'active', quantity: 0.2, pnl: -1 }), false);
+});
+
+test('止盈 Maker 委托未成交且净盈亏转负时应撤单恢复仓位管理', () => {
+  assert.equal(shouldCancelTakeProfit(-0.01), true);
+  assert.equal(shouldCancelTakeProfit(0), true);
+  assert.equal(shouldCancelTakeProfit(0.01), false);
 });
 
 test('手动同步只允许先撤销普通策略补仓单，不允许绕过开仓、平仓或手动补仓状态', () => {

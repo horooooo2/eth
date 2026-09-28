@@ -185,6 +185,18 @@ function processBar(bar: Candle) {
   for (const side of ['long', 'short'] as Side[]) {
     const p = positions[side];
     if (!p) continue;
+    const pendingClose = orders[side]?.purpose === 'close';
+    if (pendingClose) {
+      const currentNotional = p.qty * price;
+      const currentExitFee = currentNotional * settings.makerFee;
+      const currentPricePnl = p.realized + (side === 'long' ? price - p.avg : p.avg - price) * p.qty;
+      const pendingNet = core.takeProfitNetPnl({ pricePnl: currentPricePnl, funding: p.funding, entryFee: p.fee, exitFee: currentExitFee });
+      if (core.shouldCancelTakeProfit(pendingNet)) {
+        orders[side] = null;
+        p.recoveryArmed = false; p.recoveryPeak = 0; p.recoveryTrail = 0;
+        stateLabel = `${side === 'long' ? '多' : '空'}仓止盈单撤销 · 恢复补仓监控`;
+      }
+    }
     const notional = p.qty * price;
     const pricePnl = p.realized + (side === 'long' ? price - p.avg : p.avg - price) * p.qty;
     const estimatedCloseFee = notional * settings.makerFee;

@@ -111,6 +111,14 @@ router.post('/range/manual-add', async (req, res) => {
   } catch (err) { res.status(err.status || 502).json({ error: err.message || '手动补仓提交失败', code: err.code }); }
 });
 
+router.post('/range/sync', async (req, res) => {
+  try {
+    const user = requireUser(req);
+    res.json({ ok: true, ...await rangeStrategy.syncPositions(user.user.id, req.body?.symbol) });
+    void rangeStrategy.reconcile();
+  } catch (err) { res.status(err.status || 502).json({ error: err.message || '同步币安仓位失败', code: err.code }); }
+});
+
 router.post('/range/stop', async (req, res) => {
   try {
     const user = requireUser(req);

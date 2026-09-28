@@ -9,7 +9,7 @@ const { MAX_LONG_ADDITIONS, MAX_SHORT_ADDITIONS, SYMBOL_DEFAULTS, MIN_STEP_PCT, 
   SPARSE_GROUP_SIZE, SPARSE_ENTER_ATR_DISTANCE, SPARSE_EXIT_ATR_DISTANCE, TREND_CONFIRM_BARS,
   SCALP_MIN_PROFIT, SCALP_NOTIONAL_RATE, clamp, atr, defaultConfig, ladderMargin, sideAdditions,
   additionDecision, countedAdditions, ladderStep, sparseLadderStep, sparseModeDecision, sparseGroupCount,
-  sparseGroupMargin, sparseGroupTrigger, shouldPlaceAddition, canManualAddPosition, marketState, scalpProfitTarget, recoveryExitState } = STRATEGY_CORE;
+  sparseGroupMargin, sparseGroupTrigger, shouldPlaceAddition, canManualAddPosition, marketState, scalpProfitTarget, recoveryExitState, shouldCancelTakeProfit } = STRATEGY_CORE;
 
 const SYMBOLS = new Set(['XAUUSDT', 'XAGUSDT']);
 const MARGIN = 20;
@@ -364,6 +364,70 @@ async function cancelAndVerifyOrder(creds, symbol, order) {
   }
   const terminal = ['FILLED', 'CANCELED', 'EXPIRED', 'REJECTED'].includes(String(current.status));
   return { resolved: terminal, order: resolvedOrder, current };
+}
+async function cancelLosingTakeProfit(row, creds, direction, leg, netPnl) {
+  const orders = Array.isArray(leg.closeOrders) ? leg.closeOrders.filter(Boolean) : [];
+  if (!orders.length) return false;
+  const settled = [];
+  for (const order of orders) {
+    const result = await cancelAndVerifyOrder(creds, row.symbol, order);
+    if (!result.resolved) {
+      save(row, {}, { ...legPatch(direction, { CloseOrders: [...settled.map((item) => item.order), ...orders.slice(settled.length)] }) });
+      return false;
+    }
+    settled.push(result);
+  }
+
+  // A close can fill while its cancellation is in flight. The exchange position
+  // is the source of truth before returning this leg to normal management.
+  let risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: row.symbol });
+  let positions = positionsOf(risk, row.symbol);
+  let position = direction === 'long' ? positions.long : positions.short;
+  let remainingQty = qty(position);
+  const side = direction === 'long' ? 'LONG' : 'SHORT';
+  const filledDuringCancel = settled.reduce((sum, item) => sum + Number(item.current?.executedQty || 0), 0);
+  const expectedAfterClose = Math.max(0, Number(leg.expectedQty || 0) - filledDuringCancel);
+  if (!closeEnough(remainingQty, expectedAfterClose)) {
+    await waitMs(300);
+    risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: row.symbol });
+    positions = positionsOf(risk, row.symbol);
+    position = direction === 'long' ? positions.long : positions.short;
+    remainingQty = qty(position);
+  }
+  if (!(remainingQty > 0)) {
+    if (filledDuringCancel > 0 && closeEnough(filledDuringCancel, Number(leg.expectedQty || 0))) {
+      save(row, {}, { ...legPatch(direction, { Phase: 'reentry_wait', ExpectedQty: 0, CloseOrders: [], ClosePlacedAt: 0, CloseGuardPrice: 0,
+        ReentryAt: Date.now() + COOLDOWN_MS, RecoveryArmed: false, RecoveryPeakNetPnl: 0, RecoveryTrail: 0 }),
+        ...(direction === 'long' ? { expectedLong: 0 } : { expectedShort: 0 }) });
+      log(row.user_id, row.symbol, `${side === 'LONG' ? '多头' : '空头'}止盈委托撤销期间已全部成交，10 秒后重建底仓`, 'success');
+      return true;
+    }
+    save(row, { enabled: 0, status: 'manual', last_error: '止盈撤单期间仓位与委托成交量不一致，请同步币安仓位' },
+      { ...legPatch(direction, { Phase: 'active', ExpectedQty: expectedAfterClose, CloseOrders: [], ClosePlacedAt: 0, CloseGuardPrice: 0 }),
+        ...(direction === 'long' ? { expectedLong: expectedAfterClose } : { expectedShort: expectedAfterClose }) });
+    log(row.user_id, row.symbol, `${side === 'LONG' ? '多头' : '空头'}止盈撤单后交易所仓位为空，但委托成交量不足以确认自动止盈；策略转人工核对`, 'warn',
+      { filledDuringCancel, expectedQty: leg.expectedQty });
+    return true;
+  }
+
+  if (!closeEnough(remainingQty, expectedAfterClose)) {
+    save(row, { enabled: 0, status: 'manual', last_error: '止盈撤单期间检测到额外仓位变化，请同步币安仓位' },
+      { ...legPatch(direction, { Phase: 'active', ExpectedQty: expectedAfterClose, CloseOrders: [], ClosePlacedAt: 0, CloseGuardPrice: 0 }),
+        ...(direction === 'long' ? { expectedLong: expectedAfterClose } : { expectedShort: expectedAfterClose }) });
+    log(row.user_id, row.symbol, `${side === 'LONG' ? '多头' : '空头'}止盈撤单期间仓位变化超出已确认成交量，策略转人工核对`, 'warn',
+      { filledDuringCancel, expectedQty: expectedAfterClose, actualQty: remainingQty });
+    return true;
+  }
+
+  const latest = rowFor(row.user_id, row.symbol) || row;
+  const latestState = parseState(latest);
+  const latestLeg = legSnapshot(latestState, direction);
+  save(latest, { status: 'active', last_error: '' }, { ...legPatch(direction, { Phase: 'active', ExpectedQty: remainingQty,
+    CloseOrders: [], ClosePlacedAt: 0, CloseGuardPrice: 0, RecoveryArmed: false, RecoveryPeakNetPnl: 0, RecoveryTrail: 0 }),
+    ...(direction === 'long' ? { expectedLong: remainingQty } : { expectedShort: remainingQty }) });
+  log(row.user_id, row.symbol, `${side === 'LONG' ? '多头' : '空头'}止盈委托未成交且净盈亏转负，已撤销；按交易所剩余仓位恢复补仓管理`, 'warn',
+    { netPnl, filledDuringCancel, remainingQty, additions: latestLeg.additions });
+  return true;
 }
 function closeClientId(cycleId, positionSide) {
   const side = positionSide === 'LONG' ? 'L' : 'S';
@@ -1296,8 +1360,17 @@ async function reconcileRow(row) {
     const direction = legName(side); const orderSide = side === 'LONG' ? 'BUY' : 'SELL';
     if (leg.phase === 'close_pending') {
       if (!qty(position)) {
-        save(row, {}, { ...legPatch(direction, { Phase: 'reentry_wait', CloseOrders: [], ReentryAt: Date.now() + COOLDOWN_MS }) });
+        save(row, {}, { ...legPatch(direction, { Phase: 'reentry_wait', ExpectedQty: 0, CloseOrders: [], ClosePlacedAt: 0, CloseGuardPrice: 0, ReentryAt: Date.now() + COOLDOWN_MS }),
+          ...(direction === 'long' ? { expectedLong: 0 } : { expectedShort: 0 }) });
         log(row.user_id, row.symbol, `${side === 'LONG' ? '多头' : '空头'}止盈已成交，10 秒后重建同方向底仓`, 'success'); return;
+      }
+      const fundingRaw = await fundingSince(creds, row, state.fundingStartedAt || state.cycleStartedAt);
+      const fundingBySide = allocateFundingCharge(fundingRaw, pos.long.unRealizedProfit, pos.short.unRealizedProfit);
+      const currentCosts = await legCostState(creds, row, leg, Math.abs(Number(position.notional || 0)),
+        Number(position.unRealizedProfit || 0), direction === 'long' ? fundingBySide.long : fundingBySide.short);
+      if (shouldCancelTakeProfit(currentCosts.netPnl)) {
+        await cancelLosingTakeProfit(row, creds, direction, leg, currentCosts.netPnl);
+        return;
       }
       if (Date.now() - leg.closePlacedAt >= ORDER_TTL_MS) {
         const replacement = await replaceCloseOrders(row, creds, leg.closeOrders || [], side, leg.closeGuardPrice);

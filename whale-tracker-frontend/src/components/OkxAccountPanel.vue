@@ -131,7 +131,14 @@ function groupMode(group: TradfiGroup) {
     return '检查震荡条件';
   }
   if (strategy?.status === 'entry_pending') return '等待双向底仓成交';
-  if (strategy?.long?.phase === 'close_pending' || strategy?.short?.phase === 'close_pending') return '单边止盈挂单中';
+  const closingSide = (['long', 'short'] as const).find((side) => strategy?.[side]?.phase === 'close_pending');
+  if (closingSide) {
+    const pnl = rowPnl(group[closingSide]);
+    const sideName = closingSide === 'long' ? '多头' : '空头';
+    return pnl != null && pnl < 0
+      ? `${sideName}止盈委托未成交 · 当前浮亏 ${formatSignedUsd(pnl)}`
+      : `${sideName}止盈委托未成交`;
+  }
   if (strategy?.long?.phase === 'reentry_wait' || strategy?.short?.phase === 'reentry_wait') {
     const waitingLeg = strategy.long?.phase === 'reentry_wait' ? strategy.long : strategy.short;
     return reentryWaitLabel(waitingLeg).replace('止盈后冷却，等待重建', '单边止盈后冷却，等待重建底仓');
@@ -263,7 +270,12 @@ function sideMask(group: TradfiGroup, side: 'long' | 'short') {
   }
   if (!strategy.enabled && (Number(group.long?.aiQty || 0) + Number(group.short?.aiQty || 0) > 0)) return '策略已停止';
   if (!strategy.enabled && Number(group.long?.aiQty || 0) + Number(group.short?.aiQty || 0) > 0) return '策略已停止';
-  if (leg?.phase === 'close_pending') return '止盈挂单中';
+  if (leg?.phase === 'close_pending') {
+    const pnl = rowPnl(group[side]);
+    return pnl != null && pnl < 0
+      ? `止盈委托未成交 · 当前浮亏 ${formatSignedUsd(pnl)}`
+      : '止盈委托未成交';
+  }
   if (leg?.phase === 'reentry_wait') return reentryWaitLabel(leg);
   if (leg?.phase === 'reentry_pending') return '正在重建底仓';
   if (strategy.status === 'waiting') return '等待震荡条件';

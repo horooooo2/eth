@@ -131,9 +131,13 @@
     if (!trend && netPnl >= target) return { shouldClose: true, reason: '恢复模式目标达成' };
     return { shouldClose: false, reason: '' };
   }
+  function shouldCancelTakeProfit(netPnl) {
+    const value = Number(netPnl);
+    return Number.isFinite(value) && value <= 0;
+  }
   return { MAX_LONG_ADDITIONS, MAX_SHORT_ADDITIONS, SYMBOL_DEFAULTS, MIN_STEP_PCT, MAX_STEP_PCT, SPARSE_MAX_STEP_PCT,
     ATR_MULTIPLIER, SPARSE_ATR_MULTIPLIER, SPARSE_NORMAL_STEP_MULTIPLIER, SPARSE_GROUP_SIZE, SPARSE_ENTER_ATR_DISTANCE,
     SPARSE_EXIT_ATR_DISTANCE, TREND_CONFIRM_BARS, SCALP_MIN_PROFIT, SCALP_NOTIONAL_RATE, clamp, ema, atr, defaultConfig,
     ladderMargin, sideAdditions, additionDecision, countedAdditions, ladderStep, sparseLadderStep, sparseModeDecision,
-    sparseGroupCount, sparseGroupMargin, sparseGroupTrigger, shouldPlaceAddition, canManualAddPosition, marketState, scalpProfitTarget, takeProfitNetPnl, recoveryExitState };
+    sparseGroupCount, sparseGroupMargin, sparseGroupTrigger, shouldPlaceAddition, canManualAddPosition, marketState, scalpProfitTarget, takeProfitNetPnl, recoveryExitState, shouldCancelTakeProfit };
 });
