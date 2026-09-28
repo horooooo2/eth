@@ -7,6 +7,20 @@ function isStrategyClose(order) {
     || String(order?.clientOrderId || '').startsWith('wtf_c_') || /_close_/.test(String(order?.clientOrderId || ''));
 }
 
+function positionAmounts(position, strategyQty) {
+  const totalQty = Math.abs(Number(position?.positionAmt) || 0);
+  const aiQty = Math.min(totalQty, Math.max(0, Number(strategyQty) || 0));
+  const manualQty = Math.max(0, totalQty - aiQty);
+  const entryPrice = Number(position?.entryPrice) || 0;
+  const leverage = Number(position?.leverage) || 0;
+  return {
+    totalQty, aiQty, manualQty,
+    marginUsd: leverage > 0 ? totalQty * entryPrice / leverage : null,
+    aiMarginUsd: leverage > 0 ? aiQty * entryPrice / leverage : null,
+    manualMarginUsd: leverage > 0 ? manualQty * entryPrice / leverage : null,
+  };
+}
+
 function rememberManualStrategyClosure(userId, trade) {
   if (!userId || !trade?.id) return;
   try {
@@ -194,11 +208,17 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
     const aiQty = Math.max(aiQtyByPosition.get(`${row.symbol}|${direction}`) || 0, owned);
     const totalQty = Math.abs(Number(row.positionAmt));
     const share = totalQty > 0 ? Math.min(1, aiQty / totalQty) : 0;
-    return { row, share, aiQty: Math.min(totalQty, aiQty) };
-  }).filter((item) => item.share > 0);
+    return { row, share, amounts: positionAmounts(row, aiQty) };
+  }).filter(({ amounts }) => amounts.aiQty > 0);
   const records = [
-    ...pos.map(({ row: p, share, aiQty }) => ({ kind: 'position', ordId: `pos:${p.symbol}:${p.positionSide}`, instId: p.symbol, coin: p.symbol.slice(0, -4), side: Number(p.positionAmt) < 0 ? 'sell' : 'buy', posSide: p.positionSide?.toLowerCase(), px: Number(p.entryPrice), sz: String(aiQty), amountUsd: Math.abs(Number(p.notional)) * share, leverage: Number(p.leverage), state: 'filled', createdAt: Number(p.updateTime) || 0, openUpl: Number(p.unRealizedProfit) * share, realizedPnl: null, source: 'ai' })),
-    ...pending.map((o) => { const saved = ledger.find((row) => row.order_id === String(o.orderId)); return ({ kind: 'pending', ordId: String(o.orderId), instId: o.symbol, coin: o.symbol.slice(0, -4), side: String(o.side).toLowerCase(), posSide: String(o.positionSide).toLowerCase(), px: Number(o.price), sz: String(Number(o.origQty) - Number(o.executedQty || 0)), amountUsd: (Number(o.origQty) - Number(o.executedQty || 0)) * Number(o.price), leverage: Number(saved?.leverage) || null, state: 'live', createdAt: Number(o.time) || 0, openUpl: null, realizedPnl: null, source: 'ai' }); }),
+    ...pos.map(({ row: p, share, amounts }) => {
+      const leverage = Number(p.leverage) || 0;
+      const entryPrice = Number(p.entryPrice || 0);
+      const aiNotional = amounts.aiQty * entryPrice;
+      const aiOpenUpl = Number(p.unRealizedProfit) * share;
+      return { kind: 'position', ordId: `pos:${p.symbol}:${p.positionSide}`, instId: p.symbol, coin: p.symbol.slice(0, -4), side: Number(p.positionAmt) < 0 ? 'sell' : 'buy', posSide: p.positionSide?.toLowerCase(), px: entryPrice, sz: String(amounts.aiQty), amountUsd: aiNotional, marginUsd: amounts.aiMarginUsd, leverage, aiQty: amounts.aiQty, aiMarginUsd: amounts.aiMarginUsd, state: 'filled', createdAt: Number(p.updateTime) || 0, openUpl: aiOpenUpl, aiOpenUpl, realizedPnl: null, source: 'ai' };
+    }),
+    ...pending.map((o) => { const saved = ledger.find((row) => row.order_id === String(o.orderId)); const quantity = Number(o.origQty) - Number(o.executedQty || 0); const price = Number(o.price); const leverage = Number(saved?.leverage) || null; const amountUsd = quantity * price; return ({ kind: 'pending', ordId: String(o.orderId), instId: o.symbol, coin: o.symbol.slice(0, -4), side: String(o.side).toLowerCase(), posSide: String(o.positionSide).toLowerCase(), px: price, sz: String(quantity), amountUsd, marginUsd: leverage ? amountUsd / leverage : null, leverage, state: 'live', createdAt: Number(o.time) || 0, openUpl: null, realizedPnl: null, source: 'ai' }); }),
   ];
   const strategyQty = new Map();
   const manualClosures = [];
@@ -299,4 +319,4 @@ async function accountBook(creds, userId, scope = 'crypto', fundingSinceBySymbol
   return { ok: true, configured: true, simulated: creds.simulated, scope: 'ai-only', balance: { totalEq: Number(usdt?.balance) || null, usdtEq: Number(usdt?.balance) || null, availBal: Number(usdt?.availableBalance) || null }, openPnl, realizedPnl, historyPnl, records, trades, costs, feesBySymbol };
 }
 
-module.exports = { accountBook, isStrategyClose, allOrdersSince, userTradesSince, attributeFundingIncome };
+module.exports = { accountBook, isStrategyClose, allOrdersSince, userTradesSince, attributeFundingIncome, positionAmounts };

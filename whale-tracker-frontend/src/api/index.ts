@@ -1613,6 +1613,12 @@ export type OkxAiOrderRecord = {
   avgPx: number | null;
   sz: string;
   amountUsd: number | null;
+  marginUsd?: number | null;
+  aiQty?: number | null;
+  manualQty?: number | null;
+  aiMarginUsd?: number | null;
+  manualMarginUsd?: number | null;
+  aiOpenUpl?: number | null;
   leverage: number | null;
   state: string;
   createdAt: number;

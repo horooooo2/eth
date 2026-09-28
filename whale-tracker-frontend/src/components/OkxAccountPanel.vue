@@ -84,6 +84,15 @@ function plainAmount(n: number | null | undefined) {
 }
 
 function notionalAmount(row: OkxAiOrderRecord) {
+  if (props.exchange === 'tradfi') {
+    const recordedMargin = Number(row.marginUsd);
+    const leverage = Number(row.leverage);
+    const calculatedMargin = Number(row.sz) * Number(row.px) / leverage;
+    const margin = row.marginUsd != null && Number.isFinite(recordedMargin) && recordedMargin >= 0
+      ? recordedMargin
+      : Number.isFinite(calculatedMargin) && leverage > 0 ? calculatedMargin : NaN;
+    return Number.isFinite(margin) ? plainAmount(margin) : '--';
+  }
   const amount = Number(row.amountUsd);
   if (Number.isFinite(amount) && amount > 0) {
     return plainAmount(props.exchange === 'okx' && row.kind === 'pending' ? amount * (Number(row.leverage) || 1) : amount);
@@ -112,7 +121,8 @@ function twoDecimals(value: number | null | undefined) {
 
 function groupMode(group: TradfiGroup) {
   const strategy = group.strategy;
-  if (strategy && !strategy.enabled) return '策略已停止';
+  const managedQty = Number(group.long?.aiQty || 0) + Number(group.short?.aiQty || 0);
+  if (strategy && !strategy.enabled && managedQty > 0) return '策略已停止';
   if (strategy?.status === 'waiting') {
     const remaining = Number(strategy.cooldownUntil || 0) - clock.value;
     if (remaining > 0) return `冷却检查 · ${countdown(remaining)} 后检查开仓`;
@@ -153,6 +163,9 @@ function sideRealized(group: TradfiGroup, side: 'long' | 'short') {
 }
 
 function legStatus(group: TradfiGroup, side: 'long' | 'short') { return group.strategy?.[side]; }
+function sideStatusText(group: TradfiGroup, side: 'long' | 'short') {
+  return legModeLabel(group, side);
+}
 function legModeLabel(group: TradfiGroup, side: 'long' | 'short') {
   const strategy = group.strategy; const leg = legStatus(group, side);
   const additions = Number(leg?.additions || 0); const max = side === 'long'
@@ -201,7 +214,8 @@ function sideMask(group: TradfiGroup, side: 'long' | 'short') {
   const strategy = group.strategy;
   const leg = legStatus(group, side);
   if (!strategy) return '';
-  if (!strategy.enabled) return '策略已停止';
+  if (!strategy.enabled && (Number(group.long?.aiQty || 0) + Number(group.short?.aiQty || 0) > 0)) return '策略已停止';
+  if (!strategy.enabled && Number(group.long?.aiQty || 0) + Number(group.short?.aiQty || 0) > 0) return '策略已停止';
   if (leg?.phase === 'close_pending') return '止盈挂单中';
   if (leg?.phase === 'reentry_wait') return reentryWaitLabel(leg);
   if (leg?.phase === 'reentry_pending') return '正在重建底仓';
@@ -337,14 +351,14 @@ defineExpose({ reload: () => load(true) });
             <div class="position-details">
               <span class="label">持仓价</span>
               <span class="value">{{ group.long ? entryPrice(group.long) : '—' }}</span>
-              <span class="label">名义价值</span>
+              <span class="label">{{ group.long?.kind === 'pending' ? '委托本金' : '仓位价值' }}</span>
               <span class="value">{{ group.long ? notionalAmount(group.long) : '—' }}</span>
               <span class="label">盈亏</span>
               <span class="value" :class="valueClass(rowPnl(group.long))">{{ group.long ? formatSignedUsd(rowPnl(group.long)) : '—' }}</span>
               <span class="label">已实现</span>
               <span class="value" :class="valueClass(sideRealized(group, 'long'))">{{ formatSignedUsd(sideRealized(group, 'long')) }}</span>
               <span class="label">状态</span>
-              <span class="value">{{ legModeLabel(group, 'long') }}<span v-if="Number(legStatus(group, 'long')?.manualMarginUsdt || 0) > 0" class="manual-amount"> 手动 · {{ twoDecimals(legStatus(group, 'long')?.manualMarginUsdt) }}U</span></span>
+              <span class="value">{{ sideStatusText(group, 'long') }}<span v-if="Number(legStatus(group, 'long')?.manualMarginUsdt || 0) > 0" class="manual-amount"> 手动 · {{ twoDecimals(legStatus(group, 'long')?.manualMarginUsdt) }}U</span></span>
             </div>
           </section>
           <section class="position-side">
@@ -353,14 +367,14 @@ defineExpose({ reload: () => load(true) });
             <div class="position-details">
               <span class="label">持仓价</span>
               <span class="value">{{ group.short ? entryPrice(group.short) : '—' }}</span>
-              <span class="label">名义价值</span>
+              <span class="label">{{ group.short?.kind === 'pending' ? '委托本金' : '仓位价值' }}</span>
               <span class="value">{{ group.short ? notionalAmount(group.short) : '—' }}</span>
               <span class="label">盈亏</span>
               <span class="value" :class="valueClass(rowPnl(group.short))">{{ group.short ? formatSignedUsd(rowPnl(group.short)) : '—' }}</span>
               <span class="label">已实现</span>
               <span class="value" :class="valueClass(sideRealized(group, 'short'))">{{ formatSignedUsd(sideRealized(group, 'short')) }}</span>
               <span class="label">状态</span>
-              <span class="value">{{ legModeLabel(group, 'short') }}<span v-if="Number(legStatus(group, 'short')?.manualMarginUsdt || 0) > 0" class="manual-amount"> 手动 · {{ twoDecimals(legStatus(group, 'short')?.manualMarginUsdt) }}U</span></span>
+              <span class="value">{{ sideStatusText(group, 'short') }}<span v-if="Number(legStatus(group, 'short')?.manualMarginUsdt || 0) > 0" class="manual-amount"> 手动 · {{ twoDecimals(legStatus(group, 'short')?.manualMarginUsdt) }}U</span></span>
             </div>
           </section>
         </div>
@@ -605,6 +619,8 @@ defineExpose({ reload: () => load(true) });
   justify-content: space-between;
   align-items: center;
   color: var(--text);
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .asset-pnl { margin-left: 6px; font-variant-numeric: tabular-nums; }
 .asset-pnl.gain { color: var(--green); }
@@ -617,6 +633,17 @@ defineExpose({ reload: () => load(true) });
   font-weight: 400;
   margin-left: 12px;
 }
+.takeover-btn {
+  padding: 5px 9px;
+  border: 1px solid color-mix(in srgb, var(--yellow) 50%, var(--border));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--yellow) 10%, transparent);
+  color: var(--yellow);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.takeover-btn:hover { background: color-mix(in srgb, var(--yellow) 18%, transparent); }
 .position-row { display: grid; grid-template-columns: 1fr 1fr; }
 .position-side {
   padding: 16px;
@@ -657,6 +684,7 @@ defineExpose({ reload: () => load(true) });
 }
 .position-details .value.gain { color: var(--green); }
 .position-details .value.loss { color: var(--red); }
+.position-details .ownership-value { color: var(--yellow); font-size: 11px; }
 .position-mask {
   position: absolute;
   inset: 0;

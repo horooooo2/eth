@@ -336,7 +336,7 @@ function pnlClass(value: number | null) {
   if (value == null || !Number.isFinite(value) || value === 0) return 'pnl-zero';
   return value > 0 ? 'pnl-positive' : 'pnl-negative';
 }
-async function toggleStrategy() {
+async function toggleStrategy(forceAdoptExisting = false) {
   if (!strategySupported.value || strategyBusy.value) return;
   strategyBusy.value = true; strategyError.value = '';
   try {
@@ -347,7 +347,7 @@ async function toggleStrategy() {
       startupOpen.value = true;
       strategyOpen.value = false;
       strategyData.value = null;
-      let adoptExisting = false;
+      let adoptExisting = forceAdoptExisting;
       for (let pass = 0; pass < 2; pass += 1) {
         strategyData.value = await startTradfiRangeWithConfig(selected.value, { marginUsdt: Number(strategyMargin.value), leverage: Number(strategyLeverage.value), adoptExisting });
         for (let attempt = 0; attempt < 90 && strategyData.value?.strategy.status === 'initializing'; attempt += 1) {
@@ -567,7 +567,7 @@ async function closeAllPositions() {
             <p v-if="strategyData?.strategy.range" class="market-meta">当前参考区间：{{ formatTwo(strategyData.strategy.range.low) }} – {{ formatTwo(strategyData.strategy.range.high) }} · 最新价 {{ formatTwo(strategyData.strategy.lastPrice) }}</p>
             <p v-if="strategyData?.strategy.lastError || strategyError" class="order-error">{{ strategyError || strategyData?.strategy.lastError }}</p>
           </div>
-          <footer class="dialog-footer"><p class="footer-hint">停止策略会撤销已知挂单并保留已成交仓位；再次启动时按实际仓位恢复接管。</p><div class="footer-actions"><button class="btn" :disabled="strategyBusy" @click="closeStrategy">关闭</button><button class="btn primary" :disabled="strategyBusy" @click="toggleStrategy">{{ strategyBusy ? '处理中…' : strategyData?.strategy.enabled ? '停止策略' : strategyData?.strategy.resumeEligible ? '恢复并接管仓位' : '启动24H策略' }}</button></div></footer>
+          <footer class="dialog-footer"><p class="footer-hint">停止策略会撤销已知挂单并保留已成交仓位；再次启动时按实际仓位恢复接管。</p><div class="footer-actions"><button class="btn" :disabled="strategyBusy" @click="closeStrategy">关闭</button><button class="btn primary" :disabled="strategyBusy" @click="toggleStrategy()">{{ strategyBusy ? '处理中…' : strategyData?.strategy.enabled ? '停止策略' : strategyData?.strategy.resumeEligible ? '恢复并接管仓位' : '启动24H策略' }}</button></div></footer>
         </div>
       </div>
     </Teleport>
