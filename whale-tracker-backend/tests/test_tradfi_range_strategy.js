@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { takeProfitNetPnl, shouldPlaceAddition, canManualAddPosition } = require('../lib/tradfiRangeCore.cjs');
+const { canCancelPendingForPositionSync } = require('../lib/tradfiRangeStrategy');
 
 function candles(start, count, step, spread = 2) {
   return Array.from({ length: count }, (_, i) => {
@@ -93,6 +94,15 @@ test('手动补仓允许与策略挂单并行，但仍要求策略运行、该�
   assert.equal(canManualAddPosition({ enabled: true, status: 'add_pending', pending: false, phase: 'active', quantity: 0.2, pnl: -1 }), true);
   assert.equal(canManualAddPosition({ enabled: true, status: 'add_pending', pending: true, phase: 'active', quantity: 0.2, pnl: -1 }), false);
   assert.equal(canManualAddPosition({ enabled: false, status: 'manual', pending: false, phase: 'active', quantity: 0.2, pnl: -1 }), false);
+});
+
+test('手动同步只允许先撤销普通策略补仓单，不允许绕过开仓、平仓或手动补仓状态', () => {
+  const row = { enabled: 1, status: 'add_pending' };
+  const state = { pending: { kind: 'auto', side: 'BUY' }, longPhase: 'active', shortPhase: 'active' };
+  assert.equal(canCancelPendingForPositionSync(row, state), true);
+  assert.equal(canCancelPendingForPositionSync({ ...row, status: 'entry_pending' }, state), false);
+  assert.equal(canCancelPendingForPositionSync(row, { ...state, manualPending: { orderId: 'x' } }), false);
+  assert.equal(canCancelPendingForPositionSync(row, { ...state, longPhase: 'close_pending' }), false);
 });
 
 test('手动同步更新交易所数量与均价，保留恢复状态和自动档位，手动增量单独核算', () => {

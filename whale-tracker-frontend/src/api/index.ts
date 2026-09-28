@@ -1552,7 +1552,7 @@ export async function deleteBinanceKeys() {
 export type TradfiRangeEvent = { id: number; level: string; message: string; details: Record<string, unknown>; created_at: number };
 export type TradfiLegStatus = { phase: string; additions: number; manualMarginUsdt?: number; syncedManualQty?: number; syncedManualMarginUsdt?: number; expectedQty: number; lastAddPrice: number; minPnl: number; recovery: boolean; recoveryArmed: boolean; recoveryPeakNetPnl: number; recoveryTrail: number; reentryAt?: number; sparseMode?: boolean; sparseStep?: number; sparseDistanceAtr?: number; costs?: { entryFee: number; exitFee: number; fundingNet: number; estimatedCosts: number; profitTarget: number; closeTrigger: number; netPnl: number; recovery: boolean } | null };
 export type TradfiPositionSyncSide = { expectedQty: number; actualQty: number; delta: number; entryPrice: number; leverage: number; unrealizedPnl: number; marginUsdt: number | null };
-export type TradfiPositionSync = { required: boolean; available: boolean; sides: { long: TradfiPositionSyncSide; short: TradfiPositionSyncSide } | null; blockedReason?: string };
+export type TradfiPositionSync = { required: boolean; available: boolean; cancelPendingOrder?: boolean; sides: { long: TradfiPositionSyncSide; short: TradfiPositionSyncSide } | null; blockedReason?: string };
 export type TradfiRangeStatus = {
   symbol: string; enabled: boolean; status: string; simulated: boolean | null; additions: number; maxAdditions: number;
   maxLongAdditions?: number; maxShortAdditions?: number;

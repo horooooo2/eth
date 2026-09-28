@@ -202,9 +202,12 @@ function syncDescription(group: TradfiGroup) {
 }
 async function syncGroupPositions(group: TradfiGroup) {
   if (!group.strategy?.positionSync?.required || !group.strategy.positionSync.available || syncingSymbol.value) return;
+  const cancelPendingNote = group.strategy.positionSync.cancelPendingOrder
+    ? '\n\n检测到策略补仓委托仍未完成。确认后系统会先撤销并核验该委托，再根据币安最终仓位同步；如果撤单结果无法确认，同步会停止。'
+    : '';
   try {
     await ElMessageBox.confirm(
-      `${syncDescription(group)}\n\n确认后，策略将按币安当前实际多空仓位继续管理。自动补仓档位和历史最大浮亏会保留；同步增加的仓位计入总仓位与盈亏，但不占自动补仓档位。策略之后止盈时，可能平掉该方向同步后的全部仓位。`,
+      `${syncDescription(group)}\n\n确认后，策略将按币安当前实际多空仓位继续管理。自动补仓档位和历史最大浮亏会保留；同步增加的仓位计入总仓位与盈亏，但不占自动补仓档位。策略之后止盈时，可能平掉该方向同步后的全部仓位。${cancelPendingNote}`,
       '同步币安仓位', { type: 'warning', confirmButtonText: '确认同步并接管', cancelButtonText: '取消' });
   } catch { return; }
   syncingSymbol.value = group.instId;
@@ -698,7 +701,7 @@ defineExpose({ reload: () => load(true) });
   position: relative;
 }
 .position-side:first-child { border-right: 1px solid var(--border); }
-.side-header { display: flex; justify-content: space-between; align-items: center; }
+.side-header { display: flex; justify-content: space-between; align-items: center; position: relative; z-index: 3; }
 .side-badge {
   font-size: 13px;
   font-weight: 600;

@@ -620,19 +620,35 @@ function hasPendingStrategyOrder(row, state) {
   if (state.pending || ['initializing', 'entry_pending', 'add_pending', 'close_pending'].includes(row.status)) return true;
   return ['long', 'short'].some((side) => ['close_pending', 'reentry_pending'].includes(legSnapshot(state, side).phase));
 }
+function canCancelPendingForPositionSync(row, state) {
+  return row.status === 'add_pending' && state.pending?.kind === 'auto' && !state.manualPending
+    && ['long', 'short'].every((side) => !['close_pending', 'reentry_pending'].includes(legSnapshot(state, side).phase));
+}
+async function positionSyncExpectedState(creds, row, state) {
+  if (!canCancelPendingForPositionSync(row, state)) return state;
+  const pending = await orderState(creds, row.symbol, state.pending);
+  const filled = Number(pending.executedQty || 0);
+  const direction = state.pending.direction || (state.pending.side === 'BUY' ? 'long' : 'short');
+  const leg = legSnapshot(state, direction);
+  return { ...state, ...legPatch(direction, { ExpectedQty: leg.expectedQty + filled }) };
+}
 async function positionSyncStatus(userId, symbol) {
   const sym = cleanSymbol(symbol); const row = rowFor(userId, sym);
   if (!row) return { strategy: status(userId, sym).strategy, positionSync: { required: false, available: false, sides: null } };
   const state = parseState(row); const eligible = Boolean(row.enabled) || row.status === 'manual';
   if (!eligible) return { strategy: publicRow(row), positionSync: { required: false, available: false, sides: null } };
   const rowKey = `${String(userId)}|${sym}`;
-  const blocked = hasPendingStrategyOrder(row, state) || lockedRows.has(rowKey) || activeRows.has(rowKey);
+  const pendingCancelable = canCancelPendingForPositionSync(row, state);
+  const blocked = (hasPendingStrategyOrder(row, state) && !pendingCancelable) || Boolean(state.manualPending)
+    || lockedRows.has(rowKey) || activeRows.has(rowKey);
   try {
     const creds = getBinanceCredentialsForUser(userId);
     if (!creds || Number(creds.simulated) !== Number(row.simulated)) throw invalid('币安密钥缺失或交易环境已变化', 409);
     const risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: sym });
-    const summary = quantitySyncSummary(state, positionsOf(risk, sym));
+    const compareState = await positionSyncExpectedState(creds, row, state);
+    const summary = quantitySyncSummary(compareState, positionsOf(risk, sym));
     return { strategy: publicRow(row), positionSync: { ...summary, available: summary.required && !blocked,
+      cancelPendingOrder: Boolean(summary.required && pendingCancelable),
       blockedReason: blocked ? '请先等待策略委托或状态切换完成' : '' } };
   } catch (error) {
     return { strategy: publicRow(row), positionSync: { required: false, available: false, sides: null,
@@ -646,14 +662,35 @@ async function syncPositions(userId, symbol) {
   try {
     const row = rowFor(userId, sym);
     if (!(row?.enabled || row?.status === 'manual')) throw invalid('仅运行中或因仓位不匹配转人工的策略可以同步', 409);
-    const state = parseState(row);
-    if (hasPendingStrategyOrder(row, state)) throw invalid('请先等待策略委托或状态切换完成，再同步仓位', 409);
+    let state = parseState(row);
     const creds = getBinanceCredentialsForUser(userId);
     if (!creds || Number(creds.simulated) !== Number(row.simulated)) throw invalid('币安密钥缺失或交易环境已变化', 409);
+    const pendingCancelable = canCancelPendingForPositionSync(row, state);
+    if ((hasPendingStrategyOrder(row, state) && !pendingCancelable) || state.manualPending) {
+      throw invalid('策略正在开仓、平仓、重建或有手动补仓委托，请该操作完成后再同步', 409);
+    }
+    const riskBefore = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: sym });
+    const positionsBefore = positionsOf(riskBefore, sym);
+    const compareState = await positionSyncExpectedState(creds, row, state);
+    const summaryBefore = quantitySyncSummary(compareState, positionsBefore);
+    if (!summaryBefore.required) throw invalid('策略记录与币安实际仓位已一致，无需同步', 409);
+
+    if (pendingCancelable) {
+      const settled = await cancelAndVerifyOrder(creds, sym, state.pending);
+      if (!settled.resolved) throw invalid('策略补仓委托撤销结果暂未确认，请在币安核对后再同步', 409);
+      log(userId, sym, `同步手动仓位前已撤销并核验策略补仓委托（${settled.current?.status || '状态已确认'}）`, 'warn',
+        { phase: 'position_sync', orderId: settled.order?.orderId, status: settled.current?.status });
+      row = rowFor(userId, sym);
+      state = parseState(row);
+    }
+
     const risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: sym });
     const positions = positionsOf(risk, sym);
     const summary = quantitySyncSummary(state, positions);
-    if (!summary.required) throw invalid('策略记录与币安实际仓位已一致，无需同步', 409);
+    if (!summary.required) {
+      if (pendingCancelable) save(row, { status: 'active', last_error: '' }, { pending: null });
+      throw invalid('策略委托已处理，策略记录与币安实际仓位现已一致，无需同步', 409);
+    }
     const now = Date.now(); const anyPosition = summary.sides.long.actualQty > 0 || summary.sides.short.actualQty > 0;
     let patch;
     if (anyPosition) {
@@ -1416,4 +1453,4 @@ module.exports = { start, reconcile, status, enable, disable, closeAll, manualAd
   profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState, strategyConfig, requestedConfig, resumedConfig,
   isPostOnlyReject, isRequestTimeout, recoveryExitState, ignoreStaleStrategySave, SYMBOLS, MAX_ADDITIONS, MAX_LONG_ADDITIONS, MAX_SHORT_ADDITIONS,
   MARGIN, LEVERAGE, MAX_MARGIN, MAX_GOLD_MARGIN, MAX_LEVERAGE, positionSyncStatus, syncPositions, syncLegState,
-  quantitySyncSummary, canManualAddPosition };
+  quantitySyncSummary, canCancelPendingForPositionSync, canManualAddPosition };
