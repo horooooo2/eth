@@ -14,6 +14,7 @@ const { marketState, ladderStep, sparseLadderStep, sparseModeDecision, sparseGro
   ladderMargin, defaultConfig, requestedConfig, resumedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState,
   ignoreStaleStrategySave,
   closeClientId, closeOrderRemaining, additionDecision, countedAdditions, scalpProfitTarget, commissionRate, syncLegState, quantitySyncSummary,
+  isCanceledWithoutFill,
   isCommodityWeekendMode, orderFillState, marketDataFreshness, profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState,
   MAX_ADDITIONS, MAX_LONG_ADDITIONS, MAX_SHORT_ADDITIONS, MARGIN, LEVERAGE } = require('../lib/tradfiRangeStrategy');
 
@@ -197,6 +198,9 @@ test('订单状态识别完整成交、部分成交与未成交', () => {
   assert.equal(orderFillState({ status: 'PARTIALLY_FILLED', executedQty: '0.04', origQty: '0.1' }), 'partial');
   assert.equal(orderFillState({ status: 'CANCELED', executedQty: '0', origQty: '0.1' }), 'unfilled');
   assert.equal(orderFillState({ status: 'NEW', executedQty: '0', origQty: '0.1' }), 'open');
+  assert.equal(isCanceledWithoutFill({ status: 'CANCELED', executedQty: '0' }), true);
+  assert.equal(isCanceledWithoutFill({ status: 'NEW', executedQty: '0' }), false);
+  assert.equal(isCanceledWithoutFill({ status: 'CANCELED', executedQty: '0.01' }), false);
 });
 
 test('行情新鲜度要求15分钟K线不超过30分钟、1小时K线不超过2小时', () => {

@@ -322,6 +322,9 @@ function orderFillState(current, fallbackQuantity = 0) {
   if (executed > 0) return 'partial';
   return ['CANCELED', 'EXPIRED', 'REJECTED'].includes(String(current.status || '')) ? 'unfilled' : 'open';
 }
+function isCanceledWithoutFill(current) {
+  return Number(current?.executedQty || 0) <= 0 && ['CANCELED', 'EXPIRED', 'REJECTED'].includes(String(current?.status || ''));
+}
 function isRequestTimeout(err) { return /timeout of \d+ms exceeded|timeout/i.test(String(err?.message || err || '')); }
 function waitMs(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 async function findOrderByClientId(creds, symbol, clientId, attempts = 4) {
@@ -1265,7 +1268,7 @@ async function reconcileRow(row) {
       if (Number(current.executedQty || 0) > 0 || String(current.status || '') === 'FILLED') continue;
       await cancelOrder(creds, row.symbol, pending);
       const latest = await orderState(creds, row.symbol, pending);
-      if (Number(latest.executedQty || 0) > 0) continue;
+      if (!isCanceledWithoutFill(latest)) continue;
       const step = sparse.active ? sparseLadderStep(market.last, market.addStep, market.atr1h) : 0;
       const stillPending = autoPendingOrders(state).some((item) => item !== pending && item.orderId !== pending.orderId);
       save(row, { status: stillPending ? 'add_pending' : 'active' }, { ...pendingStatePatch(state, direction, null), ...legPatch(direction, { SparseMode: sparse.active,
@@ -1516,6 +1519,6 @@ module.exports = { start, reconcile, status, enable, disable, closeAll, manualAd
   marketState, closedKlines, atr, ladderStep, sparseLadderStep, sparseModeDecision, sparseGroupCount, sparseGroupMargin, sparseGroupTrigger,
   ladderMargin, defaultConfig, costState, scalpProfitTarget, commissionRate, isCommodityWeekendMode, orderFillState, marketDataFreshness,
   profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState, strategyConfig, requestedConfig, resumedConfig,
-  isPostOnlyReject, isRequestTimeout, recoveryExitState, ignoreStaleStrategySave, SYMBOLS, MAX_ADDITIONS, MAX_LONG_ADDITIONS, MAX_SHORT_ADDITIONS,
+  isPostOnlyReject, isRequestTimeout, isCanceledWithoutFill, recoveryExitState, ignoreStaleStrategySave, SYMBOLS, MAX_ADDITIONS, MAX_LONG_ADDITIONS, MAX_SHORT_ADDITIONS,
   MARGIN, LEVERAGE, MAX_MARGIN, MAX_GOLD_MARGIN, MAX_LEVERAGE, positionSyncStatus, syncPositions, syncLegState,
   quantitySyncSummary, canCancelPendingForPositionSync, canManualAddPosition, pendingForSide, pendingStatePatch, autoPendingOrders, availableAdditionDirection };
