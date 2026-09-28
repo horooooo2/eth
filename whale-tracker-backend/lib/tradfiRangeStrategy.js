@@ -660,7 +660,7 @@ async function syncPositions(userId, symbol) {
   if (lockedRows.has(key) || activeRows.has(key)) throw invalid('策略正在检查该标的，请稍后再同步', 409);
   lockedRows.add(key);
   try {
-    const row = rowFor(userId, sym);
+    let row = rowFor(userId, sym);
     if (!(row?.enabled || row?.status === 'manual')) throw invalid('仅运行中或因仓位不匹配转人工的策略可以同步', 409);
     let state = parseState(row);
     const creds = getBinanceCredentialsForUser(userId);
