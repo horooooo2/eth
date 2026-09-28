@@ -81,9 +81,10 @@ function guessSymbol(fileName: string, text: string): string {
 }
 function parseFunding(text: string): { t: number; rate: number }[] {
   const rows = readCsv(text); if (!rows.length) return [];
-  const heads = rows[0].map((x) => x.trim().toLowerCase()); const hasHead = ['timestamp', 'time', 'datetime'].some((h) => heads.includes(h));
+  const heads = rows[0].map((x) => x.trim().toLowerCase()); const timeAliases = ['timestamp', 'time', 'datetime', 'fundingtime', 'funding_time', 'funding_timestamp', 'fundingtimestamp', 'calctime', 'calc_time'];
+  const hasHead = timeAliases.some((h) => heads.includes(h)) || ['fundingrate', 'funding_rate', 'rate'].some((h) => heads.includes(h));
   const data = hasHead ? rows.slice(1) : rows;
-  const ti = hasHead ? indexMap(heads, ['timestamp', 'time', 'datetime'], 0) : 0;
+  const ti = hasHead ? indexMap(heads, timeAliases, 0) : 0;
   const ri = hasHead ? indexMap(heads, ['fundingrate', 'funding_rate', 'rate'], 1) : 1;
   const parsed = data.map((r, i) => { const t = parseTime(r[ti]); const rate = Number(r[ri]); if (!Number.isFinite(t) || !Number.isFinite(rate)) throw new Error(`第 ${i + (hasHead ? 2 : 1)} 行资金费率无效`); return { t, rate }; }).sort((a, b) => a.t - b.t);
   if (parsed.some((x, i) => i > 0 && x.t === parsed[i - 1].t)) throw new Error('资金费文件存在重复时间戳，请先清理后重新导入。');

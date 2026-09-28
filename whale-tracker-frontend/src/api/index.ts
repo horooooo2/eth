@@ -1550,11 +1550,13 @@ export async function deleteBinanceKeys() {
 }
 
 export type TradfiRangeEvent = { id: number; level: string; message: string; details: Record<string, unknown>; created_at: number };
-export type TradfiLegStatus = { phase: string; additions: number; manualMarginUsdt?: number; expectedQty: number; lastAddPrice: number; minPnl: number; recovery: boolean; recoveryArmed: boolean; recoveryPeakNetPnl: number; recoveryTrail: number; reentryAt?: number; sparseMode?: boolean; sparseStep?: number; sparseDistanceAtr?: number; costs?: { entryFee: number; exitFee: number; fundingNet: number; estimatedCosts: number; profitTarget: number; closeTrigger: number; netPnl: number; recovery: boolean } | null };
+export type TradfiLegStatus = { phase: string; additions: number; manualMarginUsdt?: number; syncedManualQty?: number; syncedManualMarginUsdt?: number; expectedQty: number; lastAddPrice: number; minPnl: number; recovery: boolean; recoveryArmed: boolean; recoveryPeakNetPnl: number; recoveryTrail: number; reentryAt?: number; sparseMode?: boolean; sparseStep?: number; sparseDistanceAtr?: number; costs?: { entryFee: number; exitFee: number; fundingNet: number; estimatedCosts: number; profitTarget: number; closeTrigger: number; netPnl: number; recovery: boolean } | null };
+export type TradfiPositionSyncSide = { expectedQty: number; actualQty: number; delta: number; entryPrice: number; leverage: number; unrealizedPnl: number; marginUsdt: number | null };
+export type TradfiPositionSync = { required: boolean; available: boolean; sides: { long: TradfiPositionSyncSide; short: TradfiPositionSyncSide } | null; blockedReason?: string };
 export type TradfiRangeStatus = {
   symbol: string; enabled: boolean; status: string; simulated: boolean | null; additions: number; maxAdditions: number;
   maxLongAdditions?: number; maxShortAdditions?: number;
-  manualAddThreshold?: number; manualAddPending?: boolean;
+  manualAddPending?: boolean; positionSync?: TradfiPositionSync;
   pendingSparse?: boolean; pendingDirection?: 'long' | 'short'; pendingTierStart?: number | null; pendingTierEnd?: number | null; pendingTriggerPrice?: number | null;
   longAdditions?: number; shortAdditions?: number; maxTotalAdditions?: number;
   marginPerOrder: number; leverage: number; comboPnl?: number | null; lastPrice?: number | null;
@@ -1594,6 +1596,10 @@ export async function previewTradfiManualAdd(symbol: string, side: 'long' | 'sho
 }
 export async function submitTradfiManualAdd(symbol: string, side: 'long' | 'short', marginUsdt: number, expected: { price: number; quantity: number }) {
   const { data } = await http.post<{ ok: boolean; order: { orderId: string; price: number; quantity: string; marginUsdt: number }; preview: TradfiManualAddPreview }>('/tradfi/range/manual-add', { symbol, side, marginUsdt, expected }, { timeout: 30_000 });
+  return data;
+}
+export async function syncTradfiRangePositions(symbol: string) {
+  const { data } = await http.post<TradfiRangeResponse>('/tradfi/range/sync', { symbol }, { timeout: 30_000 });
   return data;
 }
 export async function closeTradfiPositions() {

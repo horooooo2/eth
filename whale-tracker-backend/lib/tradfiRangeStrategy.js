@@ -9,7 +9,7 @@ const { MAX_LONG_ADDITIONS, MAX_SHORT_ADDITIONS, SYMBOL_DEFAULTS, MIN_STEP_PCT, 
   SPARSE_GROUP_SIZE, SPARSE_ENTER_ATR_DISTANCE, SPARSE_EXIT_ATR_DISTANCE, TREND_CONFIRM_BARS,
   SCALP_MIN_PROFIT, SCALP_NOTIONAL_RATE, clamp, atr, defaultConfig, ladderMargin, sideAdditions,
   additionDecision, countedAdditions, ladderStep, sparseLadderStep, sparseModeDecision, sparseGroupCount,
-  sparseGroupMargin, sparseGroupTrigger, marketState, scalpProfitTarget, recoveryExitState } = STRATEGY_CORE;
+  sparseGroupMargin, sparseGroupTrigger, shouldPlaceAddition, canManualAddPosition, marketState, scalpProfitTarget, recoveryExitState } = STRATEGY_CORE;
 
 const SYMBOLS = new Set(['XAUUSDT', 'XAGUSDT']);
 const MARGIN = 20;
@@ -19,7 +19,6 @@ const MAX_GOLD_MARGIN = 100;
 const MAX_LEVERAGE = 50;
 // Kept as the largest per-side cap for older callers.
 const MAX_ADDITIONS = MAX_LONG_ADDITIONS;
-const MANUAL_ADD_THRESHOLD = 20;
 // 高频止盈检查与补仓触发；平仓后的下一轮仍由 COOLDOWN_MS 控制为 10 秒。
 const POLL_MS = 3_000;
 const ORDER_TTL_MS = 90_000;
@@ -34,6 +33,8 @@ const feeCache = new Map();
 const NEW_YORK_TIME = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', hour: '2-digit', hourCycle: 'h23' });
 let timer = null;
 let busy = false;
+const activeRows = new Set();
+const lockedRows = new Set();
 
 function invalid(message, status = 400) { return Object.assign(new Error(message), { status }); }
 function adoptionRequired(positions) {
@@ -85,11 +86,11 @@ function log(userId, symbol, message, level = 'info', details = {}) {
   getDb().prepare('INSERT INTO tradfi_range_events (user_id,symbol,level,message,details_json,created_at) VALUES (?,?,?,?,?,?)')
     .run(String(userId), symbol, level, message, JSON.stringify(details), Date.now());
 }
-function save(row, patch = {}, statePatch = null) {
+function save(row, patch = {}, statePatch = null, allowExplicitResume = false) {
   // An in-flight reconcile may finish after the user stops the strategy. Never
   // let its stale row snapshot write the strategy back to enabled=1.
   const current = rowFor(row.user_id, row.symbol);
-  if (ignoreStaleStrategySave(current, patch)) return;
+  if (!allowExplicitResume && ignoreStaleStrategySave(current, patch)) return;
   const state = statePatch == null ? parseState(row) : { ...parseState(row), ...statePatch };
   getDb().prepare(`UPDATE tradfi_range_strategies SET enabled=?,status=?,simulated=?,additions=?,state_json=?,last_error=?,started_at=?,updated_at=? WHERE user_id=? AND symbol=?`)
     .run(patch.enabled ?? row.enabled, patch.status ?? row.status, patch.simulated ?? row.simulated,
@@ -133,6 +134,8 @@ function legSnapshot(state, side) {
     closePlacedAt: Number(legValue(state, side, 'ClosePlacedAt', 0)) || 0,
     closeGuardPrice: Number(legValue(state, side, 'CloseGuardPrice', 0)) || 0,
     fundingStartedAt: Number(legValue(state, side, 'FundingStartedAt', state?.cycleStartedAt)) || 0,
+    syncedManualQty: Number(legValue(state, side, 'SyncedManualQty', 0)) || 0,
+    syncedManualMarginUsdt: Number(legValue(state, side, 'SyncedManualMarginUsdt', 0)) || 0,
     reentryAt: Number(legValue(state, side, 'ReentryAt', 0)) || 0,
     reentryOrder: legValue(state, side, 'ReentryOrder', null),
   };
@@ -140,7 +143,7 @@ function legSnapshot(state, side) {
 function resetLeg(side, expectedQty, lastAddPrice) {
   return legPatch(side, { Phase: 'active', Additions: 0, ManualMarginUsdt: 0, ExpectedQty: expectedQty, LastAddPrice: lastAddPrice, MinPnl: 0,
     Recovery: false, RecoveryArmed: false, RecoveryPeakNetPnl: 0, RecoveryTrail: 0, SparseMode: false, SparseSince: 0, SparseStep: 0, CloseOrders: [], ClosePlacedAt: 0,
-    CloseGuardPrice: 0, FundingStartedAt: Date.now(), ReentryAt: 0, ReentryOrder: null });
+    CloseGuardPrice: 0, SyncedManualQty: 0, SyncedManualMarginUsdt: 0, FundingStartedAt: Date.now(), ReentryAt: 0, ReentryOrder: null });
 }
 function publicRow(row) {
   if (!row) return null;
@@ -150,7 +153,7 @@ function publicRow(row) {
   return { symbol: row.symbol, enabled: Boolean(row.enabled), status: row.status, simulated: Boolean(row.simulated),
     additions: counts.longAdditions + counts.shortAdditions, longAdditions: counts.longAdditions, shortAdditions: counts.shortAdditions,
     maxAdditions: MAX_ADDITIONS, maxLongAdditions: MAX_LONG_ADDITIONS, maxShortAdditions: MAX_SHORT_ADDITIONS,
-    maxTotalAdditions: MAX_LONG_ADDITIONS + MAX_SHORT_ADDITIONS, manualAddThreshold: MANUAL_ADD_THRESHOLD,
+    maxTotalAdditions: MAX_LONG_ADDITIONS + MAX_SHORT_ADDITIONS,
     manualAddPending: s.pending?.kind === 'manual', pendingSparse: Boolean(s.pending?.sparse),
     pendingDirection: s.pending?.direction || null,
     pendingTierStart: s.pending?.tierStart ?? null, pendingTierEnd: s.pending?.tierEnd ?? null,
@@ -179,7 +182,7 @@ function status(userId, symbol) {
   const defaults = defaultConfig(sym);
   return { strategy: publicRow(row) || { symbol: sym, enabled: false, status: 'stopped', simulated: null, additions: 0, longAdditions: 0, shortAdditions: 0,
     maxAdditions: MAX_ADDITIONS, maxLongAdditions: MAX_LONG_ADDITIONS, maxShortAdditions: MAX_SHORT_ADDITIONS,
-    maxTotalAdditions: MAX_LONG_ADDITIONS + MAX_SHORT_ADDITIONS, manualAddThreshold: MANUAL_ADD_THRESHOLD,
+    maxTotalAdditions: MAX_LONG_ADDITIONS + MAX_SHORT_ADDITIONS,
     marginPerOrder: defaults.marginUsdt, leverage: defaults.leverage, long: { manualMarginUsdt: 0 }, short: { manualMarginUsdt: 0 } }, events };
 }
 function enable(userId, symbol, simulated, input = {}) {
@@ -204,6 +207,7 @@ function enable(userId, symbol, simulated, input = {}) {
 async function disable(userId, symbol) {
   const row = rowFor(userId, symbol);
   if (!row) return status(userId, symbol);
+  if (lockedRows.has(`${String(userId)}|${row.symbol}`)) throw invalid('策略仓位正在同步，请稍后停止', 409);
   const state = parseState(row);
   const creds = getBinanceCredentialsForUser(userId);
   let pausedPositions = null;
@@ -397,16 +401,21 @@ async function manualAddPreview(userId, symbol, sideValue, marginValue) {
   const marginUsdt = Number(marginValue);
   if (!Number.isFinite(marginUsdt) || marginUsdt <= 0) throw invalid('请输入大于 0 的补仓保证金');
   if (!row.enabled || row.status !== 'active') throw invalid('策略当前未处于可补仓状态', 409);
-  const state = parseState(row); const counts = sideAdditions(state); const leg = legSnapshot(state, side);
-  if (counts[`${side}Additions`] < MANUAL_ADD_THRESHOLD) throw invalid(`该方向至少自动补仓 ${MANUAL_ADD_THRESHOLD} 档后才能手动补仓`, 409);
+  const state = parseState(row); const leg = legSnapshot(state, side);
+  const rowKey = `${String(userId)}|${row.symbol}`;
+  if (lockedRows.has(rowKey) || activeRows.has(rowKey)) throw invalid('策略正在检查或同步该仓位，请稍后再试', 409);
   if (state.pending || leg.phase !== 'active') throw invalid('该方向有未完成的委托或状态切换，请稍后再试', 409);
   const creds = getBinanceCredentialsForUser(userId);
   if (!creds || Number(creds.simulated) !== Number(row.simulated)) throw invalid('币安密钥缺失或交易环境已变化', 409);
   const risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: row.symbol });
   const pos = positionsOf(risk, row.symbol); const position = pos[side];
   const currentQty = qty(position); const currentEntryPrice = Number(position?.entryPrice || 0);
-  if (!(currentQty > 0) || !(currentEntryPrice > 0)) throw invalid('币安当前没有该方向的持仓', 409);
-  if (Number(position.unRealizedProfit || 0) >= 0) throw invalid('仅亏损中的仓位可以手动补仓', 409);
+  if (!canManualAddPosition({ enabled: row.enabled, status: row.status, pending: Boolean(state.pending), phase: leg.phase, quantity: currentQty, pnl: position?.unRealizedProfit })) {
+    if (!(currentQty > 0) || !(currentEntryPrice > 0)) throw invalid('币安当前没有该方向的持仓', 409);
+    if (Number(position.unRealizedProfit || 0) >= 0) throw invalid('仅亏损中的仓位可以手动补仓', 409);
+    throw invalid('该方向当前不可手动补仓', 409);
+  }
+  if (!(currentEntryPrice > 0)) throw invalid('币安当前没有有效持仓均价', 409);
   if (!closeEnough(currentQty, leg.expectedQty)) throw invalid('策略记录与币安仓位数量不一致，请先核对仓位', 409);
   const balances = await signedRequest(creds, 'GET', '/fapi/v2/balance');
   const usdt = (Array.isArray(balances) ? balances : []).find((item) => item.asset === 'USDT');
@@ -567,6 +576,99 @@ function adoptedLegState(state, direction, position) {
     RecoveryPeakNetPnl: previous.recoveryPeakNetPnl, RecoveryTrail: previous.recoveryTrail,
     CloseOrders: [], ClosePlacedAt: 0, CloseGuardPrice: 0, FundingStartedAt: Date.now(), ReentryAt: 0, ReentryOrder: null,
   });
+}
+function syncLegState(state, direction, position, now = Date.now(), fallbackLeverage = LEVERAGE) {
+  const previous = legSnapshot(state, direction);
+  const quantity = qty(position);
+  const entryPrice = Number(position?.entryPrice || 0);
+  const leverage = Number(position?.leverage) || fallbackLeverage;
+  const syncedManualQty = Math.max(0, previous.syncedManualQty + quantity - previous.expectedQty);
+  if (!(quantity > 0)) return legPatch(direction, {
+    Phase: 'reentry_wait', ExpectedQty: 0, SyncedManualQty: 0, SyncedManualMarginUsdt: 0,
+    CloseOrders: [], ClosePlacedAt: 0, CloseGuardPrice: 0, ReentryAt: now + COOLDOWN_MS, ReentryOrder: null,
+  });
+  return legPatch(direction, {
+    Phase: 'active', ExpectedQty: quantity, Additions: previous.additions, ManualMarginUsdt: previous.manualMarginUsdt,
+    LastAddPrice: entryPrice || previous.lastAddPrice,
+    MinPnl: Math.min(previous.minPnl, Number(position?.unRealizedProfit || 0)),
+    Recovery: previous.recovery, RecoveryArmed: previous.recoveryArmed,
+    RecoveryPeakNetPnl: previous.recoveryPeakNetPnl, RecoveryTrail: previous.recoveryTrail, SparseMode: previous.sparseMode,
+    SyncedManualQty: syncedManualQty,
+    SyncedManualMarginUsdt: syncedManualQty * (entryPrice || previous.lastAddPrice) / leverage,
+    CloseOrders: [], ClosePlacedAt: 0, CloseGuardPrice: 0, ReentryAt: 0, ReentryOrder: null,
+  });
+}
+function quantitySyncSummary(state, positions) {
+  const sides = {};
+  for (const side of ['long', 'short']) {
+    const position = positions[side]; const expectedQty = legSnapshot(state, side).expectedQty;
+    const actualQty = qty(position); const entryPrice = Number(position?.entryPrice || 0);
+    const leverage = Number(position?.leverage || 0);
+    sides[side] = { expectedQty, actualQty, delta: actualQty - expectedQty,
+      entryPrice, leverage, unrealizedPnl: Number(position?.unRealizedProfit || 0),
+      marginUsdt: leverage > 0 ? actualQty * entryPrice / leverage : null };
+  }
+  return { required: ['long', 'short'].some((side) => !closeEnough(sides[side].expectedQty, sides[side].actualQty)), sides };
+}
+function hasPendingStrategyOrder(row, state) {
+  if (state.pending || ['initializing', 'entry_pending', 'add_pending', 'close_pending'].includes(row.status)) return true;
+  return ['long', 'short'].some((side) => ['close_pending', 'reentry_pending'].includes(legSnapshot(state, side).phase));
+}
+async function positionSyncStatus(userId, symbol) {
+  const sym = cleanSymbol(symbol); const row = rowFor(userId, sym);
+  if (!row) return { strategy: status(userId, sym).strategy, positionSync: { required: false, available: false, sides: null } };
+  const state = parseState(row); const eligible = Boolean(row.enabled) || row.status === 'manual';
+  if (!eligible) return { strategy: publicRow(row), positionSync: { required: false, available: false, sides: null } };
+  const rowKey = `${String(userId)}|${sym}`;
+  const blocked = hasPendingStrategyOrder(row, state) || lockedRows.has(rowKey) || activeRows.has(rowKey);
+  try {
+    const creds = getBinanceCredentialsForUser(userId);
+    if (!creds || Number(creds.simulated) !== Number(row.simulated)) throw invalid('币安密钥缺失或交易环境已变化', 409);
+    const risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: sym });
+    const summary = quantitySyncSummary(state, positionsOf(risk, sym));
+    return { strategy: publicRow(row), positionSync: { ...summary, available: summary.required && !blocked,
+      blockedReason: blocked ? '请先等待策略委托或状态切换完成' : '' } };
+  } catch (error) {
+    return { strategy: publicRow(row), positionSync: { required: false, available: false, sides: null,
+      blockedReason: error.message || '暂时无法读取币安仓位' } };
+  }
+}
+async function syncPositions(userId, symbol) {
+  const sym = cleanSymbol(symbol); const key = `${String(userId)}|${sym}`;
+  if (lockedRows.has(key) || activeRows.has(key)) throw invalid('策略正在检查该标的，请稍后再同步', 409);
+  lockedRows.add(key);
+  try {
+    const row = rowFor(userId, sym);
+    if (!(row?.enabled || row?.status === 'manual')) throw invalid('仅运行中或因仓位不匹配转人工的策略可以同步', 409);
+    const state = parseState(row);
+    if (hasPendingStrategyOrder(row, state)) throw invalid('请先等待策略委托或状态切换完成，再同步仓位', 409);
+    const creds = getBinanceCredentialsForUser(userId);
+    if (!creds || Number(creds.simulated) !== Number(row.simulated)) throw invalid('币安密钥缺失或交易环境已变化', 409);
+    const risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: sym });
+    const positions = positionsOf(risk, sym);
+    const summary = quantitySyncSummary(state, positions);
+    if (!summary.required) throw invalid('策略记录与币安实际仓位已一致，无需同步', 409);
+    const now = Date.now(); const anyPosition = summary.sides.long.actualQty > 0 || summary.sides.short.actualQty > 0;
+    let patch;
+    if (anyPosition) {
+      patch = { ...syncLegState(state, 'long', positions.long, now, strategyConfig(row).leverage),
+        ...syncLegState(state, 'short', positions.short, now, strategyConfig(row).leverage),
+        expectedLong: summary.sides.long.actualQty, expectedShort: summary.sides.short.actualQty,
+        lastAddPrice: Number(positions.long?.entryPrice || positions.short?.entryPrice || state.lastAddPrice || 0),
+        pending: null, resumeEligible: false, adoptExisting: false, adoptionPositions: null,
+        syncedAt: now, cooldownUntil: 0 };
+    } else {
+      patch = { ...resetLeg('long', 0, Number(state.lastPrice || 0)), ...resetLeg('short', 0, Number(state.lastPrice || 0)),
+        expectedLong: 0, expectedShort: 0, longAdditions: 0, shortAdditions: 0, additions: 0,
+        pending: null, resumeEligible: false, adoptExisting: false, adoptionPositions: null,
+        syncedAt: now, cooldownUntil: now + COOLDOWN_MS };
+    }
+    const nextCounts = sideAdditions({ ...state, ...patch });
+    save(row, { enabled: 1, status: anyPosition ? 'active' : 'waiting', additions: nextCounts.longAdditions + nextCounts.shortAdditions, last_error: '' }, patch, true);
+    log(userId, sym, anyPosition ? '用户确认同步币安实际仓位，策略开始管理同步后的总仓位' : '用户确认同步，币安仓位为空；策略进入行情等待状态',
+      'success', { phase: 'position_sync', positions: summary.sides, additionsPreserved: anyPosition });
+    return status(userId, sym);
+  } finally { lockedRows.delete(key); }
 }
 async function initializeStrategy(row, creds) {
   const config = strategyConfig(row);
@@ -1207,8 +1309,7 @@ async function reconcileRow(row) {
     ? sparseGroupMargin(row.symbol, decision.next, groupCount, strategyConfig(row).marginUsdt)
     : ladderMargin(row.symbol, decision.next, strategyConfig(row).marginUsdt);
   const triggerPrice = sparseMode ? sparseGroupTrigger(anchor, step, groupCount, longLosing) : (longLosing ? anchor - step : anchor + step);
-  const trigger = longLosing ? market.last <= triggerPrice : market.last >= triggerPrice;
-  if (!sparseMode && !trigger) return;
+  if (!shouldPlaceAddition({ sparseMode, side: longLosing ? 'long' : 'short', price: market.last, triggerPrice })) return;
   if (decision.action === 'manual') throw invalid(`多头最多${MAX_LONG_ADDITIONS}档、空头最多${MAX_SHORT_ADDITIONS}档自动补仓，策略转人工接管`, 409);
   if (decision.action === 'wait') return;
   const side = longLosing ? 'BUY' : 'SELL'; const price = sparseMode ? triggerPrice : (longLosing ? market.bid : market.ask);
@@ -1230,18 +1331,23 @@ async function reconcile() {
   try {
     const rows = getDb().prepare('SELECT * FROM tradfi_range_strategies WHERE enabled=1').all();
     for (const row of rows) {
-      try { await reconcileRow(row); }
-      catch (err) {
-        const latest = rowFor(row.user_id, row.symbol);
-        if (err.adoptionRequired) {
-          save(latest, { enabled: 0, status: 'adoption_required', last_error: err.message }, { adoptionPositions: err.positions, adoptExisting: false, resumeEligible: false });
-          log(row.user_id, row.symbol, err.message, 'warn', { positions: err.positions });
-          continue;
+      const key = `${String(row.user_id)}|${row.symbol}`;
+      if (lockedRows.has(key)) continue;
+      activeRows.add(key);
+      try {
+        try { await reconcileRow(row); }
+        catch (err) {
+          const latest = rowFor(row.user_id, row.symbol);
+          if (err.adoptionRequired) {
+            save(latest, { enabled: 0, status: 'adoption_required', last_error: err.message }, { adoptionPositions: err.positions, adoptExisting: false, resumeEligible: false });
+            log(row.user_id, row.symbol, err.message, 'warn', { positions: err.positions });
+            continue;
+          }
+          const manual = Number(err.status) === 409;
+          save(latest, { enabled: manual ? 0 : latest.enabled, status: manual ? 'manual' : latest.status, last_error: err.message });
+          log(row.user_id, row.symbol, err.message, 'error');
         }
-        const manual = Number(err.status) === 409;
-        save(latest, { enabled: manual ? 0 : latest.enabled, status: manual ? 'manual' : latest.status, last_error: err.message });
-        log(row.user_id, row.symbol, err.message, 'error');
-      }
+      } finally { activeRows.delete(key); }
     }
   } finally { busy = false; }
 }
@@ -1252,4 +1358,5 @@ module.exports = { start, reconcile, status, enable, disable, closeAll, manualAd
   ladderMargin, defaultConfig, costState, scalpProfitTarget, commissionRate, isCommodityWeekendMode, orderFillState, marketDataFreshness,
   profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState, strategyConfig, requestedConfig, resumedConfig,
   isPostOnlyReject, isRequestTimeout, recoveryExitState, ignoreStaleStrategySave, SYMBOLS, MAX_ADDITIONS, MAX_LONG_ADDITIONS, MAX_SHORT_ADDITIONS,
-  MANUAL_ADD_THRESHOLD, MARGIN, LEVERAGE, MAX_MARGIN, MAX_GOLD_MARGIN, MAX_LEVERAGE };
+  MARGIN, LEVERAGE, MAX_MARGIN, MAX_GOLD_MARGIN, MAX_LEVERAGE, positionSyncStatus, syncPositions, syncLegState,
+  quantitySyncSummary, canManualAddPosition };

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
-import { cancelOkxOrder, fetchOkxAiBook, fetchTradfiAccountBook, previewTradfiManualAdd, submitTradfiManualAdd, type OkxAiBook, type OkxAiOrderRecord, type TradfiManualAddPreview } from '@/api';
+import { cancelOkxOrder, fetchOkxAiBook, fetchTradfiAccountBook, previewTradfiManualAdd, submitTradfiManualAdd, syncTradfiRangePositions, type OkxAiBook, type OkxAiOrderRecord, type TradfiManualAddPreview } from '@/api';
 import { formatSignedUsd, formatTimeShort } from '@/utils/format';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 
 const props = defineProps<{
   bootReady?: boolean;
@@ -22,6 +22,7 @@ const manualMargin = ref(20);
 const manualPreview = ref<TradfiManualAddPreview | null>(null);
 const manualBusy = ref(false);
 const manualError = ref('');
+const syncingSymbol = ref('');
 let timer: ReturnType<typeof setInterval> | null = null;
 let reqSeq = 0;
 
@@ -43,7 +44,7 @@ const tradfiGroups = computed<TradfiGroup[]>(() => {
   }
   for (const strategy of book.value?.strategies || []) {
     const existing = bySymbol.get(strategy.symbol);
-    if (!strategy.enabled && !existing) continue;
+    if (!strategy.enabled && !existing && !strategy.positionSync?.required) continue;
     const group = existing || {
       instId: strategy.symbol,
       coin: strategy.symbol === 'XAUUSDT' ? '黄金（GOLD）' : strategy.symbol === 'XAGUSDT' ? '白银（SILVER）' : strategy.symbol,
@@ -121,6 +122,7 @@ function twoDecimals(value: number | null | undefined) {
 
 function groupMode(group: TradfiGroup) {
   const strategy = group.strategy;
+  if (strategy?.positionSync?.required) return strategy.positionSync.available ? '币安仓位待同步' : '等待委托完成后同步';
   const managedQty = Number(group.long?.aiQty || 0) + Number(group.short?.aiQty || 0);
   if (strategy && !strategy.enabled && managedQty > 0) return '策略已停止';
   if (strategy?.status === 'waiting') {
@@ -182,8 +184,32 @@ function manualAddAvailable(group: TradfiGroup, side: 'long' | 'short') {
   const strategy = group.strategy; const leg = legStatus(group, side); const position = group[side];
   return props.exchange === 'tradfi' && Boolean(strategy?.enabled) && strategy?.status === 'active'
     && !strategy.manualAddPending && leg?.phase === 'active'
-    && Number(leg.additions || 0) >= Number(strategy.manualAddThreshold || 20)
     && position?.kind === 'position' && Number(rowPnl(position)) < 0;
+}
+function canShowManualAdd(group: TradfiGroup) { return props.exchange === 'tradfi' && Boolean(group.strategy); }
+function syncDescription(group: TradfiGroup) {
+  const sync = group.strategy?.positionSync;
+  if (!sync?.sides) return '';
+  return (['long', 'short'] as const).filter((side) => Math.abs(sync.sides![side].delta) > 1e-9).map((side) => {
+    const row = sync.sides![side]; const label = side === 'long' ? '多仓' : '空仓';
+    const change = row.delta >= 0 ? `+${twoDecimals(row.delta)}` : twoDecimals(row.delta);
+    return `${label}：策略 ${twoDecimals(row.expectedQty)} 张 → 币安 ${twoDecimals(row.actualQty)} 张（${change} 张），币安均价 ${twoDecimals(row.entryPrice)}，本金估算 ${twoDecimals(row.marginUsdt)}U`;
+  }).join('\n');
+}
+async function syncGroupPositions(group: TradfiGroup) {
+  if (!group.strategy?.positionSync?.required || !group.strategy.positionSync.available || syncingSymbol.value) return;
+  try {
+    await ElMessageBox.confirm(
+      `${syncDescription(group)}\n\n确认后，策略将按币安当前实际多空仓位继续管理。自动补仓档位和历史最大浮亏会保留；同步增加的仓位计入总仓位与盈亏，但不占自动补仓档位。策略之后止盈时，可能平掉该方向同步后的全部仓位。`,
+      '同步币安仓位', { type: 'warning', confirmButtonText: '确认同步并接管', cancelButtonText: '取消' });
+  } catch { return; }
+  syncingSymbol.value = group.instId;
+  try {
+    await syncTradfiRangePositions(group.instId);
+    ElMessage.success('币安实际仓位已同步，策略将按当前完整仓位管理');
+    await load(true);
+  } catch (err) { ElMessage.error(err instanceof Error ? err.message : '同步币安仓位失败'); }
+  finally { syncingSymbol.value = ''; }
 }
 function openManualAdd(group: TradfiGroup, side: 'long' | 'short') {
   manualSymbol.value = group.instId; manualSide.value = side;
@@ -214,6 +240,9 @@ function sideMask(group: TradfiGroup, side: 'long' | 'short') {
   const strategy = group.strategy;
   const leg = legStatus(group, side);
   if (!strategy) return '';
+  if (strategy.positionSync?.required && Math.abs(Number(strategy.positionSync.sides?.[side]?.delta || 0)) > 1e-9) {
+    return strategy.positionSync.available ? '检测到币安手动变更 · 请确认同步' : (strategy.positionSync.blockedReason || '委托处理中，暂不可同步');
+  }
   if (!strategy.enabled && (Number(group.long?.aiQty || 0) + Number(group.short?.aiQty || 0) > 0)) return '策略已停止';
   if (!strategy.enabled && Number(group.long?.aiQty || 0) + Number(group.short?.aiQty || 0) > 0) return '策略已停止';
   if (leg?.phase === 'close_pending') return '止盈挂单中';
@@ -331,7 +360,7 @@ defineExpose({ reload: () => load(true) });
       </div>
     </div>
 
-    <p v-if="props.exchange === 'tradfi'" class="account-note">余额与币安 U 本位合约账户共用；下方只展示本站自动策略提交的 TradFi 持仓与挂单。</p>
+    <p v-if="props.exchange === 'tradfi'" class="account-note">余额与币安 U 本位合约账户共用；下方展示策略管理中的 TradFi 持仓与挂单。手动仓位需确认同步后纳入管理。</p>
     <el-alert v-if="error" type="warning" :closable="false" :title="error" class="alert" />
     <el-alert v-else-if="book?.configured === false" type="info" :closable="false" title="请先在左下角「API 设置」配置币安 API 密钥" class="alert" />
     <el-skeleton v-else-if="loading && !book" :rows="6" animated class="pad" />
@@ -339,6 +368,7 @@ defineExpose({ reload: () => load(true) });
     <div v-else-if="props.exchange === 'tradfi'" class="order-list tradfi-order-list">
       <article v-for="group in tradfiGroups" :key="group.instId" class="asset-card">
         <div class="asset-header">
+          <button v-if="group.strategy?.positionSync?.required" type="button" class="sync-position-btn" :disabled="syncingSymbol === group.instId || !group.strategy.positionSync.available" :title="group.strategy.positionSync.blockedReason || syncDescription(group)" @click="syncGroupPositions(group)">{{ syncingSymbol === group.instId ? '同步中…' : '同步' }}</button>
           <span>{{ group.coin }} <b class="asset-pnl" :class="valueClass(groupPnl(group))">{{ formatSignedUsd(groupPnl(group)) }}</b></span>
           <span v-if="group.strategy" class="asset-config">单笔：{{ twoDecimals(group.strategy.marginPerOrder) }}U · 倍数：{{ group.strategy.leverage }}X</span>
           <span class="asset-fees">手续费损耗 {{ preciseUsd(groupFees(group).tradingFees) }}</span>
@@ -347,7 +377,7 @@ defineExpose({ reload: () => load(true) });
         <div class="position-row">
           <section class="position-side">
             <div v-if="sideMask(group, 'long')" class="position-mask">{{ sideMask(group, 'long') }}</div>
-            <div class="side-header"><span class="side-badge long">多头</span><button v-if="manualAddAvailable(group, 'long')" type="button" class="manual-add-btn" @click="openManualAdd(group, 'long')">补仓</button></div>
+            <div class="side-header"><span class="side-badge long">多头</span><button v-if="canShowManualAdd(group)" type="button" class="manual-add-btn" :disabled="!manualAddAvailable(group, 'long')" :title="manualAddAvailable(group, 'long') ? '使用当前策略杠杆补仓' : '策略运行中且该方向持仓亏损时可手动补仓'" @click="openManualAdd(group, 'long')">补仓</button></div>
             <div class="position-details">
               <span class="label">持仓价</span>
               <span class="value">{{ group.long ? entryPrice(group.long) : '—' }}</span>
@@ -358,12 +388,12 @@ defineExpose({ reload: () => load(true) });
               <span class="label">已实现</span>
               <span class="value" :class="valueClass(sideRealized(group, 'long'))">{{ formatSignedUsd(sideRealized(group, 'long')) }}</span>
               <span class="label">状态</span>
-              <span class="value">{{ sideStatusText(group, 'long') }}<span v-if="Number(legStatus(group, 'long')?.manualMarginUsdt || 0) > 0" class="manual-amount"> 手动 · {{ twoDecimals(legStatus(group, 'long')?.manualMarginUsdt) }}U</span></span>
+              <span class="value">{{ sideStatusText(group, 'long') }}<span v-if="Number(legStatus(group, 'long')?.manualMarginUsdt || 0) > 0" class="manual-amount"> 手动 · {{ twoDecimals(legStatus(group, 'long')?.manualMarginUsdt) }}U</span><span v-if="Number(legStatus(group, 'long')?.syncedManualMarginUsdt || 0) > 0" class="manual-amount"> 同步 · {{ twoDecimals(legStatus(group, 'long')?.syncedManualMarginUsdt) }}U</span></span>
             </div>
           </section>
           <section class="position-side">
             <div v-if="sideMask(group, 'short')" class="position-mask">{{ sideMask(group, 'short') }}</div>
-            <div class="side-header"><span class="side-badge short">空头</span><button v-if="manualAddAvailable(group, 'short')" type="button" class="manual-add-btn" @click="openManualAdd(group, 'short')">补仓</button></div>
+            <div class="side-header"><span class="side-badge short">空头</span><button v-if="canShowManualAdd(group)" type="button" class="manual-add-btn" :disabled="!manualAddAvailable(group, 'short')" :title="manualAddAvailable(group, 'short') ? '使用当前策略杠杆补仓' : '策略运行中且该方向持仓亏损时可手动补仓'" @click="openManualAdd(group, 'short')">补仓</button></div>
             <div class="position-details">
               <span class="label">持仓价</span>
               <span class="value">{{ group.short ? entryPrice(group.short) : '—' }}</span>
@@ -374,7 +404,7 @@ defineExpose({ reload: () => load(true) });
               <span class="label">已实现</span>
               <span class="value" :class="valueClass(sideRealized(group, 'short'))">{{ formatSignedUsd(sideRealized(group, 'short')) }}</span>
               <span class="label">状态</span>
-              <span class="value">{{ sideStatusText(group, 'short') }}<span v-if="Number(legStatus(group, 'short')?.manualMarginUsdt || 0) > 0" class="manual-amount"> 手动 · {{ twoDecimals(legStatus(group, 'short')?.manualMarginUsdt) }}U</span></span>
+              <span class="value">{{ sideStatusText(group, 'short') }}<span v-if="Number(legStatus(group, 'short')?.manualMarginUsdt || 0) > 0" class="manual-amount"> 手动 · {{ twoDecimals(legStatus(group, 'short')?.manualMarginUsdt) }}U</span><span v-if="Number(legStatus(group, 'short')?.syncedManualMarginUsdt || 0) > 0" class="manual-amount"> 同步 · {{ twoDecimals(legStatus(group, 'short')?.syncedManualMarginUsdt) }}U</span></span>
             </div>
           </section>
         </div>
@@ -622,6 +652,16 @@ defineExpose({ reload: () => load(true) });
   flex-wrap: wrap;
   gap: 8px;
 }
+.sync-position-btn {
+  padding: 4px 9px;
+  border: 1px solid color-mix(in srgb, var(--yellow) 55%, var(--border));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--yellow) 12%, transparent);
+  color: var(--yellow);
+  font-size: 11px;
+  cursor: pointer;
+}
+.sync-position-btn:disabled { opacity: .55; cursor: not-allowed; }
 .asset-pnl { margin-left: 6px; font-variant-numeric: tabular-nums; }
 .asset-pnl.gain { color: var(--green); }
 .asset-pnl.loss { color: var(--red); }
@@ -710,6 +750,7 @@ defineExpose({ reload: () => load(true) });
   cursor: pointer;
 }
 .manual-add-btn:hover { background: color-mix(in srgb, var(--yellow) 18%, transparent); }
+.manual-add-btn:disabled { opacity: .45; cursor: not-allowed; }
 .manual-amount { color: var(--yellow); font-size: 11px; white-space: nowrap; }
 .manual-modal-cover {
   position: fixed;

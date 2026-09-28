@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { takeProfitNetPnl } = require('../lib/tradfiRangeCore.cjs');
+const { takeProfitNetPnl, shouldPlaceAddition, canManualAddPosition } = require('../lib/tradfiRangeCore.cjs');
 
 function candles(start, count, step, spread = 2) {
   return Array.from({ length: count }, (_, i) => {
@@ -12,9 +12,9 @@ function candles(start, count, step, spread = 2) {
 const { marketState, ladderStep, sparseLadderStep, sparseModeDecision, sparseGroupCount, sparseGroupMargin, sparseGroupTrigger,
   ladderMargin, defaultConfig, requestedConfig, resumedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState,
   ignoreStaleStrategySave,
-  closeClientId, closeOrderRemaining, additionDecision, countedAdditions, scalpProfitTarget, commissionRate,
+  closeClientId, closeOrderRemaining, additionDecision, countedAdditions, scalpProfitTarget, commissionRate, syncLegState, quantitySyncSummary,
   isCommodityWeekendMode, orderFillState, marketDataFreshness, profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState,
-  MAX_ADDITIONS, MAX_LONG_ADDITIONS, MAX_SHORT_ADDITIONS, MANUAL_ADD_THRESHOLD, MARGIN, LEVERAGE } = require('../lib/tradfiRangeStrategy');
+  MAX_ADDITIONS, MAX_LONG_ADDITIONS, MAX_SHORT_ADDITIONS, MARGIN, LEVERAGE } = require('../lib/tradfiRangeStrategy');
 
 test('黄金窄幅结构允许震荡监控，明显单边结构识别为趋势', () => {
   const range15 = candles(1800, 48, 0.02, 2);
@@ -37,7 +37,6 @@ test('黄金与白银使用各自默认本金和杠杆，多空补仓上限分�
   assert.equal(MAX_ADDITIONS, 100);
   assert.equal(MAX_LONG_ADDITIONS, 100);
   assert.equal(MAX_SHORT_ADDITIONS, 50);
-  assert.equal(MANUAL_ADD_THRESHOLD, 20);
   assert.deepEqual(defaultConfig('XAUUSDT'), { marginUsdt: 20, leverage: 20, ladder: [10, 15, 25, 30] });
   assert.deepEqual(defaultConfig('XAGUSDT'), { marginUsdt: 10, leverage: 10, ladder: [5, 7.5, 12.5, 15] });
 });
@@ -78,6 +77,39 @@ test('稀疏模式采用1小时ATR和常规档距的较大值，上限为现价0
   assert.equal(sparseGroupMargin('XAUUSDT', 21, 5), 125);
   assert.equal(sparseGroupMargin('XAUUSDT', 31, 5), 150);
   assert.equal(sparseGroupTrigger(5000, 15, 5, true), 4925);
+});
+
+test('常规补仓需触及触发价，稀疏补仓会提前挂到远端触发价', () => {
+  assert.equal(shouldPlaceAddition({ side: 'long', price: 4950, triggerPrice: 4900 }), false);
+  assert.equal(shouldPlaceAddition({ side: 'long', price: 4900, triggerPrice: 4900 }), true);
+  assert.equal(shouldPlaceAddition({ side: 'short', price: 5050, triggerPrice: 5100 }), false);
+  assert.equal(shouldPlaceAddition({ side: 'short', price: 5100, triggerPrice: 5100 }), true);
+  assert.equal(shouldPlaceAddition({ sparseMode: true, side: 'long', price: 4950, triggerPrice: 4900 }), true);
+});
+
+test('手动补仓不再受自动档位数限制，但仍要求策略运行、该侧持仓亏损且没有待处理委托', () => {
+  assert.equal(canManualAddPosition({ enabled: true, status: 'active', pending: false, phase: 'active', quantity: 0.2, pnl: -1 }), true);
+  assert.equal(canManualAddPosition({ enabled: true, status: 'active', pending: false, phase: 'active', quantity: 0.2, pnl: 0 }), false);
+  assert.equal(canManualAddPosition({ enabled: true, status: 'add_pending', pending: true, phase: 'active', quantity: 0.2, pnl: -1 }), false);
+  assert.equal(canManualAddPosition({ enabled: false, status: 'manual', pending: false, phase: 'active', quantity: 0.2, pnl: -1 }), false);
+});
+
+test('手动同步更新交易所数量与均价，保留恢复状态和自动档位，手动增量单独核算', () => {
+  const state = { longExpectedQty: 0.06, longLastAddPrice: 4800, longAdditions: 17, longMinPnl: -60,
+    longRecovery: true, longRecoveryArmed: true, longRecoveryPeakNetPnl: 15, longSyncedManualQty: 0 };
+  const position = { positionAmt: '0.1', entryPrice: '4820', leverage: '20', unRealizedProfit: '-55' };
+  const summary = quantitySyncSummary(state, { long: position, short: null });
+  assert.equal(summary.required, true);
+  assert.ok(Math.abs(summary.sides.long.delta - 0.04) < 1e-12);
+  const patch = syncLegState(state, 'long', position, 1_000, 20);
+  assert.equal(patch.longExpectedQty, 0.1);
+  assert.equal(patch.longLastAddPrice, 4820);
+  assert.equal(patch.longAdditions, 17);
+  assert.ok(Math.abs(patch.longSyncedManualQty - 0.04) < 1e-12);
+  assert.ok(Math.abs(patch.longSyncedManualMarginUsdt - 9.64) < 1e-12);
+  assert.equal(patch.longMinPnl, -60);
+  assert.equal(patch.longRecovery, true);
+  assert.equal(patch.longRecoveryPeakNetPnl, 15);
 });
 
 test('启动前允许设置单边保证金和杠杆，并限制最大值', () => {

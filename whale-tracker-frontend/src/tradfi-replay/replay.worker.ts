@@ -85,13 +85,14 @@ function fill(order: Order, bar: Candle) {
     const old = positions[order.side];
     const totalQty = (old?.qty || 0) + order.qty;
     const avg = totalQty ? ((old?.avg || 0) * (old?.qty || 0) + order.price * order.qty) / totalQty : order.price;
+    const actualMargin = order.qty * order.price / settings.leverage;
     const count = core.countedAdditions({ longAdditions: order.side === 'long' ? (old?.adds || 0) : 0, shortAdditions: order.side === 'short' ? (old?.adds || 0) : 0 }, order.side === 'long', order.adds);
-    positions[order.side] = { side: order.side, qty: totalQty, avg, margin: (old?.margin || 0) + order.margin,
+    positions[order.side] = { side: order.side, qty: totalQty, avg, margin: (old?.margin || 0) + actualMargin,
       adds: count.next, lastAdd: order.price, fee: (old?.fee || 0) + fee,
       funding: old?.funding || 0, realized: old?.realized || 0, openedAt: old?.openedAt || bar.t,
       minNet: old?.minNet || 0, recovery: old?.recovery || false, recoveryArmed: old?.recoveryArmed || false,
       recoveryPeak: old?.recoveryPeak || 0, recoveryTrail: old?.recoveryTrail || 0, sparseMode: old?.sparseMode || false };
-    emitLog(bar.t, `${order.purpose}-fill`, `${order.side === 'long' ? '多' : '空'}仓${order.purpose === 'add' ? '补仓' : '开仓'}成交 · ${fmt(order.price)}`, { price: order.price, quantity: order.qty, notional, margin: order.margin, fee, adds: positions[order.side]?.adds });
+    emitLog(bar.t, `${order.purpose}-fill`, `${order.side === 'long' ? '多' : '空'}仓${order.purpose === 'add' ? '补仓' : '开仓'}成交 · ${fmt(order.price)}`, { price: order.price, quantity: order.qty, notional, margin: actualMargin, fee, adds: positions[order.side]?.adds });
   }
   orders[order.side] = null;
 }
@@ -215,7 +216,7 @@ function processBar(bar: Candle) {
     if (sparse.enter) emitLog(bar.t, 'sparse-enter', `${side === 'long' ? '多' : '空'}仓进入稀疏阶梯`, { distanceAtr: sparse.distanceAtr });
     if (sparse.exit) emitLog(bar.t, 'sparse-exit', `${side === 'long' ? '多' : '空'}仓退出稀疏阶梯`, { distanceAtr: sparse.distanceAtr });
     p.sparseMode = sparse.active;
-    if (lastMarket.trend && !sparse.active) continue;
+    if ((lastMarket.trend || lastMarket.trendDirection !== 'neutral') && !sparse.active) continue;
     const step = sparse.active ? core.sparseLadderStep(price, lastMarket.addStep, lastMarket.atr1h) : lastMarket.addStep;
     const counts = { longAdditions: side === 'long' ? p.adds : 0, shortAdditions: side === 'short' ? p.adds : 0 };
     const decision = core.additionDecision(counts, isLong);
@@ -225,10 +226,9 @@ function processBar(bar: Candle) {
     const count = sparse.active ? core.sparseGroupCount(p.adds, max) : 1;
     if (count <= 0) continue;
     const trigger = sparse.active ? core.sparseGroupTrigger(p.lastAdd, step, count, isLong) : p.lastAdd + (isLong ? -step : step);
-    const adverse = isLong ? price <= trigger : price >= trigger;
-    if (!adverse || pricePnl >= 0) continue;
+    if (!core.shouldPlaceAddition({ sparseMode: sparse.active, side, price, triggerPrice: trigger }) || pricePnl >= 0) continue;
     const margin = sparse.active ? core.sparseGroupMargin(settings.symbol, nextTier, count, settings.marginUsdt) : core.ladderMargin(settings.symbol, nextTier, settings.marginUsdt);
-    const limit = isLong ? price - settings.tickSize : price + settings.tickSize;
+    const limit = sparse.active ? trigger : (isLong ? price - settings.tickSize : price + settings.tickSize);
     place(side, 'add', limit, margin, bar.t, count, sparse.active ? `稀疏 ${p.adds + 1}-${p.adds + count}/${max}` : `常规 ${nextTier}/${max}`);
   }
   if (positions.long || positions.short) stateLabel = `${lastMarket.trend ? '趋势过滤' : '策略运行中'} · ${lastMarket.trend ? '暂停补仓' : '监控仓位'}`;
