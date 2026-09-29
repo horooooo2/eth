@@ -243,19 +243,38 @@ function status(userId, symbol) {
     maxTotalAdditions: MAX_LONG_ADDITIONS + MAX_SHORT_ADDITIONS,
     marginPerOrder: defaults.marginUsdt, leverage: defaults.leverage, long: { manualMarginUsdt: 0 }, short: { manualMarginUsdt: 0 } }, events };
 }
+function hasSavedPosition(existing, existingState) {
+  if (existing?.status !== 'paused') return false;
+  if (existingState.pausedPositions) return hasPausedPosition(existingState);
+  return Boolean(existingState.resumeEligible || Number(existingState.expectedLong || 0) > 0
+    || Number(existingState.expectedShort || 0) > 0);
+}
+function hasPausedPosition(state) {
+  return Number(state.pausedPositions?.long?.quantity || 0) > 0
+    || Number(state.pausedPositions?.short?.quantity || 0) > 0;
+}
+function restartState(existing, existingState, config, input = {}) {
+  const savedPosition = hasSavedPosition(existing, existingState);
+  // A previous startup may have paused at the adoption prompt. A recorded
+  // stopped-position snapshot still proves ownership across that retry.
+  const keepLineage = savedPosition || (existing?.status === 'adoption_required' && hasPausedPosition(existingState));
+  const initialState = keepLineage
+    ? { ...existingState, config, resumeEligible: keepLineage, adoptExisting: Boolean(input.adoptExisting), startupProgress: 5, startupStep: '准备检查现有仓位' }
+    : { config, resumeEligible: false, adoptExisting: Boolean(input.adoptExisting), longManualMarginUsdt: 0, shortManualMarginUsdt: 0, startupProgress: 5,
+      startupStep: input.adoptExisting ? '准备检查现有仓位' : '准备启动检查' };
+  return { savedPosition, initialState };
+}
 function enable(userId, symbol, simulated, input = {}) {
   const sym = cleanSymbol(symbol);
   const existing = rowFor(userId, sym);
   if (existing?.enabled) throw invalid('策略运行中，停止后才能修改金额或杠杆');
   const existingState = parseState(existing);
-  const savedPosition = existing?.status === 'paused' && (existingState.resumeEligible
-    || Number(existingState.expectedLong || 0) > 0 || Number(existingState.expectedShort || 0) > 0);
   const savedConfig = strategyConfig(existing);
-  const config = savedPosition ? resumedConfig(savedConfig, input, sym) : requestedConfig(input, sym);
+  const savedPosition = hasSavedPosition(existing, existingState);
+  const retainingLineage = savedPosition || (existing?.status === 'adoption_required' && hasPausedPosition(existingState));
+  const config = retainingLineage ? resumedConfig(savedConfig, input, sym) : requestedConfig(input, sym);
+  const { initialState } = restartState(existing, existingState, config, input);
   const now = Date.now();
-  const initialState = savedPosition || input.adoptExisting
-    ? { ...existingState, config, resumeEligible: savedPosition, adoptExisting: Boolean(input.adoptExisting), startupProgress: 5, startupStep: '准备检查现有仓位' }
-    : { config, resumeEligible: false, adoptExisting: false, longManualMarginUsdt: 0, shortManualMarginUsdt: 0, startupProgress: 5, startupStep: '准备启动检查' };
   getDb().prepare(`INSERT INTO tradfi_range_strategies (user_id,symbol,enabled,status,simulated,additions,state_json,last_error,started_at,updated_at)
     VALUES (?,?,1,'initializing',?,0,?,'',?,?) ON CONFLICT(user_id,symbol) DO UPDATE SET enabled=1,status='initializing',simulated=excluded.simulated,additions=0,state_json=excluded.state_json,last_error='',started_at=excluded.started_at,updated_at=excluded.updated_at`)
     .run(String(userId), sym, simulated ? 1 : 0, JSON.stringify(initialState), now, now);
@@ -271,10 +290,26 @@ async function disable(userId, symbol) {
   // canceling the orders that were visible at the start of this request.
   lockedRows.add(key);
   try {
-    const state = parseState(row);
+    let latest = row;
+    let state = parseState(latest);
     const creds = getBinanceCredentialsForUser(userId);
     let pausedPositions = null;
     if (creds) {
+      if (state.manualPending) {
+        const settled = await cancelAndVerifyOrder(creds, row.symbol, state.manualPending);
+        if (!settled.resolved) throw invalid('手动补仓委托撤销结果未确认，暂不能停止策略，请核对币安委托', 409);
+        await reconcileManualPending(latest, creds, state);
+        latest = rowFor(userId, row.symbol);
+        state = parseState(latest);
+      }
+      // A Maker add may fill while it is being canceled. Settle and count
+      // that fill before persisting the paused state.
+      for (const direction of ['long', 'short']) {
+        if (!pendingForSide(state, direction)) continue;
+        await cancelTrackedAutoPending(latest, creds, state, direction, '停止策略');
+        latest = rowFor(userId, row.symbol);
+        state = parseState(latest);
+      }
       await cancelKnown(creds, row.symbol, state);
       const risk = await signedRequest(creds, 'GET', '/fapi/v2/positionRisk', { symbol: row.symbol });
       const pos = positionsOf(risk, row.symbol);
@@ -284,7 +319,7 @@ async function disable(userId, symbol) {
       };
     }
     const resumeEligible = Boolean((pausedPositions?.long.quantity || 0) > 0 || (pausedPositions?.short.quantity || 0) > 0);
-    save(row, { enabled: 0, status: 'paused' }, { pending: null, pendingLong: null, pendingShort: null, pausedPositions, resumeEligible, pausedAt: Date.now(), adoptionPositions: null });
+    save(latest, { enabled: 0, status: 'paused' }, { pending: null, pendingLong: null, pendingShort: null, pausedPositions, resumeEligible, pausedAt: Date.now(), adoptionPositions: null });
     log(userId, row.symbol, resumeEligible ? '震荡交易已停止，仓位已保留；下次启动将按币安实际仓位恢复接管' : '震荡交易已停止，当前没有需要接管的策略仓位', 'warn');
     return status(userId, row.symbol);
   } finally { lockedRows.delete(key); }
@@ -1980,7 +2015,7 @@ function start() { if (timer) return; timer = setInterval(() => { void reconcile
 module.exports = { start, reconcile, status, enable, disable, closeAll, manualAddPreview, manualAdd, closeClientId, closeOrderRemaining, additionDecision, countedAdditions,
   marketState, closedKlines, atr, ladderStep, sparseLadderStep, sparseModeDecision, sparseGroupCount, sparseGroupMargin, sparseGroupTrigger,
   ladderMargin, defaultConfig, costState, scalpProfitTarget, commissionRate, isCommodityWeekendMode, orderFillState, marketDataFreshness,
-  profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState, strategyConfig, requestedConfig, resumedConfig,
+  profitGuardPrice, allocateFundingCharge, positionAdoptionSummary, adoptedLegState, strategyConfig, requestedConfig, resumedConfig, restartState,
   isPostOnlyReject, isRequestTimeout, isCanceledWithoutFill, recoveryExitState, ignoreStaleStrategySave, SYMBOLS, MAX_ADDITIONS, MAX_LONG_ADDITIONS, MAX_SHORT_ADDITIONS,
   MARGIN, LEVERAGE, MAX_MARGIN, MAX_GOLD_MARGIN, MAX_LEVERAGE, positionSyncStatus, syncPositions, syncLegState,
   quantitySyncSummary, canCancelPendingForPositionSync, canManualAddPosition, pendingForSide, pendingStatePatch, autoPendingOrders, availableAdditionDirection };

@@ -16,7 +16,7 @@ function candles(start, count, step, spread = 2) {
 }
 
 const { marketState, ladderStep, sparseLadderStep, sparseModeDecision, sparseGroupCount, sparseGroupMargin, sparseGroupTrigger,
-  ladderMargin, defaultConfig, requestedConfig, resumedConfig, isPostOnlyReject, isRequestTimeout, recoveryExitState,
+  ladderMargin, defaultConfig, requestedConfig, resumedConfig, restartState, isPostOnlyReject, isRequestTimeout, recoveryExitState,
   ignoreStaleStrategySave,
   closeClientId, closeOrderRemaining, additionDecision, countedAdditions, scalpProfitTarget, commissionRate, syncLegState, quantitySyncSummary,
   isCanceledWithoutFill,
@@ -517,6 +517,34 @@ test('空头恢复模式继续按 ATR 回撤或震荡目标止盈', () => {
   assert.deepEqual(recoveryExitState({ recovery: true, armed: true, netPnl: 8, peakNetPnl: 10, trail: 1.5, trend: true, target: 6 }), { shouldClose: true, reason: '恢复模式利润回撤触发' });
   assert.deepEqual(recoveryExitState({ recovery: true, armed: true, netPnl: 6, peakNetPnl: 6, trail: 1.5, trend: false, target: 6 }), { shouldClose: true, reason: '恢复模式目标达成' });
   assert.equal(recoveryExitState({ recovery: true, armed: false, netPnl: 8, peakNetPnl: 10, trail: 1.5, trend: true, target: 6 }).shouldClose, false);
+});
+
+test('停止后恢复及接管确认重试均保留原仓位档位，空仓重启不沿用旧档位', () => {
+  const config = { marginUsdt: 20, leverage: 20 };
+  const previous = { cycleId: 'managed-cycle', expectedLong: 0.35, longAdditions: 40,
+    shortAdditions: 7, longManualMarginUsdt: 200,
+    pausedPositions: { long: { quantity: 0.35 }, short: { quantity: 0.2 } } };
+  const paused = restartState({ status: 'paused' }, previous, config);
+  assert.equal(paused.savedPosition, true);
+  assert.equal(paused.initialState.longAdditions, 40);
+  assert.equal(paused.initialState.shortAdditions, 7);
+  assert.equal(paused.initialState.longManualMarginUsdt, 200);
+  assert.equal(paused.initialState.resumeEligible, true);
+  const retry = restartState({ status: 'adoption_required' }, previous, config, { adoptExisting: true });
+  assert.equal(retry.initialState.longAdditions, 40);
+  assert.equal(retry.initialState.shortAdditions, 7);
+  assert.equal(retry.initialState.resumeEligible, true);
+  assert.equal(retry.initialState.adoptExisting, true);
+  const fresh = restartState({ status: 'paused' }, { pausedPositions: { long: { quantity: 0 }, short: { quantity: 0 } } }, config);
+  assert.equal(fresh.savedPosition, false);
+  assert.equal(fresh.initialState.longAdditions, undefined);
+  const stale = restartState({ status: 'paused' }, { expectedLong: 0.35, longAdditions: 40,
+    pausedPositions: { long: { quantity: 0 }, short: { quantity: 0 } } }, config);
+  assert.equal(stale.savedPosition, false);
+  assert.equal(stale.initialState.longAdditions, undefined);
+  const foreign = restartState({ status: 'adoption_required' }, { longAdditions: 40 }, config, { adoptExisting: true });
+  assert.equal(foreign.initialState.longAdditions, undefined);
+  assert.equal(foreign.initialState.adoptExisting, true);
 });
 
 test('多头恢复模式达标后追踪峰值，并以目标利润作为最低触发线', () => {
