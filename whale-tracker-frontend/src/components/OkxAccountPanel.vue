@@ -179,19 +179,63 @@ function legModeLabel(group: TradfiGroup, side: 'long' | 'short') {
   const strategy = group.strategy; const leg = legStatus(group, side);
   const additions = Number(leg?.additions || 0); const max = side === 'long'
     ? Number(strategy?.maxLongAdditions || 100) : Number(strategy?.maxShortAdditions || 50);
-  if (leg?.sparseMode) {
-    const pendingOrder = side === 'long' ? strategy?.pendingLongOrder : strategy?.pendingShortOrder;
-    const pendingSparse = side === 'long' ? strategy?.pendingLongSparse : strategy?.pendingShortSparse;
-    const pendingStart = side === 'long' ? strategy?.pendingLongTierStart : strategy?.pendingShortTierStart;
-    const pendingEnd = side === 'long' ? strategy?.pendingLongTierEnd : strategy?.pendingShortTierEnd;
-    if (pendingSparse || (strategy?.pendingSparse && strategy.pendingDirection === side)) return `稀疏补仓 · ${pendingStart ?? strategy?.pendingTierStart}-${pendingEnd ?? strategy?.pendingTierEnd}档挂单 · ${additions}/${max}`;
-    if (pendingOrder) return `稀疏补仓 · 挂单中 · ${additions}/${max}`;
-    if (additions >= max) return `稀疏补仓 · 已达上限 ${additions}/${max}`;
-    const first = additions + 1; const last = Math.min(max, additions + 5);
-    return `稀疏补仓 · 下一组${first}-${last}档 · ${additions}/${max}`;
-  }
   const pendingOrder = side === 'long' ? strategy?.pendingLongOrder : strategy?.pendingShortOrder;
-  if (pendingOrder) return `${leg?.recovery ? '恢复中' : '常规'} · 补仓挂单中 · ${additions}/${max}`;
+  const pendingSparse = side === 'long' ? strategy?.pendingLongSparse : strategy?.pendingShortSparse;
+  const pendingStart = side === 'long' ? strategy?.pendingLongTierStart : strategy?.pendingShortTierStart;
+  const pendingEnd = side === 'long' ? strategy?.pendingLongTierEnd : strategy?.pendingShortTierEnd;
+  const pendingTrigger = side === 'long' ? strategy?.pendingLongTriggerPrice : strategy?.pendingShortTriggerPrice;
+  const pendingPrice = Number(pendingTrigger || group[side]?.px || 0);
+  if (pendingOrder) {
+    const kind = pendingSparse ? `稀疏补仓 · ${pendingStart ?? '—'}-${pendingEnd ?? '—'}档挂单` : '常规补仓挂单中';
+    return `${kind}${pendingPrice > 0 ? ` · 委托价 ${twoDecimals(pendingPrice)}` : ''} · ${additions}/${max}`;
+  }
+  if (strategy?.marketDataFresh === false) return '行情数据过期 · 暂停自动补仓';
+  if (leg?.phase === 'close_pending') return '止盈委托处理中';
+  if (leg?.phase === 'reentry_wait' || leg?.phase === 'reentry_pending') return '平仓后重建处理中';
+  if (additions >= max) return `${side === 'long' ? '多头' : '空头'}补仓已达上限 · ${additions}/${max}`;
+  const currentPnl = rowPnl(group[side]);
+  if (group[side]?.kind === 'position' && currentPnl != null && currentPnl >= 0) return `当前浮盈 · 暂不补仓 · ${additions}/${max}`;
+
+  const blocked = leg?.addBlockReason;
+  const blockDetails = leg?.addBlockDetails || {};
+  if (blocked === 'insufficient_margin') {
+    return `保证金不足 · 可用 ${twoDecimals(Number(blockDetails.availableBalance))}U / 需要 ${twoDecimals(Number(blockDetails.requiredMarginUsdt))}U`;
+  }
+  if (blocked === 'market_stale') return '行情数据过期 · 暂停自动补仓';
+
+  const trendBlocked = blocked === 'trend_filter' || Boolean(strategy?.trend || (strategy?.trendDirection && strategy.trendDirection !== 'neutral'));
+  if (trendBlocked && !leg?.sparseMode) {
+    const trendMatches = Boolean(blockDetails.trendMatches)
+      || (strategy?.trendDirection === (side === 'long' ? 'down' : 'up') && Number(strategy?.trendBars || 0) >= 3);
+    if (!trendMatches) {
+      return `趋势过滤 · 暂停常规补仓 · 等待${side === 'long' ? '下跌' : '上涨'}方向确认`;
+    }
+    const entry = Number(leg?.sparseEntryPrice || group[side]?.px || 0);
+    const price = Number(strategy?.lastPrice || 0);
+    const atr1h = Number(strategy?.atr1h || 0);
+    const distance = Number.isFinite(Number(blockDetails.adverseDistance))
+      ? Number(blockDetails.adverseDistance)
+      : side === 'long' ? entry - price : price - entry;
+    const required = Number.isFinite(Number(blockDetails.requiredDistance)) && Number(blockDetails.requiredDistance) > 0
+      ? Number(blockDetails.requiredDistance) : atr1h * Number(strategy?.sparseEnterAtrDistance || 2);
+    return `趋势过滤 · 暂停常规补仓 · 稀疏启动 ${twoDecimals(Math.max(0, distance))}/${twoDecimals(required)}（2×1h ATR）`;
+  }
+  if (blocked === 'waiting_grid' && blockDetails.triggerPrice != null) {
+    return `常规补仓 · 等待触发价 ${twoDecimals(Number(blockDetails.triggerPrice))} · ${additions}/${max}`;
+  }
+  if (leg?.sparseMode) {
+    const first = additions + 1; const last = Math.min(max, additions + 5);
+    const count = last - first + 1;
+    const step = Number(leg?.sparseStep || 0);
+    const anchor = Number(leg?.lastAddPrice || 0);
+    const target = anchor > 0 && step > 0 ? anchor + (side === 'long' ? -1 : 1) * step * count : 0;
+    return `稀疏补仓 · 下一组${first}-${last}档${target > 0 ? ` · 目标价 ${twoDecimals(target)}` : ''} · ${additions}/${max}`;
+  }
+  if (blocked === 'trend_filter') return '趋势过滤 · 暂停常规补仓';
+  const anchor = Number(leg?.lastAddPrice || 0);
+  const step = Number(strategy?.addStep || 0);
+  const trigger = anchor > 0 && step > 0 ? anchor + (side === 'long' ? -step : step) : 0;
+  if (trigger > 0 && group[side]?.kind === 'position') return `常规 · 等待触发价 ${twoDecimals(trigger)} · ${additions}/${max}`;
   return `${leg?.recovery ? '恢复中' : '常规'} · ${additions}/${max}`;
 }
 function manualAddAvailable(group: TradfiGroup, side: 'long' | 'short') {

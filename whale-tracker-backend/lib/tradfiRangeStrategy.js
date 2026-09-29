@@ -158,6 +158,9 @@ function legSnapshot(state, side) {
     sparseSince: Number(legValue(state, side, 'SparseSince', 0)) || 0,
     sparseStep: Number(legValue(state, side, 'SparseStep', 0)) || 0,
     sparseDistanceAtr: Number(legValue(state, side, 'SparseDistanceAtr', 0)) || 0,
+    sparseEntryPrice: Number(legValue(state, side, 'SparseEntryPrice', 0)) || 0,
+    addBlockReason: String(legValue(state, side, 'AddBlockReason', '') || ''),
+    addBlockDetails: legValue(state, side, 'AddBlockDetails', null),
     closeOrders: legValue(state, side, 'CloseOrders', []),
     closePlacedAt: Number(legValue(state, side, 'ClosePlacedAt', 0)) || 0,
     closeGuardPrice: Number(legValue(state, side, 'CloseGuardPrice', 0)) || 0,
@@ -191,14 +194,18 @@ function publicRow(row) {
     pendingLongSparse: Boolean(pendingForSide(s, 'long')?.sparse),
     pendingLongTierStart: pendingForSide(s, 'long')?.tierStart ?? null,
     pendingLongTierEnd: pendingForSide(s, 'long')?.tierEnd ?? null,
+    pendingLongTriggerPrice: pendingForSide(s, 'long')?.triggerPrice ?? null,
     pendingShortSparse: Boolean(pendingForSide(s, 'short')?.sparse),
     pendingShortTierStart: pendingForSide(s, 'short')?.tierStart ?? null,
     pendingShortTierEnd: pendingForSide(s, 'short')?.tierEnd ?? null,
+    pendingShortTriggerPrice: pendingForSide(s, 'short')?.triggerPrice ?? null,
     pendingLongOrder: Boolean(pendingForSide(s, 'long')),
     pendingShortOrder: Boolean(pendingForSide(s, 'short')),
     marginPerOrder: config.marginUsdt, leverage: config.leverage, cycleId: s.cycleId || null,
     comboPnl: s.comboPnl ?? null, netPnl: s.netPnl ?? null, closeTrigger: s.closeTrigger ?? null,
     costs: s.costs || null, addStep: s.addStep ?? null, atr1h: s.atr1h ?? null,
+    trend: Boolean(s.trend), marketDataFresh: s.marketDataFresh == null ? null : Boolean(s.marketDataFresh),
+    sparseEnterAtrDistance: SPARSE_ENTER_ATR_DISTANCE,
     trendDirection: s.trendDirection || 'neutral', trendBars: s.trendBars ?? 0,
     lastPrice: s.lastPrice ?? null, range: s.range || null,
     cooldownUntil: s.cooldownUntil ?? null, cycleStartedAt: s.cycleStartedAt ?? null,
@@ -211,6 +218,18 @@ function publicRow(row) {
     long: { ...legSnapshot(s, 'long'), costs: s.longCosts || null },
     short: { ...legSnapshot(s, 'short'), costs: s.shortCosts || null },
     lastError: row.last_error || '', startedAt: row.started_at, updatedAt: row.updated_at };
+}
+function recordAddBlock(row, direction, reason, message, details = {}) {
+  const latest = rowFor(row.user_id, row.symbol) || row;
+  const state = parseState(latest);
+  const leg = legSnapshot(state, direction);
+  const serialized = JSON.stringify(details);
+  const previousSerialized = JSON.stringify(leg.addBlockDetails || {});
+  if (leg.addBlockReason === reason && previousSerialized === serialized) return;
+  if (leg.addBlockReason !== reason && message) {
+    log(row.user_id, row.symbol, message, reason ? 'warn' : 'info', { side: direction, reason, ...details });
+  }
+  save(latest, {}, legPatch(direction, { AddBlockReason: reason, AddBlockDetails: details }));
 }
 function status(userId, symbol) {
   const sym = cleanSymbol(symbol);
@@ -1494,7 +1513,13 @@ async function reconcileRow(row) {
   save(row, {}, { ...legUpdates, comboPnl, netPnl: longCosts.netPnl + shortCosts.netPnl, costs: { long: longCosts, short: shortCosts } });
   // Keep PnL and take-profit management alive, but never add exposure from
   // stale candles or a missing book quote.
-  if (!market.dataFresh) return;
+  if (!market.dataFresh) {
+    for (const [direction, position] of [['long', pos.long], ['short', pos.short]]) {
+      if (qty(position) > 0) recordAddBlock(row, direction, 'market_stale', `${direction === 'long' ? '多头' : '空头'}补仓暂停：K线数据过期或不可用`,
+        { age15m: market.age15m, age1h: market.age1h });
+    }
+    return;
+  }
   const canAddLong = longManaged && qty(pos.long) > 0;
   const canAddShort = shortManaged && qty(pos.short) > 0;
   if (!canAddLong && !canAddShort) return;
@@ -1527,7 +1552,20 @@ async function reconcileRow(row) {
   longLosing = selectedDirection === 'long';
   const activeLeg = longLosing ? nextLong : nextShort;
   const sparseMode = Boolean(activeLeg.sparseMode);
-  if ((market.trend || market.trendDirection !== 'neutral') && !sparseMode) return;
+  const direction = longLosing ? 'long' : 'short';
+  if ((market.trend || market.trendDirection !== 'neutral') && !sparseMode) {
+    const position = longLosing ? pos.long : pos.short;
+    const entryPrice = Number(position?.entryPrice || 0);
+    const adverseDistance = longLosing ? entryPrice - market.last : market.last - entryPrice;
+    const requiredDistance = Number(market.atr1h || 0) * SPARSE_ENTER_ATR_DISTANCE;
+    const trendMatches = market.trendDirection === (longLosing ? 'down' : 'up') && Number(market.trendBars || 0) >= TREND_CONFIRM_BARS;
+    const message = trendMatches
+      ? `${longLosing ? '多头' : '空头'}趋势过滤：暂停常规补仓，等待稀疏模式启动距离`
+      : `${longLosing ? '多头' : '空头'}趋势过滤：暂停常规补仓，等待逆势方向确认`;
+    recordAddBlock(row, direction, 'trend_filter', message, { trendDirection: market.trendDirection, trendBars: market.trendBars,
+      entryPrice, currentPrice: market.last, adverseDistance, atr1h: market.atr1h, requiredDistance, trendMatches });
+    return;
+  }
   const anchor = Number((longLosing ? longLeg.lastAddPrice : shortLeg.lastAddPrice) || market.last);
   const decision = additionDecision(state, longLosing);
   const sideMax = longLosing ? MAX_LONG_ADDITIONS : MAX_SHORT_ADDITIONS;
@@ -1537,23 +1575,29 @@ async function reconcileRow(row) {
     ? sparseGroupMargin(row.symbol, decision.next, groupCount, strategyConfig(row).marginUsdt)
     : ladderMargin(row.symbol, decision.next, strategyConfig(row).marginUsdt);
   const triggerPrice = sparseMode ? sparseGroupTrigger(anchor, step, groupCount, longLosing) : (longLosing ? anchor - step : anchor + step);
-  if (!shouldPlaceAddition({ sparseMode, side: longLosing ? 'long' : 'short', price: market.last, triggerPrice })) return;
+  if (!shouldPlaceAddition({ sparseMode, side: direction, price: market.last, triggerPrice })) {
+    recordAddBlock(row, direction, 'waiting_grid', `${longLosing ? '多头' : '空头'}等待常规补仓触发价`,
+      { currentPrice: market.last, anchor, step, triggerPrice, additions: decision.next - 1, maxAdditions: sideMax });
+    return;
+  }
   if (decision.action === 'manual') throw invalid(`多头最多${MAX_LONG_ADDITIONS}档、空头最多${MAX_SHORT_ADDITIONS}档自动补仓，策略转人工接管`, 409);
   if (decision.action === 'wait') return;
   const balances = await signedRequest(creds, 'GET', '/fapi/v2/balance');
   const availableBalance = Number((Array.isArray(balances) ? balances : []).find((item) => item.asset === 'USDT')?.availableBalance || 0);
   if (availableBalance + 1e-8 < marginUsdt) {
-    log(row.user_id, row.symbol, `本轮${longLosing ? '多头' : '空头'}补仓未提交：可用保证金 ${availableBalance.toFixed(2)}U，需求 ${marginUsdt.toFixed(2)}U`, 'warn',
-      { side: longLosing ? 'long' : 'short', availableBalance, requiredMarginUsdt: marginUsdt });
+    recordAddBlock(row, direction, 'insufficient_margin', `${longLosing ? '多头' : '空头'}补仓未提交：可用保证金 ${availableBalance.toFixed(2)}U，需求 ${marginUsdt.toFixed(2)}U`,
+      { availableBalance, requiredMarginUsdt: marginUsdt, nextTier: decision.next });
     return;
   }
+  recordAddBlock(row, direction, '', `${longLosing ? '多头' : '空头'}补仓条件满足，正在提交委托`,
+    { currentPrice: market.last, triggerPrice, sparseMode, nextTier: decision.next, maxAdditions: sideMax });
   const side = longLosing ? 'BUY' : 'SELL'; const price = sparseMode ? triggerPrice : (longLosing ? market.bid : market.ask);
   const lastTier = decision.next + groupCount - 1;
   const suffix = sparseMode ? `s${longLosing ? 'l' : 's'}${decision.next}_${lastTier}` : `${longLosing ? 'l' : 's'}${decision.next}`;
   const pending = { ...(await placeLimit(creds, row, side, price, suffix, marginUsdt)), kind: 'auto',
     direction: longLosing ? 'long' : 'short', tierStart: decision.next, tierEnd: lastTier,
     slotCount: groupCount, sparse: sparseMode, triggerPrice, totalMarginUsdt: marginUsdt, remainingMarginUsdt: marginUsdt, step };
-  save(row, { status: 'add_pending' }, { ...legUpdates, ...pendingStatePatch(state, longLosing ? 'long' : 'short', pending) });
+  save(row, { status: 'add_pending' }, { ...legUpdates, ...pendingStatePatch(state, direction, pending), ...legPatch(direction, { AddBlockReason: '', AddBlockDetails: null }) });
   log(row.user_id, row.symbol, sparseMode
     ? `已提交${longLosing ? '多头' : '空头'}稀疏补仓第 ${decision.next}-${lastTier} 档：合并保证金 ${marginUsdt}U，间距 ${step.toFixed(2)}`
     : `已提交${longLosing ? '多头' : '空头'}第 ${decision.next}/${sideMax} 档补仓：保证金 ${marginUsdt}U`, 'trade',
