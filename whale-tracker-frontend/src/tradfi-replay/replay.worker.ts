@@ -3,8 +3,9 @@ import core from '@core/tradfiRangeCore.cjs';
 type Candle = { t: number; o: number; h: number; l: number; c: number; v: number };
 type Funding = { t: number; rate: number };
 type Side = 'long' | 'short';
-type Position = { side: Side; qty: number; avg: number; margin: number; adds: number; lastAdd: number; fee: number; funding: number; realized: number; openedAt: number; minNet: number; recovery: boolean; recoveryArmed: boolean; recoveryPeak: number; recoveryTrail: number; sparseMode: boolean };
-type Order = { side: Side; purpose: 'open' | 'add' | 'close'; price: number; qty: number; margin: number; createdAt: number; expiresAt: number; adds: number; label: string };
+type FillRecord = { time: number; price: number; qty: number; margin: number; purpose: 'open' | 'add'; tierStart: number; tierEnd: number; label: string };
+type Position = { side: Side; qty: number; avg: number; margin: number; adds: number; lastAdd: number; fee: number; funding: number; realized: number; openedAt: number; minNet: number; recovery: boolean; recoveryArmed: boolean; recoveryPeak: number; recoveryTrail: number; sparseMode: boolean; specialQty: number; specialCost: number; specialFee: number; fills: FillRecord[] };
+type Order = { side: Side; purpose: 'open' | 'add' | 'close'; price: number; qty: number; margin: number; createdAt: number; expiresAt: number; adds: number; label: string; overheat?: boolean; bottom?: boolean; peakLarge?: boolean; deferredStage?: number; deepLongStage?: number; deepLow?: number };
 
 const scope: any = self as any;
 let candles: Candle[] = []; let funding: Funding[] = []; let settings: any; let index = 0; let warmupState: any = null; let expectedCandles = 0;
@@ -14,8 +15,21 @@ let orders: Record<Side, Order | null> = { long: null, short: null };
 let rebuildAt: Record<Side, number> = { long: 0, short: 0 };
 let fundingIndex = 0; let timer: number | null = null; let speed = 10;
 let logs: any[] = []; let tradeCount = 0; let realized = 0; let realizedFunding = 0; let fees = 0; let fundingTotal = 0;
+let realizedBySide: Record<Side, number> = { long: 0, short: 0 };
+let positionDistribution = { large: 0, small: 0 };
 let maxLossPeak: Record<Side | 'total', number> = { long: 0, short: 0, total: 0 };
+let lossPeakContext: Record<Side, any> = { long: null, short: null };
+let totalLossPeakTime = 0;
+let marginPeak = 0; let specialPlaced = 0; let specialFilled = 0; let specialCanceled = 0; let specialRealized = 0;
+let specialMargin: Record<Side, number> = { long: 0, short: 0 };
+let losingMinutes: Record<Side, number> = { long: 0, short: 0 };
+let losingStreak: Record<Side, number> = { long: 0, short: 0 };
+let maxLosingStreak: Record<Side, number> = { long: 0, short: 0 };
 let startedAt = 0; let stateLabel = '等待有效数据'; let lastMarket: any = null; let cooldownUntil = 0; let sentLogCount = 0;
+let shortTrendProtected = false;
+let turningPoint: any = { phase: 'idle', lastHour: 0 };
+let overheat: any = { phase: 'normal', lastHour: 0 };
+let deepLongSignal: any = null;
 
 function emitLog(time: number, type: string, text: string, detail: any = {}) {
   if (type !== 'position-close') return;
@@ -32,7 +46,7 @@ function aggregate(until: number, interval: number, count: number): number[][] {
 }
 async function buildAggregateCache() {
   aggregateCache.clear();
-  const intervals = [15, 60]; const barsByInterval = new Map<number, Candle[]>(intervals.map((interval) => [interval, []]));
+  const intervals = [15, 60, 1440]; const barsByInterval = new Map<number, Candle[]>(intervals.map((interval) => [interval, []]));
   const current = new Map<number, Candle | null>(intervals.map((interval) => [interval, null]));
   for (let i = 0; i < candles.length; i += 1) {
     const candle = candles[i];
@@ -72,6 +86,14 @@ function fill(order: Order, bar: Candle) {
     const gross = order.side === 'long' ? (order.price - p.avg) * p.qty : (p.avg - order.price) * p.qty;
     const net = gross + p.funding - p.fee - fee;
     realized += net;
+    realizedBySide[order.side] += net;
+    if (net >= 10) positionDistribution.large += 1;
+    else if (net >= 0) positionDistribution.small += 1;
+    if (p.specialQty > 0) {
+      const fraction = Math.min(1, p.specialQty / p.qty);
+      const specialGross = (order.side === 'long' ? order.price * p.specialQty - p.specialCost : p.specialCost - order.price * p.specialQty);
+      specialRealized += specialGross + p.funding * fraction - p.specialFee - fee * fraction;
+    }
     realizedFunding += p.funding;
     cooldownUntil = bar.t + 70_000; // Fill time is unknown within a 1m candle; wait conservatively.
     if (order.label !== '底仓配对失败撤回') rebuildAt[order.side] = bar.t + 70_000;
@@ -80,23 +102,37 @@ function fill(order: Order, bar: Candle) {
       openPrice: p.avg, closePrice: order.price, pnl: net, funding: p.funding, fee: p.fee + fee,
     });
     positions[order.side] = null;
+    if (order.side === 'long') deepLongSignal = null;
     stateLabel = `${order.side === 'long' ? '多' : '空'}仓止盈 · 10秒后重建`;
   } else {
     const old = positions[order.side];
     const totalQty = (old?.qty || 0) + order.qty;
     const avg = totalQty ? ((old?.avg || 0) * (old?.qty || 0) + order.price * order.qty) / totalQty : order.price;
     const actualMargin = order.qty * order.price / settings.leverage;
+    if (order.side === 'long' && order.deferredStage) overheat = core.deferredLongFill(overheat, order, actualMargin, bar.t);
+    if (order.side === 'long' && order.deepLongStage) deepLongSignal = { ...deepLongSignal,
+      stage: order.deepLongStage, lastLow: order.deepLow, lastFillHour: bar.t };
+    const special = Boolean(order.peakLarge);
+    if (special) { specialFilled += 1; specialMargin[order.side] += actualMargin; }
     const count = core.countedAdditions({ longAdditions: order.side === 'long' ? (old?.adds || 0) : 0, shortAdditions: order.side === 'short' ? (old?.adds || 0) : 0 }, order.side === 'long', order.adds);
     positions[order.side] = { side: order.side, qty: totalQty, avg, margin: (old?.margin || 0) + actualMargin,
       adds: count.next, lastAdd: order.price, fee: (old?.fee || 0) + fee,
       funding: old?.funding || 0, realized: old?.realized || 0, openedAt: old?.openedAt || bar.t,
-      minNet: old?.minNet || 0, recovery: old?.recovery || false, recoveryArmed: old?.recoveryArmed || false,
-      recoveryPeak: old?.recoveryPeak || 0, recoveryTrail: old?.recoveryTrail || 0, sparseMode: old?.sparseMode || false };
+      minNet: old?.minNet || 0, recovery: old?.recovery || false, recoveryArmed: order.purpose === 'add' ? false : old?.recoveryArmed || false,
+      recoveryPeak: order.purpose === 'add' ? 0 : old?.recoveryPeak || 0, recoveryTrail: order.purpose === 'add' ? 0 : old?.recoveryTrail || 0,
+      sparseMode: old?.sparseMode || false,
+      specialQty: (old?.specialQty || 0) + (special ? order.qty : 0),
+      specialCost: (old?.specialCost || 0) + (special ? notional : 0),
+      specialFee: (old?.specialFee || 0) + (special ? fee : 0),
+      fills: [...(old?.fills || []), { time: bar.t, price: order.price, qty: order.qty, margin: actualMargin,
+        purpose: order.purpose, tierStart: order.purpose === 'add' ? (old?.adds || 0) + 1 : 0,
+        tierEnd: order.purpose === 'add' ? count.next : 0, label: order.label }] };
     emitLog(bar.t, `${order.purpose}-fill`, `${order.side === 'long' ? '多' : '空'}仓${order.purpose === 'add' ? '补仓' : '开仓'}成交 · ${fmt(order.price)}`, { price: order.price, quantity: order.qty, notional, margin: actualMargin, fee, adds: positions[order.side]?.adds });
   }
   orders[order.side] = null;
 }
 function expire(order: Order, bar: Candle) {
+  if (order.peakLarge) specialCanceled += 1;
   const time = bar.t;
   emitLog(time, 'expired', `${order.side === 'long' ? '多' : '空'}仓${order.purpose === 'add' ? '补仓' : order.purpose === 'close' ? '止盈' : '底仓'}委托过期未成交`, { price: order.price });
   orders[order.side] = null;
@@ -120,7 +156,7 @@ function expire(order: Order, bar: Candle) {
     stateLabel = '双向底仓未同时成交 · 撤回已成交侧';
   }
 }
-function place(side: Side, purpose: Order['purpose'], price: number, margin: number, time: number, adds = 0, label = '') {
+function place(side: Side, purpose: Order['purpose'], price: number, margin: number, time: number, adds = 0, label = '', ttlMs = settings.orderTtlMs) {
   if (orders[side]) return;
   const roundDown = purpose === 'close' ? side === 'short' : side === 'long';
   price = (roundDown ? Math.floor(price / settings.tickSize + 1e-9) : Math.ceil(price / settings.tickSize - 1e-9)) * settings.tickSize;
@@ -129,11 +165,18 @@ function place(side: Side, purpose: Order['purpose'], price: number, margin: num
   const rawQty = purpose === 'close' ? Number(positions[side]?.qty || 0) : margin * settings.leverage / price;
   const qty = Math.floor((rawQty + settings.qtyStep * 1e-9) / settings.qtyStep) * settings.qtyStep;
   if (!(qty > 0)) { emitLog(time, 'rejected', `${side === 'long' ? '多' : '空'}仓委托数量低于数量步进`, { price, margin, rawQty }); return; }
-  orders[side] = { side, purpose, price, qty, margin, createdAt: time, expiresAt: time + settings.orderTtlMs, adds, label };
+  orders[side] = { side, purpose, price, qty, margin, createdAt: time, expiresAt: time + ttlMs, adds, label,
+    overheat: overheat.phase === 'overheat', bottom: label === '峰值大额补多·底部' || label.startsWith('峰值大额补多·延迟'),
+    peakLarge: label.startsWith('峰值大额') || label.startsWith('深跌分级补多·'),
+    deferredStage: label.startsWith('峰值大额补多·延迟') ? Number(label.at(-1)) : 0,
+    deepLongStage: label.startsWith('深跌分级补多·') ? Number(label.at(-1)) : 0,
+    deepLow: label.startsWith('深跌分级补多·') ? Number(deepLongSignal?.pendingLow) : 0 };
+  if (orders[side].peakLarge) specialPlaced += 1;
   emitLog(time, 'placed', `${side === 'long' ? '多' : '空'}仓${purpose === 'add' ? '补仓' : purpose === 'close' ? '止盈' : '底仓'}挂单 · ${fmt(price)} · ${fmt(margin)}U`, { price, qty, margin, label });
 }
 function fmt(value: number): string { return Number(value || 0).toFixed(2); }
 function processBar(bar: Candle) {
+  const weekendMode = core.isCommodityWeekendMode(new Date(bar.t));
   // Funding is charged at its timestamp before orders in that minute can fill.
   while (fundingIndex < funding.length && funding[fundingIndex].t <= bar.t) {
     const f = funding[fundingIndex++];
@@ -150,32 +193,91 @@ function processBar(bar: Candle) {
   for (const side of ['long', 'short'] as Side[]) {
     const pending = orders[side];
     if (pending) {
+      if (weekendMode && pending.purpose === 'add') {
+        if (pending.peakLarge) specialCanceled += 1;
+        orders[side] = null;
+        continue;
+      }
       if (bar.t >= pending.expiresAt) expire(pending, bar);
       else if (bar.t > pending.createdAt && makerFill(pending, bar)) fill(pending, bar);
     }
   }
   const rows15 = aggregate(bar.t + 60_000, 15, 160);
-  const rows60 = aggregate(bar.t + 60_000, 60, 60);
-  try { lastMarket = index === 1200 && warmupState ? warmupState : core.marketState(rows15, rows60); }
+  const rows60 = aggregate(bar.t + 60_000, 60, 130);
+  const rows1d = aggregate(bar.t + 60_000, 1440, 30);
+  try { lastMarket = index === 1200 && warmupState ? warmupState : core.marketState(rows15, rows60.slice(-60)); }
   catch { stateLabel = '累积预热K线'; return; }
+  turningPoint = core.turningPointStep(turningPoint, rows60);
+  if (settings.symbol === 'XAUUSDT') overheat = core.overheatStateStep(overheat, rows60,
+    { ...lastMarket, dataFresh: true }, turningPoint, positions.short?.adds || 0, positions.long?.adds || 0,
+    Boolean(positions.long));
+  if (overheat.deferredLong) overheat = { ...overheat, deferredLong: null };
+  if (settings.symbol === 'XAUUSDT' && overheat.phase !== 'normal') overheat = { ...overheat,
+    supportZone: core.historicalSupportZone(rows1d, lastMarket.atr1h, bar.c) || overheat.supportZone || null };
+  const deepZone = settings.symbol === 'XAUUSDT'
+    ? core.deepLongZone(rows1d, rows60, deepLongSignal?.peak || 0)
+    : { level: 0, peak: 0, low: 0, drawdown: 0 };
+  if (deepZone.level > 0 && orders.long?.purpose === 'add' && !orders.long.deepLongStage) {
+    if (orders.long.peakLarge) specialCanceled += 1;
+    orders.long = null;
+  }
+  const heatActive = overheat.phase === 'overheat';
+  const bottomPhase = overheat.phase === 'bottom_watch' || overheat.phase === 'bottom_confirmed';
+  const longBlocked = overheat.phase !== 'normal';
+  const hotShortPlan = core.overheatShortPlan(overheat, bar.c, positions.short?.lastAdd || bar.c,
+    lastMarket.addStep, lastMarket.atr1h, positions.short?.adds || 0);
+  shortTrendProtected = core.shortTrendProtectionDecision(shortTrendProtected, { ...lastMarket, dataFresh: true }).active;
+  for (const side of ['long', 'short'] as Side[]) {
+    if (orders[side]?.peakLarge && !orders[side]?.bottom && !orders[side]?.deepLongStage && ((turningPoint.phase !== 'confirmed')
+      || (longBlocked && side === 'long') || (heatActive && !hotShortPlan.allowed))) { orders[side] = null; specialCanceled += 1; }
+  }
+  if (orders.long && ((longBlocked && (orders.long.label === '止盈后同向重建'
+    || (orders.long.purpose === 'add' && (heatActive || !orders.long.deepLongStage))))
+    || (!longBlocked && orders.long.bottom))) {
+    if (orders.long.label === '止盈后同向重建') rebuildAt.long = bar.t + 70_000;
+    if (orders.long.peakLarge) specialCanceled += 1;
+    orders.long = null;
+  }
+  if (orders.short && (((!heatActive && orders.short.overheat && orders.short.purpose === 'add'))
+    || (heatActive && (orders.short.purpose === 'add'
+    && (!hotShortPlan.allowed || !orders.short.overheat)))
+    || (shortTrendProtected && !hotShortPlan.allowed && orders.short.purpose === 'add' && !orders.short.peakLarge)
+    || ((shortTrendProtected || heatActive) && orders.short.label === '止盈后同向重建'))) {
+    if (orders.short.label === '止盈后同向重建') rebuildAt.short = bar.t + 70_000;
+    if (orders.short.peakLarge) specialCanceled += 1;
+    orders.short = null;
+  }
   const combinedNet = (['long', 'short'] as Side[]).reduce((sum, side) => {
     const position = positions[side];
     return sum + (position ? sidePnl(position, bar.c) - position.qty * bar.c * settings.makerFee : 0);
   }, 0);
-  maxLossPeak.total = Math.max(maxLossPeak.total, Math.abs(Math.min(0, combinedNet)));
+  const totalLoss = Math.abs(Math.min(0, combinedNet));
+  if (totalLoss > maxLossPeak.total) { maxLossPeak.total = totalLoss; totalLossPeakTime = bar.t; }
+  marginPeak = Math.max(marginPeak, Number(positions.long?.margin || 0) + Number(positions.short?.margin || 0));
+  for (const side of ['long', 'short'] as Side[]) {
+    const position = positions[side];
+    const net = position ? sidePnl(position, bar.c) - position.qty * bar.c * settings.makerFee : 0;
+    if (position && net < 0) {
+      losingMinutes[side] += 1; losingStreak[side] += 1;
+      maxLosingStreak[side] = Math.max(maxLosingStreak[side], losingStreak[side]);
+    } else losingStreak[side] = 0;
+  }
   if (['long', 'short'].some((side) => orders[side as Side]?.label === '双向底仓')) {
     stateLabel = '等待双向底仓成交'; return;
   }
   const price = bar.c;
+  const rawTurnSide = core.turningPointOpportunity(turningPoint, rows60.at(-1)?.[6] || 0) as Side | null;
+  const turnSide = weekendMode ? null : rawTurnSide === 'short' && (!heatActive || hotShortPlan.allowed) ? 'short' : null;
   for (const side of ['long', 'short'] as Side[]) {
-    if (!positions[side] && !orders[side] && rebuildAt[side] && bar.t >= rebuildAt[side]) {
+    if (!(side === 'long' && longBlocked) && !(side === 'short' && (shortTrendProtected || heatActive))
+      && !positions[side] && !orders[side] && rebuildAt[side] && bar.t >= rebuildAt[side]) {
       place(side, 'open', price + (side === 'long' ? -settings.tickSize : settings.tickSize), settings.marginUsdt, bar.t, 0, '止盈后同向重建');
       rebuildAt[side] = 0;
     }
   }
   if (!positions.long && !positions.short && !orders.long && !orders.short) {
     if (bar.t + 60_000 < cooldownUntil) stateLabel = `止盈后冷却 · ${Math.ceil((cooldownUntil - (bar.t + 60_000)) / 1000)}秒`;
-    else if (lastMarket.rangeReady) {
+    else if (lastMarket.rangeReady && !shortTrendProtected && !longBlocked) {
       const firstMargin = settings.marginUsdt;
       place('long', 'open', Math.max(settings.tickSize, price - settings.tickSize), firstMargin, bar.t, 0, '双向底仓');
       place('short', 'open', price + settings.tickSize, firstMargin, bar.t, 0, '双向底仓');
@@ -203,24 +305,36 @@ function processBar(bar: Candle) {
     const positionNet = sidePnl(p, price) - estimatedCloseFee;
     const decisionNet = core.takeProfitNetPnl({ pricePnl, funding: p.funding, entryFee: p.fee, exitFee: estimatedCloseFee });
     p.minNet = Math.min(p.minNet, decisionNet);
-    maxLossPeak[side] = Math.max(maxLossPeak[side], Math.abs(Math.min(0, positionNet)));
+    const loss = Math.abs(Math.min(0, positionNet));
+    if (loss > maxLossPeak[side]) {
+      maxLossPeak[side] = loss;
+      lossPeakContext[side] = { time: bar.t, price, entryPrice: p.avg, margin: p.margin,
+        additions: p.adds, phase: overheat.phase,
+        deepBudget: side === 'long' ? settings.marginUsdt * Number(deepLongSignal?.budgetSlots || 0) : 0,
+        deepStage: side === 'long' ? Number(deepLongSignal?.stage || 0) : 0,
+        fills: p.fills.slice() };
+    }
     const recovery = p.recovery || Math.abs(Math.min(0, p.minNet)) >= Math.max(5, notional * 0.002);
     const scalpTarget = Math.max(0.4, notional * 0.0002);
     const target = recovery ? Math.max(scalpTarget * 3, Math.abs(Math.min(0, p.minNet)) * 0.25) : scalpTarget;
     p.recovery = recovery;
     p.recoveryPeak = recovery ? Math.max(p.recoveryPeak, decisionNet) : 0;
     p.recoveryArmed = recovery && p.recoveryPeak >= target;
-    p.recoveryTrail = recovery ? Math.max(1.5, p.qty * Number(lastMarket.atr || 0) * 1.2) : 0;
-    const recoveryExit = core.recoveryExitState({ recovery, armed: p.recoveryArmed, netPnl: decisionNet, peakNetPnl: p.recoveryPeak,
-      trail: p.recoveryTrail, trend: lastMarket.trend, target });
+    const shortTrail = recovery && side === 'short' ? Math.max(1.5, p.qty * Number(lastMarket.atr || 0) * 1.2) : 0;
+    const recoveryExit = side === 'long'
+      ? core.longRecoveryExitState({ recovery, armed: p.recoveryArmed, netPnl: decisionNet, peakNetPnl: p.recoveryPeak, target })
+      : core.recoveryExitState({ recovery, armed: p.recoveryArmed, netPnl: decisionNet, peakNetPnl: p.recoveryPeak,
+        trail: shortTrail, trend: lastMarket.trend, target });
+    p.recoveryTrail = recovery && side === 'long' ? Math.max(0, p.recoveryPeak - recoveryExit.trigger) : shortTrail;
     const shouldClose = recovery ? recoveryExit.shouldClose : decisionNet >= target;
     if (!orders[side] && shouldClose) {
       const triggerFunding = Math.min(0, p.funding);
-      const guard = side === 'long' ? p.avg + (target + p.fee + estimatedCloseFee - triggerFunding) / p.qty : p.avg - (target + p.fee + estimatedCloseFee - triggerFunding) / p.qty;
+      const guard = side === 'long' && recovery ? 0 : side === 'long'
+        ? p.avg + (target + p.fee + estimatedCloseFee - triggerFunding) / p.qty
+        : p.avg - (target + p.fee + estimatedCloseFee - triggerFunding) / p.qty;
       const limit = side === 'long' ? Math.max(guard, price + settings.tickSize) : Math.min(guard, price - settings.tickSize);
       place(side, 'close', limit, 0, bar.t, 0, recovery ? recoveryExit.reason || '恢复模式回撤保护' : '小额止盈');
     }
-    if (orders[side]) continue;
     const isLong = side === 'long';
     const sparse = core.sparseModeDecision({ active: p.sparseMode, side, entryPrice: p.avg, price, atr1h: lastMarket.atr1h,
       trendDirection: lastMarket.trendDirection, trendBars: lastMarket.trendBars,
@@ -228,32 +342,117 @@ function processBar(bar: Candle) {
     if (sparse.enter) emitLog(bar.t, 'sparse-enter', `${side === 'long' ? '多' : '空'}仓进入稀疏阶梯`, { distanceAtr: sparse.distanceAtr });
     if (sparse.exit) emitLog(bar.t, 'sparse-exit', `${side === 'long' ? '多' : '空'}仓退出稀疏阶梯`, { distanceAtr: sparse.distanceAtr });
     p.sparseMode = sparse.active;
-    if ((lastMarket.trend || lastMarket.trendDirection !== 'neutral') && !sparse.active) continue;
-    const step = sparse.active ? core.sparseLadderStep(price, lastMarket.addStep, lastMarket.atr1h) : lastMarket.addStep;
+    if (turnSide === side && !turningPoint.consumed && pricePnl < 0
+      && orders[side]?.purpose === 'add' && !orders[side]?.peakLarge) orders[side] = null;
+    if (orders[side]) continue;
+    if (weekendMode) continue;
+    if (side === 'long' && !heatActive && settings.symbol === 'XAUUSDT' && pricePnl < 0
+      && p.adds < core.MAX_LONG_ADDITIONS) {
+      const stage = Math.max(0, Number(deepLongSignal?.stage) || 0) + 1;
+      const confirmation = core.deepLongStageSignal(rows60, stage,
+        deepLongSignal?.peak || deepZone.peak,
+        stage === 1 ? Infinity : Number(deepLongSignal?.lastLow),
+        Math.max(Number(deepLongSignal?.lastSubmittedHour || 0), Number(deepLongSignal?.lastFillHour || 0)));
+      if (stage <= 3 && deepZone.level >= stage && confirmation.confirmed) {
+        const budgetSlots = deepLongSignal?.budgetSlots ?? (core.MAX_LONG_ADDITIONS - p.adds);
+        const plan = core.deepLongBudget(settings.marginUsdt, budgetSlots, stage);
+        const marginBalance = Number(settings.walletBalance || 40000) + realized + (['long', 'short'] as Side[])
+          .reduce((sum, direction) => sum + (positions[direction] ? sidePnl(positions[direction]!, price) : 0), 0);
+        const usedMargin = (['long', 'short'] as Side[]).reduce((sum, direction) => sum + Number(positions[direction]?.margin || 0) + Number(orders[direction]?.margin || 0), 0);
+        const maintenance = (['long', 'short'] as Side[]).reduce((sum, direction) => sum + Number(positions[direction]?.qty || 0) * price * 0.005, 0);
+        const risk = core.turningPointRiskDecision({ available: marginBalance - usedMargin, marginBalance, maintenance,
+          sideQty: p.qty, marginUsdt: plan.marginUsdt, leverage: settings.leverage, price, atr1h: lastMarket.atr1h * 1.5 });
+        if (plan.allowed && risk.allowed) {
+          deepLongSignal = { ...deepLongSignal, stage: stage - 1, peak: deepLongSignal?.peak || deepZone.peak,
+            budgetSlots, lastSubmittedHour: confirmation.hour, pendingLow: confirmation.low };
+          place('long', 'add', price - settings.tickSize, plan.marginUsdt, bar.t, 1,
+            `深跌分级补多·${stage}`, 2 * 60 * 60_000);
+          if (orders.long) continue;
+        }
+      }
+    }
+    if (side === 'long' && (bottomPhase || heatActive || deepZone.level > 0)) continue;
+    if (turnSide === side && !turningPoint.consumed && pricePnl < 0 && p.adds < core.MAX_SHORT_ADDITIONS) {
+      const size = core.peakLargeMarginPlan(p.qty * price / settings.leverage, settings.marginUsdt);
+      if (!size.allowed) continue;
+      const addMargin = size.marginUsdt;
+      const marginBalance = Number(settings.walletBalance || 40000) + realized + (['long', 'short'] as Side[])
+        .reduce((sum, direction) => sum + (positions[direction] ? sidePnl(positions[direction]!, price) : 0), 0);
+      const usedMargin = (['long', 'short'] as Side[]).reduce((sum, direction) => sum + Number(positions[direction]?.margin || 0) + Number(orders[direction]?.margin || 0), 0);
+      const maintenance = (['long', 'short'] as Side[]).reduce((sum, direction) => sum + Number(positions[direction]?.qty || 0) * price * 0.005, 0);
+      const risk = core.turningPointRiskDecision({ available: marginBalance - usedMargin, marginBalance, maintenance,
+        sideQty: p.qty, marginUsdt: addMargin, leverage: settings.leverage, price, atr1h: lastMarket.atr1h * 1.5 });
+      if (risk.allowed) {
+        const plan = core.turningPointEntryPlan(turningPoint, price, price - settings.tickSize, price + settings.tickSize, settings.tickSize);
+        if (plan.valid) place(side, 'add', plan.price, addMargin, bar.t, 1,
+          '峰值大额补空·反转', plan.ttlMs);
+        if (orders[side]) {
+          turningPoint = { ...turningPoint, consumed: true };
+        }
+      }
+      continue;
+    }
+    if (heatActive && (side === 'long' || !hotShortPlan.allowed)) continue;
+    if (side === 'short' && shortTrendProtected && !heatActive) continue;
+    if ((lastMarket.trend || lastMarket.trendDirection !== 'neutral') && !sparse.active && !heatActive) continue;
+    const hotShort = side === 'short' && heatActive;
+    const step = hotShort ? hotShortPlan.step : sparse.active ? core.sparseLadderStep(price, lastMarket.addStep, lastMarket.atr1h) : lastMarket.addStep;
     const counts = { longAdditions: side === 'long' ? p.adds : 0, shortAdditions: side === 'short' ? p.adds : 0 };
     const decision = core.additionDecision(counts, isLong);
     if (decision.action !== 'add') continue;
     const nextTier = decision.next;
     const max = isLong ? core.MAX_LONG_ADDITIONS : core.MAX_SHORT_ADDITIONS;
-    const count = sparse.active ? core.sparseGroupCount(p.adds, max) : 1;
+    const count = 1;
     if (count <= 0) continue;
-    const trigger = sparse.active ? core.sparseGroupTrigger(p.lastAdd, step, count, isLong) : p.lastAdd + (isLong ? -step : step);
-    if (!core.shouldPlaceAddition({ sparseMode: sparse.active, side, price, triggerPrice: trigger }) || pricePnl >= 0) continue;
-    const margin = sparse.active ? core.sparseGroupMargin(settings.symbol, nextTier, count, settings.marginUsdt) : core.ladderMargin(settings.symbol, nextTier, settings.marginUsdt);
-    const limit = sparse.active ? trigger : (isLong ? price - settings.tickSize : price + settings.tickSize);
-    place(side, 'add', limit, margin, bar.t, count, sparse.active ? `稀疏 ${p.adds + 1}-${p.adds + count}/${max}` : `常规 ${nextTier}/${max}`);
+    const sparsePlan = sparse.active && !hotShort
+      ? core.sparseSinglePlan(settings.symbol, nextTier, settings.marginUsdt, p.lastAdd, step, isLong) : null;
+    const trigger = sparsePlan ? sparsePlan.triggerPrice : p.lastAdd + (isLong ? -step : step);
+    if (!core.shouldPlaceAddition({ sparseMode: sparse.active && !hotShort, side, price, triggerPrice: trigger }) || pricePnl >= 0) continue;
+    const margin = hotShort ? core.ladderMargin(settings.symbol, nextTier, settings.marginUsdt) * hotShortPlan.marginScale
+      : sparsePlan ? (isLong ? Math.min(sparsePlan.marginUsdt, settings.marginUsdt) : sparsePlan.marginUsdt)
+      : core.ladderMargin(settings.symbol, nextTier, settings.marginUsdt);
+    if (hotShort) {
+      const marginBalance = Number(settings.walletBalance || 40000) + realized + (['long', 'short'] as Side[])
+        .reduce((sum, direction) => sum + (positions[direction] ? sidePnl(positions[direction]!, price) : 0), 0);
+      const usedMargin = (['long', 'short'] as Side[]).reduce((sum, direction) => sum + Number(positions[direction]?.margin || 0) + Number(orders[direction]?.margin || 0), 0);
+      const maintenance = (['long', 'short'] as Side[]).reduce((sum, direction) => sum + Number(positions[direction]?.qty || 0) * price * 0.005, 0);
+      if (!core.turningPointRiskDecision({ available: marginBalance - usedMargin, marginBalance, maintenance,
+        sideQty: p.qty, marginUsdt: margin, leverage: settings.leverage, price, atr1h: lastMarket.atr1h }).allowed) continue;
+    }
+    const limit = sparse.active && !hotShort ? trigger : (isLong ? price - settings.tickSize : price + settings.tickSize);
+    place(side, 'add', limit, margin, bar.t, count, hotShort ? `高位轻空 ${hotShortPlan.used + 1}/3`
+      : sparse.active ? `稀疏 ${p.adds + 1}-${p.adds + count}/${max}` : `常规 ${nextTier}/${max}`);
   }
-  if (positions.long || positions.short) stateLabel = `${lastMarket.trend ? '趋势过滤' : '策略运行中'} · ${lastMarket.trend ? '暂停补仓' : '监控仓位'}`;
+  if (positions.long || positions.short) stateLabel = deepZone.level > 0 && positions.long
+    ? `深跌分级补多 · 区间 ${deepZone.level}/3 · 已成交 ${deepLongSignal?.stage || 0}/3`
+    : heatActive
+    ? `上涨过热 · 暂缓补多 · ${hotShortPlan.allowed ? `高位轻空 ${hotShortPlan.used}/3` : '等待补空确认'}`
+    : overheat.phase === 'bottom_watch' ? '高位回落 · 暂缓补多'
+    : overheat.phase === 'bottom_confirmed' ? '底部确认 · 等待深跌分级条件'
+    : turningPoint.phase === 'confirmed' && turningPoint.side === 'short'
+    ? `小时线急涨补空确认 · ${turningPoint.consumed ? '已提交特殊补仓' : '等待风险检查'}`
+    : shortTrendProtected ? '上涨保护 · 暂停空头常规新增，继续管理已有仓位' : `${lastMarket.trend ? '趋势过滤' : '策略运行中'} · ${lastMarket.trend ? '暂停补仓' : '监控仓位'}`;
 }
 function snapshot() {
   const bar = candles[Math.max(0, index - 1)]; const price = bar?.c || 0;
   const data: any = { index, total: candles.length, progress: candles.length ? index / candles.length : 0, time: bar?.t || 0, price,
-    state: stateLabel, symbol: settings.symbol, positions: {}, orders: {}, realized, realizedFunding, maxLossPeak: { ...maxLossPeak }, fees, funding: fundingTotal,
-    unrealized: 0, net: realized, tradeCount, recentLogs: logs.slice(-100), logsTotal: logs.length, market: lastMarket,
+    state: stateLabel, shortTrendProtected, turningPoint, overheat, symbol: settings.symbol, positions: {}, orders: {}, realized,
+    realizedBySide: { ...realizedBySide }, realizedFunding, maxLossPeak: { ...maxLossPeak },
+    lossPeakContext: Object.fromEntries((['long', 'short'] as Side[]).map((side) => {
+      const context = lossPeakContext[side];
+      if (!context) return [side, null];
+      const { fills: _fills, ...summary } = context;
+      return [side, summary];
+    })), totalLossPeakTime, fees, funding: fundingTotal,
+    marginPeak, special: { placed: specialPlaced, filled: specialFilled, canceled: specialCanceled,
+      realized: specialRealized, margin: { ...specialMargin } },
+    losingMinutes: { ...losingMinutes }, maxLosingStreak: { ...maxLosingStreak },
+    unrealized: 0, net: realized, tradeCount, positionDistribution: { ...positionDistribution }, recentLogs: logs.slice(-100), logsTotal: logs.length, market: lastMarket,
     candles: sampledCandles(), paused: timer == null, startedAt };
   for (const side of ['long', 'short'] as Side[]) {
     const p = positions[side]; const o = orders[side];
-    data.positions[side] = p ? { ...p, pnl: sidePnl(p, price), notional: p.qty * price } : null;
+    if (p) { const { fills: _fills, ...displayPosition } = p; data.positions[side] = { ...displayPosition, pnl: sidePnl(p, price), notional: p.qty * price }; }
+    else data.positions[side] = null;
     if (p) data.unrealized += sidePnl(p, price);
     data.orders[side] = o ? { ...o } : null;
   }
@@ -275,7 +474,8 @@ function stop() { if (timer != null) clearInterval(timer); timer = null; }
 function beginReplay(message: any) {
   stop(); candles = []; funding = message.funding || []; settings = message.settings; expectedCandles = Number(message.candleCount) || 0; index = 0;
   positions = { long: null, short: null }; orders = { long: null, short: null }; rebuildAt = { long: 0, short: 0 };
-  fundingIndex = 0; logs = []; tradeCount = 0; realized = 0; realizedFunding = 0; maxLossPeak = { long: 0, short: 0, total: 0 }; fees = 0; fundingTotal = 0; lastMarket = null; warmupState = null; cooldownUntil = 0; sentLogCount = 0;
+  fundingIndex = 0; logs = []; tradeCount = 0; positionDistribution = { large: 0, small: 0 }; realized = 0; realizedBySide = { long: 0, short: 0 }; realizedFunding = 0; maxLossPeak = { long: 0, short: 0, total: 0 }; lossPeakContext = { long: null, short: null }; totalLossPeakTime = 0; fees = 0; fundingTotal = 0; marginPeak = 0; specialPlaced = 0; specialFilled = 0; specialCanceled = 0; specialRealized = 0; specialMargin = { long: 0, short: 0 }; losingMinutes = { long: 0, short: 0 }; losingStreak = { long: 0, short: 0 }; maxLosingStreak = { long: 0, short: 0 }; lastMarket = null; warmupState = null; cooldownUntil = 0; sentLogCount = 0; shortTrendProtected = false; turningPoint = { phase: 'idle', lastHour: 0 }; overheat = { phase: 'normal', lastHour: 0 };
+  deepLongSignal = null;
   stateLabel = '载入回放数据'; startedAt = Date.now();
   scope.postMessage({ type: 'warmup-progress', progress: 6, stage: '回放引擎已就绪，等待分块数据…' });
 }
@@ -322,7 +522,9 @@ scope.onmessage = (event: MessageEvent) => {
     void finishReplay().catch((error) => scope.postMessage({ type: 'replay-error', message: error instanceof Error ? error.message : String(error) }));
   } else if (m.type === 'step') { stop(); advance(1); }
   else if (m.type === 'play') { stop(); speed = Math.max(1, Number(m.speed) || 1); timer = self.setInterval(() => advance(speed), 50); }
+  else if (m.type === 'speed') speed = Math.max(1, Number(m.speed) || 1);
   else if (m.type === 'pause') stop();
   else if (m.type === 'export') scope.postMessage({ type: 'export', payload: logs });
+  else if (m.type === 'peak-fills') scope.postMessage({ type: 'peak-fills', side: m.side, payload: lossPeakContext[m.side as Side] || null });
   else if (m.type === 'stop') stop();
 };

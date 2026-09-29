@@ -139,6 +139,7 @@ function groupMode(group: TradfiGroup) {
       ? `${sideName}止盈委托未成交 · 当前浮亏 ${formatSignedUsd(pnl)}`
       : `${sideName}止盈委托未成交`;
   }
+  if (strategy?.shortTrendProtected) return '上涨保护 · 暂停空头自动新增';
   if (strategy?.long?.phase === 'reentry_wait' || strategy?.short?.phase === 'reentry_wait') {
     const waitingLeg = strategy.long?.phase === 'reentry_wait' ? strategy.long : strategy.short;
     return reentryWaitLabel(waitingLeg).replace('止盈后冷却，等待重建', '单边止盈后冷却，等待重建底仓');
@@ -147,11 +148,11 @@ function groupMode(group: TradfiGroup) {
   if (strategy?.status === 'add_pending') {
     const orderLabel = strategy.manualAddPending ? '手动补仓挂单中'
       : strategy.pendingSparse ? `稀疏组单 ${strategy.pendingTierStart}-${strategy.pendingTierEnd} 档挂单中` : '补仓挂单中';
-    return `${orderLabel} · 多${strategy.longAdditions ?? '—'}/${strategy.maxLongAdditions ?? 100} · 空${strategy.shortAdditions ?? '—'}/${strategy.maxShortAdditions ?? 50}`;
+    return `${orderLabel} · 多${strategy.longAdditions ?? '—'}/${strategy.maxLongAdditions ?? 100} · 空${strategy.shortAdditions ?? '—'}/${strategy.maxShortAdditions ?? 20}`;
   }
   if (strategy?.status === 'active') {
     if (strategy.longAdditions == null && strategy.shortAdditions == null) return `策略运行中 · 已补 ${strategy.additions || 0} 档`;
-    return `策略运行中 · 多${strategy.longAdditions || 0}/${strategy.maxLongAdditions ?? 100} · 空${strategy.shortAdditions || 0}/${strategy.maxShortAdditions ?? 50}`;
+    return `策略运行中 · 多${strategy.longAdditions || 0}/${strategy.maxLongAdditions ?? 100} · 空${strategy.shortAdditions || 0}/${strategy.maxShortAdditions ?? 20}`;
   }
   if (group.long?.kind === 'pending' || group.short?.kind === 'pending') return '含挂单';
   if (group.long && group.short) return '双向持仓';
@@ -178,7 +179,7 @@ function sideStatusText(group: TradfiGroup, side: 'long' | 'short') {
 function legModeLabel(group: TradfiGroup, side: 'long' | 'short') {
   const strategy = group.strategy; const leg = legStatus(group, side);
   const additions = Number(leg?.additions || 0); const max = side === 'long'
-    ? Number(strategy?.maxLongAdditions || 100) : Number(strategy?.maxShortAdditions || 50);
+    ? Number(strategy?.maxLongAdditions || 100) : Number(strategy?.maxShortAdditions || 20);
   const pendingOrder = side === 'long' ? strategy?.pendingLongOrder : strategy?.pendingShortOrder;
   const pendingSparse = side === 'long' ? strategy?.pendingLongSparse : strategy?.pendingShortSparse;
   const pendingStart = side === 'long' ? strategy?.pendingLongTierStart : strategy?.pendingShortTierStart;
@@ -191,6 +192,7 @@ function legModeLabel(group: TradfiGroup, side: 'long' | 'short') {
   }
   if (strategy?.marketDataFresh === false) return '行情数据过期 · 暂停自动补仓';
   if (leg?.phase === 'close_pending') return '止盈委托处理中';
+  if (side === 'short' && strategy?.shortTrendProtected) return `上涨保护 · 暂停空头新增 · ${additions}/${max}`;
   if (leg?.phase === 'reentry_wait' || leg?.phase === 'reentry_pending') return '平仓后重建处理中';
   if (additions >= max) return `${side === 'long' ? '多头' : '空头'}补仓已达上限 · ${additions}/${max}`;
   const currentPnl = rowPnl(group[side]);
@@ -320,6 +322,7 @@ function sideMask(group: TradfiGroup, side: 'long' | 'short') {
       ? `止盈委托未成交 · 当前浮亏 ${formatSignedUsd(pnl)}`
       : '止盈委托未成交';
   }
+  if (side === 'short' && strategy.shortTrendProtected && (leg?.phase === 'reentry_wait' || !group[side])) return '上涨保护 · 暂停空头重建';
   if (leg?.phase === 'reentry_wait') return reentryWaitLabel(leg);
   if (leg?.phase === 'reentry_pending') return '正在重建底仓';
   if (strategy.status === 'waiting') return '等待震荡条件';

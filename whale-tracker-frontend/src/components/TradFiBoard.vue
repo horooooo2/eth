@@ -160,7 +160,7 @@ const ladderDescription = computed(() => {
     ? initialMargin
     : selected.value === 'XAGUSDT' ? 10 : 20;
   const tiers = [0.5, 0.75, 1.25, 1.5].map((ratio) => formatTwo(base * ratio));
-  return `多头：1–10档 ${tiers[0]}U、11–20档 ${tiers[1]}U、21–30档 ${tiers[2]}U、31–100档 ${tiers[3]}U（自动补仓 ${formatTwo(base * 130)}U）；空头：1–10档 ${tiers[0]}U、11–20档 ${tiers[1]}U、21–30档 ${tiers[2]}U、31–50档 ${tiers[3]}U（自动补仓 ${formatTwo(base * 55)}U）`;
+  return `多头：1–10档 ${tiers[0]}U、11–20档 ${tiers[1]}U、21–30档 ${tiers[2]}U、31–100档 ${tiers[3]}U（自动补仓 ${formatTwo(base * 130)}U）；空头：1–10档 ${tiers[0]}U、11–20档 ${tiers[1]}U（自动补仓 ${formatTwo(base * 12.5)}U）`;
 });
 const tradeRows = computed(() => (accountBook.value?.trades || []).filter((row) => row.instId === selected.value).slice(0, 50));
 const historyTab = ref<'trades' | 'logs'>('trades');
@@ -486,8 +486,8 @@ async function closeAllPositions() {
             <div>
               <div class="account-title-line">
                 <div class="panel-title">交易账户</div>
-                <span v-if="accountWeekendMode" class="weekend-warning" title="周末报价模式下，币安使用订单簿 EWMA 价格指数；策略仍按正常逻辑运行。">
-                  <b>?</b> 周末报价模式：策略照常运行（开仓、补仓、止盈与重建）
+                <span v-if="accountWeekendMode" class="weekend-warning" title="纽约时间周五 17:00 至周日 18:00 暂停自动补仓；已有仓位仍受策略管理。">
+                  <b>?</b> 周末报价模式：暂停自动补仓，继续管理已有仓位
                 </span>
               </div>
               <div class="panel-sub">币安 · TradFi 自动策略持仓与挂单</div>
@@ -558,12 +558,16 @@ async function closeAllPositions() {
             </div>
             <div class="strategy-metrics">
               <div><span>单笔保证金</span><b>{{ formatTwo(strategyData?.strategy.enabled ? strategyData.strategy.marginPerOrder : strategyMargin) }} USDT</b></div><div><span>杠杆</span><b>{{ strategyData?.strategy.leverage ?? strategyLeverage }}×</b></div>
-              <div><span>已补仓</span><b v-if="strategyData?.strategy.longAdditions == null && strategyData?.strategy.shortAdditions == null">{{ strategyData?.strategy.additions || 0 }} / 100</b><b v-else>多 {{ strategyData?.strategy.longAdditions || 0 }}/100 · 空 {{ strategyData?.strategy.shortAdditions || 0 }}/50</b></div><div><span>下一档间距</span><b>{{ strategyData?.strategy.addStep == null ? '—' : `${Number(strategyData.strategy.addStep).toFixed(2)}` }}</b></div>
+              <div><span>已补仓</span><b v-if="strategyData?.strategy.longAdditions == null && strategyData?.strategy.shortAdditions == null">{{ strategyData?.strategy.additions || 0 }} / 120</b><b v-else>多 {{ strategyData?.strategy.longAdditions || 0 }}/{{ strategyData?.strategy.maxLongAdditions ?? 100 }} · 空 {{ strategyData?.strategy.shortAdditions || 0 }}/{{ strategyData?.strategy.maxShortAdditions ?? 20 }}</b></div><div><span>下一档间距</span><b>{{ strategyData?.strategy.addStep == null ? '—' : `${Number(strategyData.strategy.addStep).toFixed(2)}` }}</b></div>
               <div><span>多头净盈亏</span><b>{{ strategyData?.strategy.long?.costs == null ? '—' : `${Number(strategyData.strategy.long.costs.netPnl).toFixed(2)} U` }}</b></div><div><span>空头净盈亏</span><b>{{ strategyData?.strategy.short?.costs == null ? '—' : `${Number(strategyData.strategy.short.costs.netPnl).toFixed(2)} U` }}</b></div>
             </div>
-            <p v-if="strategyData?.strategy.weekendMode" class="market-meta">周末报价模式：策略照常运行；币安使用订单簿 EWMA 价格指数。</p>
-            <p class="dialog-intro">服务器识别震荡结构并建立双向底仓。常规补仓使用 15 分钟 ATR × 0.6，间距限制为现价的 0.08%～0.35%；多头最多 100 档、空头最多 50 档。逆势趋势连续 3 根已收盘小时线，且现价偏离该侧均价达到 2 倍 1 小时 ATR(14) 时，直接进入稀疏模式：间距取常规间距 × 1.5 与 1 小时 ATR × 0.3 的较大值，最高为现价的 0.7%/档；每 5 档合并成一组，每次只挂下一组。保证金阶梯：{{ ladderDescription }}。止盈、恢复和手动补仓按原规则处理。</p>
-            <p v-if="strategyData?.strategy.long?.costs || strategyData?.strategy.short?.costs" class="market-meta">多头：{{ strategyData.strategy.long?.recovery ? `恢复中，目标 ${Number(strategyData.strategy.long.costs?.profitTarget || 0).toFixed(2)}U，ATR 回撤 ${Number(strategyData.strategy.long.recoveryTrail || 0).toFixed(2)}U` : `常规目标 ${Number(strategyData.strategy.long?.costs?.profitTarget || 0).toFixed(2)}U` }}。空头：{{ strategyData.strategy.short?.recovery ? `恢复中，目标 ${Number(strategyData.strategy.short.costs?.profitTarget || 0).toFixed(2)}U，ATR 回撤 ${Number(strategyData.strategy.short.recoveryTrail || 0).toFixed(2)}U` : `常规目标 ${Number(strategyData.strategy.short?.costs?.profitTarget || 0).toFixed(2)}U` }}。</p>
+            <p v-if="strategyData?.strategy.weekendMode" class="market-meta">周末报价模式：暂停自动补仓并撤销未成交补仓单，已有仓位继续管理。</p>
+            <p v-if="strategyData?.strategy.overheat?.phase === 'overheat'" class="market-meta">上涨过热：暂停多头自动补仓与重建；{{ strategyData.strategy.overheat.shortReady ? '回落结构已确认，高位空头按小额限次补仓' : '空头等待小时线回落确认' }}。阶段高点 {{ formatTwo(strategyData.strategy.overheat.peak) }}。</p>
+            <p v-if="strategyData?.strategy.overheat?.phase === 'bottom_watch'" class="market-meta">高位回落：保留多头仓位，暂停常规补多，等待深跌分级补多条件。阶段低点 {{ formatTwo(strategyData.strategy.overheat.low) }}。</p>
+            <p v-if="strategyData?.strategy.overheat?.phase === 'bottom_confirmed'" class="market-meta">底部确认：等待深跌分级补多条件及风险检查。确认价 {{ formatTwo(strategyData.strategy.overheat.confirmPrice) }}。</p>
+            <p v-if="strategyData?.strategy.overheat?.phase !== 'normal' && strategyData?.strategy.overheat?.supportZone" class="market-meta">近 30 根已收盘日线的历史低位参考：{{ formatTwo(strategyData.strategy.overheat.supportZone.low) }}–{{ formatTwo(strategyData.strategy.overheat.supportZone.high) }}。仅供观察，不直接触发补仓。</p>
+            <p class="dialog-intro">服务器识别震荡结构并建立双向底仓。小时线上涨连续 3 根确认后，暂停空头常规新增；高位回落并确认后，已有亏损空仓可有限补仓。常规补仓使用 15 分钟 ATR × 0.6，间距为现价的 0.08%～0.35%；多头最多 100 档、空头最多 20 档。逆势趋势偏离均价至少 2 倍 1 小时 ATR 时进入稀疏模式，每笔多头试探补仓不超过初始单笔本金。黄金极端下跌时，以最近 30 根完整日线的高点计算回撤；达到 12% 后须小时线止跌确认才尝试首笔大额补多；后续 22%、25% 档要求完整小时线收在对应深度、且形成比上一档更低的低点，逐档尝试 Maker 多头补仓。总预算按进入深跌模式时的初始单笔本金 × 剩余多头补仓档位计算，三笔分别使用 22%、35%、43%；深跌期间暂停普通多头阶梯补仓，每笔均进行保证金与压力检查。纽约周末时段暂停自动补仓并撤销未成交补仓单。保证金阶梯：{{ ladderDescription }}。多头恢复模式达标后按盈利峰值 25% 回撤追踪；Maker 触发不保证成交。</p>
+            <p v-if="strategyData?.strategy.long?.costs || strategyData?.strategy.short?.costs" class="market-meta">多头：{{ strategyData.strategy.long?.recovery ? `恢复中，启动目标 ${Number(strategyData.strategy.long.costs?.profitTarget || 0).toFixed(2)}U，峰值回撤 ${Number(strategyData.strategy.long.recoveryTrail || 0).toFixed(2)}U` : `常规目标 ${Number(strategyData.strategy.long?.costs?.profitTarget || 0).toFixed(2)}U` }}。空头：{{ strategyData.strategy.short?.recovery ? `恢复中，目标 ${Number(strategyData.strategy.short.costs?.profitTarget || 0).toFixed(2)}U，ATR 回撤 ${Number(strategyData.strategy.short.recoveryTrail || 0).toFixed(2)}U` : `常规目标 ${Number(strategyData.strategy.short?.costs?.profitTarget || 0).toFixed(2)}U` }}。</p>
             <p v-if="strategyData?.strategy.range" class="market-meta">当前参考区间：{{ formatTwo(strategyData.strategy.range.low) }} – {{ formatTwo(strategyData.strategy.range.high) }} · 最新价 {{ formatTwo(strategyData.strategy.lastPrice) }}</p>
             <p v-if="strategyData?.strategy.lastError || strategyError" class="order-error">{{ strategyError || strategyData?.strategy.lastError }}</p>
           </div>
@@ -610,16 +614,16 @@ async function closeAllPositions() {
 .up { color: var(--green); }
 .down { color: var(--red); }
 .muted { color: var(--muted); }
-.content { box-sizing: border-box; width: 100%; height: 100%; min-height: 0; padding: 16px 0; display: flex; flex-direction: column; overflow: hidden; }
-.market-state { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 10px; margin-bottom: 12px; }
+.content { box-sizing: border-box; width: 100%; height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.market-state { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 10px; padding: 5px 24px; background: var(--panel); border-bottom: 1px solid var(--border); }
 .market-state, .strip, .focus { flex-shrink: 0; }
 .market-state span:first-child { color: var(--yellow); }
-.strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(max(130px, calc((100% - 70px) / 8)), 1fr)); gap: 10px; margin-bottom: 18px; max-height: min(330px, 38vh); overflow-y: auto; }
+.strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(max(130px, calc((100% - 112px) / 8)), 1fr)); gap: 10px; padding: 12px 24px; max-height: min(330px, 38vh); overflow-y: auto; background: var(--panel); border-bottom: 1px solid var(--border); }
 .ticker {
-  background: var(--card);
+  background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 9px;
-  padding: 12px 15px;
+  border-radius: 6px;
+  padding: 10px 12px;
   text-align: left;
   color: var(--text);
   min-width: 0;
@@ -630,16 +634,14 @@ async function closeAllPositions() {
 }
 .ticker-top { display: flex; justify-content: space-between; gap: 10px; align-items: center; color: var(--muted); font-size: 11px; }
 .ticker-top span:last-child { font-size: 9px; }
-.ticker-main { display: flex; align-items: baseline; justify-content: space-between; gap: 5px; margin-top: 10px; }
-.ticker-main strong { font-size: 19px; }
+.ticker-main { display: flex; align-items: baseline; justify-content: space-between; gap: 5px; margin-top: 6px; }
+.ticker-main strong { font-size: 18px; }
 .ticker-main em { font-size: 12px; font-style: normal; font-weight: 700; }
-.ticker small { color: var(--muted); font-size: 10px; display: block; margin-top: 6px; }
+.ticker small { color: var(--muted); font-size: 10px; display: block; margin-top: 4px; }
 .focus {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 17px 20px;
-  margin-bottom: 18px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  padding: 16px 24px;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -648,17 +650,17 @@ async function closeAllPositions() {
 }
 .focus-left { display: flex; align-items: center; gap: 15px; min-width: 0; }
 .asset-icon {
-  height: 43px; width: 43px; border-radius: 10px;
-  background: color-mix(in srgb, var(--yellow) 16%, var(--panel-2));
-  color: var(--yellow);
+  height: 42px; width: 42px; border-radius: 50%;
+  background: #d4af37;
+  color: #171716;
   display: grid; place-items: center;
   font-size: 17px; font-weight: 800; flex: none;
 }
-.focus h2 { margin: 0; font-size: 19px; }
+.focus h2 { margin: 0; font-size: 20px; }
 .focus-sub { color: var(--muted); font-size: 11px; margin-top: 4px; }
-.focus-price { text-align: right; }
-.focus-price strong { display: block; font-size: 21px; }
-.focus-price small { font-size: 11px; }
+.focus-price { text-align: left; }
+.focus-price strong { display: block; font-size: 26px; line-height: 1.15; }
+.focus-price small { font-size: 12px; }
 .focus-metrics { display: flex; gap: 22px; flex-wrap: wrap; }
 .focus-metrics span { display: block; color: var(--muted); font-size: 10px; margin-bottom: 5px; }
 .focus-metrics b { font-size: 12px; }
@@ -694,8 +696,10 @@ async function closeAllPositions() {
 .history-tabs button:hover { color: var(--text); background: var(--panel-2); }
 .history-tabs button.active { color: var(--yellow); background: color-mix(in srgb, var(--yellow) 12%, transparent); }
 .section-tag { color: var(--yellow); font-size: 10px; font-weight: 700; }
-.main-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.65fr) minmax(0, 1fr); gap: 16px; flex: 1; min-height: 0; }
+.main-grid { display: grid; grid-template-columns: minmax(400px, 23fr) minmax(530px, 57fr) minmax(300px, 20fr); flex: 1; min-height: 0; }
 .main-grid > .panel { display: flex; flex-direction: column; min-height: 0; }
+.main-grid > .panel:not(:last-child) { border-right: 1px solid var(--border); }
+.main-grid > .panel { border-radius: 0; border-top: 0; border-bottom: 0; border-left: 0; background: var(--bg); }
 .main-grid .panel-head, .main-grid .feed-tools, .main-grid .panel-foot { flex-shrink: 0; }
 .history-panel { min-width: 0; }
 .history-list {
@@ -710,8 +714,8 @@ async function closeAllPositions() {
 .record-table-head,
 .record-row {
   display: grid;
-  grid-template-columns: 90px 66px minmax(96px, 1fr) 112px 40px;
-  column-gap: 4px;
+  grid-template-columns: 73px 60px minmax(80px, 1fr) 110px 37px;
+  column-gap: 2px;
   align-items: center;
   justify-items: center;
   font-variant-numeric: tabular-nums;
@@ -720,8 +724,8 @@ async function closeAllPositions() {
   position: sticky;
   top: 0;
   z-index: 2;
-  padding: 8px 10px;
-  background: var(--panel);
+  padding: 10px 8px;
+  background: var(--panel-2);
   border-bottom: 1px solid var(--border);
   color: var(--muted);
   font-size: 11px;
@@ -729,7 +733,7 @@ async function closeAllPositions() {
 .record-table-head > span { width: 100%; text-align: center; white-space: nowrap; }
 .record-row {
   min-height: 48px;
-  padding: 8px 10px;
+  padding: 9px 8px;
   border-bottom: 1px solid var(--border);
   font-size: 12px;
   transition: background-color .15s;
@@ -800,16 +804,23 @@ async function closeAllPositions() {
   border-bottom: 1px solid var(--border);
 }
 .account-panel :deep(.data-card) {
-  background: var(--panel-2);
+  background: var(--panel);
   padding: 16px;
   border-radius: 6px;
-  border: 0;
+  border: 1px solid var(--border);
 }
-.account-panel :deep(.data-card:hover) { border: 0; }
+.account-panel :deep(.data-card:hover) { border-color: var(--border-2); }
 .account-panel :deep(.data-label) { font-size: 12px; margin-bottom: 8px; }
 .account-panel :deep(.data-value) { font-size: 22px; font-weight: 700; margin-bottom: 0; }
 .account-panel :deep(.data-sub) { margin-top: 6px; color: color-mix(in srgb, var(--muted) 70%, transparent); }
 .account-panel :deep(.tradfi-order-list) { padding: 16px; gap: 16px; }
+.account-panel :deep(.asset-card) { background: var(--panel); border-radius: 6px; }
+.account-panel :deep(.asset-header) { padding: 14px 16px; }
+.account-panel :deep(.position-row) { gap: 14px; padding: 14px; }
+.account-panel :deep(.position-side) { padding: 14px; border: 1px solid var(--border); border-top: 3px solid var(--green); border-radius: 6px; background: var(--bg); }
+.account-panel :deep(.position-side:last-child) { border-top-color: var(--red); }
+.account-panel :deep(.position-side:first-child) { border-right: 1px solid var(--border); }
+.account-panel :deep(.position-details) { gap: 8px 10px; }
 .strategy-state { display: flex; justify-content: space-between; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); }
 .strategy-state span { color: var(--muted); }
 .startup-progress { margin-top: 14px; padding: 14px; border: 1px solid color-mix(in srgb, var(--yellow) 34%, var(--border)); border-radius: 9px; background: color-mix(in srgb, var(--yellow) 5%, var(--panel-2)); }
@@ -846,17 +857,17 @@ async function closeAllPositions() {
 .search { width: 160px; border: 1px solid var(--border); outline: 0; background: var(--bg); color: var(--text); border-radius: 6px; padding: 7px 9px; font-size: 11px; }
 .search:focus { border-color: var(--yellow); }
 .news-list { padding: 0 18px; flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
-.news-item { display: grid; grid-template-columns: 82px minmax(0, 1fr) auto; gap: 15px; padding: 17px 0; border-bottom: 1px solid var(--border); align-items: start; }
+.news-item { display: flex; flex-direction: column; gap: 6px; padding: 15px 0; border-bottom: 1px solid var(--border); }
 .news-item:last-child { border: 0; }
 .news-time { font-size: 10px; color: var(--muted); line-height: 1.5; }
-.news-time b { display: block; color: var(--text); font-size: 11px; }
+.news-time b { display: block; color: var(--muted); font-size: 11px; font-weight: 500; }
 .news-tag { display: inline-block; border-radius: 4px; background: var(--panel-3); color: var(--muted); font-size: 9px; padding: 3px 6px; margin-right: 6px; }
 .news-tag.important { background: color-mix(in srgb, var(--yellow) 18%, var(--panel-2)); color: var(--yellow); }
-.news-title { font-size: 13px; font-weight: 700; line-height: 1.5; }
+.news-title { font-size: 13px; font-weight: 500; line-height: 1.5; }
 .news-title a:hover, .panel-foot a:hover { color: var(--yellow); text-decoration: underline; }
 .news-summary { font-size: 11px; color: var(--muted); line-height: 1.6; margin-top: 5px; }
 .news-bottom { font-size: 10px; color: var(--muted); margin-top: 8px; }
-.news-mark { color: var(--yellow); font-size: 10px; white-space: nowrap; }
+.news-mark { display: none; }
 .empty { padding: 38px 15px; text-align: center; color: var(--muted); font-size: 12px; }
 .panel-foot { border-top: 1px solid var(--border); padding: 11px 18px; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .modal-cover { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box; background: rgba(0, 0, 0, .72); }
@@ -876,17 +887,22 @@ async function closeAllPositions() {
 .footer-actions .btn { min-height: 36px; font-size: 12px; }
 .footer-actions .btn.primary { background: linear-gradient(135deg, #6366f1, #a855f7); color: #fff; border-color: transparent; }
 .footer-actions .btn:disabled { opacity: .5; cursor: not-allowed; }
-@media (max-width: 1380px) {
+@media (max-width: 1510px) {
   .content { overflow-y: auto; }
-  .main-grid { flex: none; grid-template-columns: minmax(500px, .95fr) minmax(0, 1.3fr); grid-template-rows: minmax(420px, 60vh) minmax(320px, 45vh); }
+  .main-grid { flex: none; grid-template-columns: minmax(400px, .95fr) minmax(0, 1.3fr); grid-template-rows: minmax(420px, 60vh) minmax(320px, 45vh); }
   .main-grid > .panel:last-child { grid-column: 1 / -1; }
+  .main-grid > .panel:nth-child(2) { border-right: 0; }
+  .main-grid > .panel:last-child { border-top: 1px solid var(--border); }
 }
 @media (max-width: 760px) {
-  .content { padding: 12px 0; }
+  .market-state { padding: 6px 12px; }
+  .strip { padding: 10px 12px; }
+  .focus { padding: 14px 12px; }
   .main-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(360px, 50vh) minmax(420px, 55vh) minmax(320px, 45vh); }
   .main-grid > .panel:last-child { grid-column: auto; }
+  .main-grid > .panel { border-right: 0; border-top: 1px solid var(--border); }
   .record-table-head,
-  .record-row { grid-template-columns: 86px 64px minmax(88px, 1fr) 112px 40px; column-gap: 3px; }
+  .record-row { grid-template-columns: 73px 60px minmax(80px, 1fr) 110px 37px; column-gap: 2px; }
   .account-panel :deep(.account-summary) { grid-template-columns: 1fr; }
   .account-panel :deep(.position-row) { grid-template-columns: 1fr; }
   .account-panel :deep(.position-side:first-child) { border-right: 0; border-bottom: 1px solid var(--border); }

@@ -1567,7 +1567,8 @@ export type TradfiRangeStatus = {
   marginPerOrder: number; leverage: number; comboPnl?: number | null; lastPrice?: number | null;
   netPnl?: number | null; closeTrigger?: number | null; addStep?: number | null; atr1h?: number | null;
   trend?: boolean; marketDataFresh?: boolean | null; sparseEnterAtrDistance?: number;
-  trendDirection?: 'up' | 'down' | 'neutral'; trendBars?: number;
+  trendDirection?: 'up' | 'down' | 'neutral'; trendBars?: number; shortTrendProtected?: boolean;
+  overheat?: { phase: 'normal' | 'overheat' | 'bottom_watch' | 'bottom_confirmed'; peak?: number; drawdown?: number; low?: number; confirmPrice?: number; bottomBaseAdds?: number; bottomLargePlaced?: boolean; shortReady?: boolean; shortBaseAdds?: number; deferredLong?: { anchor: number; virtualCount: number; budget: number; spent: number; stage: number; firstFilledAt?: number }; supportZone?: { low: number; high: number; nearby: boolean } | null } | null;
   weekendMode?: boolean;
   startupProgress?: number | null; startupStep?: string;
   resumeEligible?: boolean;
@@ -1818,4 +1819,3 @@ export async function streamOkxStanceOrder(
   if (buffer.trim()) dispatchBlock(buffer);
   if (!settled) throw new Error('挂单流意外结束');
 }
-

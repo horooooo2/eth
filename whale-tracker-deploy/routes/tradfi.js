@@ -60,10 +60,14 @@ router.get('/account', async (req, res) => {
     const user = requireUser(req);
     const creds = getBinanceCredentialsForUser(user.user.id);
     if (!creds) return res.json({ ok: true, configured: false, scope: 'tradfi', weekendMode: rangeStrategy.isCommodityWeekendMode(), balance: { totalEq: null, usdtEq: null, availBal: null }, openPnl: 0, historyPnl: null, records: [], strategies: [] });
-    const [catalog, strategies] = await Promise.all([
+    const [catalog, strategyStates] = await Promise.all([
       getCatalog(),
-      Promise.resolve(['XAUUSDT', 'XAGUSDT'].map((symbol) => rangeStrategy.status(user.user.id, symbol).strategy)),
+      Promise.all(['XAUUSDT', 'XAGUSDT'].map(async (symbol) => {
+        const result = await rangeStrategy.positionSyncStatus(user.user.id, symbol);
+        return { ...result.strategy, positionSync: result.positionSync };
+      })),
     ]);
+    const strategies = strategyStates;
     const fundingSinceBySymbol = Object.fromEntries(strategies
       .filter((row) => row.enabled && Number(row.cycleStartedAt) > 0)
       .map((row) => [row.symbol, Number(row.cycleStartedAt)]));

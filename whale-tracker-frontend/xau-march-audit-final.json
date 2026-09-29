@@ -1,0 +1,419 @@
+{
+  "count": 380160,
+  "fundingCount": 1583,
+  "levels": ".12,.22,.25",
+  "settings": {
+    "margin": 20,
+    "leverage": 20,
+    "makerFee": 0,
+    "tickSize": 0.01,
+    "qtyStep": 0.001,
+    "walletBalance": 40000
+  },
+  "events": [
+    {
+      "type": "placed",
+      "time": 1773950340000,
+      "stage": 1,
+      "price": 4648.31,
+      "margin": 387.2,
+      "adds": 12
+    },
+    {
+      "type": "filled",
+      "time": 1773950400000,
+      "delta": 386.97180749999825,
+      "label": "深跌分级补多·1",
+      "adds": 13,
+      "positionMargin": 535.1059645
+    },
+    {
+      "type": "placed",
+      "time": 1774252740000,
+      "stage": 2,
+      "price": 4209.85,
+      "margin": 616,
+      "adds": 13
+    },
+    {
+      "type": "filled",
+      "time": 1774252800000,
+      "delta": 615.9010549999985,
+      "label": "深跌分级补多·2",
+      "adds": 14,
+      "positionMargin": 1151.0070195
+    }
+  ],
+  "daily": [
+    {
+      "day": "2026-03-18",
+      "time": 1773842340000,
+      "price": 4882.26,
+      "phase": "normal",
+      "longAdds": 10,
+      "longMargin": 118.38280599999999,
+      "longPnl": -137.2698396443329,
+      "state": "趋势过滤 · 暂停补仓"
+    },
+    {
+      "day": "2026-03-19",
+      "time": 1773849600000,
+      "price": 4865.02,
+      "phase": "normal",
+      "longAdds": 10,
+      "longMargin": 118.38280599999999,
+      "longPnl": -145.1657596443328,
+      "state": "策略运行中 · 监控仓位"
+    },
+    {
+      "day": "2026-03-20",
+      "time": 1773936000000,
+      "price": 4605.78,
+      "phase": "normal",
+      "longAdds": 12,
+      "longMargin": 148.134157,
+      "longPnl": -289.2102323011182,
+      "state": "深跌分级补多 · 区间 1/3 · 已成交 0/3"
+    },
+    {
+      "day": "2026-03-21",
+      "time": 1774022400000,
+      "price": 4569.12,
+      "phase": "normal",
+      "longAdds": 13,
+      "longMargin": 535.1059645,
+      "longPnl": -450.3555769000402,
+      "state": "深跌分级补多 · 区间 1/3 · 已成交 1/3"
+    },
+    {
+      "day": "2026-03-22",
+      "time": 1774108800000,
+      "price": 4498,
+      "phase": "normal",
+      "longAdds": 13,
+      "longMargin": 535.1059645,
+      "longPnl": -630.6436680237596,
+      "state": "深跌分级补多 · 区间 1/3 · 已成交 1/3"
+    },
+    {
+      "day": "2026-03-23",
+      "time": 1774195200000,
+      "price": 4489.7,
+      "phase": "normal",
+      "longAdds": 13,
+      "longMargin": 535.1059645,
+      "longPnl": -649.9815894905946,
+      "state": "深跌分级补多 · 区间 1/3 · 已成交 1/3"
+    },
+    {
+      "day": "2026-03-24",
+      "time": 1774281600000,
+      "price": 4370.24,
+      "phase": "normal",
+      "longAdds": 14,
+      "longMargin": 1151.0070195,
+      "longPnl": -467.1970171983431,
+      "state": "深跌分级补多 · 区间 1/3 · 已成交 2/3"
+    },
+    {
+      "day": "2026-03-25",
+      "time": 1774368000000,
+      "price": 4409.07,
+      "phase": "normal",
+      "longAdds": 14,
+      "longMargin": 1151.0070195,
+      "longPnl": -275.96080581675324,
+      "state": "深跌分级补多 · 区间 1/3 · 已成交 2/3"
+    }
+  ],
+  "closes": [
+    {
+      "time": 1774415880000,
+      "openedAt": 1772273280000,
+      "openPrice": 4450.05613570462,
+      "closePrice": 4564.650000000001,
+      "pnl": 526.3945823401297,
+      "funding": -66.39947765987439
+    },
+    {
+      "time": 1774417500000,
+      "openedAt": 1774416060000,
+      "openPrice": 4563.1900000000005,
+      "closePrice": 4568.41,
+      "pnl": 0.4541399999999431,
+      "funding": 0
+    },
+    {
+      "time": 1774437780000,
+      "openedAt": 1774417680000,
+      "openPrice": 4566.31,
+      "closePrice": 4577.01,
+      "pnl": 0.9308999999999843,
+      "funding": 0
+    },
+    {
+      "time": 1774440060000,
+      "openedAt": 1774437960000,
+      "openPrice": 4578.914312749003,
+      "closePrice": 4580.56,
+      "pnl": 3.304540000002118,
+      "funding": 0
+    },
+    {
+      "time": 1774440420000,
+      "openedAt": 1774440240000,
+      "openPrice": 4577.4809805873565,
+      "closePrice": 4579.72,
+      "pnl": 4.498190000001307,
+      "funding": 0
+    },
+    {
+      "time": 1774976700000,
+      "openedAt": 1774440600000,
+      "openPrice": 4579.225059760956,
+      "closePrice": 4647.4800000000005,
+      "pnl": 104.28101155029978,
+      "funding": -32.7749084497008
+    },
+    {
+      "time": 1774977120000,
+      "openedAt": 1774976880000,
+      "openPrice": 4640.01687184662,
+      "closePrice": 4644.87,
+      "pnl": 9.618899999998481,
+      "funding": 0
+    },
+    {
+      "time": 1774977540000,
+      "openedAt": 1774977300000,
+      "openPrice": 4642.344295810197,
+      "closePrice": 4644.31,
+      "pnl": 3.8940600000008248,
+      "funding": 0
+    },
+    {
+      "time": 1774978140000,
+      "openedAt": 1774977960000,
+      "openPrice": 4643.485073195356,
+      "closePrice": 4644.43,
+      "pnl": 1.8719000000010275,
+      "funding": 0
+    },
+    {
+      "time": 1774978440000,
+      "openedAt": 1774978320000,
+      "openPrice": 4652.476685222672,
+      "closePrice": 4653.72,
+      "pnl": 2.456790000000372,
+      "funding": 0
+    },
+    {
+      "time": 1774978800000,
+      "openedAt": 1774978620000,
+      "openPrice": 4648.038023255814,
+      "closePrice": 4650.75,
+      "pnl": 5.364290000000618,
+      "funding": 0
+    },
+    {
+      "time": 1774979100000,
+      "openedAt": 1774978980000,
+      "openPrice": 4657.244584599798,
+      "closePrice": 4659.54,
+      "pnl": 4.53114999999839,
+      "funding": 0
+    },
+    {
+      "time": 1774979400000,
+      "openedAt": 1774979280000,
+      "openPrice": 4658.769650278764,
+      "closePrice": 4661.87,
+      "pnl": 6.116989999998516,
+      "funding": 0
+    },
+    {
+      "time": 1774980480000,
+      "openedAt": 1774979580000,
+      "openPrice": 4657.967406281662,
+      "closePrice": 4659.12,
+      "pnl": 2.2752199999988405,
+      "funding": 0
+    }
+  ],
+  "peakFills": {
+    "time": 1774250460000,
+    "price": 4128.7,
+    "entryPrice": 4762.847926123721,
+    "margin": 535.1059645,
+    "additions": 13,
+    "phase": "normal",
+    "deepBudget": 1760,
+    "deepStage": 1,
+    "fills": [
+      {
+        "time": 1772273280000,
+        "price": 5388.99,
+        "qty": 0.074,
+        "margin": 19.939262999999997,
+        "purpose": "open",
+        "tierStart": 0,
+        "tierEnd": 0,
+        "label": "止盈后同向重建"
+      },
+      {
+        "time": 1772406060000,
+        "price": 5334.400000000001,
+        "qty": 0.037,
+        "margin": 9.868640000000001,
+        "purpose": "add",
+        "tierStart": 1,
+        "tierEnd": 1,
+        "label": "稀疏 1-1/100"
+      },
+      {
+        "time": 1772488920000,
+        "price": 5319.91,
+        "qty": 0.037,
+        "margin": 9.8418335,
+        "purpose": "add",
+        "tierStart": 2,
+        "tierEnd": 2,
+        "label": "常规 2/100"
+      },
+      {
+        "time": 1772517360000,
+        "price": 5308.33,
+        "qty": 0.037,
+        "margin": 9.8204105,
+        "purpose": "add",
+        "tierStart": 3,
+        "tierEnd": 3,
+        "label": "常规 3/100"
+      },
+      {
+        "time": 1772518440000,
+        "price": 5291,
+        "qty": 0.037,
+        "margin": 9.78835,
+        "purpose": "add",
+        "tierStart": 4,
+        "tierEnd": 4,
+        "label": "常规 4/100"
+      },
+      {
+        "time": 1772536080000,
+        "price": 5185.37,
+        "qty": 0.038,
+        "margin": 9.852203,
+        "purpose": "add",
+        "tierStart": 5,
+        "tierEnd": 5,
+        "label": "稀疏 5-5/100"
+      },
+      {
+        "time": 1772549460000,
+        "price": 5052.17,
+        "qty": 0.039,
+        "margin": 9.8517315,
+        "purpose": "add",
+        "tierStart": 6,
+        "tierEnd": 6,
+        "label": "稀疏 6-6/100"
+      },
+      {
+        "time": 1773612060000,
+        "price": 5022.11,
+        "qty": 0.039,
+        "margin": 9.793114499999998,
+        "purpose": "add",
+        "tierStart": 7,
+        "tierEnd": 7,
+        "label": "稀疏 7-7/100"
+      },
+      {
+        "time": 1773616800000,
+        "price": 4987.61,
+        "qty": 0.04,
+        "margin": 9.97522,
+        "purpose": "add",
+        "tierStart": 8,
+        "tierEnd": 8,
+        "label": "稀疏 8-8/100"
+      },
+      {
+        "time": 1773834180000,
+        "price": 4943.12,
+        "qty": 0.04,
+        "margin": 9.886239999999999,
+        "purpose": "add",
+        "tierStart": 9,
+        "tierEnd": 9,
+        "label": "稀疏 9-9/100"
+      },
+      {
+        "time": 1773837480000,
+        "price": 4882.900000000001,
+        "qty": 0.04,
+        "margin": 9.765800000000002,
+        "purpose": "add",
+        "tierStart": 10,
+        "tierEnd": 10,
+        "label": "稀疏 10-10/100"
+      },
+      {
+        "time": 1773865620000,
+        "price": 4822.43,
+        "qty": 0.062,
+        "margin": 14.949532999999999,
+        "purpose": "add",
+        "tierStart": 11,
+        "tierEnd": 11,
+        "label": "稀疏 11-11/100"
+      },
+      {
+        "time": 1773902880000,
+        "price": 4774.78,
+        "qty": 0.062,
+        "margin": 14.801818,
+        "purpose": "add",
+        "tierStart": 12,
+        "tierEnd": 12,
+        "label": "稀疏 12-12/100"
+      },
+      {
+        "time": 1773950400000,
+        "price": 4648.31,
+        "qty": 1.665,
+        "margin": 386.9718075,
+        "purpose": "add",
+        "tierStart": 13,
+        "tierEnd": 13,
+        "label": "深跌分级补多·1"
+      }
+    ]
+  },
+  "final": {
+    "realized": 2779.2480726730737,
+    "realizedBySide": {
+      "long": 1930.8464107999832,
+      "short": 848.4016618730888
+    },
+    "realizedFunding": -53.60181732692519,
+    "maxLossPeak": {
+      "long": 1459.2483259498722,
+      "short": 670.8673256125638,
+      "total": 1459.2483259498722
+    },
+    "special": {
+      "placed": 65,
+      "filled": 62,
+      "canceled": 3,
+      "realized": 2709.7574310404416,
+      "margin": {
+        "long": 24069.851197499993,
+        "short": 325.047526
+      }
+    },
+    "tradeCount": 1990
+  }
+}
