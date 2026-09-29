@@ -15,7 +15,7 @@ type Snapshot = { index: number; total: number; progress: number; time: number; 
 const router = useRouter();
 const worker = new Worker(new URL('../tradfi-replay/replay.worker.ts', import.meta.url), { type: 'module' });
 const symbol = ref('XAUUSDT');
-const margin = ref(20); const leverage = ref(20); const makerFeePct = ref(0); const tickSize = ref(0.01); const qtyStep = ref(0.001);
+const margin = ref(10); const leverage = ref(10); const makerFeePct = ref(0); const tickSize = ref(0.01); const qtyStep = ref(0.001);
 const walletBalance = ref(40000);
 const detectorVisible = ref(false); const detectorName = ref(''); const detectorCandles = ref<Candle[]>([]); const detectorError = ref('');
 type DetectorSignal = { time: number; watchAt: number; side: 'long' | 'short'; extreme: number; confirmPrice: number; atr: number; gapAtr: number; entryPrice: number; distant: boolean; outcome: '命中' | '失效' | '未决'; outcomeTime: number; outcomePrice: number };
@@ -63,7 +63,7 @@ const warmupVisible = ref(false); const warmupProgress = ref(0); const warmupSta
 let warmupCloseTimer: number | undefined;
 let chunkAckTimer: number | undefined;
 const transferState = { rows: [] as Candle[], offset: 0, chunkSize: 4_000, settings: null as any, funding: [] as { t: number; rate: number }[] };
-const symbolDefaults = computed(() => symbol.value === 'XAUUSDT' ? { margin: 20, leverage: 20, tick: 0.01 } : symbol.value === 'XAGUSDT' ? { margin: 10, leverage: 10, tick: 0.001 } : { margin: 20, leverage: 20, tick: 0.01 });
+const symbolDefaults = computed(() => symbol.value === 'XAUUSDT' ? { margin: 10, leverage: 10, tick: 0.01 } : symbol.value === 'XAGUSDT' ? { margin: 10, leverage: 10, tick: 0.001 } : { margin: 20, leverage: 20, tick: 0.01 });
 const maxMargin = computed(() => symbol.value === 'XAUUSDT' ? 100 : 20);
 const progress = computed(() => Math.min(100, Math.round((snapshot.value?.progress || 0) * 100)));
 const filteredLogs = computed(() => allLogs.value.filter((row) => Number(row.pnl) >= 10));

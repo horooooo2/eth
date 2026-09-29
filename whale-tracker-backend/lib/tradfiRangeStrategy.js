@@ -16,8 +16,8 @@ const { MAX_LONG_ADDITIONS, MAX_SHORT_ADDITIONS, SYMBOL_DEFAULTS, MIN_STEP_PCT, 
   shouldPlaceAddition, ordinaryAdditionDue, canManualAddPosition, marketState, scalpProfitTarget, recoveryExitState, longRecoveryExitState, shouldCancelTakeProfit } = STRATEGY_CORE;
 
 const SYMBOLS = new Set(['XAUUSDT', 'XAGUSDT']);
-const MARGIN = 20;
-const LEVERAGE = 20;
+const MARGIN = 10;
+const LEVERAGE = 10;
 const MAX_MARGIN = 20;
 const MAX_GOLD_MARGIN = 100;
 const MAX_LEVERAGE = 50;

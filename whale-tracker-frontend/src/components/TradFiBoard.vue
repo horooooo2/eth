@@ -132,8 +132,8 @@ const strategyOpen = ref(false);
 const strategyBusy = ref(false);
 const strategyError = ref('');
 const strategyData = ref<TradfiRangeResponse | null>(null);
-const strategyMargin = ref(20);
-const strategyLeverage = ref(20);
+const strategyMargin = ref(10);
+const strategyLeverage = ref(10);
 const startupOpen = ref(false);
 const closingAll = ref(false);
 const accountBook = ref<OkxAiBook | null>(null);
@@ -150,7 +150,7 @@ const marketUpdatedAt = ref('');
 const intel = ref<TradFiIntelResponse | null>(null);
 const intelLoading = ref(false);
 const intelError = ref('');
-const strategySupported = computed(() => selected.value === 'XAUUSDT' || selected.value === 'XAGUSDT');
+const strategySupported = computed(() => selected.value === 'XAUUSDT');
 const strategyMaxMargin = computed(() => selected.value === 'XAUUSDT' ? 100 : 20);
 const ladderDescription = computed(() => {
   const initialMargin = Number(strategyData.value?.strategy.enabled
@@ -158,7 +158,7 @@ const ladderDescription = computed(() => {
     : strategyMargin.value);
   const base = Number.isFinite(initialMargin) && initialMargin > 0
     ? initialMargin
-    : selected.value === 'XAGUSDT' ? 10 : 20;
+    : 10;
   const tiers = [0.5, 0.75, 1.25, 1.5].map((ratio) => formatTwo(base * ratio));
   return `多头：1–10档 ${tiers[0]}U、11–20档 ${tiers[1]}U、21–30档 ${tiers[2]}U、31–100档 ${tiers[3]}U（自动补仓 ${formatTwo(base * 130)}U）；空头：1–10档 ${tiers[0]}U、11–20档 ${tiers[1]}U（自动补仓 ${formatTwo(base * 12.5)}U）`;
 });
@@ -262,7 +262,7 @@ async function loadIntel(symbol: string) {
 function selectAsset(symbol: string) {
   if (!watch.value.includes(symbol) && !catalogBySymbol.value.has(symbol)) return;
   selected.value = symbol; strategyData.value = null; strategyError.value = ''; void loadIntel(symbol);
-  if (symbol === 'XAUUSDT' || symbol === 'XAGUSDT') void loadStrategy();
+  if (symbol === 'XAUUSDT') void loadStrategy();
 }
 async function loadStrategy(silent = false) {
   if (!strategySupported.value) return;
@@ -275,8 +275,13 @@ async function openStrategy() {
   strategyOpen.value = true;
   await loadStrategy();
   if (!strategyData.value?.strategy.enabled) {
-    strategyMargin.value = Number(strategyData.value?.strategy.marginPerOrder || (selected.value === 'XAGUSDT' ? 10 : 20));
-    strategyLeverage.value = Number(strategyData.value?.strategy.leverage || (selected.value === 'XAGUSDT' ? 10 : 20));
+    if (strategyData.value?.strategy.resumeEligible) {
+      strategyMargin.value = Number(strategyData.value.strategy.marginPerOrder || 10);
+      strategyLeverage.value = Number(strategyData.value.strategy.leverage || 10);
+    } else {
+      strategyMargin.value = 10;
+      strategyLeverage.value = 10;
+    }
   }
 }
 function closeStrategy() { if (!strategyBusy.value) strategyOpen.value = false; }
@@ -441,7 +446,7 @@ async function closeAllPositions() {
           <div><span>关联大户市场</span><b>Hyperliquid HIP-3</b></div>
         </div>
         <div class="focus-actions">
-          <a class="btn" href="#/tradfi-replay">策略回放</a>
+          <a v-if="strategySupported" class="btn" href="#/tradfi-replay">策略回放</a>
           <button v-if="strategySupported" type="button" class="btn primary" @click="openStrategy">震荡交易</button>
         </div>
       </section>

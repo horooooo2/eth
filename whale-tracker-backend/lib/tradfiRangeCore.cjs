@@ -8,7 +8,7 @@
   const MAX_LONG_ADDITIONS = 100;
   const MAX_SHORT_ADDITIONS = 20;
   const SYMBOL_DEFAULTS = Object.freeze({
-    XAUUSDT: Object.freeze({ marginUsdt: 20, leverage: 20, ladder: Object.freeze([10, 15, 25, 30]) }),
+    XAUUSDT: Object.freeze({ marginUsdt: 10, leverage: 10, ladder: Object.freeze([10, 15, 25, 30]) }),
     XAGUSDT: Object.freeze({ marginUsdt: 10, leverage: 10, ladder: Object.freeze([5, 7.5, 12.5, 15]) }),
   });
   const MIN_STEP_PCT = 0.0008;

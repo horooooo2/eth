@@ -117,12 +117,12 @@ test('黄金延迟补仓只累计已越过的档位，成交才消耗预算，�
   assert.equal(activated.deferredLong.budget, 0);
   const held = deferredLongBudgetStep(activated, input);
   assert.equal(held.deferredLong.virtualCount, 6);
-  assert.equal(held.deferredLong.budget, 60);
+  assert.equal(held.deferredLong.budget, 120);
   assert.deepEqual(deferredLongBudgetStep(held, input).deferredLong, held.deferredLong);
   const bottom = { ...held, phase: 'bottom_confirmed', low: 4700, confirmPrice: 4750, confirmedAt: 1000 };
   const first = deferredLongReleasePlan(bottom, { price: 4750, additions: 0, now: 2000, hourlyRows: [] });
   assert.equal(first.allowed, true);
-  assert.equal(first.marginUsdt, 24);
+  assert.equal(first.marginUsdt, 48);
   const filled = deferredLongFill(bottom, { deferredStage: 1 }, 20, 3000);
   assert.equal(filled.deferredLong.spent, 20);
   assert.equal(filled.deferredLong.stage, 1);
@@ -130,11 +130,11 @@ test('黄金延迟补仓只累计已越过的档位，成交才消耗预算，�
   const retest = [[0, 4750, 4760, 4720, 4755, 1, 5000]];
   const second = deferredLongReleasePlan(filled, { price: 4755, additions: 1, now: 6000, hourlyRows: retest });
   assert.equal(second.allowed, true);
-  assert.equal(second.marginUsdt, 40);
+  assert.equal(second.marginUsdt, 100);
   const partialSecond = deferredLongFill(filled, { deferredStage: 2 }, 20, 7000);
   assert.equal(partialSecond.deferredLong.stage, 1);
-  assert.equal(deferredLongReleasePlan(partialSecond, { price: 4755, additions: 2, now: 8000, hourlyRows: retest }).marginUsdt, 20);
-  const done = deferredLongFill(filled, { deferredStage: 2 }, 40, 7000);
+  assert.equal(deferredLongReleasePlan(partialSecond, { price: 4755, additions: 2, now: 8000, hourlyRows: retest }).marginUsdt, 80);
+  const done = deferredLongFill(filled, { deferredStage: 2 }, 100, 7000);
   assert.equal(deferredLongReleasePlan(done, { price: 4755, additions: 2, now: 8000, hourlyRows: retest }).allowed, false);
   assert.equal(deferredLongBudgetStep(done, { ...input, hasPosition: false }), done);
 });
@@ -229,12 +229,12 @@ test('特殊补仓风险检查拒绝低可用保证金或过大压力损失', ()
 });
 
 test('黄金与白银使用各自默认本金和杠杆，多空补仓上限分别为100档和20档', () => {
-  assert.equal(MARGIN, 20);
-  assert.equal(LEVERAGE, 20);
+  assert.equal(MARGIN, 10);
+  assert.equal(LEVERAGE, 10);
   assert.equal(MAX_ADDITIONS, 100);
   assert.equal(MAX_LONG_ADDITIONS, 100);
   assert.equal(MAX_SHORT_ADDITIONS, 20);
-  assert.deepEqual(defaultConfig('XAUUSDT'), { marginUsdt: 20, leverage: 20, ladder: [10, 15, 25, 30] });
+  assert.deepEqual(defaultConfig('XAUUSDT'), { marginUsdt: 10, leverage: 10, ladder: [10, 15, 25, 30] });
   assert.deepEqual(defaultConfig('XAGUSDT'), { marginUsdt: 10, leverage: 10, ladder: [5, 7.5, 12.5, 15] });
 });
 
@@ -245,8 +245,8 @@ test('阶梯补仓每10档调整保证金并延续到多头100档、空头20档'
   assert.equal(Array.from({ length: 20 }, (_, i) => ladderMargin('XAUUSDT', i + 1)).reduce((a, b) => a + b, 0), 250);
   assert.equal(Array.from({ length: 100 }, (_, i) => ladderMargin('XAGUSDT', i + 1)).reduce((a, b) => a + b, 0), 1300);
   assert.equal(Array.from({ length: 20 }, (_, i) => ladderMargin('XAGUSDT', i + 1)).reduce((a, b) => a + b, 0), 125);
-  assert.deepEqual([1, 11, 21, 31].map((level) => ladderMargin('XAUUSDT', level, 50)), [25, 37.5, 62.5, 75]);
-  assert.equal(Array.from({ length: 100 }, (_, i) => ladderMargin('XAUUSDT', i + 1, 50)).reduce((a, b) => a + b, 0), 6500);
+  assert.deepEqual([1, 11, 21, 31].map((level) => ladderMargin('XAUUSDT', level, 50)), [50, 75, 125, 150]);
+  assert.equal(Array.from({ length: 100 }, (_, i) => ladderMargin('XAUUSDT', i + 1, 50)).reduce((a, b) => a + b, 0), 13000);
 });
 
 test('补仓间距使用15分钟 ATR 的 0.6 倍，并限制在现价的 0.08% 到 0.35%', () => {
@@ -275,7 +275,7 @@ test('稀疏模式采用1小时ATR和常规档距的较大值，上限为现价0
   assert.equal(sparseGroupMargin('XAUUSDT', 31, 5), 150);
   assert.equal(sparseGroupTrigger(5000, 15, 5, true), 4925);
   assert.deepEqual(sparseSinglePlan('XAUUSDT', 21, 20, 5000, 15, true),
-    { count: 1, marginUsdt: 25, triggerPrice: 4925 });
+    { count: 1, marginUsdt: 50, triggerPrice: 4925 });
 });
 
 test('深跌补多按剩余档位预算分三级，并要求新的小时线低点确认', () => {
