@@ -416,7 +416,7 @@ onUnmounted(() => {
         </div>
       </div>
       </div>
-      <TradFiBoard v-show="sideTab === 'tradfi'" class="tradfi-host" :active="sideTab === 'tradfi'" />
+      <TradFiBoard v-show="sideTab === 'tradfi'" class="tradfi-host" />
     </div>
     </template>
   </div>

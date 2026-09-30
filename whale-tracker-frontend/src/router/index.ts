@@ -9,11 +9,6 @@ const router = createRouter({
       component: () => import('@/views/DesktopApp.vue'),
     },
     {
-      path: '/tradfi-replay',
-      name: 'tradfi-replay',
-      component: () => import('@/views/TradFiReplay.vue'),
-    },
-    {
       path: '/console',
       component: () => import('@/views/console/ManagementLayout.vue'),
       redirect: '/console/data',

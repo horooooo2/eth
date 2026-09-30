@@ -2,10 +2,6 @@ const express = require('express');
 const { getCatalog, getQuotes } = require('../lib/tradfiMarkets');
 const { getIntel } = require('../lib/tradfiIntel');
 const { getWhaleActivity, getAllWhaleActivity } = require('../lib/tradfiWhales');
-const { requireUser } = require('../lib/authStore');
-const { getBinanceCredentialsForUser } = require('../lib/userExchangeKeys');
-const { accountBook } = require('../lib/binanceAiAccountBook');
-const rangeStrategy = require('../lib/tradfiRangeStrategy');
 
 const router = express.Router();
 
@@ -53,88 +49,6 @@ router.get('/whales', async (req, res) => {
     console.error('[GET /api/tradfi/whales]', err.message);
     res.status(err.status || 502).json({ error: err.message || 'TradFi 大户动态暂不可用' });
   }
-});
-
-router.get('/account', async (req, res) => {
-  try {
-    const user = requireUser(req);
-    const creds = getBinanceCredentialsForUser(user.user.id);
-    if (!creds) return res.json({ ok: true, configured: false, scope: 'tradfi', weekendMode: rangeStrategy.isCommodityWeekendMode(), balance: { totalEq: null, usdtEq: null, availBal: null }, openPnl: 0, historyPnl: null, records: [], strategies: [] });
-    const [catalog, strategyStates] = await Promise.all([
-      getCatalog(),
-      Promise.all(['XAUUSDT', 'XAGUSDT'].map(async (symbol) => {
-        const result = await rangeStrategy.positionSyncStatus(user.user.id, symbol);
-        return { ...result.strategy, positionSync: result.positionSync };
-      })),
-    ]);
-    const strategies = strategyStates;
-    const fundingSinceBySymbol = Object.fromEntries(strategies
-      .filter((row) => row.enabled && Number(row.cycleStartedAt) > 0)
-      .map((row) => [row.symbol, Number(row.cycleStartedAt)]));
-    const ownershipBySymbol = Object.fromEntries(strategies.filter((row) => row.enabled || row.resumeEligible).map((row) => [row.symbol, {
-      long: Number(row.long?.expectedQty || row.adoptedLongQty || 0), short: Number(row.short?.expectedQty || row.adoptedShortQty || 0),
-      adoptedAt: Number(row.adoptedAt || 0), adoptedLongQty: Number(row.adoptedLongQty || 0), adoptedShortQty: Number(row.adoptedShortQty || 0),
-    }]));
-    const book = await accountBook(creds, user.user.id, 'tradfi', fundingSinceBySymbol, ownershipBySymbol);
-    const symbols = new Set(catalog.symbols.map((row) => row.symbol));
-    const records = book.records.filter((row) => symbols.has(row.instId));
-    res.json({ ...book, scope: 'tradfi', records, strategies, weekendMode: rangeStrategy.isCommodityWeekendMode(), openPnl: records.filter((row) => row.kind === 'position').reduce((sum, row) => sum + Number(row.openUpl || 0), 0) });
-  } catch (err) { res.status(err.status || 502).json({ error: err.message || 'TradFi 交易账户加载失败', code: err.code }); }
-});
-
-router.get('/range/status', (req, res) => {
-  try {
-    const user = requireUser(req);
-    res.json({ ok: true, ...rangeStrategy.status(user.user.id, req.query.symbol) });
-  } catch (err) { res.status(err.status || 500).json({ error: err.message || '震荡策略状态加载失败' }); }
-});
-
-router.post('/range/start', async (req, res) => {
-  try {
-    const user = requireUser(req);
-    const creds = getBinanceCredentialsForUser(user.user.id);
-    if (!creds) throw Object.assign(new Error('请先在 API 设置中配置币安 API 密钥'), { status: 400 });
-    res.json({ ok: true, ...rangeStrategy.enable(user.user.id, req.body?.symbol, creds.simulated, req.body) });
-    void rangeStrategy.reconcile();
-  } catch (err) { res.status(err.status || 500).json({ error: err.message || '震荡策略启动失败', code: err.code }); }
-});
-
-router.post('/range/manual-add/preview', async (req, res) => {
-  try {
-    const user = requireUser(req);
-    res.json({ ok: true, preview: await rangeStrategy.manualAddPreview(user.user.id, req.body?.symbol, req.body?.side, req.body?.marginUsdt) });
-  } catch (err) { res.status(err.status || 502).json({ error: err.message || '手动补仓预估失败', code: err.code }); }
-});
-
-router.post('/range/manual-add', async (req, res) => {
-  try {
-    const user = requireUser(req);
-    const result = await rangeStrategy.manualAdd(user.user.id, req.body?.symbol, req.body?.side, req.body?.marginUsdt, req.body?.expected || {});
-    res.json({ ok: true, ...result });
-    void rangeStrategy.reconcile();
-  } catch (err) { res.status(err.status || 502).json({ error: err.message || '手动补仓提交失败', code: err.code }); }
-});
-
-router.post('/range/sync', async (req, res) => {
-  try {
-    const user = requireUser(req);
-    res.json({ ok: true, ...await rangeStrategy.syncPositions(user.user.id, req.body?.symbol) });
-    void rangeStrategy.reconcile();
-  } catch (err) { res.status(err.status || 502).json({ error: err.message || '同步币安仓位失败', code: err.code }); }
-});
-
-router.post('/range/stop', async (req, res) => {
-  try {
-    const user = requireUser(req);
-    res.json({ ok: true, ...await rangeStrategy.disable(user.user.id, req.body?.symbol) });
-  } catch (err) { res.status(err.status || 500).json({ error: err.message || '震荡策略停止失败', code: err.code }); }
-});
-
-router.post('/close-all', async (req, res) => {
-  try {
-    const user = requireUser(req);
-    res.json({ ok: true, ...await rangeStrategy.closeAll(user.user.id) });
-  } catch (err) { res.status(err.status || 500).json({ error: err.message || '一键平仓提交失败', code: err.code }); }
 });
 
 module.exports = router;

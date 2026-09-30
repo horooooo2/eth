@@ -1,12 +1,9 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
-import { fetchCalendar, fetchOkxKeys } from '@/api';
+import { fetchCalendar } from '@/api';
 import type { CalendarEvent, WhaleProfile } from '@/types';
 import type { RecoQuotes } from '@/utils/recommend';
-import OkxAccountPanel from '@/components/OkxAccountPanel.vue';
 import AiAnalyzeButton from '@/components/AiAnalyzeButton.vue';
-
-type DataTab = 'macro' | 'flow';
 
 const props = defineProps<{
   whales: WhaleProfile[];
@@ -23,20 +20,6 @@ const emit = defineEmits<{
   focusWhale: [payload: { id: string; name: string }];
 }>();
 
-const tab = ref<DataTab>('macro');
-const accountExchange = ref<'okx'>('okx');
-const accountKeys = ref<{ okx: boolean }>({ okx: false });
-const accountKeysError = ref('');
-async function loadAccountKeys() {
-  try {
-    const keys = await fetchOkxKeys();
-    accountKeys.value = { okx: Boolean(keys.okx?.ready) };
-    accountKeysError.value = '';
-  } catch (err) {
-    accountKeysError.value = err instanceof Error ? err.message : '读取 API 配置失败';
-  }
-}
-watch(tab, (next) => { if (next === 'flow') void loadAccountKeys(); });
 const macroLoading = ref(false);
 const macroError = ref('');
 const macroEvents = ref<CalendarEvent[]>([]);
@@ -141,12 +124,6 @@ async function loadMacro(force = false) {
   }
 }
 
-async function onTabChange(next: string | number | boolean | undefined) {
-  if (!props.bootReady) return;
-  const t = (typeof next === 'string' ? next : tab.value) as DataTab;
-  if (t === 'macro') await loadMacro(false);
-}
-
 watch(
   () => props.bootReady,
   (ready) => {
@@ -161,15 +138,12 @@ watch(
   <el-card class="panel" shadow="never">
     <template #header>
       <div class="head">
-        <el-radio-group v-model="tab" class="direction-filter" @change="onTabChange">
-          <el-radio-button label="macro">宏观数据</el-radio-button>
-          <el-radio-button label="flow">交易账户</el-radio-button>
-        </el-radio-group>
+        <strong>宏观数据</strong>
       </div>
     </template>
 
     <div class="tab-stack">
-      <div v-show="tab === 'macro'" class="tab-panel">
+      <div class="tab-panel">
         <el-skeleton v-if="macroLoading && !macroEvents.length" :rows="8" animated />
         <el-alert
           v-else-if="macroError && !macroEvents.length"
@@ -211,11 +185,6 @@ watch(
         </div>
       </div>
 
-      <div v-show="tab === 'flow'" class="tab-panel transfer-panel">
-        <el-alert v-if="accountKeysError" type="warning" :closable="false" :title="accountKeysError" />
-        <el-alert v-else-if="!accountKeys.okx" type="info" :closable="false" title="请先在左下角「API 设置」配置 OKX API 密钥" />
-        <OkxAccountPanel v-else :exchange="accountExchange" :boot-ready="bootReady" :active="tab === 'flow'" />
-      </div>
     </div>
   </el-card>
 </template>

@@ -1,0 +1,9 @@
+# Required: replace null with your explicit cost and risk assumptions.
+# No exchange VIP fee or risk budget is silently assumed.
+maker_fee_bps: null
+taker_fee_bps: null
+sizing_entry_slippage_bps: null  # retained; not applied by final A/B sizing rules
+sizing_stop_slippage_bps: null
+actual_entry_slippage_bps: null
+actual_exit_slippage_bps: null
+risk_budget_usdt: null

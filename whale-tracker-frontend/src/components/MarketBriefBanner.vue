@@ -1,17 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import {
   fetchMarketBriefAnalysis,
   streamMarketBrief,
-  streamOkxStanceOrder,
-  fetchOkxKeys,
-  previewOkxStanceOrder,
-  type CryptoStanceOrderInput,
-  type CryptoStancePreview,
   type MarketBriefResponse,
   type MarketBriefStructured,
-  type OkxStanceOrderStage,
 } from '@/api';
 import { preferredCoinsState, normalizeCoinId } from '@/utils/watchedCoins';
 import {
@@ -270,257 +264,6 @@ function fmtStancePrice(v: number | null | undefined) {
   return formatPrice(Number(v));
 }
 
-function isWaitAction(action?: string) {
-  return !action || /观望/.test(action);
-}
-
-function canUsePending(leg: NonNullable<MarketBriefStructured['personal_stance']>['short']) {
-  if (!leg || leg.execution !== '等待触发' || leg.entry_validation?.decision !== '支持') return false;
-  const validation = leg.entry_validation;
-  if (!validation.technical || !validation.sentiment || !validation.news_macro || !validation.positioning) return false;
-  if (![validation.sentiment, validation.news_macro, validation.positioning].some((item) => !/暂无|缺失|无数据|unavailable|未接入/i.test(String(item)))) return false;
-  const direction = structured.value?.mid_long_term?.direction;
-  if (leg.action === '做多' ? direction !== '偏多' : leg.action === '做空' ? direction !== '偏空' : true) return false;
-  return Number(leg.entry) > 0 && Number(leg.stop) > 0 && Number(leg.take_profit) > 0;
-}
-
-const orderDialogVisible = ref(false);
-const orderAmount = ref('10');
-const okxOrderReady = ref(false);
-const okxOrderSimulation = ref(true);
-const orderSubmitting = ref(false);
-const orderPreview = ref<CryptoStancePreview['plan'] | null>(null);
-const orderPreviewBusy = ref(false);
-const orderPreviewError = ref('');
-const orderMode = ref<'direct' | 'pending'>('direct');
-let orderPreviewSeq = 0;
-const orderProgressVisible = ref(false);
-const orderProgress = ref(0);
-const orderProgressError = ref('');
-const orderProgressDone = ref(false);
-const orderProgressSteps = ref<
-  { id: string; label: string; status: 'pending' | 'running' | 'done' | 'error'; detail?: string }[]
->([]);
-const orderTarget = ref<{
-  id: string;
-  header: string;
-  leg: NonNullable<MarketBriefStructured['personal_stance']>['short'];
-} | null>(null);
-
-const orderPreviewPrice = computed(() => Number(orderPreview.value?.price ?? orderPreview.value?.entry));
-const orderDistancePct = computed(() => {
-  const last = Number(orderPreview.value?.last);
-  const price = orderPreviewPrice.value;
-  return last > 0 && Number.isFinite(price) ? ((price - last) / last * 100) : null;
-});
-const orderLeverage = computed(() => 10);
-
-function stanceOrderInput(): CryptoStanceOrderInput | null {
-  const leg = orderTarget.value?.leg;
-  const targetCoin = result.value?.coin;
-  const analysisId = result.value?.analysisId;
-  const horizon = orderTarget.value?.id;
-  if (!leg || !targetCoin || !analysisId || (horizon !== 'short' && horizon !== 'mid_long') || leg.entry == null || leg.stop == null || leg.take_profit == null) return null;
-  return {
-    coin: targetCoin,
-    analysisId,
-    horizon,
-    action: String(leg.action),
-    execution: String(leg.execution || '禁止下单'),
-    orderMode: orderMode.value,
-    entry: Number(leg.entry),
-    stop: Number(leg.stop),
-    takeProfit: Number(leg.take_profit),
-    leverage: orderLeverage.value,
-    amountUsd: Number(orderAmount.value),
-  };
-}
-
-async function refreshOrderPreview() {
-  const seq = ++orderPreviewSeq;
-  orderPreview.value = null;
-  orderPreviewError.value = '';
-  const payload = stanceOrderInput();
-  if (!payload || !okxOrderReady.value) return;
-  if (!(payload.amountUsd > 0) || payload.amountUsd > 100) {
-    orderPreviewError.value = '本金必须在 0～100 USDT 之间';
-    return;
-  }
-  orderPreviewBusy.value = true;
-  try {
-    const response = await previewOkxStanceOrder(payload);
-    if (seq === orderPreviewSeq) orderPreview.value = response.plan;
-  } catch (err) {
-    if (seq === orderPreviewSeq) orderPreviewError.value = err instanceof Error ? err.message : '无法预览订单';
-  } finally {
-    if (seq === orderPreviewSeq) orderPreviewBusy.value = false;
-  }
-}
-
-watch(orderAmount, () => {
-  if (orderDialogVisible.value) void refreshOrderPreview();
-});
-
-const ORDER_STEP_DEFS = [
-  { id: 'price', label: '获取当前最新价格' },
-  { id: 'limit', label: '按多空方向挂限价单（Maker）' },
-  { id: 'sltp', label: '设置止损 / 止盈' },
-  { id: 'done', label: '提交完成' },
-] as const;
-
-function resetOrderProgress() {
-  orderProgress.value = 0;
-  orderProgressError.value = '';
-  orderProgressDone.value = false;
-  orderProgressSteps.value = ORDER_STEP_DEFS.map((s) => ({
-    id: s.id,
-    label: s.label,
-    status: 'pending' as const,
-  }));
-}
-
-function applyOrderStage(stage: OkxStanceOrderStage) {
-  if (typeof stage.progress === 'number') {
-    orderProgress.value = Math.max(orderProgress.value, Math.min(100, stage.progress));
-  }
-  const mapId = stage.id === 'init' ? 'price' : stage.id;
-  const idx = orderProgressSteps.value.findIndex((s) => s.id === mapId);
-  if (idx < 0) return;
-  for (let i = 0; i < idx; i++) {
-    if (orderProgressSteps.value[i].status !== 'done') {
-      orderProgressSteps.value[i] = { ...orderProgressSteps.value[i], status: 'done' };
-    }
-  }
-  const cur = orderProgressSteps.value[idx];
-  const nextStatus =
-    stage.status === 'done' || stage.id === 'done'
-      ? 'done'
-      : stage.status === 'error'
-        ? 'error'
-        : 'running';
-  orderProgressSteps.value[idx] = {
-    ...cur,
-    status: nextStatus,
-    detail: stage.message || cur.detail,
-  };
-}
-
-async function openOrderDialog(card: {
-  id: string;
-  header: string;
-  leg: NonNullable<MarketBriefStructured['personal_stance']>['short'];
-}, mode: 'direct' | 'pending' = 'direct') {
-  if (mode === 'pending' && !canUsePending(card.leg)) {
-    ElMessage.warning('AI 尚未验证这个挂单价，或方向与中长期判断不一致，请重新分析');
-    return;
-  }
-  if (!card.leg?.execution) {
-    ElMessage.warning('这份分析没有新的开单状态，请重新分析后再预览订单');
-    return;
-  }
-  if (mode === 'direct' && card.leg?.execution !== '现在可开') {
-    ElMessage.warning(card.leg?.trigger || card.leg?.note || '尚未达到开单条件，请重新分析');
-    return;
-  }
-  if (isWaitAction(card.leg?.action)) {
-    ElMessage.warning('当前仍为观望，请点顶部「重新分析」生成做多/做空方案');
-    return;
-  }
-  if (card.leg?.entry == null || card.leg?.stop == null || card.leg?.take_profit == null) {
-    ElMessage.warning('缺少开仓/止损/止盈价，请先刷新该周期建议');
-    return;
-  }
-  orderTarget.value = card;
-  orderMode.value = mode;
-  orderAmount.value = '10';
-  try {
-    const keys = await fetchOkxKeys();
-    okxOrderReady.value = Boolean(keys.okx?.ready);
-    okxOrderSimulation.value = Boolean(keys.okx?.simulated);
-  } catch (err) {
-    okxOrderReady.value = false;
-    ElMessage.warning(err instanceof Error ? err.message : '读取交易所配置失败');
-  }
-  orderDialogVisible.value = true;
-  await refreshOrderPreview();
-}
-
-async function confirmStanceOrder() {
-  if (orderSubmitting.value) return;
-  const card = orderTarget.value;
-  const coin = result.value?.coin;
-  if (!card?.leg || !coin) return;
-  const payload = stanceOrderInput();
-  if (!okxOrderReady.value) {
-    ElMessage.warning('请先在左下角「API 设置」配置 OKX API 密钥');
-    return;
-  }
-  if (!payload || !(payload.amountUsd > 0) || payload.amountUsd > 100) {
-    ElMessage.warning('请输入 0~100 的 USDT 金额');
-    return;
-  }
-  if (!orderPreview.value || !Number.isFinite(orderPreviewPrice.value)) {
-    ElMessage.warning(orderPreviewError.value || '请等待真实订单预览完成');
-    return;
-  }
-  const previewPrice = orderPreviewPrice.value;
-  const previewLoss = Number(orderPreview.value.estimatedLossUsdt);
-  orderSubmitting.value = true;
-  try {
-    await ElMessageBox.confirm(
-      `交易所 OKX · ${okxOrderSimulation.value ? '演示盘' : '实盘'}\n${coin} · ${card.leg.action} · ${card.header}\n实际委托价 ${fmtStancePrice(previewPrice)} · 本金 ${payload.amountUsd} USDT · 杠杆 ${payload.leverage}x\n止损 ${fmtStancePrice(card.leg.stop)} · 止盈 ${fmtStancePrice(card.leg.take_profit)}\n预计到止损亏损 ${Number.isFinite(previewLoss) ? previewLoss.toFixed(2) : '—'} USDT（未计手续费与滑点）${orderMode.value === 'pending' ? '\n挂单会立即提交交易所，价格触及时即可成交，不等待复合条件确认。' : ''}`,
-      orderMode.value === 'pending' ? '确认交易所限价挂单' : '确认挂单开仓',
-      { type: 'warning', confirmButtonText: '开始挂单', cancelButtonText: '取消' },
-    );
-  } catch {
-    orderSubmitting.value = false;
-    return;
-  }
-
-  orderDialogVisible.value = false;
-  resetOrderProgress();
-  orderProgressVisible.value = true;
-  orderSubmitting.value = true;
-
-  try {
-    payload.expectedPrice = previewPrice;
-    await streamOkxStanceOrder(
-      payload,
-      {
-        onStage: applyOrderStage,
-        onDone: (data) => {
-          orderProgress.value = 100;
-          orderProgressDone.value = true;
-          orderProgressSteps.value = orderProgressSteps.value.map((s) =>
-            s.status === 'error' ? s : { ...s, status: 'done' as const },
-          );
-          const ordId = String(data.order?.ordId || '');
-          const px = data.plan && typeof data.plan.entry === 'number' ? data.plan.entry : '';
-          ElMessage.success(
-            (data.simulated ? '模拟盘挂单成功' : '挂单成功') +
-              (ordId ? ` ${ordId}` : '') +
-              (px ? ` · 限价 ${px}` : ''),
-          );
-        },
-        onError: (message) => {
-          orderProgressError.value = message;
-          const running = orderProgressSteps.value.find((s) => s.status === 'running');
-          if (running) {
-            running.status = 'error';
-            running.detail = message;
-          }
-        },
-      },
-    );
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : '挂单失败';
-    orderProgressError.value = msg;
-    ElMessage.error(msg);
-  } finally {
-    orderSubmitting.value = false;
-  }
-}
-
 function biasFromResult(data: MarketBriefResponse) {
   const st = data.analysisResult?.short_term || data.structured?.short_term;
   if (st?.direction || st?.bias) {
@@ -709,7 +452,7 @@ async function runBrief() {
         };
         stopLoadingSteps();
         phase.value = 'streaming';
-        statusMessage.value = '正在生成交易计划…';
+        statusMessage.value = '正在生成分析内容…';
       },
       onDelta: (text) => {
         if (seq !== reqSeq || !text) return;
@@ -971,15 +714,9 @@ onUnmounted(() => {
                       <p>新闻宏观：{{ card.leg.entry_validation.news_macro || '暂无' }}</p>
                       <p>大户与资金：{{ card.leg.entry_validation.positioning || '暂无' }}</p>
                     </details>
-                    <button v-if="card.leg?.execution === '现在可开'" type="button" class="primary-btn simple-order-btn" @click="openOrderDialog(card, 'direct')">预览订单</button>
-                    <div v-else-if="card.leg?.execution === '等待触发'" class="order-choice-row">
-                      <button type="button" class="primary-btn simple-order-btn" disabled>预览订单 · 待条件满足</button>
-                      <button type="button" class="primary-btn simple-order-btn" :disabled="!canUsePending(card.leg)" @click="openOrderDialog(card, 'pending')">挂单模式</button>
-                    </div>
-                    <p v-if="card.leg?.execution === '等待触发' && !canUsePending(card.leg)" class="order-hint">挂单价缺少综合验证，或与中长期方向不一致；请重新分析。</p>
                   </div>
                 </div>
-                <div v-else class="simple-card"><strong>{{ sentiment.label }}</strong><p class="simple-note">结构化计划未生成，请重新分析后再预览订单。</p></div>
+                <div v-else class="simple-card"><strong>{{ sentiment.label }}</strong><p class="simple-note">本次分析没有生成结构化观点，请重新分析。</p></div>
                 <details class="analysis-details"><summary>查看分析依据</summary>
                 <div class="analysis-tabs-wrap">
                 <div class="analysis-tabs" role="tablist">
@@ -1159,91 +896,6 @@ onUnmounted(() => {
         </div>
       </div>
     </Teleport>
-
-    <el-dialog
-      v-model="orderDialogVisible"
-      :title="orderMode === 'pending' ? 'AI 挂单模式 · 交易所限价委托' : '按 AI 建议挂单开仓'"
-      width="420px"
-      append-to-body
-      destroy-on-close
-    >
-      <div v-if="orderTarget?.leg" class="order-dlg-body">
-        <p>
-          {{ result?.coin }} · <strong>{{ orderTarget.leg.action }}</strong> ·
-          {{ orderTarget.header }}
-        </p>
-        <p class="order-meta">AI 挂单价 {{ fmtStancePrice(orderTarget.leg.entry) }} · 按交易所精度委托 {{ orderPreview ? fmtStancePrice(orderPreviewPrice) : '计算中…' }}</p>
-        <p v-if="orderPreview && orderDistancePct != null" class="order-meta">当前价 {{ fmtStancePrice(orderPreview.last) }} · 委托价较现价 {{ Math.abs(orderDistancePct).toFixed(2) }}% {{ orderDistancePct < 0 ? '更低' : '更高' }}</p>
-        <p class="order-hint">入场单只做 Maker；盘口变化导致委托会立即成交时，交易所可能取消挂单。止盈止损触发后按市价执行。</p>
-        <p v-if="orderMode === 'pending'" class="order-hint">点击确认后立即向交易所提交限价单。价格触及时可能成交，无需等待上方复合触发条件。</p>
-        <p class="order-meta">杠杆 {{ orderLeverage }}x（AI 策略固定）</p>
-        <p class="order-meta">
-          止损 {{ fmtStancePrice(orderTarget.leg.stop) }} · 止盈
-          {{ fmtStancePrice(orderTarget.leg.take_profit) }}
-        </p>
-        <label class="order-amount-label">保证金金额（USDT，最大 100）</label>
-        <el-input v-model="orderAmount" type="number" min="1" max="100" step="1" />
-        <p v-if="okxOrderReady" class="order-meta">交易账户 OKX · {{ okxOrderSimulation ? '演示盘' : '实盘' }}</p>
-        <el-alert v-else type="info" :closable="false" title="请先在左下角「API 设置」配置 OKX API 密钥" />
-        <p v-if="orderPreviewBusy" class="order-hint">正在读取实时行情并核算订单…</p>
-        <el-alert v-if="orderPreviewError" type="error" :closable="false" :title="orderPreviewError" />
-        <p v-if="orderPreview" class="order-hint">预计到止损亏损 {{ Number(orderPreview.estimatedLossUsdt || 0).toFixed(2) }} USDT（未计费用与滑点）。止盈止损必须被交易所接受。</p>
-      </div>
-      <template #footer>
-        <button type="button" class="dlg-btn ghost" @click="orderDialogVisible = false">取消</button>
-        <button
-          type="button"
-          class="dlg-btn primary"
-          :disabled="orderSubmitting || orderPreviewBusy || !orderPreview || !okxOrderReady"
-          @click="confirmStanceOrder"
-        >
-          {{ orderSubmitting ? '挂单中…' : '确认挂单' }}
-        </button>
-      </template>
-    </el-dialog>
-
-    <el-dialog
-      v-model="orderProgressVisible"
-      title="挂单进度"
-      width="440px"
-      append-to-body
-      :close-on-click-modal="!orderSubmitting"
-      :close-on-press-escape="!orderSubmitting"
-      :show-close="!orderSubmitting"
-    >
-      <div class="order-progress-body">
-        <div class="order-progress-bar-track">
-          <div class="order-progress-bar-fill" :style="{ width: `${orderProgress}%` }" />
-        </div>
-        <p class="order-progress-pct">{{ Math.round(orderProgress) }}%</p>
-        <ul class="order-progress-steps">
-          <li
-            v-for="step in orderProgressSteps"
-            :key="step.id"
-            class="order-progress-step"
-            :class="step.status"
-          >
-            <span class="step-dot" />
-            <div class="step-text">
-              <strong>{{ step.label }}</strong>
-              <span v-if="step.detail" class="step-detail">{{ step.detail }}</span>
-            </div>
-          </li>
-        </ul>
-        <p v-if="orderProgressError" class="order-progress-error">{{ orderProgressError }}</p>
-        <p v-else-if="orderProgressDone" class="order-progress-ok">挂单已提交，等待成交。</p>
-      </div>
-      <template #footer>
-        <button
-          type="button"
-          class="dlg-btn primary"
-          :disabled="orderSubmitting"
-          @click="orderProgressVisible = false"
-        >
-          {{ orderSubmitting ? '进行中…' : '关闭' }}
-        </button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 

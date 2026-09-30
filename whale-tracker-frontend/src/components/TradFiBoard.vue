@@ -1,11 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch as watchVue } from 'vue';
-import { ElMessage, ElMessageBox } from 'element-plus';
-import { closeTradfiPositions, fetchTradFiCatalog, fetchTradFiQuotes, fetchTradFiIntel, fetchTradfiRangeStatus, startTradfiRangeWithConfig, stopTradfiRange, type BinanceAiTradeRecord, type OkxAiBook, type TradfiRangeResponse, type TradFiIntelResponse, type TradFiMarketSymbol, type TradFiQuote } from '@/api';
-import OkxAccountPanel from '@/components/OkxAccountPanel.vue';
+import { fetchTradFiCatalog, fetchTradFiQuotes, fetchTradFiIntel, type TradFiIntelResponse, type TradFiMarketSymbol, type TradFiQuote } from '@/api';
 import { tradfiWatch } from '@/utils/tradfiWatch';
 
-const props = defineProps<{ active?: boolean }>();
 
 type NewsRow = [tag: string, time: string, title: string, summary: string, source: string];
 type Pair = [string, string];
@@ -128,20 +125,9 @@ const selected = ref('XAUUSDT');
 const newsFilter = ref('全部');
 const newsQuery = ref('');
 const watch = tradfiWatch;
-const strategyOpen = ref(false);
-const strategyBusy = ref(false);
-const strategyError = ref('');
-const strategyData = ref<TradfiRangeResponse | null>(null);
-const strategyMargin = ref(10);
-const strategyLeverage = ref(10);
-const startupOpen = ref(false);
-const closingAll = ref(false);
-const accountBook = ref<OkxAiBook | null>(null);
-const accountPanel = ref<{ reload: () => void } | null>(null);
 let quoteTimer = 0;
 let intelTimer = 0;
 let intelRequestId = 0;
-let strategyTimer = 0;
 const catalog = ref<TradFiMarketSymbol[]>([]);
 const quotes = ref<Record<string, TradFiQuote>>({});
 const marketError = ref('');
@@ -150,27 +136,6 @@ const marketUpdatedAt = ref('');
 const intel = ref<TradFiIntelResponse | null>(null);
 const intelLoading = ref(false);
 const intelError = ref('');
-const strategySupported = computed(() => selected.value === 'XAUUSDT');
-const strategyMaxMargin = computed(() => selected.value === 'XAUUSDT' ? 100 : 20);
-const ladderDescription = computed(() => {
-  const initialMargin = Number(strategyData.value?.strategy.enabled
-    ? strategyData.value.strategy.marginPerOrder
-    : strategyMargin.value);
-  const base = Number.isFinite(initialMargin) && initialMargin > 0
-    ? initialMargin
-    : 10;
-  const tiers = [0.5, 0.75, 1.25, 1.5].map((ratio) => formatTwo(base * ratio));
-  return `多头：1–10档 ${tiers[0]}U、11–20档 ${tiers[1]}U、21–30档 ${tiers[2]}U、31–100档 ${tiers[3]}U（自动补仓 ${formatTwo(base * 130)}U）；空头：1–10档 ${tiers[0]}U、11–20档 ${tiers[1]}U（自动补仓 ${formatTwo(base * 12.5)}U）`;
-});
-const tradeRows = computed(() => (accountBook.value?.trades || []).filter((row) => row.instId === selected.value).slice(0, 50));
-const historyTab = ref<'trades' | 'logs'>('trades');
-const strategyLogs = computed(() => strategyData.value?.events || []);
-const startupLogs = computed(() => {
-  const startedAt = Number(strategyData.value?.strategy.startedAt || 0);
-  return strategyLogs.value.filter((row) => row.details?.phase === 'startup' && (!startedAt || Number(row.created_at) >= startedAt)).slice().reverse();
-});
-const startupProgress = computed(() => Math.max(0, Math.min(100, Number(strategyData.value?.strategy.startupProgress || 0))));
-const accountWeekendMode = computed(() => Boolean(accountBook.value?.weekendMode ?? strategyData.value?.strategy.weekendMode));
 
 const catalogBySymbol = computed(() => new Map(catalog.value.map((item) => [item.symbol, item])));
 function assetFor(symbol: string): Asset {
@@ -236,11 +201,8 @@ onMounted(() => {
   void loadMarkets();
   quoteTimer = window.setInterval(() => { void refreshQuotes(); }, 15_000);
   intelTimer = window.setInterval(() => { void loadIntel(selected.value); }, 5 * 60_000);
-  if (props.active && strategySupported.value) void loadStrategy();
-  strategyTimer = window.setInterval(() => { if (props.active && strategySupported.value) void loadStrategy(true); }, 15_000);
 });
-onUnmounted(() => { window.clearInterval(quoteTimer); window.clearInterval(intelTimer); window.clearInterval(strategyTimer); });
-watchVue(() => props.active, (active) => { if (active && strategySupported.value) void loadStrategy(); });
+onUnmounted(() => { window.clearInterval(quoteTimer); window.clearInterval(intelTimer); });
 watchVue(watch, (symbols) => { if (!symbols.includes(selected.value)) selectAsset(symbols[0]); void refreshQuotes(); });
 
 const newsRows = computed(() => {
@@ -261,140 +223,7 @@ async function loadIntel(symbol: string) {
 }
 function selectAsset(symbol: string) {
   if (!watch.value.includes(symbol) && !catalogBySymbol.value.has(symbol)) return;
-  selected.value = symbol; strategyData.value = null; strategyError.value = ''; void loadIntel(symbol);
-  if (symbol === 'XAUUSDT') void loadStrategy();
-}
-async function loadStrategy(silent = false) {
-  if (!strategySupported.value) return;
-  if (!silent) strategyBusy.value = true;
-  try { strategyData.value = await fetchTradfiRangeStatus(selected.value); strategyError.value = ''; }
-  catch (err) { strategyError.value = err instanceof Error ? err.message : '震荡策略状态加载失败'; }
-  finally { if (!silent) strategyBusy.value = false; }
-}
-async function openStrategy() {
-  strategyOpen.value = true;
-  await loadStrategy();
-  if (!strategyData.value?.strategy.enabled) {
-    if (strategyData.value?.strategy.resumeEligible) {
-      strategyMargin.value = Number(strategyData.value.strategy.marginPerOrder || 10);
-      strategyLeverage.value = Number(strategyData.value.strategy.leverage || 10);
-    } else {
-      strategyMargin.value = 10;
-      strategyLeverage.value = 10;
-    }
-  }
-}
-function closeStrategy() { if (!strategyBusy.value) strategyOpen.value = false; }
-function closeStartup() { if (!strategyBusy.value) startupOpen.value = false; }
-function onAccountLoaded(book: OkxAiBook) { accountBook.value = book; }
-function tradeDirection(row: BinanceAiTradeRecord) {
-  const direction = row.posSide === 'short' ? '空' : row.posSide === 'long' ? '多' : row.side === 'sell' ? '空' : '多';
-  return row.source === 'manual' ? `${direction}手动平仓` : `${direction}${row.action === 'close' ? '平仓' : '开仓'}`;
-}
-function tradeTagClass(row: BinanceAiTradeRecord) {
-  return row.posSide === 'short' || (row.posSide !== 'long' && row.side === 'sell') ? 'short' : 'long';
-}
-function formatTwo(value: unknown) {
-  const amount = Number(value);
-  return Number.isFinite(amount)
-    ? amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    : '—';
-}
-function tradeAmount(value: number | null) { return value == null ? '—' : `${formatTwo(value)} U`; }
-function tradeQuantity(value: string | number | null) { return formatTwo(value); }
-function tradeFee(row: BinanceAiTradeRecord) {
-  const fee = Number(row.commission);
-  if (!Number.isFinite(fee)) return '—';
-  return `${fee > 0 ? '-' : ''}${formatTwo(fee)} ${row.commissionAsset || 'USDT'}`;
-}
-function tradePrice(value: number | null) { return value == null ? '—' : formatTwo(value); }
-function tradePnlPercent(row: BinanceAiTradeRecord) {
-  const pnl = Number(row.realizedPnl);
-  const amount = Math.abs(Number(row.amountUsd));
-  if (!Number.isFinite(pnl) || !Number.isFinite(amount) || amount <= 0) return '—';
-  return `${(pnl / amount * 100).toFixed(2)}%`;
-}
-function tradeTime(raw: number | null) {
-  if (!raw) return '—';
-  const date = new Date(raw);
-  if (!Number.isFinite(date.getTime())) return '—';
-  const mm = String(date.getMonth() + 1).padStart(2, '0');
-  const dd = String(date.getDate()).padStart(2, '0');
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mi = String(date.getMinutes()).padStart(2, '0');
-  return `${mm}/${dd} ${hh}:${mi}`;
-}
-function tradeClock(raw: number | null) {
-  if (!raw) return '—';
-  const date = new Date(raw);
-  if (!Number.isFinite(date.getTime())) return '—';
-  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-}
-function logLevelLabel(level: string) {
-  if (level === 'error') return '异常';
-  if (level === 'warn') return '提醒';
-  if (level === 'success') return '完成';
-  if (level === 'trade') return '交易';
-  return '运行';
-}
-function pnlClass(value: number | null) {
-  if (value == null || !Number.isFinite(value) || value === 0) return 'pnl-zero';
-  return value > 0 ? 'pnl-positive' : 'pnl-negative';
-}
-async function toggleStrategy(forceAdoptExisting = false) {
-  if (!strategySupported.value || strategyBusy.value) return;
-  strategyBusy.value = true; strategyError.value = '';
-  try {
-    if (strategyData.value?.strategy.enabled) {
-      strategyData.value = await stopTradfiRange(selected.value);
-      void accountPanel.value?.reload();
-    } else {
-      startupOpen.value = true;
-      strategyOpen.value = false;
-      strategyData.value = null;
-      let adoptExisting = forceAdoptExisting;
-      for (let pass = 0; pass < 2; pass += 1) {
-        strategyData.value = await startTradfiRangeWithConfig(selected.value, { marginUsdt: Number(strategyMargin.value), leverage: Number(strategyLeverage.value), adoptExisting });
-        for (let attempt = 0; attempt < 90 && strategyData.value?.strategy.status === 'initializing'; attempt += 1) {
-          await new Promise((resolve) => window.setTimeout(resolve, 500));
-          strategyData.value = await fetchTradfiRangeStatus(selected.value);
-        }
-        if (strategyData.value?.strategy.status !== 'adoption_required') break;
-        const positions = strategyData.value.strategy.adoptionPositions;
-        const summary = `多仓 ${positions?.long.quantity || 0}（均价 ${positions?.long.entryPrice || '—'}）\n空仓 ${positions?.short.quantity || 0}（均价 ${positions?.short.entryPrice || '—'}）`;
-        try {
-          await ElMessageBox.confirm(`检测到来源不明确的现有仓位：\n${summary}\n\n确认后，策略将按币安实际仓位继续补仓与止盈。`, '确认接管现有仓位', { type: 'warning', confirmButtonText: '确认接管', cancelButtonText: '取消' });
-        } catch {
-          strategyError.value = '已取消接管，现有仓位保持人工管理';
-          startupOpen.value = false;
-          strategyOpen.value = true;
-          break;
-        }
-        adoptExisting = true;
-      }
-      if (strategyData.value?.strategy.enabled && strategyData.value.strategy.status !== 'initializing') {
-        await new Promise((resolve) => window.setTimeout(resolve, 500));
-        startupOpen.value = false;
-        void accountPanel.value?.reload();
-      }
-    }
-  }
-  catch (err) { strategyError.value = err instanceof Error ? err.message : '震荡策略操作失败'; }
-  finally { strategyBusy.value = false; }
-}
-async function closeAllPositions() {
-  if (closingAll.value) return;
-  try {
-    await ElMessageBox.confirm('将撤销本站震荡策略的未成交入场单，并为黄金、白银策略持仓提交接近市价的 Post Only 平仓单。订单需要等待成交。', '确认一键平仓', { type: 'warning', confirmButtonText: '提交平仓单', cancelButtonText: '取消' });
-  } catch { return; }
-  closingAll.value = true;
-  try {
-    const result = await closeTradfiPositions();
-    ElMessage.success(result.submitted.length ? `已提交 ${result.submitted.length} 笔 Maker 平仓单` : '没有可平的策略仓位或挂单');
-    void loadStrategy(true);
-    void accountPanel.value?.reload();
-  } catch (err) { ElMessage.error(err instanceof Error ? err.message : '一键平仓提交失败'); }
-  finally { closingAll.value = false; }
+  selected.value = symbol; void loadIntel(symbol);
 }
 
 </script>
@@ -443,63 +272,18 @@ async function closeAllPositions() {
         <div class="focus-metrics">
           <div><span>标的类别</span><b>{{ asset.category }}</b></div>
           <div><span>合约来源</span><b>{{ quoteStatus(selected) }}</b></div>
-          <div><span>关联大户市场</span><b>Hyperliquid HIP-3</b></div>
-        </div>
-        <div class="focus-actions">
-          <a v-if="strategySupported" class="btn" href="#/tradfi-replay">策略回放</a>
-          <button v-if="strategySupported" type="button" class="btn primary" @click="openStrategy">震荡交易</button>
         </div>
       </section>
 
       <div class="main-grid">
-        <section class="panel history-panel">
-          <div class="panel-head">
-            <div>
-              <div class="history-tabs" role="tablist" aria-label="策略记录">
-                <button type="button" :class="{ active: historyTab === 'trades' }" @click="historyTab = 'trades'">交易记录</button>
-                <button type="button" :class="{ active: historyTab === 'logs' }" @click="historyTab = 'logs'">运行日志</button>
-              </div>
-              <div class="panel-sub">{{ historyTab === 'trades' ? '产生盈亏或手续费的成功成交' : '当前标的策略运行记录' }}</div>
-            </div>
-            <div class="panel-count">{{ historyTab === 'trades' ? `${tradeRows.length} 条` : `${strategyLogs.length} 条` }}</div>
+        <section class="panel analysis-panel">
+          <div class="panel-head"><div><div class="panel-title">标的观察</div><div class="panel-sub">市场驱动与关注事件</div></div><span class="section-tag">{{ asset.category }}</span></div>
+          <div class="analysis-content">
+            <div v-for="[label, value] in asset.fund" :key="label" class="analysis-row"><span>{{ label }}</span><b>{{ value }}</b></div>
+            <p>{{ asset.fundNote }}</p>
+            <h3>关注事件</h3>
+            <div v-for="[status, title, note] in asset.events" :key="title" class="event-row"><span>{{ status }}</span><div><b>{{ title }}</b><small>{{ note }}</small></div></div>
           </div>
-          <div v-show="historyTab === 'trades'" class="history-list">
-            <div class="record-table-head">
-              <span>品种/方向</span><span>成交价</span><span>数量 / 成交额</span><span>已实现盈亏</span><span>时间</span>
-            </div>
-            <article v-for="row in tradeRows" :key="row.tradeId" class="record-row">
-              <div class="record-symbol"><span>{{ row.coin }}</span><span class="tag" :class="tradeTagClass(row)">{{ tradeDirection(row) }}</span></div>
-              <div class="record-price">{{ tradePrice(row.px) }}</div>
-              <div class="record-amount">{{ tradeQuantity(row.sz) }} / {{ tradeAmount(row.amountUsd) }}</div>
-              <div class="record-pnl" :class="pnlClass(row.realizedPnl)" :title="`交易费用 ${tradeFee(row)}`">
-                <span>{{ tradeAmount(row.realizedPnl) }}（{{ tradePnlPercent(row) }}）</span><small>{{ tradeFee(row) }}</small>
-              </div>
-              <div class="record-time" :title="tradeTime(row.createdAt)">{{ tradeClock(row.createdAt) }}</div>
-            </article>
-            <div v-if="!tradeRows.length" class="empty">暂无产生盈亏或手续费的策略成交</div>
-          </div>
-          <div v-show="historyTab === 'logs'" class="history-list log-list">
-            <article v-for="row in strategyLogs" :key="row.id" class="strategy-log-row" :class="`level-${row.level}`">
-              <div class="log-top"><span class="log-level">{{ logLevelLabel(row.level) }}</span><time>{{ tradeTime(row.created_at) }}</time></div>
-              <p>{{ row.message }}</p>
-            </article>
-            <div v-if="!strategyLogs.length" class="empty">暂无该标的策略运行记录</div>
-          </div>
-        </section>
-        <section class="panel account-panel">
-          <div class="panel-head">
-            <div>
-              <div class="account-title-line">
-                <div class="panel-title">交易账户</div>
-                <span v-if="accountWeekendMode" class="weekend-warning" title="纽约时间周五 17:00 至周日 18:00 暂停自动补仓；已有仓位仍受策略管理。">
-                  <b>?</b> 周末报价模式：暂停自动补仓，继续管理已有仓位
-                </span>
-              </div>
-              <div class="panel-sub">币安 · TradFi 自动策略持仓与挂单</div>
-            </div>
-            <button type="button" class="btn-close-all" :disabled="closingAll" @click="closeAllPositions">{{ closingAll ? '提交中…' : '一键平仓' }}</button>
-          </div>
-          <OkxAccountPanel ref="accountPanel" exchange="tradfi" :boot-ready="true" :active="active !== false" @loaded="onAccountLoaded" />
         </section>
 
         <section class="panel">
@@ -546,62 +330,6 @@ async function closeAllPositions() {
         </section>
       </div>
     </main>
-
-    <Teleport to="body">
-      <div v-if="strategyOpen" class="modal-cover" @click.self="closeStrategy">
-        <div class="dialog strategy-dialog" role="dialog" aria-modal="true" aria-label="震荡交易">
-          <header class="dialog-head"><div class="dialog-title">震荡交易 <span class="dialog-symbol">· {{ selected }}</span></div><button type="button" class="dialog-close" :disabled="strategyBusy" @click="closeStrategy">×</button></header>
-          <div class="dialog-scroll">
-            <section class="strategy-state">
-              <strong>{{ strategyData?.strategy.status === 'initializing' ? '启动检查中' : strategyData?.strategy.enabled ? '服务器运行中' : strategyData?.strategy.status === 'paused' ? '策略已停止' : strategyData?.strategy.status === 'adoption_required' ? '等待确认接管' : strategyData?.strategy.status === 'manual' ? '人工接管' : '未运行' }}</strong>
-              <span>{{ strategyData?.strategy.simulated == null ? '币安账户待核对' : strategyData.strategy.simulated ? '演示盘' : '实盘' }}</span>
-            </section>
-            <div class="strategy-config">
-              <label>单边保证金 <input v-model.number="strategyMargin" type="number" min="1" :max="strategyMaxMargin" step="1" :disabled="strategyData?.strategy.enabled || strategyBusy" /><b>USDT</b></label>
-              <label>杠杆 <input v-model.number="strategyLeverage" type="number" min="1" max="50" step="1" :disabled="strategyData?.strategy.enabled || strategyData?.strategy.resumeEligible || strategyBusy" /><b>×</b></label>
-              <span>{{ strategyData?.strategy.enabled ? '策略运行中，参数已锁定' : strategyData?.strategy.resumeEligible ? '恢复接管时可修改后续单笔本金，杠杆保持不变' : '启动后参数锁定' }}</span>
-            </div>
-            <div class="strategy-metrics">
-              <div><span>单笔保证金</span><b>{{ formatTwo(strategyData?.strategy.enabled ? strategyData.strategy.marginPerOrder : strategyMargin) }} USDT</b></div><div><span>杠杆</span><b>{{ strategyData?.strategy.leverage ?? strategyLeverage }}×</b></div>
-              <div><span>已补仓</span><b v-if="strategyData?.strategy.longAdditions == null && strategyData?.strategy.shortAdditions == null">{{ strategyData?.strategy.additions || 0 }} / 120</b><b v-else>多 {{ strategyData?.strategy.longAdditions || 0 }}/{{ strategyData?.strategy.maxLongAdditions ?? 100 }} · 空 {{ strategyData?.strategy.shortAdditions || 0 }}/{{ strategyData?.strategy.maxShortAdditions ?? 20 }}</b></div><div><span>下一档间距</span><b>{{ strategyData?.strategy.addStep == null ? '—' : `${Number(strategyData.strategy.addStep).toFixed(2)}` }}</b></div>
-              <div><span>多头净盈亏</span><b>{{ strategyData?.strategy.long?.costs == null ? '—' : `${Number(strategyData.strategy.long.costs.netPnl).toFixed(2)} U` }}</b></div><div><span>空头净盈亏</span><b>{{ strategyData?.strategy.short?.costs == null ? '—' : `${Number(strategyData.strategy.short.costs.netPnl).toFixed(2)} U` }}</b></div>
-            </div>
-            <p v-if="strategyData?.strategy.weekendMode" class="market-meta">周末报价模式：暂停自动补仓并撤销未成交补仓单，已有仓位继续管理。</p>
-            <p v-if="strategyData?.strategy.overheat?.phase === 'overheat'" class="market-meta">上涨过热：暂停多头自动补仓与重建；{{ strategyData.strategy.overheat.shortReady ? '回落结构已确认，高位空头按小额限次补仓' : '空头等待小时线回落确认' }}。阶段高点 {{ formatTwo(strategyData.strategy.overheat.peak) }}。</p>
-            <p v-if="strategyData?.strategy.overheat?.phase === 'bottom_watch'" class="market-meta">高位回落：保留多头仓位，暂停常规补多，等待深跌分级补多条件。阶段低点 {{ formatTwo(strategyData.strategy.overheat.low) }}。</p>
-            <p v-if="strategyData?.strategy.overheat?.phase === 'bottom_confirmed'" class="market-meta">底部确认：等待深跌分级补多条件及风险检查。确认价 {{ formatTwo(strategyData.strategy.overheat.confirmPrice) }}。</p>
-            <p v-if="strategyData?.strategy.overheat?.phase !== 'normal' && strategyData?.strategy.overheat?.supportZone" class="market-meta">近 30 根已收盘日线的历史低位参考：{{ formatTwo(strategyData.strategy.overheat.supportZone.low) }}–{{ formatTwo(strategyData.strategy.overheat.supportZone.high) }}。仅供观察，不直接触发补仓。</p>
-            <p class="dialog-intro">服务器识别震荡结构并建立双向底仓。小时线上涨连续 3 根确认后，暂停空头常规新增；高位回落并确认后，已有亏损空仓可有限补仓。常规补仓使用 15 分钟 ATR × 0.6，间距为现价的 0.08%～0.35%；多头最多 100 档、空头最多 20 档。逆势趋势偏离均价至少 2 倍 1 小时 ATR 时进入稀疏模式，每笔多头试探补仓不超过初始单笔本金。黄金极端下跌时，以最近 30 根完整日线的高点计算回撤；达到 12% 后须小时线止跌确认才尝试首笔大额补多；后续 22%、25% 档要求完整小时线收在对应深度、且形成比上一档更低的低点，逐档尝试 Maker 多头补仓。总预算按进入深跌模式时的初始单笔本金 × 剩余多头补仓档位计算，三笔分别使用 22%、35%、43%；深跌期间暂停普通多头阶梯补仓，每笔均进行保证金与压力检查。纽约周末时段暂停自动补仓并撤销未成交补仓单。保证金阶梯：{{ ladderDescription }}。多头恢复模式达标后按盈利峰值 25% 回撤追踪；Maker 触发不保证成交。</p>
-            <p v-if="strategyData?.strategy.long?.costs || strategyData?.strategy.short?.costs" class="market-meta">多头：{{ strategyData.strategy.long?.recovery ? `恢复中，启动目标 ${Number(strategyData.strategy.long.costs?.profitTarget || 0).toFixed(2)}U，峰值回撤 ${Number(strategyData.strategy.long.recoveryTrail || 0).toFixed(2)}U` : `常规目标 ${Number(strategyData.strategy.long?.costs?.profitTarget || 0).toFixed(2)}U` }}。空头：{{ strategyData.strategy.short?.recovery ? `恢复中，目标 ${Number(strategyData.strategy.short.costs?.profitTarget || 0).toFixed(2)}U，ATR 回撤 ${Number(strategyData.strategy.short.recoveryTrail || 0).toFixed(2)}U` : `常规目标 ${Number(strategyData.strategy.short?.costs?.profitTarget || 0).toFixed(2)}U` }}。</p>
-            <p v-if="strategyData?.strategy.range" class="market-meta">当前参考区间：{{ formatTwo(strategyData.strategy.range.low) }} – {{ formatTwo(strategyData.strategy.range.high) }} · 最新价 {{ formatTwo(strategyData.strategy.lastPrice) }}</p>
-            <p v-if="strategyData?.strategy.lastError || strategyError" class="order-error">{{ strategyError || strategyData?.strategy.lastError }}</p>
-          </div>
-          <footer class="dialog-footer"><p class="footer-hint">停止策略会撤销已知挂单并保留已成交仓位；再次启动时按实际仓位恢复接管。</p><div class="footer-actions"><button class="btn" :disabled="strategyBusy" @click="closeStrategy">关闭</button><button class="btn primary" :disabled="strategyBusy" @click="toggleStrategy()">{{ strategyBusy ? '处理中…' : strategyData?.strategy.enabled ? '停止策略' : strategyData?.strategy.resumeEligible ? '恢复并接管仓位' : '启动24H策略' }}</button></div></footer>
-        </div>
-      </div>
-    </Teleport>
-
-    <Teleport to="body">
-      <div v-if="startupOpen" class="modal-cover">
-        <div class="dialog startup-dialog-modal" role="dialog" aria-modal="true" aria-label="策略启动进度">
-          <header class="dialog-head"><div class="dialog-title">策略启动检查 <span class="dialog-symbol">· {{ selected }}</span></div><button type="button" class="dialog-close" :disabled="strategyBusy" @click="closeStartup">×</button></header>
-          <div class="dialog-scroll startup-dialog-body">
-            <section class="startup-progress" :class="{ complete: startupProgress >= 100 && strategyData?.strategy.status !== 'initializing' }" aria-live="polite">
-              <div class="startup-progress-head"><strong>启动检查进度</strong><span>{{ startupProgress }}%</span></div>
-              <div class="startup-progress-track"><div class="startup-progress-fill" :style="{ width: `${startupProgress}%` }" /></div>
-              <div class="startup-current">{{ strategyData?.strategy.startupStep || '等待服务器开始检查' }}</div>
-              <div class="startup-log-list">
-                <div v-for="row in startupLogs" :key="row.id" class="startup-log-item" :class="`level-${row.level}`">
-                  <i /> <span>{{ row.message }}</span><time>{{ tradeClock(row.created_at) }}</time>
-                </div>
-              </div>
-            </section>
-            <p v-if="strategyError || strategyData?.strategy.lastError" class="order-error">{{ strategyError || strategyData?.strategy.lastError }}</p>
-          </div>
-          <footer v-if="!strategyBusy" class="dialog-footer"><div class="footer-actions"><button class="btn primary" @click="closeStartup">关闭</button></div></footer>
-        </div>
-      </div>
-    </Teleport>
 
   </div>
 </template>
@@ -682,179 +410,22 @@ async function closeAllPositions() {
 .panel { background: var(--card); border: 1px solid var(--border); border-radius: 8px; min-width: 0; overflow: hidden; }
 .panel-head { padding: 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 15px; }
 .panel-title { font-size: 16px; font-weight: 600; }
-.account-title-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.weekend-warning { display: inline-flex; align-items: center; gap: 5px; color: var(--yellow); font-size: 11px; font-weight: 600; line-height: 1.4; }
-.weekend-warning b { width: 15px; height: 15px; display: inline-grid; place-items: center; border: 1px solid currentColor; border-radius: 50%; font-size: 10px; }
 .panel-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
-.panel-count { font-size: 12px; color: var(--muted); margin: 0; }
-.history-tabs { display: inline-flex; align-items: center; gap: 4px; }
-.history-tabs button {
-  border: 0;
-  border-radius: 5px;
-  padding: 5px 9px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.history-tabs button:hover { color: var(--text); background: var(--panel-2); }
-.history-tabs button.active { color: var(--yellow); background: color-mix(in srgb, var(--yellow) 12%, transparent); }
 .section-tag { color: var(--yellow); font-size: 10px; font-weight: 700; }
-.main-grid { display: grid; grid-template-columns: minmax(400px, 23fr) minmax(530px, 57fr) minmax(300px, 20fr); flex: 1; min-height: 0; }
-.main-grid > .panel { display: flex; flex-direction: column; min-height: 0; }
+.main-grid { display: grid; grid-template-columns: minmax(280px, .85fr) minmax(0, 1.5fr); flex: 1; min-height: 0; }
+.main-grid > .panel { display: flex; flex-direction: column; min-height: 0; border-radius: 0; border-top: 0; border-bottom: 0; border-left: 0; background: var(--bg); }
 .main-grid > .panel:not(:last-child) { border-right: 1px solid var(--border); }
-.main-grid > .panel { border-radius: 0; border-top: 0; border-bottom: 0; border-left: 0; background: var(--bg); }
 .main-grid .panel-head, .main-grid .feed-tools, .main-grid .panel-foot { flex-shrink: 0; }
-.history-panel { min-width: 0; }
-.history-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-}
-.history-list::-webkit-scrollbar { width: 6px; }
-.history-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-.record-table-head,
-.record-row {
-  display: grid;
-  grid-template-columns: 73px 60px minmax(80px, 1fr) 110px 37px;
-  column-gap: 2px;
-  align-items: center;
-  justify-items: center;
-  font-variant-numeric: tabular-nums;
-}
-.record-table-head {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  padding: 10px 8px;
-  background: var(--panel-2);
-  border-bottom: 1px solid var(--border);
-  color: var(--muted);
-  font-size: 11px;
-}
-.record-table-head > span { width: 100%; text-align: center; white-space: nowrap; }
-.record-row {
-  min-height: 48px;
-  padding: 9px 8px;
-  border-bottom: 1px solid var(--border);
-  font-size: 12px;
-  transition: background-color .15s;
-}
-.record-row:hover { background: color-mix(in srgb, var(--panel-3) 78%, var(--panel-2)); }
-.record-symbol {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  font-size: 13px;
-  font-weight: 600;
-  min-width: 0;
-  width: 100%;
-}
-.tag {
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 500;
-  margin-left: 6px;
-}
-.tag.long { background: color-mix(in srgb, var(--green) 10%, transparent); color: var(--green); }
-.tag.short { background: color-mix(in srgb, var(--red) 10%, transparent); color: var(--red); }
-.record-symbol .tag { margin-left: 0; white-space: nowrap; }
-.record-price,
-.record-amount,
-.record-pnl,
-.record-time { width: 100%; text-align: center; min-width: 0; }
-.record-price { color: var(--text); }
-.record-amount { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.record-pnl { display: flex; flex-direction: column; align-items: center; gap: 1px; font-weight: 600; }
-.record-pnl > span { white-space: nowrap; }
-.record-pnl small { color: var(--muted); font-size: 10px; font-weight: 400; }
-.record-time { color: var(--muted); font-size: 11px; }
-.log-list { padding: 0 10px; gap: 0; }
-.strategy-log-row { padding: 11px 4px; border-bottom: 1px solid var(--border); }
-.strategy-log-row:last-child { border-bottom: 0; }
-.log-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-.log-level { border-radius: 3px; padding: 2px 5px; color: var(--muted); background: var(--panel-2); font-size: 10px; font-weight: 600; }
-.level-trade .log-level, .level-success .log-level { color: var(--green); background: color-mix(in srgb, var(--green) 10%, transparent); }
-.level-warn .log-level { color: var(--yellow); background: color-mix(in srgb, var(--yellow) 10%, transparent); }
-.level-error .log-level { color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); }
-.log-top time { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
-.strategy-log-row p { margin: 7px 0 0; color: var(--text); font-size: 12px; line-height: 1.5; }
-.pnl-positive { color: var(--green); }
-.pnl-negative { color: var(--red); }
-.pnl-zero { color: var(--muted); opacity: .6; }
-.btn-close-all {
-  background: transparent;
-  color: var(--red);
-  border: 1px solid var(--red);
-  padding: 6px 12px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 13px;
-  transition: background-color .2s;
-}
-.btn-close-all:hover:not(:disabled) { background: color-mix(in srgb, var(--red) 10%, transparent); }
-.btn-close-all:disabled { opacity: .5; cursor: default; }
-.account-panel :deep(.okx-panel) { flex: 1; height: auto; min-height: 0; background: transparent; }
-.account-panel :deep(.account-note) { display: none; }
-.account-panel :deep(.account-summary) {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-  padding: 16px;
-  border-bottom: 1px solid var(--border);
-}
-.account-panel :deep(.data-card) {
-  background: var(--panel);
-  padding: 16px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-}
-.account-panel :deep(.data-card:hover) { border-color: var(--border-2); }
-.account-panel :deep(.data-label) { font-size: 12px; margin-bottom: 8px; }
-.account-panel :deep(.data-value) { font-size: 22px; font-weight: 700; margin-bottom: 0; }
-.account-panel :deep(.data-sub) { margin-top: 6px; color: color-mix(in srgb, var(--muted) 70%, transparent); }
-.account-panel :deep(.tradfi-order-list) { padding: 16px; gap: 16px; }
-.account-panel :deep(.asset-card) { background: var(--panel); border-radius: 6px; }
-.account-panel :deep(.asset-header) { padding: 14px 16px; }
-.account-panel :deep(.position-row) { gap: 14px; padding: 14px; }
-.account-panel :deep(.position-side) { padding: 14px; border: 1px solid var(--border); border-top: 3px solid var(--green); border-radius: 6px; background: var(--bg); }
-.account-panel :deep(.position-side:last-child) { border-top-color: var(--red); }
-.account-panel :deep(.position-side:first-child) { border-right: 1px solid var(--border); }
-.account-panel :deep(.position-details) { gap: 8px 10px; }
-.strategy-state { display: flex; justify-content: space-between; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); }
-.strategy-state span { color: var(--muted); }
-.startup-progress { margin-top: 14px; padding: 14px; border: 1px solid color-mix(in srgb, var(--yellow) 34%, var(--border)); border-radius: 9px; background: color-mix(in srgb, var(--yellow) 5%, var(--panel-2)); }
-.startup-progress-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; font-size: 12px; }
-.startup-progress-head span { color: var(--yellow); font-variant-numeric: tabular-nums; }
-.startup-progress-track { height: 6px; overflow: hidden; border-radius: 999px; background: var(--panel); }
-.startup-progress-fill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, #dba91f, var(--yellow)); transition: width .25s ease; }
-.startup-progress.complete { border-color: color-mix(in srgb, var(--green) 42%, var(--border)); background: color-mix(in srgb, var(--green) 5%, var(--panel-2)); }
-.startup-progress.complete .startup-progress-head span { color: var(--green); }
-.startup-progress.complete .startup-progress-fill { background: linear-gradient(90deg, color-mix(in srgb, var(--green) 72%, #1f9d68), var(--green)); }
-.startup-current { margin-top: 9px; color: var(--muted); font-size: 11px; }
-.startup-log-list { max-height: 150px; margin-top: 10px; overflow-y: auto; border-top: 1px solid var(--border); }
-.startup-log-item { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 7px 1px; color: var(--muted); font-size: 11px; border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent); }
-.startup-log-item i { width: 6px; height: 6px; border-radius: 50%; background: var(--yellow); }
-.startup-log-item.level-success i { background: var(--green); }
-.startup-log-item.level-warn i, .startup-log-item.level-error i { background: var(--red); }
-.startup-log-item time { color: var(--muted); font-variant-numeric: tabular-nums; }
-.strategy-config { display: flex; align-items: end; gap: 12px; margin: 14px 0; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel-2); }
-.strategy-config label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
-.strategy-config input { width: 66px; padding: 6px 7px; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 5px; }
-.strategy-config input:disabled { opacity: .65; cursor: not-allowed; }
-.strategy-config span { margin-left: auto; color: var(--muted); font-size: 11px; }
-.strategy-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
-.strategy-metrics div { padding: 13px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
-.strategy-metrics span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 7px; }
-.strategy-dialog { height: auto; min-height: 470px; }
-.startup-dialog-modal { width: min(680px, 100%); height: auto; min-height: 360px; max-height: 82vh; }
-.startup-dialog-body { padding: 18px; }
-.startup-dialog-body .startup-progress { margin-top: 0; }
+.analysis-content { padding: 18px; overflow: auto; }
+.analysis-row { display: flex; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.analysis-row span, .analysis-content p, .event-row small { color: var(--muted); }
+.analysis-row b { text-align: right; }
+.analysis-content p { line-height: 1.7; }
+.analysis-content h3 { margin: 22px 0 8px; font-size: 13px; }
+.event-row { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.event-row > span { min-width: 34px; color: var(--yellow); font-size: 11px; }
+.event-row b, .event-row small { display: block; }
+.event-row small { margin-top: 4px; line-height: 1.5; }
 .feed-tools { padding: 12px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .chips { display: flex; gap: 5px; flex-wrap: wrap; }
 .chip { border: 1px solid transparent; background: var(--panel-2); border-radius: 5px; color: var(--muted); padding: 6px 10px; font-size: 10px; }
@@ -875,46 +446,17 @@ async function closeAllPositions() {
 .news-mark { display: none; }
 .empty { padding: 38px 15px; text-align: center; color: var(--muted); font-size: 12px; }
 .panel-foot { border-top: 1px solid var(--border); padding: 11px 18px; color: var(--muted); font-size: 10px; line-height: 1.5; }
-.modal-cover { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box; background: rgba(0, 0, 0, .72); }
-.dialog { width: min(800px, 100%); height: 680px; max-height: 96vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 24px 64px rgba(0, 0, 0, .5); }
-.dialog-head { flex: none; min-height: 62px; box-sizing: border-box; padding: 14px 18px; border-bottom: 1px solid var(--border); background: linear-gradient(to right, rgba(99, 102, 241, .14), transparent); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.dialog-title { color: var(--text); font-size: 16px; font-weight: 750; }
-.dialog-symbol { color: var(--muted); }
-.dialog-close { border: 0; background: transparent; color: var(--muted); font-size: 22px; cursor: pointer; }
-.dialog-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.dialog-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 20px; }
-.dialog-intro { margin: 0 0 24px; color: var(--muted); line-height: 1.7; }
-.market-meta { margin: 12px 0 16px; color: var(--muted); font-size: 12px; line-height: 1.6; }
-.order-error { color: var(--red); font-size: 12px; line-height: 1.6; }
-.dialog-footer { flex: none; padding: 12px 18px; border-top: 1px solid var(--border); background: var(--card); }
-.footer-hint { margin: 0 0 10px; color: var(--muted); font-size: 11px; line-height: 1.5; }
-.footer-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
-.footer-actions .btn { min-height: 36px; font-size: 12px; }
-.footer-actions .btn.primary { background: linear-gradient(135deg, #6366f1, #a855f7); color: #fff; border-color: transparent; }
-.footer-actions .btn:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 1510px) {
   .content { overflow-y: auto; }
-  .main-grid { flex: none; grid-template-columns: minmax(400px, .95fr) minmax(0, 1.3fr); grid-template-rows: minmax(420px, 60vh) minmax(320px, 45vh); }
-  .main-grid > .panel:last-child { grid-column: 1 / -1; }
-  .main-grid > .panel:nth-child(2) { border-right: 0; }
-  .main-grid > .panel:last-child { border-top: 1px solid var(--border); }
+  .main-grid { flex: none; grid-template-columns: minmax(260px, .8fr) minmax(0, 1.2fr); grid-template-rows: minmax(420px, 60vh); }
 }
 @media (max-width: 760px) {
   .market-state { padding: 6px 12px; }
   .strip { padding: 10px 12px; }
   .focus { padding: 14px 12px; }
-  .main-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(360px, 50vh) minmax(420px, 55vh) minmax(320px, 45vh); }
-  .main-grid > .panel:last-child { grid-column: auto; }
+  .main-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(300px, 40vh) minmax(420px, 55vh); }
   .main-grid > .panel { border-right: 0; border-top: 1px solid var(--border); }
-  .record-table-head,
-  .record-row { grid-template-columns: 73px 60px minmax(80px, 1fr) 110px 37px; column-gap: 2px; }
-  .account-panel :deep(.account-summary) { grid-template-columns: 1fr; }
-  .account-panel :deep(.position-row) { grid-template-columns: 1fr; }
-  .account-panel :deep(.position-side:first-child) { border-right: 0; border-bottom: 1px solid var(--border); }
   .news-item { grid-template-columns: 60px minmax(0, 1fr); }
   .news-mark { display: none; }
-  .dialog-scroll { padding: 14px; }
-  .strategy-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .footer-actions .btn { flex: 1; }
 }
 </style>
