@@ -3,6 +3,7 @@
  */
 const DEEPSEEK_BASE = 'https://api.deepseek.com';
 const DEFAULT_MODEL = 'deepseek-chat';
+const MARKET_BRIEF_MAX_TOKENS = 8192;
 
 async function deepseekFetch(apiKey, path, { method = 'GET', body, timeoutMs = 60_000 } = {}) {
   const key = String(apiKey || '').trim();
@@ -331,104 +332,34 @@ const {
 /**
  * 统一 AnalysisResult JSON Schema（流式与非流式同一套）
  */
-function buildMarketBriefMessages({
-  coin,
-  contextText,
-  equityLike = false,
-  capability,
-  forceTradeDecision = false,
-} = {}) {
+function buildMarketBriefMessages({ coin, contextText, equityLike = false, capability, directionAssessment } = {}) {
   const symbol = String(coin || 'BTC').toUpperCase();
-  const assetHint = equityLike
-    ? [
-        '资产类别：加密永续合约映射的公司/权益类标的。',
-        '基本面与新闻按公司/A股事件驱动理解（业绩、减持、解禁、问询函、回购等）。',
-        '注意：合约本身仍是 24/7 永续，可讨论资金费率与爆仓；但不要把 A股 T+1、涨跌停当成该合约的撮合规则。',
-      ].join('')
-    : ['资产类别：加密永续。', '强调 24/7、资金费率、爆仓、主动买卖与交易所大户多空。'].join('');
-
-  const capHint = capability
-    ? `分析能力：shortTerm=${capability.shortTerm?.status}；newsDriven=${capability.newsDriven?.status}；whaleAnalysis=${capability.whaleAnalysis?.status}。unavailable 的能力请在对应字段说明数据不足，不要硬编。`
-    : '';
-
-  const tradeModeHint = [
-    '【方向与执行分离】',
-    '- 有足够证据时，每档必须明确做多或做空倾向，不得用空泛观望代替判断。关键数据缺失时可标记观望，并写明缺口。',
-    '- 每档给出 execution（现在可开|等待触发|禁止下单）和 trigger；等待触发必须写清价格/事件条件，等待不表示已经自动挂单。',
-    '- 等待触发时可另外给出回踩限价挂单方案：做多入场价必须低于当前价，做空必须高于当前价，且方向必须与 mid_long_term.direction 一致。限价单会在价格触及时尝试成交，不代表复合 trigger 已满足。',
-    '- 所有可下单建议的 entry 都由你根据技术结构、情绪、宏观消息和仓位证据独立确定为具体限价，不按固定百分比偏离现价。入场单只做 Maker：做多限价必须低于当前最优卖价，做空限价必须高于当前最优买价；若只有最新成交价而无盘口报价，分别保守地低于或高于最新价。不能给出可立即吃单的价格，也不要编造盘口数据；无法给出合适限价时标记等待触发或禁止下单，并说明原因。',
-    '- 对 short 和 mid_long 的每个入场价、触发价给出 entry_validation：technical 写该价位对应的结构/支撑阻力，sentiment 写情绪与费率是否支持，news_macro 写新闻宏观是否支持，positioning 写大户仓位/主动买卖是否支持。尽量引用输入中的具体数值、时间或事件；缺数据直写“暂无数据”。',
-    '- entry_validation.decision 只能是“支持”“冲突”“数据不足”；仅在技术价位明确、至少一个非技术维度支持且无重大反向证据时写“支持”。不能用 MA7 或前高本身冒充综合验证。',
-    '- 可交易建议必须有 entry、固定10倍 leverage、stop、take_profit；金额由服务端核算，每单保证金最多100 USDT。',
-    '- note 用开单口吻，并写明依据（宏观定价、仓位/费率、K线位置）。',
-    '',
-    '【智能定价与市场心理 · 必须结合】',
-    '1) 综合最新新闻、宏观日历（预期/前值/实际）、站内巨鲸仓位、资金费率、爆仓与主动买卖再定方向。',
-    '2) 事件交易要区分「尚未公布」与「已公布」：',
-    '   - 未公布：用预期 vs 前值 + 盘面是否已提前计价；假设现在距公布还有一段时间，评估波动窗口。',
-    '   - 已公布：用实际 vs 预期判断超预期/不及预期，但不要机械跟字面利多利空。',
-    '3) 常见反身性：若市场普遍预期利空并已大跌，数据兑现后可能「利空出尽」反弹；若普遍预期利好并已大涨，兑现后可能高开低走。开仓方向要写清是「顺预期冲击」还是「逆向博弈已计价」。',
-    '4) 重大数据后区分消息字面影响、实际价格反应和仓位解释；若没有事件前后价格实测，禁止声称已经“利空出尽”或“空头挤压”。',
-  ].join('\n');
-
-  const userPrompt = [
-    `请基于下列上下文给出 ${symbol} 交易研究简报。`,
-    assetHint,
-    capHint,
-    tradeModeHint,
-    '硬性要求：',
-    '1) 只用给定材料；unavailable/empty 必须直说，禁止用其他维替代编造。',
-    '2) 用中文，简洁专业。关键结论请用 **双星号** 包裹，便于前端高亮。',
-    '3) 只输出一个 JSON 对象（不要 Markdown 解释），字段：',
-    '{',
-    '  "short_term": { "direction": "偏多|震荡|偏空|观望", "confidence": "低|中|高", "summary": "..." },',
-    '  "mid_long_term": { "direction": "偏多|震荡|偏空|观望", "summary": "..." },',
-    '  "technical": { "m5": "...", "hourly": "...", "daily": "..." },',
-    '  "derivatives": { "funding": "...", "liquidations": "...", "taker": "...", "details": "..." },',
-    '  "whales": { "site": "...", "external": "...", "details": "..." },',
-    '  "news_analysis": { "sentiment": "利好|中性|利空|混合", "details": "..." },',
-    '  "event_reaction": "事件公布后的实测价格反应及尚待验证的解释；无可对齐数据则写暂无",',
-    '  "market_sentiment": { "long_short_ratio": "...", "funding_rate": "...", "liquidations": "...", "details": "..." },',
-    '  "personal_stance": {',
-    '    "headline": "仓位建议",',
-    '    "basis": ["市场情绪", "新闻内容", "小时线走势"],',
-    '    "ultra_short": { "action": "做多|做空|观望", "execution": "现在可开|等待触发|禁止下单", "trigger": "...", "entry": 数字, "leverage": 数字, "stop": 数字, "take_profit": 数字, "note": "..." },',
-    '    "short": { "action": "做多|做空|观望", "execution": "现在可开|等待触发|禁止下单", "trigger": "...", "entry_validation": { "technical": "...", "sentiment": "...", "news_macro": "...", "positioning": "...", "decision": "支持|冲突|数据不足" }, "entry": 数字, "leverage": 数字, "stop": 数字, "take_profit": 数字, "note": "..." },',
-    '    "mid_long": { "action": "做多|做空|观望", "execution": "现在可开|等待触发|禁止下单", "trigger": "...", "entry_validation": { "technical": "...", "sentiment": "...", "news_macro": "...", "positioning": "...", "decision": "支持|冲突|数据不足" }, "entry": 数字, "leverage": 数字, "stop": 数字, "take_profit": 数字, "note": "..." }',
-    '  },',
-    '  "key_evidence": ["..."],',
-    '  "risks_and_invalidation": ["..."],',
-    '  "disclaimer": "以上内容仅供研究参考，不构成投资建议。"',
-    '}',
-    '4) short_term.direction / confidence / summary 必填。',
-    '5) 短线以1h结构为主、长线以1d结构为主；可交易档必须有正确方向的entry/leverage/stop/take_profit。禁止把观望强制改为做多。',
-    '6) personal_stance.basis 必填：3~6 个短标签，表示本次开单依据维度（如「市场情绪」「新闻内容」「小时线走势」「宏观日历」「巨鲸仓位」「资金费率」），不要写长句或免责声明。',
-    '7) technical.m5 / hourly / daily 分别写对应周期，不要混写；disclaimer 不可省略。',
-    '',
-    '—— 上下文开始 ——',
-    String(contextText || ''),
-    '—— 上下文结束 ——',
-  ]
-    .filter(Boolean)
-    .join('\n');
-
   const system = equityLike
-    ? '你是兼具衍生品与公司研究能力的投研助手。严格依据用户材料；区分5分钟超短线、短期与中长期；给出带止损止盈的仓位建议；强调风险；不输出真实下单指令。'
-    : '你是加密衍生品研究助手。严格依据用户材料；区分5分钟超短线、短期与中长期；给出带止损止盈的仓位建议；强调费率、爆仓与流动性风险；不输出真实下单指令。';
-
-  return {
-    system,
-    userPrompt,
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: userPrompt },
-    ],
-  };
+    ? '你是权益市场研究助手，只做方向研判与信息聚合。严格依据输入事实，不能输出交易执行建议。'
+    : '你是加密市场研究助手，只做方向研判与信息聚合。严格依据输入事实，不能输出交易执行建议。';
+  const userPrompt = [
+    `请为 ${symbol} 生成完整的市场方向仪表盘 JSON，分析具体、简洁，避免重复。`,
+    'JSON 顶层只输出 short_term:{direction,confidence,summary}、mid_long_term:{direction,summary}、direction_analysis、risks_and_invalidation、disclaimer。',
+    'direction_analysis 结构：{summary,market_state:{trend,volatility,structure,phase,observation},horizons:{ultra_short:{analysis,bull_points:[],bear_points:[],focus},short_term:{...},medium_long:{...}},timeframes:{m5:{status,state,analysis,metrics:[]},hour:{...},day:{...}},module_analysis:{technical:{status,summary,facts:[],limitation},derivatives:{...},flow:{...},whales:{...},news:{...},cross:{...}},bull_evidence:[],bear_evidence:[],data_limitations:[]}。',
+    '控制长度：总摘要不超过120字；每个周期分析不超过100字、看多和看空依据各最多2条、关注点不超过50字；市场状态每项不超过50字；每个周期分析不超过80字且指标最多2条；每个模块摘要不超过80字、事实最多2条、限制不超过50字；总多空证据各最多4条、数据限制最多5条。',
+    '基于上下文中的实际数值，具体解释趋势、动能、波动、费率、爆仓、主动买卖、巨鲸、新闻和跨市场数据；不同时间尺度不能复制同一结论。未提供的指标明确写数据不足。timeframes 只填写实际可用周期，禁止插值和臆造。',
+    'direction/confidence 必须原样采用后面的程序评估，不能自行更改；DATA_INSUFFICIENT 表示数据不足，不能改成中性或其他方向。所有数字方向分数、覆盖率和信心仅以程序评估为准；AI负责提供具体解释，不能伪造子模块分数。',
+    '严禁输出买卖指令、入场价、挂单、杠杆、仓位、止损或止盈。区分可观测事实与推断；推断需用“可能/倾向/尚待验证”等措辞。新闻仅作事实摘要，不进入方向评分。',
+    `能力状态：${JSON.stringify(capability || {})}`,
+    `程序方向评估：${JSON.stringify(directionAssessment || {})}`,
+    '—— 市场数据上下文开始 ——',
+    String(contextText || ''),
+    '—— 市场数据上下文结束 ——',
+    '每个周期和六个分析模块都必须有简短说明；数据不可用时说明缺口。所有字符串保持简洁，确保 JSON 能完整闭合。',
+  ].join('\n');
+  return { system, userPrompt, messages: [{ role: 'system', content: system }, { role: 'user', content: userPrompt }] };
 }
 
-function finalizeAnalysis(rawText) {
+function finalizeAnalysis(rawText, directionAssessment) {
   const parsed = parseAnalysisResult(rawText);
   if (parsed.ok && parsed.result) {
+    assertDashboardAnalysis(parsed.result);
+    applyDirectionAssessment(parsed.result, directionAssessment);
     return {
       analysis: analysisResultToMarkdown(parsed.result),
       structured: parsed.result,
@@ -437,6 +368,8 @@ function finalizeAnalysis(rawText) {
     };
   }
   if (parsed.result) {
+    assertDashboardAnalysis(parsed.result);
+    applyDirectionAssessment(parsed.result, directionAssessment);
     return {
       analysis: analysisResultToMarkdown(parsed.result),
       structured: parsed.result,
@@ -449,22 +382,76 @@ function finalizeAnalysis(rawText) {
   throw err;
 }
 
+function assertDashboardAnalysis(result) {
+  const d = result?.direction_analysis;
+  const horizonKeys = ['ultra_short', 'short_term', 'medium_long'];
+  const marketStateKeys = ['trend', 'volatility', 'structure', 'phase', 'observation'];
+  const moduleKeys = ['technical', 'derivatives', 'flow', 'whales', 'news', 'cross'];
+  const complete = Boolean(d?.summary?.trim()) &&
+    horizonKeys.every((key) => Boolean(d?.horizons?.[key]?.analysis?.trim())) &&
+    marketStateKeys.every((key) => Boolean(d?.market_state?.[key]?.trim())) &&
+    moduleKeys.every((key) => Boolean(d?.module_analysis?.[key]?.summary?.trim()));
+  if (!complete) {
+    const err = new Error('AI 未返回完整的市场方向仪表盘分析，请重新分析');
+    err.status = 502;
+    throw err;
+  }
+}
+
+function applyDirectionAssessment(result, assessment) {
+  if (!assessment?.horizons) return result;
+  const map = (direction) => direction === 'DATA_INSUFFICIENT' ? '数据不足' : direction;
+  const conf = (n) => Number(n) >= 70 ? '高' : Number(n) >= 40 ? '中' : '低';
+  const short = assessment.horizons.short_term;
+  const mid = assessment.horizons.medium_long;
+  const ultra = assessment.horizons.ultra_short;
+  if (short) {
+    result.short_term.direction = map(short.direction);
+    result.short_term.bias = result.short_term.direction;
+    result.short_term.confidence = conf(short.confidence);
+    result.short_term.summary = `${result.short_term.summary}（程序方向评估：${result.short_term.direction}，覆盖率${Math.round((short.coverage || 0) * 100)}%，信心${short.confidence}%）`;
+    result.short_term.reason = result.short_term.summary;
+  }
+  if (mid) {
+    result.mid_long_term.direction = map(mid.direction);
+    result.mid_long_term.bias = result.mid_long_term.direction;
+    result.mid_long_term.summary = `${result.mid_long_term.summary || ''}（程序方向评估：${map(mid.direction)}，覆盖率${Math.round((mid.coverage || 0) * 100)}%，信心${mid.confidence}%）`;
+    result.mid_long_term.reason = result.mid_long_term.summary;
+  }
+  const da = result.direction_analysis || {};
+  const horizonCopy = { ...(da.horizons || {}) };
+  for (const [key, row] of Object.entries({ ultra_short: ultra, short_term: short, medium_long: mid })) {
+    if (!row) continue;
+    horizonCopy[key] = {
+      ...(horizonCopy[key] || {}),
+      direction: map(row.direction),
+      score: row.score,
+      confidence: row.confidence,
+      coverage: row.coverage,
+    };
+  }
+  result.direction_analysis = { ...da, horizons: horizonCopy };
+  result.direction_assessment = assessment;
+  result.ultra_short_direction = ultra ? map(ultra.direction) : '数据不足';
+  return result;
+}
+
 async function analyzeMarketBrief(
   apiKey,
-  { coin, contextText, equityLike = false, capability, forceTradeDecision = false } = {},
+  { coin, contextText, equityLike = false, capability, directionAssessment } = {},
 ) {
   const { messages } = buildMarketBriefMessages({
     coin,
     contextText,
     equityLike,
     capability,
-    forceTradeDecision,
+    directionAssessment,
   });
   const baseBody = {
     model: DEFAULT_MODEL,
     messages,
     temperature: 0.35,
-    max_tokens: 4096,
+    max_tokens: MARKET_BRIEF_MAX_TOKENS,
   };
 
   let data;
@@ -495,7 +482,7 @@ async function analyzeMarketBrief(
     throw err;
   }
   return {
-    ...finalizeAnalysis(raw),
+    ...finalizeAnalysis(raw, directionAssessment),
     model: data?.model || DEFAULT_MODEL,
     usage: data?.usage || null,
   };
@@ -506,7 +493,7 @@ async function analyzeMarketBrief(
  */
 async function streamAnalyzeMarketBrief(
   apiKey,
-  { coin, contextText, equityLike = false, capability, forceTradeDecision = false } = {},
+  { coin, contextText, equityLike = false, capability, directionAssessment } = {},
   { onDelta, signal } = {},
 ) {
   const key = String(apiKey || '').trim();
@@ -521,7 +508,7 @@ async function streamAnalyzeMarketBrief(
     contextText,
     equityLike,
     capability,
-    forceTradeDecision,
+    directionAssessment,
   });
 
   const controller = new AbortController();
@@ -545,7 +532,7 @@ async function streamAnalyzeMarketBrief(
         model: DEFAULT_MODEL,
         messages,
         temperature: 0.35,
-        max_tokens: 4096,
+        max_tokens: MARKET_BRIEF_MAX_TOKENS,
         stream: true,
         response_format: { type: 'json_object' },
       }),
@@ -572,7 +559,7 @@ async function streamAnalyzeMarketBrief(
           model: DEFAULT_MODEL,
           messages,
           temperature: 0.35,
-          max_tokens: 4096,
+          max_tokens: MARKET_BRIEF_MAX_TOKENS,
           stream: true,
         }),
         signal: controller.signal,
@@ -669,7 +656,7 @@ async function streamAnalyzeMarketBrief(
   }
 
   return {
-    ...finalizeAnalysis(text),
+    ...finalizeAnalysis(text, directionAssessment),
     model,
     usage: null,
   };

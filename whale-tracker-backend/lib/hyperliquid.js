@@ -733,7 +733,8 @@ function mapFillToTrade(fill, whale, names = {}) {
   const side = fill.side === 'B' ? 'buy' : 'sell';
   const asset = fill.coin || '';
   const label = coinLabel(asset, names);
-  const startRaw = Number(fill.startPosition);
+  const startValue = fill.startPosition;
+  const startRaw = startValue == null || startValue === '' ? NaN : Number(startValue);
   return {
     id: String(fill.tid || fill.hash || `${whale.id}-${fill.time}`),
     time: Number(fill.time) || Date.now(),
@@ -772,7 +773,8 @@ function normalizeToHlFill(row) {
   const px = Number(row.px != null ? row.px : row.price) || 0;
   const coin = String(row.coin || row.asset || '').trim();
   if (!coin || !(sz > 0)) return null;
-  const startRaw = Number(row.startPosition);
+  const startValue = row.startPosition;
+  const startRaw = startValue == null || startValue === '' ? NaN : Number(startValue);
   return {
     coin,
     side,
@@ -796,11 +798,13 @@ function aggregateTradesByWindow(trades, windowMs = FILL_AGGREGATE_WINDOW_MS) {
 
   for (const trade of list) {
     const last = groups[groups.length - 1];
+    const actionKey = tradePositionAction(trade);
     const sameBucket =
       last &&
       last.whaleId === trade.whaleId &&
       last.asset === trade.asset &&
       last.side === trade.side &&
+      last._actionKey === actionKey &&
       trade.time - last._startTime <= windowMs &&
       trade.time - last.time <= windowMs;
 
@@ -813,6 +817,7 @@ function aggregateTradesByWindow(trades, windowMs = FILL_AGGREGATE_WINDOW_MS) {
         _startTime: trade.time,
         _fillCount: 1,
         _notional: (Number(trade.price) || 0) * (Number(trade.amount) || 0),
+        _actionKey: actionKey,
       });
       continue;
     }
@@ -828,10 +833,20 @@ function aggregateTradesByWindow(trades, windowMs = FILL_AGGREGATE_WINDOW_MS) {
     if (last.amount > 0) last.price = Math.abs(last._notional / last.amount);
   }
 
-  return groups.map(({ _startTime, _fillCount, _notional, ...rest }) => ({
+  return groups.map(({ _startTime, _fillCount, _notional, _actionKey, ...rest }) => ({
     ...rest,
     fillCount: _fillCount,
   }));
+}
+
+/** 区分新开仓、同向加仓、减仓/平仓；避免 5 分钟聚合跨越仓位动作边界。 */
+function tradePositionAction(trade) {
+  const rawStart = trade?.startPosition;
+  const start = rawStart == null || rawStart === '' ? NaN : Number(rawStart);
+  if (!Number.isFinite(start)) return `unknown:${String(trade?.dir || '').toLowerCase()}`;
+  if (Math.abs(start) < 1e-8) return 'open';
+  const buy = trade.side === 'buy' || trade.side === 'B' || trade.side === 'in';
+  return start > 0 ? (buy ? 'increase' : 'reduce') : (buy ? 'reduce' : 'increase');
 }
 
 function mapAndFilterFills(fills, whale, names = {}, minUsd = 1000) {

@@ -29,6 +29,10 @@ export interface WhaleAlertItem {
   marginUsed?: number | null;
   /** 验证层：关联成交摘要 */
   verifyText?: string;
+  /** 事件证据来源，用于成交流与仓位快照交叉去重。 */
+  evidenceSource?: 'fill' | 'snapshot';
+  /** 成交时间来自实际 fill/已知历史；observed 表示只能确认发现时间。 */
+  timeSource?: 'execution' | 'observed';
 }
 
 export interface AlertPosView {
@@ -223,6 +227,26 @@ export function mergeDockAlerts(
 
     const seen = new Set((hit.items || []).map(itemDedupeKey));
     for (const item of alert.items || []) {
+      const crossSourceIndex = hit.items.findIndex((existing) => {
+        const crossSource =
+          (existing.evidenceSource === 'fill' && item.evidenceSource === 'snapshot') ||
+          (existing.evidenceSource === 'snapshot' && item.evidenceSource === 'fill');
+        return (
+          crossSource &&
+          existing.kind === item.kind &&
+          coinKey(existing.coin || '') === coinKey(item.coin || '') &&
+          existing.side === item.side &&
+          Math.abs((Number(existing.time) || 0) - (Number(item.time) || 0)) <= windowMs
+        );
+      });
+      if (crossSourceIndex >= 0) {
+        // 同一操作的 fill 明细优先于快照估值；卡片仍保留一条真实异动。
+        if (item.evidenceSource === 'fill') {
+          hit.items[crossSourceIndex] = item;
+          hit.id = alert.id;
+        }
+        continue;
+      }
       const id = itemDedupeKey(item);
       if (seen.has(id)) continue;
       hit.items.push(item);
@@ -568,7 +592,17 @@ function diffPositions(prev: PositionSnap | undefined, next: PositionSnap): Whal
     }
     if (meaningfulSizeChange(old.size, pos.size)) {
       const up = absSize(pos.size) > absSize(old.size);
-      const deltaUsd = Math.abs((pos.positionValue || 0) - (old.positionValue || 0));
+      const sizeDelta = Math.abs(absSize(pos.size) - absSize(old.size));
+      const currentSize = absSize(pos.size);
+      const previousSize = absSize(old.size);
+      const unitUsd = currentSize > 0
+        ? Math.abs(Number(pos.positionValue) || 0) / currentSize
+        : previousSize > 0
+          ? Math.abs(Number(old.positionValue) || 0) / previousSize
+          : 0;
+      // 名义价值包含 mark price 变化，事件金额按数量变化折算，避免行情本身
+      // 把真实加仓金额高估或低估。
+      const deltaUsd = sizeDelta * unitUsd || Math.abs((pos.positionValue || 0) - (old.positionValue || 0));
       items.push(
         attachSpecs(
           {
@@ -632,7 +666,6 @@ function attachFillVerification(items: WhaleAlertItem[], fills: WhaleTrade[]) {
     let notional = 0;
     let pxSum = 0;
     let pxWeight = 0;
-    let latest = 0;
     for (const trade of related) {
       const usd = Math.abs(Number(trade.amountUsd) || 0);
       const px = tradePrice(trade);
@@ -643,7 +676,6 @@ function attachFillVerification(items: WhaleAlertItem[], fills: WhaleTrade[]) {
         pxSum += px * usd;
         pxWeight += usd;
       }
-      latest = Math.max(latest, Number(trade.time) || 0);
     }
     const avgPx = pxWeight > 0 ? pxSum / pxWeight : 0;
     const sideText =
@@ -651,7 +683,8 @@ function attachFillVerification(items: WhaleAlertItem[], fills: WhaleTrade[]) {
     const verify = `验证成交 ${formatUsd(notional)}（${sideText}${avgPx ? ` · 均价 ${formatPrice(avgPx)}` : ''}）`;
     item.verifyText = verify;
     item.detail = `${item.detail} · ${verify}`;
-    if (latest) item.time = latest;
+    // 成交只是核验仓位 diff 的旁证，不应覆盖异动发生时间；否则旧仓位变化
+    // 会被一笔稍晚的同币成交“刷新”，影响新鲜度、排序和共振时间窗。
     if (avgPx && !item.price) item.price = avgPx;
   }
 }
@@ -785,7 +818,9 @@ export function diffWhaleActivity(input: {
       .map((item) => `${item.kind}:${Number(item.usd || 0).toFixed(0)}`)
       .join('|');
     const alert: WhaleAlert = {
-      id: `pos-${whale.id}-${coinPart}-${kind}-${sizeFp}`,
+      // 同一巨鲸可在不同时间重复发生相同金额的开仓/加仓，时间必须参与 ID，
+      // 否则历史 Map 去重会把两次真实事件压成一条。
+      id: `pos-${whale.id}-${coinPart}-${kind}-${sizeFp}-${eventAt}`,
       at: eventAt,
       whaleId: whale.id,
       whaleName: whale.name,

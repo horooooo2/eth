@@ -53,7 +53,8 @@ function eventsFromTrade(trade) {
   const ts = Number(trade.time) || 0;
   const buy = trade.side === 'buy' || trade.side === 'B' || trade.side === 'in';
   const dir = String(trade.dir || '');
-  const start = Number(trade.startPosition);
+  const startValue = trade.startPosition;
+  const start = startValue == null || startValue === '' ? NaN : Number(startValue);
   const sz = Math.abs(Number(trade.amount) || 0);
   const eps = 1e-8;
 
@@ -75,16 +76,10 @@ function eventsFromTrade(trade) {
   } else if (/close|reduce/i.test(dir)) {
     isClose = true;
     side = /short/i.test(dir) ? 'short' : 'long';
-  } else if (/short/i.test(dir)) {
-    side = 'short';
-    isOpen = /open/i.test(dir);
-  } else if (/long/i.test(dir)) {
-    side = 'long';
-    isOpen = /open/i.test(dir);
   } else {
-    isClose = Math.abs(Number(trade.closedPnl) || 0) > 1;
-    side = buy ? 'long' : 'short';
-    if (!isClose) return [];
+    // HL 的 Open Long/Short 也可能是补仓。缺少 startPosition 时不再把 dir
+    // 当作新开仓证据，以免加仓误入开仓/共振记录。
+    return [];
   }
 
   if (!side) return [];
@@ -161,7 +156,7 @@ function upsertAlertRows(database, alerts) {
 
   let written = 0;
   let added = 0;
-  for (const alert of alerts) {
+  alertLoop: for (const alert of alerts) {
     if (!alert?.id) continue;
     const kind = String(alert.kind || '');
     if (!OPEN_KINDS.has(kind)) continue;
@@ -189,6 +184,23 @@ function upsertAlertRows(database, alerts) {
         const pCoin = String(payload?.items?.[0]?.coin || '').toUpperCase();
         const pSide = String(payload?.items?.[0]?.side || '').toLowerCase();
         if (pCoin !== coin || pSide !== side) continue;
+
+        const previousSource = payload?.items?.[0]?.evidenceSource;
+        const incomingSource = alert.items?.[0]?.evidenceSource;
+        if (
+          previousSource && incomingSource &&
+          previousSource !== incomingSource &&
+          (previousSource === 'fill' || incomingSource === 'fill')
+        ) {
+          // 成交流是具体成交金额，快照流是最终仓位变化。两者可能描述同一次
+          // 操作：以 fill 为权威金额，避免交叉重复相加；同来源的拆单仍按下方合并。
+          if (previousSource === 'fill') {
+            if (incomingSource === 'snapshot') continue alertLoop;
+          } else if (incomingSource === 'fill') {
+            delById.run(String(row.id));
+            continue;
+          }
+        }
 
         const prevUsd = Math.abs(Number(payload?.items?.[0]?.usd) || 0);
         const nextKind = preferKind(row.kind, kind);
@@ -302,6 +314,29 @@ function loadPagedAlerts(query = {}) {
   const side = String(query.side || 'all').trim().toLowerCase();
   const minUsd = Math.max(0, Number(query.minUsd) || 0);
 
+  // 一条仓位 diff 可以同时包含多个币种/方向；过滤必须检查整个 items 数组，
+  // 而不能只看 items[0]。参数顺序与返回 SQL 片段保持一致。
+  function itemExistsSql({ includeSide = true, includeCoins = true } = {}) {
+    const itemWhere = [];
+    const itemParams = [];
+    if (includeCoins && coins.length) {
+      itemWhere.push(`UPPER(COALESCE(json_extract(alert_item.value, '$.coin'), '')) IN (${coins.map(() => '?').join(', ')})`);
+      itemParams.push(...coins);
+    }
+    if (includeSide && (side === 'long' || side === 'short')) {
+      itemWhere.push(`LOWER(COALESCE(json_extract(alert_item.value, '$.side'), '')) = ?`);
+      itemParams.push(side);
+    }
+    if (minUsd > 0) {
+      itemWhere.push(`ABS(COALESCE(json_extract(alert_item.value, '$.usd'), 0)) >= ?`);
+      itemParams.push(minUsd);
+    }
+    return {
+      sql: `EXISTS (SELECT 1 FROM json_each(alerts.payload_json, '$.items') AS alert_item${itemWhere.length ? ` WHERE ${itemWhere.join(' AND ')}` : ''})`,
+      params: itemParams,
+    };
+  }
+
   const where = [
     `time >= ?`,
     `kind IN ('open', 'increase')`,
@@ -316,31 +351,9 @@ function loadPagedAlerts(query = {}) {
     where.push('kind = ?');
     params.push(kind);
   }
-  if (coins.length === 1) {
-    where.push(
-      `UPPER(COALESCE(json_extract(payload_json, '$.items[0].coin'), '')) = ?`,
-    );
-    params.push(coins[0]);
-  } else if (coins.length > 1) {
-    where.push(
-      `UPPER(COALESCE(json_extract(payload_json, '$.items[0].coin'), '')) IN (${coins
-        .map(() => '?')
-        .join(', ')})`,
-    );
-    params.push(...coins);
-  }
-  if (side === 'long' || side === 'short') {
-    where.push(
-      `LOWER(COALESCE(json_extract(payload_json, '$.items[0].side'), '')) = ?`,
-    );
-    params.push(side);
-  }
-  if (minUsd > 0) {
-    where.push(
-      `COALESCE(json_extract(payload_json, '$.items[0].usd'), 0) >= ?`,
-    );
-    params.push(minUsd);
-  }
+  const rowItems = itemExistsSql();
+  where.push(rowItems.sql);
+  params.push(...rowItems.params);
 
   const whereSql = where.join(' AND ');
   const database = getDb();
@@ -377,25 +390,9 @@ function loadPagedAlerts(query = {}) {
     facetParams.push(kind);
   }
   // 多空计数需跟当前币种一致（否则选 BTC 仍显示全市场多空数）
-  if (coins.length === 1) {
-    facetWhere.push(
-      `UPPER(COALESCE(json_extract(payload_json, '$.items[0].coin'), '')) = ?`,
-    );
-    facetParams.push(coins[0]);
-  } else if (coins.length > 1) {
-    facetWhere.push(
-      `UPPER(COALESCE(json_extract(payload_json, '$.items[0].coin'), '')) IN (${coins
-        .map(() => '?')
-        .join(', ')})`,
-    );
-    facetParams.push(...coins);
-  }
-  if (minUsd > 0) {
-    facetWhere.push(
-      `COALESCE(json_extract(payload_json, '$.items[0].usd'), 0) >= ?`,
-    );
-    facetParams.push(minUsd);
-  }
+  const facetItems = itemExistsSql({ includeSide: false });
+  facetWhere.push(facetItems.sql);
+  facetParams.push(...facetItems.params);
   const facetSql = facetWhere.join(' AND ');
   const allCount =
     Number(
@@ -404,11 +401,15 @@ function loadPagedAlerts(query = {}) {
     ) || 0;
   const coinRows = database
     .prepare(
-      `SELECT UPPER(COALESCE(json_extract(payload_json, '$.items[0].coin'), '')) AS coin, COUNT(*) AS c
-       FROM alerts WHERE ${facetSql}
+      `SELECT UPPER(COALESCE(json_extract(alert_item.value, '$.coin'), '')) AS coin,
+              COUNT(DISTINCT alerts.id) AS c
+       FROM alerts, json_each(alerts.payload_json, '$.items') AS alert_item
+       WHERE ${facetSql}
+         AND ABS(COALESCE(json_extract(alert_item.value, '$.usd'), 0)) >= ?
+         ${coins.length ? `AND UPPER(COALESCE(json_extract(alert_item.value, '$.coin'), '')) IN (${coins.map(() => '?').join(', ')})` : ''}
        GROUP BY coin`,
     )
-    .all(...facetParams);
+    .all(...facetParams, ...(minUsd > 0 ? [minUsd] : [0]), ...coins);
   const byCoin = {};
   for (const row of coinRows) {
     const key = String(row.coin || '').trim();
@@ -419,19 +420,27 @@ function loadPagedAlerts(query = {}) {
     Number(
       database
         .prepare(
-          `SELECT COUNT(*) AS c FROM alerts WHERE ${facetSql}
-           AND LOWER(COALESCE(json_extract(payload_json, '$.items[0].side'), '')) = 'long'`,
+          `SELECT COUNT(*) AS c FROM alerts
+           WHERE ${facetSql}
+             AND EXISTS (SELECT 1 FROM json_each(alerts.payload_json, '$.items') AS alert_item
+                         WHERE LOWER(COALESCE(json_extract(alert_item.value, '$.side'), '')) = 'long'
+                           AND ABS(COALESCE(json_extract(alert_item.value, '$.usd'), 0)) >= ?
+                           ${coins.length ? `AND UPPER(COALESCE(json_extract(alert_item.value, '$.coin'), '')) IN (${coins.map(() => '?').join(', ')})` : ''})`,
         )
-        .get(...facetParams)?.c,
+        .get(...facetParams, minUsd, ...coins)?.c,
     ) || 0;
   const shortCount =
     Number(
       database
         .prepare(
-          `SELECT COUNT(*) AS c FROM alerts WHERE ${facetSql}
-           AND LOWER(COALESCE(json_extract(payload_json, '$.items[0].side'), '')) = 'short'`,
+          `SELECT COUNT(*) AS c FROM alerts
+           WHERE ${facetSql}
+             AND EXISTS (SELECT 1 FROM json_each(alerts.payload_json, '$.items') AS alert_item
+                         WHERE LOWER(COALESCE(json_extract(alert_item.value, '$.side'), '')) = 'short'
+                           AND ABS(COALESCE(json_extract(alert_item.value, '$.usd'), 0)) >= ?
+                           ${coins.length ? `AND UPPER(COALESCE(json_extract(alert_item.value, '$.coin'), '')) IN (${coins.map(() => '?').join(', ')})` : ''})`,
         )
-        .get(...facetParams)?.c,
+        .get(...facetParams, minUsd, ...coins)?.c,
     ) || 0;
 
   return {

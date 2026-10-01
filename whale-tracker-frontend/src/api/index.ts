@@ -1021,6 +1021,25 @@ export type MarketBriefStructured = {
   };
   key_evidence?: string[];
   risks_and_invalidation?: string[];
+  direction_analysis?: {
+    summary?: string;
+    market_state?: { trend?: string; volatility?: string; structure?: string; phase?: string; observation?: string };
+    horizons?: Record<string, {
+      analysis?: string;
+      bull_points?: string[];
+      bear_points?: string[];
+      focus?: string;
+      direction?: string;
+      score?: number | null;
+      confidence?: number | null;
+      coverage?: number | null;
+    }>;
+    timeframes?: Record<string, { status?: string; state?: string; analysis?: string; metrics?: string[] }>;
+    module_analysis?: Record<string, { status?: string; summary?: string; facts?: string[]; limitation?: string }>;
+    bull_evidence?: string[];
+    bear_evidence?: string[];
+    data_limitations?: string[];
+  };
   disclaimer?: string;
 };
 
@@ -1028,6 +1047,14 @@ export type MarketBriefResponse = {
   ok: boolean;
   coin: string;
   analysis: string;
+  directionAssessment?: {
+    version?: string;
+    asOf?: number;
+    regime?: string;
+    note?: string;
+    horizons?: Record<string, { score?: number; direction?: string; confidence?: number; coverage?: number; evidence?: Array<{ module?: string; score?: number; quality?: number; detail?: string }> }>;
+    modules?: Record<string, { quality?: number; detail?: string }>;
+  } | null;
   structured?: MarketBriefStructured | null;
   analysisResult?: MarketBriefStructured | null;
   analysisId?: string;
@@ -1041,6 +1068,7 @@ export type MarketBriefResponse = {
   parseMode?: string;
   contextSummary?: {
     price: number | null;
+    change24hPct?: number | null;
     fundingPct: number | null;
     newsCount: number;
     webNewsCount?: number;
@@ -1118,6 +1146,7 @@ export type MarketBriefStreamHandlers = {
     coin: string;
     contextText?: string;
     contextSummary?: MarketBriefResponse['contextSummary'];
+    directionAssessment?: MarketBriefResponse['directionAssessment'];
     equityLike?: boolean;
     analysisId?: string;
     contextSnapshotId?: string;

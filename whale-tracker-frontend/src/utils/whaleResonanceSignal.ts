@@ -1,7 +1,7 @@
 import type { WhaleProfile, WhaleTrade } from '@/types';
 import { formatUsd } from '@/utils/format';
 import { estimateLiquidationPx } from '@/utils/positionAnalysis';
-import { alertEventTime, isTradeOpen, tradeFillSide, type WhaleAlert, type WhaleAlertItem } from '@/utils/whaleAlerts';
+import { alertEventTime, inferSide, tradeFillSide, type WhaleAlert, type WhaleAlertItem } from '@/utils/whaleAlerts';
 import { coinMatchesWatch, readWatchedCoins } from '@/utils/watchedCoins';
 
 const STORAGE_KEY = 'whale-tracker-resonance-window-h';
@@ -52,6 +52,8 @@ export interface ResonanceOpenRow {
   winRate: number;
   leverage: number | null;
   liquidationPx: number | null;
+  /** cluster 只统计新开仓；accumulation 还会统计真实同向加仓。 */
+  action: 'open' | 'increase';
   /** 时间窗内合并的开仓笔数 */
   openCount?: number;
 }
@@ -163,21 +165,21 @@ function buildAccumulationBannerText(signal: ResonanceSignal, windowHours: numbe
   const sideText = signal.side === 'long' ? '做多' : '做空';
   const bias = signal.side === 'long' ? '主力吸筹' : '主力派发';
   const label = shortWhaleLabel(signal.whaleName || signal.rows[0]?.whaleName || '', signal.rows[0]?.address || '');
-  return `【${signal.coin}】${windowHours}h内 ${label} 持续${sideText}加仓（${signal.tradeCount}笔·总${formatUsd(signal.totalUsd)}）→ ${bias}`;
+  return `【${signal.coin}】${windowHours}h内 ${label} 持续${sideText}开/加仓（${signal.tradeCount}笔·总${formatUsd(signal.totalUsd)}）→ ${bias}`;
 }
 
 function isOpenAlertKind(kind: string | undefined) {
   return kind === 'open';
 }
 
-function alertOpenItems(alert: WhaleAlert): WhaleAlertItem[] {
+function alertSignalItems(alert: WhaleAlert): WhaleAlertItem[] {
   if (alert.items?.length) {
-    return alert.items.filter((item) => isOpenAlertKind(item.kind));
+    return alert.items.filter((item) => isOpenAlertKind(item.kind) || item.kind === 'increase');
   }
-  if (!isOpenAlertKind(alert.kind)) return [];
+  if (!isOpenAlertKind(alert.kind) && alert.kind !== 'increase') return [];
   return [
     {
-      kind: 'open',
+      kind: alert.kind,
       title: alert.headline || '',
       detail: '',
       coin: '',
@@ -189,25 +191,45 @@ function alertOpenItems(alert: WhaleAlert): WhaleAlertItem[] {
   ];
 }
 
+/** 成交方向只有在成交前仓位明确为空时，才能作为「新开仓」计入共振。
+ * Hyperliquid 的 dir 会把加仓也标成 Open Long/Short，因此不能单独依赖 dir；
+ * 缺 startPosition 的旧记录不猜方向/开平，避免把平仓成交当作反向新开仓。
+ */
+function classifyFillAction(trade: WhaleTrade): 'open' | 'increase' | null {
+  if (!trade || trade.source === 'onchain' || trade.startPosition == null) return null;
+  const startPosition = Number(trade.startPosition);
+  if (!Number.isFinite(startPosition) || Math.abs(Number(trade.closedPnl) || 0) > 1) return null;
+  if (Math.abs(startPosition) < 1e-8) return 'open';
+  const side = String(trade.side || '').toLowerCase();
+  const addsToLong = startPosition > 0 && (side === 'buy' || side === 'b' || side === 'in');
+  const addsToShort = startPosition < 0 && (side === 'sell' || side === 'a' || side === 'out');
+  return addsToLong || addsToShort ? 'increase' : null;
+}
+
 function rowsFromAlerts(alerts: WhaleAlert[], whaleMap: Map<string, WhaleProfile>, since: number, config: ResonanceConfig) {
   const rows: ResonanceOpenRow[] = [];
   for (const alert of alerts) {
     const whale = whaleMap.get(alert.whaleId);
     if (!whale) continue;
-    for (const item of alertOpenItems(alert)) {
+    for (const item of alertSignalItems(alert)) {
+      // 未能关联真实成交时间的快照只用于异动提示，不参与时间窗共振判断。
+      if (item.evidenceSource === 'snapshot' && item.timeSource === 'observed') continue;
       const time = Number(item.time) || alertEventTime(alert);
       if (!time || time < since) continue;
       const notionalUsd = Number(item.usd) || 0;
       if (notionalUsd < config.minNotionalUsd) continue;
       const coin = coinKey(item.coin || '');
       if (!coin) continue;
+      const side = item.side || inferSide(alert, item);
+      if (!side) continue;
       rows.push(
         buildOpenRow(whale, {
           whaleId: alert.whaleId,
           whaleName: alert.whaleName || whale.name,
           address: alert.address || whale.address,
           coin,
-          side: item.side || 'long',
+          side,
+          action: item.kind === 'increase' ? 'increase' : 'open',
           price: Number(item.price) || 0,
           notionalUsd,
           time,
@@ -222,7 +244,7 @@ function rowsFromAlerts(alerts: WhaleAlert[], whaleMap: Map<string, WhaleProfile
 function dedupeRows(rows: ResonanceOpenRow[]) {
   const map = new Map<string, ResonanceOpenRow>();
   for (const row of rows) {
-    const key = `${row.whaleId}|${row.coin}|${row.side}|${Math.floor(row.time / 60_000)}`;
+    const key = `${row.whaleId}|${row.coin}|${row.side}|${row.action}|${Math.floor(row.time / 60_000)}`;
     const prev = map.get(key);
     if (!prev || row.notionalUsd > prev.notionalUsd) map.set(key, row);
   }
@@ -317,7 +339,8 @@ function collectOpenRows(input: {
   const rawRows: ResonanceOpenRow[] = [];
 
   for (const trade of input.activity) {
-    if (!trade.whaleId || !isTradeOpen(trade)) continue;
+    const action = classifyFillAction(trade);
+    if (!trade.whaleId || !action) continue;
     if (trade.time < input.since) continue;
     const whale = whaleMap.get(trade.whaleId);
     if (!whale) continue;
@@ -330,6 +353,7 @@ function collectOpenRows(input: {
         whaleName: trade.whaleName || whale.name,
         address: whale.address,
         coin: coinLabel(trade),
+        action,
         side: tradeFillSide(trade),
         price: tradePrice(trade),
         notionalUsd,
@@ -341,7 +365,9 @@ function collectOpenRows(input: {
 
   rawRows.push(...rowsFromAlerts(input.alerts || [], whaleMap, input.since, input.config));
   const watched = input.watchedCoins?.length ? input.watchedCoins : readWatchedCoins();
-  return dedupeRows(rawRows.filter((row) => coinMatchesWatch(row.coin, watched)));
+  return dedupeRows(rawRows.filter((row) =>
+    coinMatchesWatch(row.coin, watched) && row.winRate >= input.config.minWinRate,
+  ));
 }
 
 function scanClusterSignals(rows: ResonanceOpenRow[], config: ResonanceConfig): ResonanceSignal[] {
@@ -429,6 +455,28 @@ function sortSignals(a: ResonanceSignal, b: ResonanceSignal) {
   return b.tradeCount - a.tradeCount;
 }
 
+function primaryBySignalSide(signals: ResonanceSignal[]) {
+  const totals = new Map<'long' | 'short', { signals: number; rows: number; whales: number; usd: number }>();
+  for (const signal of signals) {
+    const total = totals.get(signal.side) || { signals: 0, rows: 0, whales: 0, usd: 0 };
+    total.signals += 1;
+    total.rows += signal.tradeCount;
+    total.whales += signal.whaleCount;
+    total.usd += signal.totalUsd;
+    totals.set(signal.side, total);
+  }
+  const long = totals.get('long') || { signals: 0, rows: 0, whales: 0, usd: 0 };
+  const short = totals.get('short') || { signals: 0, rows: 0, whales: 0, usd: 0 };
+  const winningSide = short.signals !== long.signals
+    ? (short.signals > long.signals ? 'short' : 'long')
+    : short.rows !== long.rows
+      ? (short.rows > long.rows ? 'short' : 'long')
+      : short.whales !== long.whales
+        ? (short.whales > long.whales ? 'short' : 'long')
+        : short.usd > long.usd ? 'short' : 'long';
+  return [...signals].filter((signal) => signal.side === winningSide).sort(sortSignals)[0] || signals[0] || null;
+}
+
 export function scanResonanceSignals(input: {
   activity: WhaleTrade[];
   alerts?: WhaleAlert[];
@@ -455,7 +503,7 @@ export function scanResonanceSignals(input: {
   });
 
   const clusterRows = mergeOpens(
-    dedupedRows.filter((row) => row.time >= since),
+    dedupedRows.filter((row) => row.action === 'open' && row.time >= since),
     mergeMs,
   );
   const accumulationRows = dedupedRows;
@@ -472,7 +520,7 @@ export function scanResonanceSignals(input: {
 
   return {
     hit: signals.length > 0,
-    primary: signals[0] || null,
+    primary: primaryBySignalSide(signals),
     signals,
     emptyText: watched.length
       ? `暂无 ${watched.join(' / ')} 共振或持续加仓信号`

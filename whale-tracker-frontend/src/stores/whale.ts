@@ -362,7 +362,9 @@ export const useWhaleStore = defineStore('whale', () => {
 
   function mergeAlertHistory(entries: WhaleAlert[]) {
     const map = new Map<string, WhaleAlert>();
-    for (const item of [...entries, ...alertHistory.value]) {
+    // 同 ID 的服务端/本地更新以本次传入的最新版本为准；旧写法先写新值再写
+    // 历史值，会让旧时间和旧详情反向覆盖最新事件。
+    for (const item of [...alertHistory.value, ...entries]) {
       const normalized = normalizeStoredAlert(item);
       if (!normalized?.id || !isPositionDiffAlert(normalized)) continue;
       map.set(normalized.id, normalized);
@@ -415,7 +417,11 @@ export const useWhaleStore = defineStore('whale', () => {
     const next = whales.value.slice();
     next[idx] = { ...prev, ...patch, id } as WhaleProfile;
     whales.value = next;
-    ingestAlerts(whales.value, activity.value);
+    // 实时 patch 后端会紧接着广播同一份 position diff alert。此处不能再调用
+    // ingestAlerts 生成一份前端 diff，否则一笔实时开仓会同时以 ws-pos-* 和
+    // pos-* 两个 ID 写入历史（dock 虽会合并，异动列表仍会重复显示）。
+    // 只推进快照基线；开/加仓事件由后端 alert 消息负责入库和展示。
+    writeAlertSnap(snapshotWhales(whales.value));
   }
 
   function dismissAlert(id: string) {

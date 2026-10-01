@@ -18,6 +18,7 @@ const {
   streamChatMarketBrief,
 } = require('../lib/deepseekClient');
 const { buildMarketBriefContext, contextToPrompt, buildAnalyzeMarketSnippet, normalizeCoin } = require('../lib/marketBrief');
+const { buildDirectionAssessment } = require('../lib/directionEngine');
 
 const router = express.Router();
 
@@ -250,6 +251,7 @@ const {
 function buildContextSummary(context) {
   return {
     price: context.market.price,
+    change24hPct: context.sentiment?.change24hPct ?? null,
     fundingPct: context.market.fundingPct,
     newsCount: context.news.length,
     webNewsCount: context.webNews?.length || 0,
@@ -306,6 +308,8 @@ async function runBriefPipeline({ apiKey, coin, userId, forceRefresh }) {
   updateAnalysis(analysis.analysisId, { status: 'running' });
 
   const context = await buildMarketBriefContext(coin, { forceRefresh });
+  const directionAssessment = buildDirectionAssessment(context);
+  context.directionAssessment = directionAssessment;
   const contextSnapshotId = newContextSnapshotId();
   const contextText = contextToPrompt(context);
   const contextSummary = buildContextSummary(context);
@@ -328,6 +332,7 @@ async function runBriefPipeline({ apiKey, coin, userId, forceRefresh }) {
     analysisId: analysis.analysisId,
     contextSnapshotId,
     context,
+    directionAssessment,
     contextText,
     contextSummary,
     contextDiff,
@@ -347,6 +352,7 @@ function persistDone({
   snap,
   result,
   capability,
+  directionAssessment,
 }) {
   const row = {
     analysisId,
@@ -360,6 +366,7 @@ function persistDone({
     contextDiff,
     contextSnapshot: snap,
     capability,
+    directionAssessment,
     model: result.model,
   };
   pushVersion(coin, userId, row);
@@ -371,6 +378,7 @@ function persistDone({
     contextSummary,
     contextDiff,
     capability,
+    directionAssessment,
     model: result.model,
     error: null,
   });
@@ -403,6 +411,7 @@ router.post('/market-brief', async (req, res) => {
       contextText: pipe.contextText,
       equityLike: Boolean(pipe.context.equityLike),
       capability: pipe.context.capability,
+      directionAssessment: pipe.directionAssessment,
       forceTradeDecision,
     });
     const saved = persistDone({
@@ -416,6 +425,7 @@ router.post('/market-brief', async (req, res) => {
       snap: pipe.snap,
       result,
       capability: pipe.context.capability,
+      directionAssessment: pipe.directionAssessment,
     });
     res.json({
       ok: true,
@@ -429,6 +439,7 @@ router.post('/market-brief', async (req, res) => {
       contextText: pipe.contextText,
       contextDiff: pipe.contextDiff,
       capability: pipe.context.capability,
+      directionAssessment: pipe.directionAssessment,
       model: result.model,
       usage: result.usage,
       contextSummary: pipe.contextSummary,
@@ -455,6 +466,7 @@ router.get('/market-brief-analysis/:analysisId', (req, res) => {
     structured: row.result,
     analysisResult: row.result,
     contextSummary: row.contextSummary,
+    directionAssessment: row.directionAssessment,
     contextDiff: row.contextDiff,
     capability: row.capability,
     model: row.model,
@@ -658,6 +670,7 @@ router.post('/market-brief-stream', async (req, res) => {
       contextSnapshotId: pipe.contextSnapshotId,
       version: pipe.version,
       contextSummary: pipe.contextSummary,
+      directionAssessment: pipe.directionAssessment,
       capability: pipe.context.capability,
       contextDiff: pipe.contextDiff,
       equityLike: Boolean(pipe.context.equityLike),
@@ -677,6 +690,7 @@ router.post('/market-brief-stream', async (req, res) => {
         contextText: pipe.contextText,
         equityLike: Boolean(pipe.context.equityLike),
         capability: pipe.context.capability,
+        directionAssessment: pipe.directionAssessment,
         forceTradeDecision,
       },
       {
@@ -704,6 +718,7 @@ router.post('/market-brief-stream', async (req, res) => {
       snap: pipe.snap,
       result,
       capability: pipe.context.capability,
+      directionAssessment: pipe.directionAssessment,
     });
 
     sseWrite(res, 'done', {
@@ -718,6 +733,7 @@ router.post('/market-brief-stream', async (req, res) => {
       contextSummary: pipe.contextSummary,
       contextDiff: pipe.contextDiff,
       capability: pipe.context.capability,
+      directionAssessment: pipe.directionAssessment,
       model: result.model,
       usage: result.usage,
       parseMode: result.parseMode,

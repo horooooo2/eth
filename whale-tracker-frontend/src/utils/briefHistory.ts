@@ -1,5 +1,5 @@
 import { ref } from 'vue';
-import type { MarketBriefStructured, MarketChatMessage } from '@/api';
+import type { MarketBriefResponse, MarketBriefStructured, MarketChatMessage } from '@/api';
 
 export const MARKET_BRIEF_HISTORY_KEY = 'whale-tracker-market-brief-history';
 export const MAX_BRIEF_HISTORY = 30;
@@ -17,6 +17,8 @@ export type MarketBriefHistoryItem = {
   confidence?: string;
   analysis: string;
   structured?: MarketBriefStructured | null;
+  directionAssessment?: MarketBriefResponse['directionAssessment'];
+  contextSummary?: MarketBriefResponse['contextSummary'];
   summaryBits?: string[];
   analysisId?: string;
   contextSnapshotId?: string;
@@ -49,6 +51,8 @@ function mapItem(x: any): MarketBriefHistoryItem | null {
     confidence: x.confidence ? String(x.confidence) : undefined,
     analysis: String(x.analysis || ''),
     structured: x.structured || null,
+    directionAssessment: x.directionAssessment || null,
+    contextSummary: x.contextSummary || undefined,
     summaryBits: Array.isArray(x.summaryBits) ? x.summaryBits.map(String) : [],
     analysisId: x.analysisId ? String(x.analysisId) : undefined,
     contextSnapshotId: x.contextSnapshotId ? String(x.contextSnapshotId) : undefined,
@@ -131,6 +135,8 @@ export function pushBriefHistory(item: Omit<MarketBriefHistoryItem, 'id'> & { id
     confidence: item.confidence,
     analysis: item.analysis,
     structured: item.structured || null,
+    directionAssessment: item.directionAssessment || null,
+    contextSummary: item.contextSummary,
     summaryBits: item.summaryBits || [],
     analysisId: item.analysisId,
     contextSnapshotId: item.contextSnapshotId,

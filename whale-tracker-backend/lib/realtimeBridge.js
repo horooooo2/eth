@@ -11,25 +11,27 @@ const { normalizeAddress } = require('./config');
 const { OPEN_KINDS } = require('./positionEventPolicy');
 
 const MODE = 'hf';
-const DISPLAY_TOP_N = 20;
-/** userFills 订阅上限：仅有仓地址，按仓位优先截断 */
-const FILL_SUB_TOP_N = Math.max(
-  20,
-  Math.min(120, Number(process.env.FILL_SUB_TOP_N) || 60),
-);
-const FILL_SUB_MIN_USD = Math.max(0, Number(process.env.FILL_SUB_MIN_USD) || 1000);
+/** Hyperliquid 对 user-specific WS 订阅最多允许 10 个不同用户；两路订阅共用地址集合。 */
+const USER_WS_ADDRESS_LIMIT = Math.max(1, Math.min(10, Number(process.env.HL_WS_USER_LIMIT) || 10));
 const MAX_CACHE_TRADES = 4000;
-const SKIP_FILL_SNAPSHOT = process.env.HL_WS_APPLY_SNAPSHOT === '1' ? false : true;
 const CACHE_FLUSH_MS = 2_000;
+const ACTIVITY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const ACTIVITY_HALF_LIFE_MS = 6 * 60 * 60 * 1000;
+const MIN_SUBSCRIPTION_DWELL_MS = 5 * 60 * 1000;
+const REPLACEMENT_SCORE_MULTIPLIER = 1.25;
 
 /** @type {Map<string, object>} address(lower) -> whale */
 const whalesByAddress = new Map();
 /** @type {Map<string, object>} whaleId -> last positions snap for webData2 diff */
 const positionSnapByWhale = new Map();
+/** 最近真实成交用于把状态快照变化回连到执行时间；只保留短窗口内的小型内存索引。 */
+const recentPositionFills = new Map();
 /** @type {ReturnType<typeof createHlWsClient> | null} */
 let client = null;
 let started = false;
 let lastStatus = { connected: false, fillSubs: 0, webDataSubs: 0 };
+let liveAddressSelection = [];
+let liveAddressSelectionChangedAt = 0;
 
 /** @type {object[]} */
 let pendingCacheTrades = [];
@@ -41,8 +43,39 @@ function positionNotionalUsd(pos) {
   return Math.abs((Number(pos?.size) || 0) * (Number(pos?.entryPx) || 0));
 }
 
-function sortWhalesForDisplay(list) {
+function recentOpenActivityScores(trades = [], now = Date.now()) {
+  const scores = new Map();
+  for (const trade of trades || []) {
+    const time = Number(trade?.time) || 0;
+    const usd = Math.abs(Number(trade?.amountUsd) || (Number(trade?.amount) || 0) * (Number(trade?.price) || 0));
+    const startValue = trade?.startPosition;
+    const start = startValue == null || startValue === '' ? NaN : Number(startValue);
+    const side = String(trade?.side || '').toLowerCase();
+    const isBuy = side === 'buy' || side === 'b' || side === 'in';
+    const isSell = side === 'sell' || side === 'a' || side === 'out';
+    if (!trade?.whaleId || !time || now - time < 0 || now - time > ACTIVITY_WINDOW_MS || usd < 1000 || !Number.isFinite(start)) continue;
+    if (Math.abs(Number(trade?.closedPnl) || 0) > 1) continue;
+    const isOpen = Math.abs(start) < 1e-8;
+    const isIncrease = (start > 0 && isBuy) || (start < 0 && isSell);
+    if (!isOpen && !isIncrease) continue;
+    const weight = Math.exp(-Math.LN2 * (now - time) / ACTIVITY_HALF_LIFE_MS);
+    const row = scores.get(String(trade.whaleId)) || { score: 0, weightedCount: 0, weightedUsd: 0, lastAt: 0 };
+    row.score += weight * (1 + Math.min(3, Math.log10(Math.max(1, usd) / 1000)));
+    row.weightedCount += weight;
+    row.weightedUsd += weight * usd;
+    row.lastAt = Math.max(row.lastAt, time);
+    scores.set(String(trade.whaleId), row);
+  }
+  return scores;
+}
+
+function sortWhalesForDisplay(list, activityScores = new Map()) {
   return [...(list || [])].sort((a, b) => {
+    const activeA = activityScores.get(String(a.id)) || { score: 0, weightedCount: 0, weightedUsd: 0 };
+    const activeB = activityScores.get(String(b.id)) || { score: 0, weightedCount: 0, weightedUsd: 0 };
+    if (activeB.score !== activeA.score) return activeB.score - activeA.score;
+    if (activeB.weightedCount !== activeA.weightedCount) return activeB.weightedCount - activeA.weightedCount;
+    if (activeB.weightedUsd !== activeA.weightedUsd) return activeB.weightedUsd - activeA.weightedUsd;
     const pa = Number(a.priority) || 0;
     const pb = Number(b.priority) || 0;
     if (pb !== pa) return pb - pa;
@@ -50,6 +83,57 @@ function sortWhalesForDisplay(list) {
     const nb = (b.positions || []).reduce((s, p) => s + positionNotionalUsd(p), 0);
     return nb - na;
   });
+}
+
+function pickLiveAddresses(whales, trades = [], now = Date.now()) {
+  const scores = recentOpenActivityScores(trades, now);
+  const eligible = sortWhalesForDisplay(whales, scores).filter((whale) =>
+    (whale.positions || []).length > 0 || positionNotionalUsd({ positionValue: whale.netUsd }) || scores.has(String(whale.id)),
+  );
+  const addressToWhale = new Map();
+  for (const whale of eligible) {
+    const address = normalizeAddress(whale.address);
+    if (address && !addressToWhale.has(address.toLowerCase())) addressToWhale.set(address.toLowerCase(), { address, whale });
+  }
+  const ideal = [...addressToWhale.values()].slice(0, USER_WS_ADDRESS_LIMIT).map((row) => row.address);
+  if (!liveAddressSelection.length || !liveAddressSelection.some((address) => addressToWhale.has(address.toLowerCase()))) {
+    liveAddressSelection = ideal;
+    liveAddressSelectionChangedAt = now;
+    return [...liveAddressSelection];
+  }
+
+  const selected = liveAddressSelection.filter((address) => addressToWhale.has(address.toLowerCase()));
+  const selectedSet = new Set(selected.map((address) => address.toLowerCase()));
+  for (const address of ideal) {
+    if (selected.length >= USER_WS_ADDRESS_LIMIT) break;
+    if (selectedSet.has(address.toLowerCase())) continue;
+    selected.push(address);
+    selectedSet.add(address.toLowerCase());
+  }
+
+  if (now - liveAddressSelectionChangedAt >= MIN_SUBSCRIPTION_DWELL_MS) {
+    const candidates = [...addressToWhale.values()].filter((row) => !selectedSet.has(row.address.toLowerCase()));
+    for (const candidate of candidates) {
+      if (!selected.length) break;
+      const weakestIndex = selected.reduce((weakest, address, index) => {
+        const currentId = addressToWhale.get(address.toLowerCase())?.whale.id;
+        const currentScore = scores.get(String(currentId))?.score || 0;
+        const weakestId = addressToWhale.get(selected[weakest].toLowerCase())?.whale.id;
+        const weakestScore = scores.get(String(weakestId))?.score || 0;
+        return currentScore < weakestScore ? index : weakest;
+      }, 0);
+      const currentId = addressToWhale.get(selected[weakestIndex].toLowerCase())?.whale.id;
+      const weakestScore = scores.get(String(currentId))?.score || 0;
+      const candidateScore = scores.get(String(candidate.whale.id))?.score || 0;
+      if (candidateScore < Math.max(1.25, weakestScore * REPLACEMENT_SCORE_MULTIPLIER)) break;
+      selectedSet.delete(selected[weakestIndex].toLowerCase());
+      selected[weakestIndex] = candidate.address;
+      selectedSet.add(candidate.address.toLowerCase());
+      liveAddressSelectionChangedAt = now;
+    }
+  }
+  liveAddressSelection = selected;
+  return [...liveAddressSelection];
 }
 
 function rebuildWhaleIndex(whales) {
@@ -61,35 +145,18 @@ function rebuildWhaleIndex(whales) {
   }
 }
 
-function pickTopAddresses(whales, limit = DISPLAY_TOP_N) {
-  return sortWhalesForDisplay(whales)
-    .filter((w) => (w.positions || []).length > 0 || positionNotionalUsd({ positionValue: w.netUsd }))
-    .slice(0, limit)
-    .map((w) => normalizeAddress(w.address))
-    .filter(Boolean);
-}
-
-/** 成交 WS：只订有实质仓位的地址，不再全名单 200 订阅 */
-function pickFillAddresses(whales, limit = FILL_SUB_TOP_N) {
-  return sortWhalesForDisplay(whales)
-    .filter((w) =>
-      (w.positions || []).some((p) => positionNotionalUsd(p) >= FILL_SUB_MIN_USD),
-    )
-    .slice(0, limit)
-    .map((w) => normalizeAddress(w.address))
-    .filter(Boolean);
-}
-
 function syncFromCache() {
   const cached = readWhaleModeCache(MODE);
   const whales = Array.isArray(cached?.data?.whales) ? cached.data.whales : [];
   rebuildWhaleIndex(whales);
-  const fillAddresses = pickFillAddresses(whales, FILL_SUB_TOP_N);
-  const webDataAddresses = pickTopAddresses(whales, DISPLAY_TOP_N);
+  // userFills + webData2 都属于 user-specific 订阅，使用同一组最多 10 个唯一地址。
+  const liveAddresses = pickLiveAddresses(whales, cached?.data?.trades || []);
+  const fillAddresses = liveAddresses;
+  const webDataAddresses = liveAddresses;
   if (client) {
     client.syncSubscriptions({ fillAddresses, webDataAddresses });
   }
-  return { whales: whales.length, fills: fillAddresses.length, webData: webDataAddresses.length };
+  return { whales: whales.length, fills: fillAddresses.length, webData: webDataAddresses.length, uniqueUsers: new Set([...fillAddresses, ...webDataAddresses]).size };
 }
 
 function appendTradesToCache(trades) {
@@ -159,7 +226,8 @@ function alertFromLiveFill(whale, fill, trade) {
   const dir = String(fill.dir || trade.dir || '');
   if (/>/.test(dir)) return null;
 
-  const start = Number(fill.startPosition ?? trade.startPosition);
+  const startValue = fill.startPosition != null ? fill.startPosition : trade.startPosition;
+  const start = startValue == null || startValue === '' ? NaN : Number(startValue);
   const buy = trade.side === 'buy' || fill.side === 'B';
   const eps = 1e-8;
   const fillSz = Math.abs(Number(fill.sz ?? fill.size ?? trade.size) || 0);
@@ -207,13 +275,8 @@ function alertFromLiveFill(whale, fill, trade) {
     else if (/long/i.test(dir)) side = 'long';
     else side = buy ? 'short' : 'long'; // 买平空 / 卖平多
     kind = /close/i.test(dir) ? 'close' : 'decrease';
-  } else if (/open\s*short|short\s*open/i.test(dir) || (/short/i.test(dir) && /open|add/i.test(dir))) {
-    side = 'short';
-    kind = /open/i.test(dir) ? 'open' : 'increase';
-  } else if (/open\s*long|long\s*open/i.test(dir) || (/long/i.test(dir) && /open|add/i.test(dir))) {
-    side = 'long';
-    kind = /open/i.test(dir) ? 'open' : 'increase';
   } else {
+    // startPosition 缺失时，Open Long/Short 无法区分新开仓与加仓；等待仓位快照 diff。
     return null;
   }
 
@@ -249,6 +312,7 @@ function alertFromLiveFill(whale, fill, trade) {
         kind,
         title,
         detail: '',
+        evidenceSource: 'fill',
         coin,
         side,
         usd,
@@ -259,6 +323,44 @@ function alertFromLiveFill(whale, fill, trade) {
       },
     ],
   };
+}
+
+function rememberPositionFill(whale, trade) {
+  const start = trade?.startPosition == null ? NaN : Number(trade.startPosition);
+  if (Math.abs(Number(trade.closedPnl) || 0) > 1) return;
+  const isBuy = trade.side === 'buy';
+  const kind = !Number.isFinite(start)
+    ? 'unknown'
+    : Math.abs(start) < 1e-8
+      ? 'open'
+      : ((start > 0 && isBuy) || (start < 0 && !isBuy) ? 'increase' : null);
+  if (!kind) return;
+  const side = !Number.isFinite(start) || Math.abs(start) < 1e-8 ? (isBuy ? 'long' : 'short') : (start > 0 ? 'long' : 'short');
+  const key = String(whale.id);
+  const now = Date.now();
+  const rows = (recentPositionFills.get(key) || []).filter((row) => now - row.receivedAt < 10 * 60_000);
+  rows.push({ coin: String(trade.asset || '').toUpperCase(), side, kind, size: Math.abs(Number(trade.amount) || 0), time: Number(trade.time) || now, receivedAt: now, id: String(trade.id || '') });
+  recentPositionFills.set(key, rows.slice(-500));
+}
+
+function matchSnapshotExecution(whale, pos, kind, deltaSize) {
+  const now = Date.now();
+  const rows = recentPositionFills.get(String(whale.id)) || [];
+  const candidates = rows.filter((row) =>
+    !row.used && row.coin === String(pos.coin || '').toUpperCase() && row.side === pos.side &&
+    (row.kind === kind || row.kind === 'unknown') && now - row.receivedAt <= 120_000 && Math.abs(now - row.time) <= 120_000,
+  );
+  if (!candidates.length) return null;
+  let total = 0;
+  const matched = [];
+  for (const row of candidates) {
+    total += row.size;
+    matched.push(row);
+    if (total >= deltaSize * 0.85) break;
+  }
+  if (Math.abs(total - deltaSize) > Math.max(deltaSize * 0.15, 1e-8)) return null;
+  for (const row of matched) row.used = true;
+  return Math.max(...matched.map((row) => row.time));
 }
 
 function mapAssetPositions(clearinghouseState) {
@@ -353,9 +455,12 @@ function alertsFromPositionDiff(whale, prevPositions, nextPositions) {
     const kindLabel =
       kind === 'open' ? '开单' : kind === 'increase' ? '加仓' : kind === 'decrease' ? '减仓' : '平仓';
     const key = `${String(coin).toUpperCase()}:${side}`;
+    const knownTime = Number(extras.executionTime) || (kind === 'open' ? Number(pos.openTime) : 0);
+    const eventTime = knownTime || now;
+    const timeSource = knownTime ? 'execution' : 'observed';
     alerts.push({
       id: `ws-pos-${kind}-${whale.id}-${key}-${now}`,
-      at: now,
+      at: eventTime,
       whaleId: whale.id,
       whaleName: whale.name,
       address: whale.address,
@@ -368,12 +473,14 @@ function alertsFromPositionDiff(whale, prevPositions, nextPositions) {
           kind,
           title,
           detail: '',
+          evidenceSource: 'snapshot',
+          timeSource,
           coin,
           side,
           usd: extras.usd ?? positionNotionalUsd(pos),
           prevUsd: extras.prevUsd,
           remainingUsd: extras.remainingUsd,
-          time: now,
+          time: eventTime,
           price: pos.entryPx || pos.markPx || null,
           leverage: pos.leverage,
         },
@@ -385,17 +492,32 @@ function alertsFromPositionDiff(whale, prevPositions, nextPositions) {
     const key = `${String(pos.coin).toUpperCase()}:${pos.side}`;
     const prev = prevMap.get(key);
     const usd = positionNotionalUsd(pos);
+    const currentSize = Math.abs(Number(pos.size) || 0);
     if (usd < 1) continue;
     if (!prev) {
-      pushAlert('open', pos, { usd });
+      pushAlert('open', pos, { usd, executionTime: matchSnapshotExecution(whale, pos, 'open', currentSize) });
       continue;
     }
     const prevUsd = positionNotionalUsd(prev);
-    if (usd > prevUsd * 1.04 && usd - prevUsd > 50) {
-      pushAlert('increase', pos, { usd: usd - prevUsd, prevUsd, remainingUsd: usd });
-    } else if (usd < prevUsd * 0.96 && prevUsd - usd > 50) {
+    const previousSize = Math.abs(Number(prev.size) || 0);
+    const deltaSize = Math.abs(currentSize - previousSize);
+    // positionValue 随 mark price 变化；只能用仓位数量变化认定加/减仓，
+    // 否则单纯的行情涨跌会伪装成仓位异动。
+    const unitUsd = currentSize > 0 ? usd / currentSize : 0;
+    const deltaUsd = deltaSize * unitUsd;
+    if (currentSize > previousSize && deltaSize > previousSize * 0.04 && deltaUsd > 50) {
+      const previousAtCurrentPrice = Math.max(0, currentSize - deltaSize) * unitUsd;
+      const matchedTime = matchSnapshotExecution(whale, pos, 'increase', deltaSize);
+      const knownAddTime = Number(pos.lastAddTime) > Number(prev.lastAddTime || 0) ? Number(pos.lastAddTime) : 0;
+      pushAlert('increase', pos, {
+        usd: deltaUsd,
+        prevUsd: previousAtCurrentPrice || prevUsd,
+        remainingUsd: usd,
+        executionTime: matchedTime || knownAddTime,
+      });
+    } else if (currentSize < previousSize && deltaSize > previousSize * 0.04 && deltaUsd > 50) {
       pushAlert('decrease', pos, {
-        usd: prevUsd - usd,
+        usd: deltaUsd,
         prevUsd,
         remainingUsd: usd,
       });
@@ -432,7 +554,6 @@ function emitAlerts(alerts) {
 
 function handleFills({ user, fills, isSnapshot }) {
   if (!user || !fills?.length) return;
-  if (isSnapshot && SKIP_FILL_SNAPSHOT) return;
   const whale = whalesByAddress.get(String(user).toLowerCase());
   if (!whale) return;
 
@@ -442,7 +563,9 @@ function handleFills({ user, fills, isSnapshot }) {
     const trade = mapFillToTrade(fill, whale, {});
     if (!trade?.id) continue;
     trades.push(trade);
-    const alert = alertFromLiveFill(whale, fill, trade);
+    rememberPositionFill(whale, trade);
+    // WS 初始/重连快照用于补成交历史与事件时间，不重复弹出旧异动。
+    const alert = isSnapshot ? null : alertFromLiveFill(whale, fill, trade);
     if (alert) alerts.push(alert);
   }
   if (!trades.length) return;
@@ -454,8 +577,10 @@ function handleFills({ user, fills, isSnapshot }) {
     pushError({ source: 'realtime', message: `成交缓存失败: ${err.message}` });
   }
 
-  for (const trade of trades) {
-    broadcast({ type: 'fill', trade, at: Date.now() });
+  if (!isSnapshot) {
+    for (const trade of trades) {
+      broadcast({ type: 'fill', trade, at: Date.now() });
+    }
   }
   emitAlerts(alerts);
 }
@@ -470,6 +595,7 @@ function handleWebData({ user, data }) {
   }
   if (!whale) return;
 
+  const hadRealtimeBaseline = positionSnapByWhale.has(whale.id);
   const prev = positionSnapByWhale.get(whale.id) || whale.positions || [];
   const positions = mergePositionMeta(
     mapAssetPositions(data.clearinghouseState || data),
@@ -498,7 +624,8 @@ function handleWebData({ user, data }) {
     at: Date.now(),
   });
 
-  const alerts = alertsFromPositionDiff(whale, prev, positions);
+  // 首帧只建立基线：重启期间的净变化无法被准确赋予成交时间。
+  const alerts = hadRealtimeBaseline ? alertsFromPositionDiff(whale, prev, positions) : [];
   emitAlerts(alerts);
 }
 
@@ -536,6 +663,7 @@ function getRealtimeStatus() {
   return {
     ...lastStatus,
     ...(client?.getStatus() || {}),
+    userAddressLimit: USER_WS_ADDRESS_LIMIT,
     browserClients: clientCount(),
   };
 }
@@ -554,4 +682,9 @@ module.exports = {
   isRealtimeConnected,
   getRealtimeStatus,
   getWhaleByAddress,
+  // Exported for deterministic tests of the position/fill event classifiers.
+  alertsFromPositionDiff,
+  alertFromLiveFill,
+  rememberPositionFill,
+  pickLiveAddresses,
 };

@@ -374,10 +374,9 @@ export function isClearlyIncreaseTrade(trade: WhaleTrade) {
   if (!trade || trade.source === 'onchain') return false;
   if (Math.abs(Number(trade.closedPnl) || 0) > 1) return false;
   const dir = String(trade.dir || '');
-  if (/open/i.test(dir)) return false;
   // 减仓/平仓/翻仓不是加仓
   if (/close|reduce|long\s*>|short\s*>/i.test(dir)) return false;
-  const start = Number(trade.startPosition);
+  const start = trade.startPosition == null ? NaN : Number(trade.startPosition);
   if (Number.isFinite(start)) return Math.abs(start) >= 1e-8;
   return false;
 }
@@ -387,10 +386,10 @@ export function isOpeningFillTrade(trade: WhaleTrade) {
   if (!trade || trade.source === 'onchain') return false;
   if (Math.abs(Number(trade.closedPnl) || 0) > 1) return false;
   const dir = String(trade.dir || '');
-  if (/open/i.test(dir)) return true;
   if (/close|long >|short >/i.test(dir)) return false;
-  const start = Number(trade.startPosition);
+  const start = trade.startPosition == null ? NaN : Number(trade.startPosition);
   if (Number.isFinite(start)) return Math.abs(start) < 1e-8;
+  // Open Long/Short 同样可能表示加仓；字段缺失时不能仅靠 dir 当作新开仓。
   return false;
 }
 

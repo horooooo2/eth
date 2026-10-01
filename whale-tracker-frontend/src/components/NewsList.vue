@@ -5,6 +5,7 @@ import { Refresh } from '@element-plus/icons-vue';
 import type { WhaleProfile } from '@/types';
 import {
   normalizeStoredAlert,
+  alertItemSide,
   scopeAlertToCoin,
   scopeAlertToSide,
   alertEventTime,
@@ -207,14 +208,7 @@ async function loadAlertPage(silent = false) {
     }
 
     const pool = [...map.values()]
-      .filter((alert) => {
-        const coin = alert.items?.[0]?.coin;
-        if (isExoticAsset(String(coin || ''))) return false;
-        if (alertCoinFilter.value !== 'all') {
-          if (!coinMatchesWatch(coin, [alertCoinFilter.value])) return false;
-        }
-        return alertPassesFreshListGate(alert, whaleOf(alert));
-      })
+      .filter((alert) => hasListEligibleItem(alert) && alertPassesFreshListGate(alert, whaleOf(alert)))
       .sort((a, b) => alertEventTime(b) - alertEventTime(a));
 
     // 与列表同一套闸门后的多空 / 币种计数
@@ -222,13 +216,13 @@ async function loadAlertPage(silent = false) {
     let long = 0;
     let short = 0;
     for (const alert of pool) {
-      const side = alert.items?.[0]?.side;
-      if (side === 'long') long += 1;
-      else if (side === 'short') short += 1;
-      const coin = String(alert.items?.[0]?.coin || '')
-        .trim()
-        .toUpperCase();
-      if (coin) byCoin[coin] = (byCoin[coin] || 0) + 1;
+      const items = eligibleItems(alert);
+      const sides = new Set(items.map((item) => alertItemSide(alert, item)));
+      if (sides.has('long')) long += 1;
+      if (sides.has('short')) short += 1;
+      for (const coin of new Set(items.map((item) => String(item.coin || '').trim().toUpperCase()).filter(Boolean))) {
+        byCoin[coin] = (byCoin[coin] || 0) + 1;
+      }
     }
 
     // 非闪电且样本可能被 limit 截断时，优先用服务端 facet
@@ -243,7 +237,9 @@ async function loadAlertPage(silent = false) {
     }
 
     const side = alertSideFilter.value;
-    const sided = side === 'all' ? pool : pool.filter((a) => a.items?.[0]?.side === side);
+    const sided = side === 'all' ? pool : pool.filter((alert) =>
+      eligibleItems(alert).some((item) => alertItemSide(alert, item) === side),
+    );
     const start = (alertPage.value - 1) * ALERT_PAGE_SIZE;
     const list = sided.slice(start, start + ALERT_PAGE_SIZE);
 
@@ -375,9 +371,9 @@ function alertItemKind(alert: WhaleAlert) {
 
 const filteredAlerts = computed(() => {
   const side = alertSideFilter.value;
-  return pageAlerts.value
+    return pageAlerts.value
     .map((alert) => {
-      let scoped = alert;
+      let scoped = { ...alert, items: eligibleItems(alert) };
       if (alertCoinFilter.value !== 'all') {
         scoped = scopeAlertToCoin(scoped, alertCoinFilter.value);
       }
@@ -456,21 +452,27 @@ function scheduleRealtimeReload() {
 
 function alertMatchesListFilters(alert: WhaleAlert) {
   if (props.filterWhaleId && alert.whaleId !== props.filterWhaleId) return false;
-  const coin = alert.items?.[0]?.coin;
-  if (isExoticAsset(String(coin || ''))) return false;
-  if (alertCoinFilter.value !== 'all') {
-    if (!coinMatchesWatch(coin, [alertCoinFilter.value])) return false;
-  }
-  if (openOnly.value) {
-    const kind = alert.items?.[0]?.kind || alert.kind;
-    if (kind !== 'open') return false;
-  }
-  if (alertSideFilter.value !== 'all' && alert.items?.[0]?.side !== alertSideFilter.value) {
-    return false;
-  }
-  const usd = Math.abs(Number(alert.items?.[0]?.usd) || 0);
-  if (alertMinUsd.value > 0 && usd < alertMinUsd.value) return false;
+  const items = eligibleItems(alert);
+  if (!items.length) return false;
+  if (
+    alertSideFilter.value !== 'all' &&
+    !items.some((item) => alertItemSide(alert, item) === alertSideFilter.value)
+  ) return false;
   return alertPassesFreshListGate(alert, whaleOf(alert));
+}
+
+function eligibleItems(alert: WhaleAlert) {
+  return (alert.items || []).filter((item) => {
+    if (isExoticAsset(String(item.coin || ''))) return false;
+    if (alertCoinFilter.value !== 'all' && !coinMatchesWatch(item.coin, [alertCoinFilter.value])) return false;
+    if (openOnly.value && item.kind !== 'open') return false;
+    if (alertMinUsd.value > 0 && Math.abs(Number(item.usd) || 0) < alertMinUsd.value) return false;
+    return true;
+  });
+}
+
+function hasListEligibleItem(alert: WhaleAlert) {
+  return eligibleItems(alert).length > 0;
 }
 
 /** Socket 推送：先插入列表，再静默对齐服务端 */
@@ -486,15 +488,15 @@ function pushRealtimeAlert(raw: WhaleAlert | Record<string, unknown>) {
     if (!pageAlerts.value.some((item) => item.id === alert.id)) {
       pageAlerts.value = [alert, ...pageAlerts.value].slice(0, ALERT_PAGE_SIZE);
       alertTotal.value += 1;
-      const side = alert.items?.[0]?.side;
-      const coin = String(alert.items?.[0]?.coin || '')
-        .trim()
-        .toUpperCase();
+      const items = eligibleItems(alert);
       const nextFacets = { ...facets.value, byCoin: { ...facets.value.byCoin } };
       nextFacets.all += 1;
-      if (side === 'long') nextFacets.long += 1;
-      if (side === 'short') nextFacets.short += 1;
-      if (coin) nextFacets.byCoin[coin] = (nextFacets.byCoin[coin] || 0) + 1;
+      const sides = new Set(items.map((item) => alertItemSide(alert, item)));
+      if (sides.has('long')) nextFacets.long += 1;
+      if (sides.has('short')) nextFacets.short += 1;
+      for (const coin of new Set(items.map((item) => String(item.coin || '').trim().toUpperCase()).filter(Boolean))) {
+        nextFacets.byCoin[coin] = (nextFacets.byCoin[coin] || 0) + 1;
+      }
       facets.value = nextFacets;
     }
   }
@@ -727,6 +729,13 @@ function alertFundingWarn(row: {
               class="whale-name"
               @locate="emit('locateWhale', $event)"
             />
+            <span
+              v-if="row.alert.items?.[0]?.timeSource === 'observed'"
+              class="abs-time"
+              title="这是快照发现时间，不代表实际成交时间"
+            >
+              发现 ·
+            </span>
             <span class="abs-time">{{ formatTimeShort(row.view.eventTime) }}</span>
           </div>
         </button>

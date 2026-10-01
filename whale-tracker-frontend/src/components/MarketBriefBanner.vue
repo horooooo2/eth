@@ -19,7 +19,6 @@ import {
 } from '@/utils/briefHistory';
 import { aiKeyReady } from '@/stores/aiKey';
 import { formatPrice } from '@/utils/format';
-import { highlightBriefHtml } from '@/utils/briefHighlight';
 import BriefKlineChart from '@/components/BriefKlineChart.vue';
 
 type BiasTag = 'buy' | 'sell' | 'wait';
@@ -51,7 +50,6 @@ const streamDraft = ref('');
 const statusMessage = ref('');
 const loadingStepIdx = ref(0);
 const streamScrollRef = ref<HTMLElement | null>(null);
-const analysisTab = ref('short');
 const techTf = ref<'5m' | '1h' | '1d'>('1d');
 
 let reqSeq = 0;
@@ -140,52 +138,6 @@ const structured = computed<MarketBriefStructured | null>(() => {
   return s;
 });
 
-const sentiment = computed(() => {
-  const st = structured.value?.short_term;
-  if (st?.bias || st?.direction || st?.confidence) {
-    const biasText = st.direction || st.bias || '';
-    const tag = /偏多|看多/.test(biasText)
-      ? 'buy'
-      : /偏空|看空|承压/.test(biasText)
-        ? 'sell'
-        : 'wait';
-    const tone = tag === 'buy' ? 'bull' : tag === 'sell' ? 'bear' : 'neutral';
-    const emoji = tag === 'buy' ? '🟢' : tag === 'sell' ? '🔴' : '🟡';
-    const level = (/低|中|高/.exec(st.confidence || '')?.[0] || '') as '' | '低' | '中' | '高';
-    return {
-      label: `${emoji} 市场情绪：${biasText || '待解读'}`,
-      tone,
-      confidence: level ? `AI 信心：${level}` : st.confidence ? `AI 信心：${st.confidence}` : 'AI 信心：见正文',
-      confidenceLevel: level,
-    };
-  }
-  const short = sections.value.find((s) => s.key === 'short');
-  const mid = sections.value.find((s) => s.key === 'mid');
-  const bias = short?.tag
-    ? { tag: short.tag, label: short.tagLabel }
-    : mid?.tag
-      ? { tag: mid.tag, label: mid.tagLabel }
-      : detectBias(result.value?.analysis || '');
-  if (!bias) {
-    return {
-      label: '市场情绪：待解读',
-      tone: 'neutral' as const,
-      confidence: '—',
-      confidenceLevel: '' as '' | '低' | '中' | '高',
-    };
-  }
-  const tone = bias.tag === 'buy' ? 'bull' : bias.tag === 'sell' ? 'bear' : 'neutral';
-  const emoji = bias.tag === 'buy' ? '🟢' : bias.tag === 'sell' ? '🔴' : '🟡';
-  const confMatch = String(result.value?.analysis || '').match(/信心[：:]\s*(低|中|高)/);
-  const level = (confMatch?.[1] || '') as '' | '低' | '中' | '高';
-  return {
-    label: `${emoji} 市场情绪：${bias.label}`,
-    tone,
-    confidence: level ? `AI 信心：${level}` : 'AI 信心：见正文',
-    confidenceLevel: level,
-  };
-});
-
 const chartPacks = computed(() => {
   const c = result.value?.contextSummary?.charts;
   return {
@@ -195,74 +147,29 @@ const chartPacks = computed(() => {
   };
 });
 
-const activeTechText = computed(() => {
-  const t = structured.value?.technical;
-  if (!t) return '';
-  if (techTf.value === '5m') return t.m5 || '';
-  if (techTf.value === '1h') return t.hourly || '';
-  return t.daily || '';
-});
-
-const activeTechLabel = computed(() => {
-  if (techTf.value === '5m') return '5分钟';
-  if (techTf.value === '1h') return '小时线';
-  return '日线';
-});
-
-const personalStance = computed(() => structured.value?.personal_stance || null);
-
-const stanceCards = computed(() => {
-  const ps = personalStance.value;
+const directionAssessment = computed(() => result.value?.directionAssessment || null);
+const directionAnalysis = computed(() => structured.value?.direction_analysis || null);
+const horizonCards = computed(() => {
+  const h = directionAssessment.value?.horizons;
+  if (!h) return [];
+  const ai = directionAnalysis.value?.horizons || {};
   return [
-    { id: 'short', header: '短线 · 1小时', leg: ps?.short },
-    { id: 'mid_long', header: '长线 · 日线', leg: ps?.mid_long },
-  ];
+    { id: 'ultra_short', label: '超短线', period: '5分钟级', value: h.ultra_short, analysis: ai.ultra_short },
+    { id: 'short_term', label: '短线', period: '小时级', value: h.short_term, analysis: ai.short_term },
+    { id: 'medium_long', label: '中长期', period: '日线级', value: h.medium_long, analysis: ai.medium_long },
+  ].filter((x) => x.value);
 });
-
-type AnalysisTab = { id: string; label: string };
-
-const analysisTabs = computed<AnalysisTab[]>(() => {
-  const s = structured.value;
-  if (s) {
-    const tabs: AnalysisTab[] = [
-      { id: 'short', label: '短期看法' },
-      { id: 'mid', label: '中长期' },
-      { id: 'tech', label: '技术分析' },
-      { id: 'news', label: '新闻分析' },
-      { id: 'sentiment', label: '市场情绪' },
-    ];
-    if (s.key_evidence?.length) tabs.push({ id: 'evidence', label: '关键证据' });
-    if (s.risks_and_invalidation?.length) tabs.push({ id: 'risk', label: '风险失效' });
-    return tabs;
-  }
-  return sections.value.map((sec) => ({
-    id: sec.key,
-    label: sec.title.replace(/^[\u{1F300}-\u{1FAFF}\u2600-\u27BF]\s*/u, '') || sec.title,
-  }));
+const aiModuleCards = computed(() => {
+  const modules = directionAnalysis.value?.module_analysis || {};
+  const quality = directionAssessment.value?.modules || {};
+  const labels: Record<string, string> = { technical: '技术结构', derivatives: '衍生品仓位', flow: '主动买卖', whales: '巨鲸观测', news: '新闻事件', cross: '跨市场' };
+  return Object.entries(labels).map(([id, label]) => ({ id, label, analysis: modules[id], quality: quality[id]?.quality ?? 0 }));
 });
-
-watch(
-  analysisTabs,
-  (tabs) => {
-    if (!tabs.length) return;
-    if (!tabs.some((t) => t.id === analysisTab.value)) {
-      analysisTab.value = tabs[0].id;
-    }
-  },
-  { immediate: true },
-);
-
-function stanceActionClass(action?: string) {
-  const t = String(action || '');
-  if (/做多/.test(t)) return 'long';
-  if (/做空/.test(t)) return 'short';
-  return 'wait';
-}
-
-function fmtStancePrice(v: number | null | undefined) {
-  if (v == null || !Number.isFinite(Number(v))) return '—';
-  return formatPrice(Number(v));
-}
+const timeframeCards = computed(() => {
+  const rows = directionAnalysis.value?.timeframes || {};
+  const labels: Record<string, string> = { m5: '5分钟', hour: '1小时', day: '日线' };
+  return Object.entries(labels).map(([id, label]) => ({ id, label, ...rows[id] }));
+});
 
 function biasFromResult(data: MarketBriefResponse) {
   const st = data.analysisResult?.short_term || data.structured?.short_term;
@@ -292,6 +199,8 @@ function saveHistory(data: MarketBriefResponse) {
     confidence,
     analysis: data.analysis,
     structured: data.analysisResult || data.structured || null,
+    directionAssessment: data.directionAssessment || null,
+    contextSummary: data.contextSummary,
     summaryBits: bits,
     analysisId: data.analysisId,
     contextSnapshotId: data.contextSnapshotId,
@@ -327,6 +236,7 @@ function openHistory(item: MarketBriefHistoryItem) {
     analysis: item.analysis,
     structured: item.structured || null,
     analysisResult: item.structured || null,
+    directionAssessment: item.directionAssessment || null,
     analysisId: item.analysisId,
     contextSnapshotId: item.contextSnapshotId,
     version: item.version,
@@ -334,17 +244,9 @@ function openHistory(item: MarketBriefHistoryItem) {
       ? { changed: true, summary: item.contextDiffSummary }
       : null,
     contextText: '',
-    contextSummary: undefined,
+    contextSummary: item.contextSummary,
   };
   phase.value = 'result';
-}
-
-function shortTermBias(st?: MarketBriefStructured['short_term'] | MarketBriefStructured['mid_long_term']) {
-  return st?.direction || st?.bias || '';
-}
-
-function shortTermBody(st?: MarketBriefStructured['short_term'] | MarketBriefStructured['mid_long_term']) {
-  return st?.summary || st?.reason || '';
 }
 
 function deleteHistory(id: string, ev: Event) {
@@ -449,6 +351,7 @@ async function runBrief() {
           version: (meta as { version?: string }).version,
           contextDiff: (meta as { contextDiff?: MarketBriefResponse['contextDiff'] }).contextDiff,
           contextSummary: meta.contextSummary,
+          directionAssessment: meta.directionAssessment,
         };
         stopLoadingSteps();
         phase.value = 'streaming';
@@ -507,7 +410,7 @@ async function runBrief() {
         /* fallthrough */
       }
     }
-    error.value = err instanceof Error ? err.message : '生成建议失败';
+    error.value = err instanceof Error ? err.message : '生成方向分析失败';
     result.value = null;
     phase.value = 'pick';
   } finally {
@@ -544,7 +447,7 @@ onUnmounted(() => {
             <div class="modal-title-row">
               <div class="modal-title">
                 <span class="ai-spark">✨</span>
-                DeepSeek 智能投研
+                AI 深度诊币 · 市场方向研判
                 <em v-if="phase !== 'pick'">· {{ coin }}</em>
               </div>
               <div v-if="phase !== 'pick'" class="header-actions">
@@ -665,225 +568,64 @@ onUnmounted(() => {
 
           <!-- 结果 + 流式打字 + 对话 -->
           <div v-else class="modal-body result-layout">
-            <div
-              v-if="phase === 'result' || phase === 'streaming'"
-              class="sentiment-sticky"
-              :class="sentiment.tone"
-            >
-              <div class="sticky-main">
-                <span class="sticky-coin">{{ coin }}</span>
-                <span v-if="result?.version" class="sticky-ver">{{ result.version }}</span>
-                <span class="sentiment-text">短线判断：{{ shortTermBias(structured?.short_term) || '分析中' }}</span>
-              </div>
-              <div
-                class="confidence"
-                :class="{
-                  'conf-low': sentiment.confidenceLevel === '低',
-                  'conf-mid': sentiment.confidenceLevel === '中',
-                  'conf-high': sentiment.confidenceLevel === '高',
-                }"
-              >
-                {{ phase === 'streaming' ? '生成中…' : sentiment.confidence }}
-              </div>
-            </div>
-
             <div ref="streamScrollRef" class="result-scroll">
               <div v-if="phase === 'streaming'" class="stream-banner">
                 <span class="stream-dot" />
-                正在分析价格结构、情绪与事件…
+                正在整理行情结构、方向依据与风险提示…
               </div>
 
-              <div v-if="phase === 'streaming'" class="quiet-analysis">AI 正在静默分析，完成后显示交易结论。</div>
+              <div v-if="phase === 'streaming'" class="quiet-analysis">程序方向评估已完成，AI 正在补充市场背景与证据解释。</div>
 
-              <div v-else-if="structured || sections.length" class="simple-result">
-                <p v-if="structured?.event_reaction && !/暂无|unavailable/i.test(structured.event_reaction)" class="simple-event">事件反应：{{ structured.event_reaction }}</p>
-                <div v-if="structured" class="simple-cards">
-                  <div v-for="card in stanceCards" :key="card.id" class="simple-card">
-                    <div class="simple-card-head"><strong>{{ card.header }}</strong><span :class="stanceActionClass(card.leg?.action)">{{ card.leg?.action || '数据不足' }} · {{ card.leg?.execution || '禁止下单' }}</span></div>
-                    <div class="simple-prices">
-                      <span>参考入场 <b>{{ fmtStancePrice(card.leg?.entry) }}</b></span>
-                      <span>止损 <b>{{ fmtStancePrice(card.leg?.stop) }}</b></span>
-                      <span>止盈 <b>{{ fmtStancePrice(card.leg?.take_profit) }}</b></span>
+              <div v-else-if="structured || sections.length" class="research-dashboard">
+                <section class="dashboard-hero">
+                  <article class="panel hero-main">
+                    <div class="coin-row">
+                      <div class="coin-left"><div class="coin-logo">{{ coin.slice(0, 1) }}</div><div><div class="coin-name">{{ coin }} 市场研判</div><div class="coin-symbol">{{ coin }} · 多周期方向与市场信息</div></div></div>
+                      <div><div class="price">{{ result?.contextSummary?.price ? formatPrice(result.contextSummary.price) : '价格暂无' }}</div><div class="change">24h {{ result?.contextSummary?.change24hPct == null ? '—' : `${result.contextSummary.change24hPct}%` }}</div></div>
                     </div>
-                    <p class="simple-note">{{ card.leg?.note || (card.id === 'short' ? shortTermBody(structured.short_term) : shortTermBody(structured.mid_long_term)) }}</p>
-                    <p v-if="card.leg?.execution === '等待触发' && card.leg?.trigger" class="simple-note">触发条件：{{ card.leg.trigger }}</p>
-                    <details v-if="card.leg?.entry_validation" class="entry-validation">
-                      <summary>查看入场价验证 · {{ card.leg.entry_validation.decision }}</summary>
-                      <p>技术：{{ card.leg.entry_validation.technical || '暂无' }}</p>
-                      <p>情绪：{{ card.leg.entry_validation.sentiment || '暂无' }}</p>
-                      <p>新闻宏观：{{ card.leg.entry_validation.news_macro || '暂无' }}</p>
-                      <p>大户与资金：{{ card.leg.entry_validation.positioning || '暂无' }}</p>
-                    </details>
-                  </div>
-                </div>
-                <div v-else class="simple-card"><strong>{{ sentiment.label }}</strong><p class="simple-note">本次分析没有生成结构化观点，请重新分析。</p></div>
-                <details class="analysis-details"><summary>查看分析依据</summary>
-                <div class="analysis-tabs-wrap">
-                <div class="analysis-tabs" role="tablist">
-                  <button
-                    v-for="tab in analysisTabs"
-                    :key="tab.id"
-                    type="button"
-                    role="tab"
-                    class="analysis-tab"
-                    :class="{ active: analysisTab === tab.id }"
-                    :aria-selected="analysisTab === tab.id"
-                    @click="analysisTab = tab.id"
-                  >
-                    {{ tab.label }}
-                  </button>
-                </div>
-
-                <div class="analysis-tab-panel">
-                  <template v-if="structured">
-                    <div v-show="analysisTab === 'short'" class="tab-pane">
-                      <div class="coin-analysis" :class="biasClass(shortTermBias(structured.short_term))">
-                        <div class="coin-header">
-                          <span
-                            class="tag"
-                            :class="biasClass(shortTermBias(structured.short_term)) === 'tone-buy' ? 'tag-buy' : biasClass(shortTermBias(structured.short_term)) === 'tone-sell' ? 'tag-sell' : 'tag-wait'"
-                            v-html="highlightBriefHtml(shortTermBias(structured.short_term) || '观望')"
-                          />
-                        </div>
-                        <div
-                          class="coin-desc"
-                          v-html="highlightBriefHtml(shortTermBody(structured.short_term))"
-                        />
-                      </div>
+                    <div class="meta-strip">
+                      <span class="chip" :class="result?.contextSummary?.hasTech ? 'good' : 'warn'">{{ result?.contextSummary?.hasTech ? 'K线数据可用' : 'K线数据不足' }}</span>
+                      <span class="chip">新闻 {{ result?.contextSummary?.newsCount ?? 0 }} 条</span>
+                      <span class="chip">巨鲸多/空 {{ result?.contextSummary?.whaleLong ?? 0 }}/{{ result?.contextSummary?.whaleShort ?? 0 }}</span>
+                      <span class="chip" :class="directionAssessment?.regime ? 'good' : 'warn'">{{ directionAssessment?.regime || '市场状态待确认' }}</span>
+                      <span class="chip">更新于 {{ directionAssessment?.asOf ? new Date(directionAssessment.asOf).toLocaleString() : '—' }}</span>
                     </div>
-
-                    <div v-show="analysisTab === 'mid'" class="tab-pane">
-                      <div class="coin-analysis" :class="biasClass(shortTermBias(structured.mid_long_term))">
-                        <div v-if="shortTermBias(structured.mid_long_term)" class="coin-header">
-                          <span
-                            class="tag"
-                            :class="biasClass(shortTermBias(structured.mid_long_term)) === 'tone-buy' ? 'tag-buy' : biasClass(shortTermBias(structured.mid_long_term)) === 'tone-sell' ? 'tag-sell' : 'tag-wait'"
-                            v-html="highlightBriefHtml(shortTermBias(structured.mid_long_term))"
-                          />
-                        </div>
-                        <div
-                          class="coin-desc"
-                          v-html="highlightBriefHtml(shortTermBody(structured.mid_long_term))"
-                        />
-                      </div>
+                    <div class="summary-box">
+                      <div><h3>AI 市场摘要</h3><p>{{ directionAnalysis?.summary || 'AI 尚未生成本周期的综合摘要。' }}</p></div>
+                      <div class="state-block"><div class="state-label">程序方向 · 短线</div><div class="state-value">{{ directionAssessment?.horizons?.short_term?.direction === 'DATA_INSUFFICIENT' ? '数据不足' : directionAssessment?.horizons?.short_term?.direction || '评估中' }}</div><div class="state-sub">AI 解释不改变程序评估</div></div>
                     </div>
+                  </article>
+                  <article class="panel quality">
+                    <div><div class="panel-title">数据覆盖与信心</div><div class="panel-sub">信心由覆盖率与有效模块方向一致性计算</div></div>
+                    <div class="quality-main"><div class="ring" :style="{ '--quality': `${directionAssessment?.horizons?.short_term?.confidence || 0}%` }"><b>{{ directionAssessment?.horizons?.short_term?.confidence ?? 0 }}<small>%</small></b></div><div class="quality-info"><strong>短线信心度</strong><p>覆盖率 {{ Math.round((directionAssessment?.horizons?.short_term?.coverage || 0) * 100) }}%。低覆盖时系统标记数据不足。</p></div></div>
+                    <div class="mini-bars"><div v-for="(item, key) in directionAssessment?.modules || {}" :key="key" class="mini-bar"><span>{{ key }}</span><div class="track"><div class="fill" :style="{ width: `${Math.round((item.quality || 0) * 100)}%` }" /></div><b>{{ Math.round((item.quality || 0) * 100) }}</b></div></div>
+                  </article>
+                </section>
 
-                    <div v-show="analysisTab === 'tech'" class="tab-pane tech-pane">
-                      <BriefKlineChart
-                        v-model="techTf"
-                        :m5="chartPacks.m5"
-                        :hour="chartPacks.hour"
-                        :day="chartPacks.day"
-                      />
-                      <div class="coin-analysis">
-                        <div class="coin-desc tech-desc">
-                          <template v-if="activeTechText">
-                            <strong>{{ activeTechLabel }}：</strong>
-                            <span v-html="highlightBriefHtml(activeTechText)" />
-                          </template>
-                          <template v-else>当前周期暂无文字分析</template>
-                        </div>
-                      </div>
-                    </div>
+                <div class="section-title-row"><div><h2>多周期方向</h2><p>评分范围 −1 至 +1；方向阈值固定，数据不足不降级为中性。</p></div><span class="asof">{{ directionAssessment?.version || 'Direction Engine' }}</span></div>
+                <section class="direction-grid">
+                  <article v-for="card in horizonCards" :key="card.id" class="panel direction-card" :class="biasClass(card.value?.direction)">
+                    <div class="dir-head"><div><small>{{ card.period }}</small><h3>{{ card.label }}</h3></div><span class="dir-badge" :class="biasClass(card.value?.direction)">{{ card.value?.direction === 'DATA_INSUFFICIENT' ? '数据不足' : card.value?.direction }}</span></div>
+                    <div class="score-row"><div class="score">{{ Number(card.value?.score || 0).toFixed(2) }}<span>/ 1</span></div><div class="confidence"><b>{{ card.value?.confidence ?? 0 }}%</b><small>信心 · 覆盖 {{ Math.round((card.value?.coverage || 0) * 100) }}%</small></div></div>
+                    <div class="axis"><i class="marker" :style="{ left: `${Math.max(0, Math.min(100, ((card.value?.score || 0) + 1) * 50))}%` }" /></div><div class="axis-labels"><span>偏空</span><span>中性</span><span>偏多</span></div>
+                    <div class="horizon-ai-analysis"><p>{{ card.analysis?.analysis || 'AI 尚未提供该周期的具体分析。' }}</p><div class="horizon-points"><div><b>支持</b><span>{{ card.analysis?.bull_points?.join('；') || '暂无明确支持项' }}</span></div><div><b>反向</b><span>{{ card.analysis?.bear_points?.join('；') || '暂无明确反向项' }}</span></div></div><small>关注：{{ card.analysis?.focus || '暂无后续观察条件' }}</small></div>
+                  </article>
+                </section>
 
-                    <div v-show="analysisTab === 'news'" class="tab-pane">
-                      <div class="coin-analysis" :class="biasClass(structured.news_analysis?.sentiment)">
-                        <div v-if="structured.news_analysis?.sentiment" class="coin-header">
-                          <span
-                            class="tag tag-wait"
-                            v-html="highlightBriefHtml(structured.news_analysis.sentiment)"
-                          />
-                        </div>
-                        <div
-                          class="coin-desc"
-                          v-html="highlightBriefHtml(structured.news_analysis?.details)"
-                        />
-                      </div>
-                    </div>
+                <section class="two-col">
+                  <article class="panel structure"><div class="panel-title">价格结构与周期信号</div><div class="panel-sub">程序指标与 AI 逐周期解读，图表周期可切换</div><BriefKlineChart v-model="techTf" :m5="chartPacks.m5" :hour="chartPacks.hour" :day="chartPacks.day" /><div class="timeframe-analysis-grid"><div v-for="tf in timeframeCards" :key="tf.id" class="timeframe-analysis"><strong>{{ tf.label }}</strong><span>{{ tf.status || tf.state || '数据不足' }}</span><p>{{ tf.analysis || '该周期暂无可用解读。' }}</p><small v-for="(metric, idx) in tf.metrics || []" :key="idx">{{ metric }}</small></div></div></article>
+                  <article class="panel regime"><div class="panel-title">市场状态</div><div class="panel-sub">AI 对趋势、波动与结构阶段的解读，数值仍以原始数据为准</div><div class="regime-grid"><div class="regime-item"><span>趋势</span><b class="info">{{ directionAnalysis?.market_state?.trend || directionAssessment?.regime || '数据不足' }}</b></div><div class="regime-item"><span>波动</span><b>{{ directionAnalysis?.market_state?.volatility || '数据不足' }}</b></div><div class="regime-item"><span>结构</span><b>{{ directionAnalysis?.market_state?.structure || '数据不足' }}</b></div><div class="regime-item"><span>阶段</span><b>{{ directionAnalysis?.market_state?.phase || '数据不足' }}</b></div><div class="regime-item regime-wide"><span>观察</span><b>{{ directionAnalysis?.market_state?.observation || '等待 AI 根据数据填写市场状态分析。' }}</b></div><div class="regime-item"><span>资金费率</span><b>{{ result?.contextSummary?.fundingPct == null ? '暂无' : `${result.contextSummary.fundingPct}%` }}</b></div><div class="regime-item"><span>交易所多空</span><b>{{ result?.contextSummary?.exchangeLongPct == null ? '暂无' : `${result.contextSummary.exchangeLongPct}% 多` }}</b></div><div class="regime-item"><span>新闻 / 宏观</span><b>{{ (result?.contextSummary?.newsCount ?? 0) + (result?.contextSummary?.webNewsCount ?? 0) }} / {{ result?.contextSummary?.macroCount ?? 0 }} 条</b></div></div></article>
+                </section>
 
-                    <div v-show="analysisTab === 'sentiment'" class="tab-pane">
-                      <div class="coin-analysis">
-                        <div class="coin-desc">
-                          <p v-if="structured.market_sentiment?.long_short_ratio">
-                            多空：
-                            <span v-html="highlightBriefHtml(structured.market_sentiment.long_short_ratio)" />
-                          </p>
-                          <p v-if="structured.market_sentiment?.funding_rate">
-                            费率：
-                            <span v-html="highlightBriefHtml(structured.market_sentiment.funding_rate)" />
-                          </p>
-                          <p v-if="structured.market_sentiment?.liquidations">
-                            爆仓：
-                            <span v-html="highlightBriefHtml(structured.market_sentiment.liquidations)" />
-                          </p>
-                          <p
-                            v-if="structured.market_sentiment?.details"
-                            v-html="highlightBriefHtml(structured.market_sentiment.details)"
-                          />
-                        </div>
-                      </div>
-                    </div>
+                <section class="panel evidence-panel"><div class="panel-title">多空证据与关键观察</div><div class="panel-sub">AI 需分别列出支持和反对当前方向的事实，避免只给单边结论</div><div class="evidence-list"><div class="evidence-item bias-evidence bull-evidence"><span class="ev-num">多</span><div><strong>看多依据</strong><ul><li v-for="(item, idx) in directionAnalysis?.bull_evidence || []" :key="idx">{{ item }}</li></ul><p v-if="!directionAnalysis?.bull_evidence?.length">当前没有足够的明确看多证据。</p></div></div><div class="evidence-item bias-evidence bear-evidence"><span class="ev-num">空</span><div><strong>看空依据</strong><ul><li v-for="(item, idx) in directionAnalysis?.bear_evidence || []" :key="idx">{{ item }}</li></ul><p v-if="!directionAnalysis?.bear_evidence?.length">当前没有足够的明确看空证据。</p></div></div></div></section>
 
-                    <div v-show="analysisTab === 'evidence'" class="tab-pane">
-                      <div class="coin-analysis">
-                        <ul class="bullet-list">
-                          <li
-                            v-for="(e, i) in structured.key_evidence || []"
-                            :key="i"
-                            v-html="highlightBriefHtml(e)"
-                          />
-                        </ul>
-                      </div>
-                    </div>
+                <div class="section-title-row"><div><h2>分析模块</h2><p>每项展示 AI 对真实输入数据的具体解读与数据限制</p></div></div>
+                <section class="module-grid"><article v-for="module in aiModuleCards" :key="module.id" class="panel module-card"><div class="module-head"><div class="module-title"><span class="mod-ico">{{ module.quality > 0 ? '●' : '—' }}</span><div><strong>{{ module.label }}</strong><small>数据质量 {{ Math.round(module.quality * 100) }}%</small></div></div><span class="status-pill" :class="module.quality > 0 ? '' : 'warn'">{{ module.analysis?.status || (module.quality > 0 ? '可用' : '数据不足') }}</span></div><div class="module-desc module-summary">{{ module.analysis?.summary || 'AI 未返回该模块的具体分析。' }}</div><ul v-if="module.analysis?.facts?.length" class="module-facts"><li v-for="(fact, idx) in module.analysis.facts" :key="idx">{{ fact }}</li></ul><div v-if="module.analysis?.limitation" class="module-limitation">限制：{{ module.analysis.limitation }}</div></article></section>
 
-                    <div v-show="analysisTab === 'risk'" class="tab-pane">
-                      <div class="coin-analysis risk">
-                        <ul class="bullet-list">
-                          <li
-                            v-for="(e, i) in structured.risks_and_invalidation || []"
-                            :key="i"
-                            v-html="highlightBriefHtml(e)"
-                          />
-                        </ul>
-                      </div>
-                    </div>
-
-                  </template>
-
-                  <template v-else>
-                    <div
-                      v-for="sec in sections"
-                      v-show="analysisTab === sec.key"
-                      :key="sec.key"
-                      class="tab-pane"
-                    >
-                      <div
-                        class="coin-analysis"
-                        :class="[
-                          sec.key,
-                          sec.tag === 'buy' ? 'tone-buy' : sec.tag === 'sell' ? 'tone-sell' : sec.tag === 'wait' ? 'tone-wait' : '',
-                        ]"
-                      >
-                        <div
-                          v-if="sec.tagLabel && (sec.key === 'short' || sec.key === 'mid')"
-                          class="coin-header"
-                        >
-                          <span
-                            class="tag"
-                            :class="sec.tag === 'buy' ? 'tag-buy' : sec.tag === 'sell' ? 'tag-sell' : 'tag-wait'"
-                          >
-                            {{ sec.tagLabel }}
-                          </span>
-                        </div>
-                        <div class="coin-desc" v-html="highlightBriefHtml(sec.body)" />
-                      </div>
-                    </div>
-                  </template>
-                </div>
-                </div>
-                </details>
+                <section class="risk-grid"><article class="panel info-card"><h3>不确定性与数据限制</h3><div class="callout">{{ directionAssessment?.note || '方向分数是研究用指标，存在数据滞后、口径差异和快速变化风险。' }}</div><ul class="risk-list"><li v-for="(item, idx) in directionAnalysis?.data_limitations || []" :key="`d-${idx}`">{{ item }}</li><li v-for="(item, idx) in structured?.risks_and_invalidation || []" :key="`r-${idx}`">{{ item }}</li><li>本页面用于市场方向研判，不提供交易执行建议。</li></ul></article><article class="panel info-card"><h3>中长期方向解读</h3><p>{{ directionAnalysis?.horizons?.medium_long?.analysis || '暂无中长期方向解读。' }}</p><div class="focus-callout">关注：{{ directionAnalysis?.horizons?.medium_long?.focus || '暂无' }}</div></article></section>
               </div>
 
+              <div v-else-if="phase === 'result'" class="panel empty-analysis"><strong>本次分析暂未生成结构化结果</strong><p>{{ result?.analysis || '请尝试重新分析。' }}</p></div>
               <div class="disclaimer">
                 {{
                   structured?.disclaimer ||
@@ -952,22 +694,23 @@ onUnmounted(() => {
   position: fixed;
   inset: 0;
   z-index: 1200;
-  background: rgba(0, 0, 0, 0.58);
-  backdrop-filter: blur(3px);
+  background: rgba(3, 8, 17, 0.84);
+  backdrop-filter: blur(10px);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px 16px;
+  padding: 16px;
   box-sizing: border-box;
 }
 
 .modal {
-  width: min(800px, 100%);
-  height: 680px;
-  max-height: min(680px, 96vh);
-  background: var(--card, #15191e);
-  border: 1px solid var(--border);
-  border-radius: 14px;
+  width: min(1560px, calc(100vw - 32px));
+  height: min(1040px, calc(100dvh - 32px));
+  max-height: calc(100dvh - 32px);
+  background: #08111f;
+  color: #eef4ff;
+  border: 1px solid #20314b;
+  border-radius: 20px;
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
   display: flex;
   flex-direction: column;
@@ -993,7 +736,7 @@ onUnmounted(() => {
   justify-content: space-between;
   align-items: center;
   gap: 12px;
-  background: linear-gradient(to right, rgba(99, 102, 241, 0.14), transparent);
+  background: radial-gradient(ellipse at 0 0, rgba(49, 214, 214, 0.12), transparent 50%), #0b1628;
   flex-shrink: 0;
 }
 
@@ -2059,9 +1802,89 @@ onUnmounted(() => {
 
 @media (max-width: 640px) {
   .modal {
-    height: min(680px, 94vh);
-    max-height: 94vh;
-    width: 100%;
+    height: 100dvh;
+    max-height: 100dvh;
+    width: 100vw;
+    border-radius: 0;
   }
 }
-</style>
+
+.direction-dashboard { display: grid; gap: 16px; color: #eef4ff; }
+.direction-topline { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:20px 22px; border:1px solid #20314b; border-radius:16px; background:linear-gradient(120deg,rgba(49,214,214,.08),transparent 55%),#0f1b2e; }
+.direction-topline > div:first-child { display:grid; gap:6px; }
+.direction-topline strong { font-size:22px; }
+.eyebrow { color:#8fa2bd; font-size:11px; font-weight:800; letter-spacing:.13em; text-transform:uppercase; }
+.eyebrow small { margin-left:8px; color:#6e819d; font-size:10px; letter-spacing:0; }
+.asof { color:#8fa2bd; font-size:12px; }
+.horizon-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+.horizon-card,.direction-panel { border:1px solid #20314b; border-radius:16px; background:#0f1b2e; }
+.horizon-card { min-height:148px; padding:18px; display:flex; flex-direction:column; gap:12px; }
+.horizon-card.tone-buy { border-color:rgba(41,211,145,.42); }
+.horizon-card.tone-sell { border-color:rgba(255,100,124,.42); }
+.horizon-direction { font-size:25px; }
+.tone-buy .horizon-direction { color:#29d391; }
+.tone-sell .horizon-direction { color:#ff647c; }
+.tone-wait .horizon-direction { color:#f7c65f; }
+.horizon-metrics { display:flex; justify-content:space-between; color:#9dafc8; font-size:12px; }
+.coverage-track { height:5px; border-radius:5px; overflow:hidden; background:#20314b; }
+.coverage-track i { display:block; height:100%; border-radius:inherit; background:linear-gradient(90deg,#31d6d6,#5c8dff); }
+.direction-lower { display:grid; grid-template-columns:1.5fr 1fr; gap:12px; }
+.direction-panel { padding:18px; min-width:0; }
+.evidence-line { padding-top:14px; margin-top:12px; border-top:1px solid #20314b; }
+.evidence-line > strong { font-size:13px; }
+.evidence-line ul { margin:8px 0 0; padding-left:18px; color:#bdcbe0; font-size:12px; line-height:1.65; }
+.evidence-line small { color:#778ba7; }
+.quality-panel p { display:flex; justify-content:space-between; margin:11px 0; padding-bottom:8px; border-bottom:1px solid #20314b; color:#afbed4; font-size:12px; }
+.quality-panel b { color:#31d6d6; }
+.quality-panel > small { display:block; color:#8296b2; line-height:1.6; }
+.interpretation-card { border-color:#20314b; color:#c2cfe2; }
+.interpretation-card p { line-height:1.7; }
+.analysis-details { border-color:#20314b; }
+.modal :deep(.modal-body), .modal :deep(.result-scroll) { background:#08111f; }
+.modal :deep(.simple-card), .modal :deep(.coin-analysis), .modal :deep(.analysis-tab-panel) { background:#0f1b2e; border-color:#20314b; color:#dce7f7; }
+.modal :deep(.analysis-tab) { color:#9dafc8; }
+.modal :deep(.analysis-tab.active) { color:#31d6d6; border-color:#31d6d6; }
+@media (max-width: 900px) { .horizon-grid { grid-template-columns:1fr; } .direction-lower { grid-template-columns:1fr; } }
+
+/* Layout inspired by the supplied AI direction dashboard reference. */
+.result-scroll { padding:24px 28px 18px; background:radial-gradient(circle at 76% -10%,rgba(54,98,180,.14),transparent 32%),linear-gradient(180deg,#07101d,#091322); }
+.research-dashboard { max-width:1680px; margin:0 auto; display:grid; gap:0; color:#eef4ff; }
+.panel { min-width:0; background:linear-gradient(180deg,rgba(17,31,52,.97),rgba(12,24,42,.97)); border:1px solid rgba(76,105,143,.3); border-radius:18px; box-shadow:0 16px 40px rgba(0,0,0,.2); }
+.dashboard-hero { display:grid; grid-template-columns:minmax(0,1.6fr) minmax(285px,.65fr); gap:16px; }
+.hero-main { padding:22px; }
+.coin-row { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; }
+.coin-left { display:flex; align-items:center; gap:14px; }
+.coin-logo { width:46px; height:46px; flex:0 0 auto; border-radius:50%; display:grid; place-items:center; background:linear-gradient(145deg,#f2b93b,#f7931a); color:#111; font-weight:950; font-size:20px; }
+.coin-name { font-size:22px; font-weight:900; }.coin-symbol { color:#8fa2bd; font-size:12px; margin-top:3px; }
+.price { font-size:27px; font-weight:900; text-align:right; }.change { color:#29d391; text-align:right; font-size:12px; font-weight:750; margin-top:5px; }
+.meta-strip { display:flex; flex-wrap:wrap; gap:8px; margin:18px 0; padding-top:16px; border-top:1px solid rgba(90,115,148,.2); }
+.chip { padding:7px 10px; border:1px solid rgba(76,105,143,.32); border-radius:999px; background:#0b1728; color:#aabbd0; font-size:11px; font-weight:700; }.chip.good { color:#9de8cb; border-color:rgba(41,211,145,.28); background:rgba(41,211,145,.07); }.chip.warn { color:#f3d997; border-color:rgba(247,198,95,.26); background:rgba(247,198,95,.06); }
+.summary-box { display:grid; grid-template-columns:minmax(0,1.4fr) minmax(140px,.6fr); gap:16px; align-items:center; padding:16px; border:1px solid rgba(93,132,188,.22); border-radius:15px; background:linear-gradient(135deg,rgba(50,84,139,.12),rgba(49,214,214,.035)); }.summary-box h3 { margin:0 0 8px; font-size:13px; }.summary-box p,.info-card p { margin:0; color:#afbdd0; font-size:12px; line-height:1.78; }
+.state-block { text-align:right; }.state-label { color:#8fa2bd; font-size:10px; font-weight:800; letter-spacing:1px; }.state-value { margin-top:7px; font-size:17px; font-weight:900; }.state-sub { color:#7f93ae; font-size:10px; margin-top:5px; }
+.quality { padding:20px; display:flex; flex-direction:column; justify-content:space-between; }.panel-title { color:#dce7f6; font-size:12px; font-weight:850; }.panel-sub { margin-top:4px; color:#8fa2bd; font-size:10px; line-height:1.5; }
+.quality-main { display:flex; align-items:center; gap:18px; margin:17px 0 13px; }.ring { width:96px; height:96px; flex:0 0 auto; display:grid; place-items:center; position:relative; border-radius:50%; background:conic-gradient(#31d6d6 var(--quality),#1a2a42 var(--quality) 100%); }.ring::after { content:''; position:absolute; width:74px; height:74px; border-radius:50%; background:#0f1b2e; }.ring b { z-index:1; font-size:24px; }.ring small { font-size:10px; color:#8fa2bd; }.quality-info { min-width:0; }.quality-info strong { font-size:13px; }.quality-info p { color:#8fa2bd; font-size:11px; line-height:1.55; margin:6px 0 0; }
+.mini-bars { display:grid; gap:8px; }.mini-bar { display:grid; grid-template-columns:64px 1fr 28px; gap:8px; align-items:center; color:#8fa2bd; font-size:10px; }.mini-bar b { text-align:right; }.track { height:6px; border-radius:999px; background:#19283d; overflow:hidden; }.fill { height:100%; border-radius:inherit; background:linear-gradient(90deg,#4f86ff,#31d6d6); }
+.section-title-row { display:flex; justify-content:space-between; align-items:end; gap:14px; margin:24px 0 12px; }.section-title-row h2 { margin:0; font-size:14px; }.section-title-row p { margin:4px 0 0; color:#8fa2bd; font-size:10px; }
+.direction-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }.direction-card { padding:18px; position:relative; overflow:hidden; }.direction-card::after { content:''; position:absolute; right:-34px; top:-34px; width:110px; height:110px; border-radius:50%; background:radial-gradient(circle,rgba(92,141,255,.13),transparent 68%); pointer-events:none; }
+.dir-head { display:flex; justify-content:space-between; align-items:start; gap:10px; }.dir-head small { color:#8fa2bd; font-size:10px; }.dir-head h3 { margin:3px 0 0; font-size:13px; }.dir-badge { padding:6px 9px; border-radius:9px; font-size:11px; font-weight:900; background:rgba(247,198,95,.08); color:#efd17f; border:1px solid rgba(247,198,95,.18); }.dir-badge.tone-buy { color:#67e4b6; background:rgba(41,211,145,.1); border-color:rgba(41,211,145,.2); }.dir-badge.tone-sell { color:#ff8295; background:rgba(255,100,124,.1); border-color:rgba(255,100,124,.2); }
+.score-row { display:flex; justify-content:space-between; align-items:end; margin:17px 0 10px; }.score { font-size:30px; font-weight:950; letter-spacing:-1px; }.score span { margin-left:4px; color:#8fa2bd; font-size:12px; font-weight:700; }.confidence { text-align:right; }.confidence b { font-size:15px; }.confidence small { display:block; margin-top:2px; color:#8fa2bd; font-size:9px; }
+.axis { height:10px; position:relative; border-radius:999px; background:linear-gradient(90deg,rgba(255,100,124,.8),#34465f 50%,rgba(41,211,145,.8)); }.axis::after { content:''; position:absolute; left:50%; top:-3px; width:1px; height:16px; background:#94a8c3; opacity:.65; }.marker { position:absolute; top:-4px; width:18px; height:18px; border:3px solid #0f1b2e; border-radius:50%; background:#f3f7ff; transform:translateX(-50%); box-shadow:0 3px 12px rgba(0,0,0,.4); }.axis-labels { display:flex; justify-content:space-between; margin-top:5px; color:#71849e; font-size:9px; }.dir-note { min-height:36px; margin:12px 0 0; color:#9dafc6; font-size:11px; line-height:1.6; }
+.two-col { display:grid; grid-template-columns:1.05fr .95fr; gap:14px; margin-top:14px; }.structure,.regime { padding:18px; min-width:0; }.structure :deep(.brief-kline-chart) { margin-top:12px; }.align-row { display:flex; justify-content:space-between; align-items:center; margin-top:15px; padding-top:14px; border-top:1px solid rgba(90,115,148,.2); }.align-row span { color:#8fa2bd; font-size:10px; }.align-row b { font-size:11px; color:#bad0f1; }
+.regime-grid { display:grid; grid-template-columns:1fr 1fr; gap:9px; margin-top:14px; }.regime-item { padding:12px; border-radius:12px; background:#0b1728; border:1px solid rgba(87,113,147,.22); }.regime-item span { color:#8fa2bd; font-size:9px; letter-spacing:.5px; }.regime-item b { display:block; margin-top:5px; font-size:11px; }.regime-item .info { color:#80a9ff; }
+.evidence-panel { padding:18px; margin-top:14px; }.evidence-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; margin-top:12px; }.evidence-item { display:flex; gap:10px; align-items:flex-start; padding:13px 14px; border:1px solid rgba(87,113,147,.22); border-radius:12px; background:#0b1728; }.ev-num { width:23px; height:23px; flex:0 0 auto; display:grid; place-items:center; border-radius:8px; background:#13253f; color:#7ba6ff; font-size:10px; font-weight:900; }.evidence-item strong { display:block; font-size:11px; }.evidence-item p { margin:5px 0 0; color:#8fa2bd; font-size:10.5px; line-height:1.55; }
+.risk-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:14px; }.info-card { padding:18px; }.info-card h3 { margin:0 0 12px; font-size:12px; }.info-card p + p { margin-top:10px; }.callout { border-left:3px solid #f7c65f; border-radius:0 11px 11px 0; padding:12px 13px; background:rgba(247,198,95,.05); color:#d5c18a; font-size:10px; line-height:1.6; }.risk-list { margin:11px 0 0; padding-left:18px; color:#8fa2bd; font-size:10px; line-height:1.7; }
+.empty-analysis { margin:24px; padding:28px; color:#c7d5e8; }.empty-analysis p { white-space:pre-wrap; color:#8fa2bd; line-height:1.7; }.research-dashboard ~ .disclaimer { margin-top:16px; color:#7488a3; border-color:#20314b; font-size:10px; }
+.modal-header { min-height:66px; padding:14px 22px; border-color:rgba(90,115,148,.2); }.modal-title { font-size:15px; letter-spacing:.1px; }.modal-body,.result-layout { background:#08111f; }
+@media (max-width:1100px) { .dashboard-hero { grid-template-columns:1fr; }.quality { gap:14px; }.direction-grid { grid-template-columns:1fr; }.dir-note { min-height:0; } }
+@media (max-width:760px) { .result-scroll { padding:14px; }.two-col,.risk-grid,.evidence-list { grid-template-columns:1fr; }.coin-row { align-items:flex-start; }.coin-name { font-size:18px; }.price { font-size:20px; }.summary-box { grid-template-columns:1fr; }.state-block { text-align:left; }.section-title-row { align-items:flex-start; }.section-title-row .asof { display:none; } }.horizon-ai-analysis { margin-top:13px; padding-top:12px; border-top:1px solid rgba(90,115,148,.2); color:#aebed3; font-size:11px; line-height:1.65; }.horizon-ai-analysis p { margin:0; }.horizon-points { display:grid; gap:6px; margin-top:10px; }.horizon-points div { display:grid; grid-template-columns:42px 1fr; gap:8px; }.horizon-points b { color:#29d391; font-size:10px; }.horizon-points div + div b { color:#ff8295; }.horizon-points span { color:#8fa2bd; }.horizon-ai-analysis > small { display:block; margin-top:8px; color:#d9be77; }
+.timeframe-analysis-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:10px; }.timeframe-analysis { min-width:0; padding:11px; border:1px solid rgba(87,113,147,.22); border-radius:11px; background:#0b1728; }.timeframe-analysis strong { display:block; font-size:11px; }.timeframe-analysis > span { display:inline-block; margin-top:6px; color:#31d6d6; font-size:10px; }.timeframe-analysis p { margin:7px 0; color:#9dafc6; font-size:10px; line-height:1.55; }.timeframe-analysis small { display:block; color:#7489a4; font-size:9px; line-height:1.5; }
+.regime-wide { grid-column:1 / -1; }.regime-wide b { line-height:1.6; font-weight:600; color:#afbdd0; }.bias-evidence { min-height:100%; }.bias-evidence ul { margin:5px 0 0; padding-left:17px; color:#a9bad0; font-size:10.5px; line-height:1.7; }.bull-evidence .ev-num { color:#67e4b6; }.bear-evidence .ev-num { color:#ff8295; }
+.module-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }.module-card { padding:17px; }.module-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }.module-title { display:flex; align-items:center; gap:9px; }.mod-ico { width:30px; height:30px; flex:0 0 auto; display:grid; place-items:center; border-radius:9px; background:#13243c; border:1px solid rgba(87,113,147,.22); color:#31d6d6; }.module-title strong { display:block; font-size:11px; }.module-title small { display:block; margin-top:3px; color:#8fa2bd; font-size:9px; }.status-pill { padding:5px 7px; border-radius:8px; background:rgba(41,211,145,.08); color:#68ddb3; font-size:9px; font-weight:900; }.status-pill.warn { background:rgba(247,198,95,.08); color:#e6c66f; }.module-summary { margin-top:14px; color:#9dafc6; font-size:10.5px; line-height:1.65; }.module-facts { margin:9px 0 0; padding-left:17px; color:#8fa2bd; font-size:10px; line-height:1.6; }.module-limitation { margin-top:9px; padding-top:8px; border-top:1px solid rgba(90,115,148,.16); color:#d4bb78; font-size:9px; line-height:1.5; }.focus-callout { margin-top:12px; padding:10px; border-radius:10px; background:#0b1728; color:#aebed3; font-size:10px; line-height:1.6; }
+@media (max-width:760px) { .two-col,.risk-grid,.evidence-list,.module-grid { grid-template-columns:1fr; }.timeframe-analysis-grid { grid-template-columns:1fr; } }.pick-body { width:min(980px,100%); margin:0 auto; padding:28px; gap:18px; overflow-y:auto; }
+.pick-body .intro { padding:18px 20px; border:1px solid #20314b; border-radius:15px; background:linear-gradient(120deg,rgba(49,214,214,.07),transparent),#0f1b2e; color:#afbdd0; line-height:1.65; }
+.pick-body .block { padding:17px; border:1px solid rgba(76,105,143,.3); border-radius:15px; background:#0f1b2e; }
+.pick-body .block-label { color:#dce7f6; font-size:12px; font-weight:850; letter-spacing:.3px; }
+.pick-body .coin-chip { border-color:#20314b; background:#0b1728; color:#9dafc6; }.pick-body .coin-chip.active { border-color:rgba(92,141,255,.55); background:linear-gradient(135deg,rgba(72,120,238,.28),rgba(102,89,235,.2)); color:#eef4ff; }
+.pick-body .custom-input { min-height:40px; border:1px solid #20314b; border-radius:10px; background:#0b1728; color:#eef4ff; padding:0 12px; }.pick-body .primary-btn { align-self:flex-start; min-height:42px; padding:0 18px; border-radius:11px; background:linear-gradient(135deg,#4878ee,#6659eb); }
+.pick-body .history-block { padding:17px; }.pick-body .history-item { border-color:#20314b; background:#0b1728; color:#dce7f6; }.pick-body .history-item:hover { border-color:#3d6bb2; background:#122038; }
+.modal-title { color:#eef4ff; }.ai-spark { color:#31d6d6; }</style>
