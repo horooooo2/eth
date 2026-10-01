@@ -38,6 +38,8 @@ function createHlWsClient(handlers = {}) {
   const webDataUsers = new Set();
   /** 已向当前连接发送的订阅，断线清空 */
   const activeSubs = new Set();
+  const acknowledgedSubs = new Set();
+  const subscriptionErrors = new Map();
 
   function subKey(type, user) {
     return `${type}:${String(user || '').toLowerCase()}`;
@@ -50,6 +52,9 @@ function createHlWsClient(handlers = {}) {
       usingGoldRush: /goldrushdata\.com/i.test(resolveWsUrl()),
       fillSubs: fillUsers.size,
       webDataSubs: webDataUsers.size,
+      ackedSubs: acknowledgedSubs.size,
+      pendingAcks: Math.max(0, activeSubs.size - acknowledgedSubs.size),
+      subscriptionErrors: [...subscriptionErrors.values()].slice(-20),
     };
   }
 
@@ -87,6 +92,8 @@ function createHlWsClient(handlers = {}) {
       subscription: { type, user: addr },
     });
     activeSubs.delete(key);
+    acknowledgedSubs.delete(key);
+    subscriptionErrors.delete(key);
   }
 
   function flushSubscriptions() {
@@ -159,10 +166,45 @@ function createHlWsClient(handlers = {}) {
 
     if (msg.channel === 'pong' || msg.method === 'pong') return;
 
+    if (msg.channel === 'subscriptionResponse') {
+      const sub = msg.data?.subscription || msg.data;
+      if (sub?.type && sub?.user) {
+        const key = subKey(sub.type, sub.user);
+        acknowledgedSubs.add(key);
+        subscriptionErrors.delete(key);
+        onStatus(getStatus());
+      }
+      return;
+    }
+    if (msg.channel === 'error' || msg.channel === 'subscriptionError') {
+      const sub = msg.data?.subscription || msg.data?.subscriptionRequest || null;
+      if (sub?.type && sub?.user) {
+        const key = subKey(sub.type, sub.user);
+        subscriptionErrors.set(key, {
+          type: sub.type,
+          user: String(sub.user).toLowerCase(),
+          message: String(msg.data?.message || msg.data?.error || msg.error || '订阅被拒绝'),
+          at: Date.now(),
+        });
+      } else {
+        subscriptionErrors.set(`unknown:${Date.now()}`, {
+          type: 'unknown', message: String(msg.data?.message || msg.data?.error || msg.error || 'WebSocket 返回错误'), at: Date.now(),
+        });
+      }
+      while (subscriptionErrors.size > 100) subscriptionErrors.delete(subscriptionErrors.keys().next().value);
+      onStatus(getStatus());
+      return;
+    }
+
     if (msg.channel === 'userFills' && msg.data) {
       const user = String(msg.data.user || '').toLowerCase();
       const fills = Array.isArray(msg.data.fills) ? msg.data.fills : [];
       const isSnapshot = Boolean(msg.data.isSnapshot);
+      if (user) {
+        const key = subKey('userFills', user);
+        acknowledgedSubs.add(key);
+        subscriptionErrors.delete(key);
+      }
       const short = user ? `${user.slice(0, 6)}…${user.slice(-4)}` : 'unknown';
       pushSocket({
         kind: isSnapshot ? 'fill-snap' : 'fill',
@@ -170,11 +212,17 @@ function createHlWsClient(handlers = {}) {
         detail: { user, count: fills.length, isSnapshot },
       });
       onFill({ user, fills, isSnapshot });
+      onStatus(getStatus());
       return;
     }
 
     if (msg.channel === 'webData2' && msg.data) {
       const user = String(msg.data.user || msg.data?.clearinghouseState?.user || '').toLowerCase();
+      if (user) {
+        const key = subKey('webData2', user);
+        acknowledgedSubs.add(key);
+        subscriptionErrors.delete(key);
+      }
       const short = user ? `${user.slice(0, 6)}…${user.slice(-4)}` : 'unknown';
       const posN = Array.isArray(msg.data?.clearinghouseState?.assetPositions)
         ? msg.data.clearinghouseState.assetPositions.length
@@ -185,6 +233,7 @@ function createHlWsClient(handlers = {}) {
         detail: { user, positions: posN },
       });
       onWebData({ user, data: msg.data });
+      onStatus(getStatus());
     }
   }
 
@@ -192,6 +241,8 @@ function createHlWsClient(handlers = {}) {
     if (stopped) return;
     clearTimers();
     activeSubs.clear();
+    acknowledgedSubs.clear();
+    subscriptionErrors.clear();
     connected = false;
 
     const url = resolveWsUrl();
@@ -225,6 +276,7 @@ function createHlWsClient(handlers = {}) {
     socket.on('close', () => {
       connected = false;
       activeSubs.clear();
+      acknowledgedSubs.clear();
       clearTimers();
       console.warn('[hl-ws] disconnected, reconnecting…');
       pushSocket({ kind: 'status', message: 'WS 断开，正在重连…' });
@@ -253,6 +305,8 @@ function createHlWsClient(handlers = {}) {
     }
     socket = null;
     connected = false;
+    activeSubs.clear();
+    acknowledgedSubs.clear();
     onStatus(getStatus());
   }
 

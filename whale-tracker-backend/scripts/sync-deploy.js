@@ -57,6 +57,7 @@ const FILES = [
   'lib/briefModuleCache.js',
   'lib/analysisResult.js',
   'lib/analysisCapability.js',
+  'lib/directionEngine.js',
   'lib/briefAnalysisStore.js',
   'lib/userAiKeys.js',
   'lib/userExchangeKeys.js',

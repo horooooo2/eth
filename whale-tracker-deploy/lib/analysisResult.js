@@ -175,6 +175,20 @@ function emptyResult() {
     event_reaction: '',
     key_evidence: [],
     risks_and_invalidation: [],
+    direction_analysis: {
+      summary: '',
+      market_state: { trend: '', volatility: '', structure: '', phase: '', observation: '' },
+      horizons: {
+        ultra_short: { analysis: '', bull_points: [], bear_points: [], focus: '' },
+        short_term: { analysis: '', bull_points: [], bear_points: [], focus: '' },
+        medium_long: { analysis: '', bull_points: [], bear_points: [], focus: '' },
+      },
+      timeframes: {},
+      module_analysis: {},
+      bull_evidence: [],
+      bear_evidence: [],
+      data_limitations: [],
+    },
     personal_stance: {
       headline: '仓位建议',
       basis: ['市场情绪', '新闻内容', '小时线走势'],
@@ -183,6 +197,66 @@ function emptyResult() {
       mid_long: { action: '观望', entry: null, leverage: null, stop: null, take_profit: null, note: '' },
     },
     disclaimer: '以上内容仅供研究参考，不构成投资建议。',
+  };
+}
+
+function normalizeDirectionAnalysis(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const state = source.market_state || {};
+  const rawHorizons = source.horizons || {};
+  const horizon = (key) => {
+    const item = rawHorizons[key] || {};
+    return {
+      analysis: asStr(item.analysis || item.summary, 1200),
+      bull_points: asArr(item.bull_points, 6),
+      bear_points: asArr(item.bear_points, 6),
+      focus: asStr(item.focus, 500),
+      direction: '',
+      score: null,
+      confidence: null,
+      coverage: null,
+    };
+  };
+  const timeframes = {};
+  for (const [key, item] of Object.entries(source.timeframes || {}).slice(0, 8)) {
+    const value = item && typeof item === 'object' ? item : {};
+    timeframes[key.slice(0, 12)] = {
+      status: asStr(value.status, 40),
+      state: asStr(value.state || value.bias, 40),
+      analysis: asStr(value.analysis || value.summary, 800),
+      metrics: asArr(value.metrics, 6),
+    };
+  }
+  const moduleAnalysis = {};
+  for (const key of ['technical', 'derivatives', 'flow', 'whales', 'news', 'cross']) {
+    const item = source.module_analysis?.[key];
+    if (!item || typeof item !== 'object') continue;
+    moduleAnalysis[key] = {
+      status: asStr(item.status, 40),
+      summary: asStr(item.summary, 1000),
+      facts: asArr(item.facts, 6),
+      limitation: asStr(item.limitation, 400),
+    };
+  }
+  return {
+    summary: asStr(source.summary, 1600),
+    market_state: {
+      trend: asStr(state.trend, 240),
+      volatility: asStr(state.volatility, 240),
+      structure: asStr(state.structure, 400),
+      phase: asStr(state.phase, 240),
+      observation: asStr(state.observation, 800),
+    },
+    horizons: {
+      ultra_short: horizon('ultra_short'),
+      short_term: horizon('short_term'),
+      medium_long: horizon('medium_long'),
+    },
+    timeframes,
+    module_analysis: moduleAnalysis,
+    bull_evidence: asArr(source.bull_evidence, 8),
+    bear_evidence: asArr(source.bear_evidence, 8),
+    data_limitations: asArr(source.data_limitations, 10),
   };
 }
 
@@ -243,6 +317,7 @@ function normalizeAnalysisResult(raw) {
     event_reaction: asStr(raw.event_reaction, 600),
     key_evidence: asArr(raw.key_evidence),
     risks_and_invalidation: asArr(raw.risks_and_invalidation),
+    direction_analysis: normalizeDirectionAnalysis(raw.direction_analysis),
     personal_stance: {
       headline: asStr(stance.headline || stance.title, 40) || '仓位建议',
       basis: (() => {
@@ -301,61 +376,47 @@ function fmtStanceLeg(label, leg) {
 
 function analysisResultToMarkdown(result) {
   const r = result || emptyResult();
-  const ps = r.personal_stance;
-  return [
-    '## 短期看法（数小时～2天）',
-    `方向倾向：${r.short_term.direction}｜信心：${r.short_term.confidence}`,
-    r.short_term.summary || '',
+  const da = r.direction_analysis || {};
+  const horizons = da.horizons || {};
+  const modules = da.module_analysis || {};
+  const lines = [
+    '# 市场方向研判',
+    da.summary || r.short_term?.summary || '',
     '',
-    '## 中长期看法（1～4周）',
-    `方向倾向：${r.mid_long_term.direction}`,
-    r.mid_long_term.summary || '',
+    '## 多周期解读',
+    ...[
+      ['超短线', horizons.ultra_short],
+      ['短线', horizons.short_term],
+      ['中长期', horizons.medium_long],
+    ].flatMap(([label, item]) => item ? [
+      `### ${label}｜${item.direction || '程序评估中'}｜评分 ${item.score ?? '—'}｜信心 ${item.confidence ?? '—'}%｜覆盖 ${item.coverage == null ? '—' : `${Math.round(item.coverage * 100)}%`}`,
+      item.analysis || '',
+      ...(item.bull_points || []).map((x) => `- 支持：${x}`),
+      ...(item.bear_points || []).map((x) => `- 反向：${x}`),
+      item.focus ? `观察重点：${item.focus}` : '',
+      '',
+    ] : []),
+    '## 市场状态',
+    ...Object.entries(da.market_state || {}).map(([key, value]) => `${key}：${value || '暂无'}`),
     '',
-    '## 技术分析（5分钟 / 小时 / 日线）',
-    r.technical.m5 ? `5分钟：${r.technical.m5}` : '',
-    r.technical.hourly ? `小时线：${r.technical.hourly}` : '',
-    r.technical.daily ? `日线：${r.technical.daily}` : '',
+    '## 周期信号',
+    ...Object.entries(da.timeframes || {}).flatMap(([key, item]) => [`### ${key}｜${item.state || item.status || '数据不足'}`, item.analysis || '', ...(item.metrics || []).map((x) => `- ${x}`)]),
     '',
-    '## 衍生品',
-    r.derivatives.funding ? `费率：${r.derivatives.funding}` : '',
-    r.derivatives.liquidations ? `爆仓：${r.derivatives.liquidations}` : '',
-    r.derivatives.taker ? `Taker：${r.derivatives.taker}` : '',
-    r.derivatives.details || '',
+    '## 多空证据',
+    ...(da.bull_evidence || []).map((x) => `- 偏多：${x}`),
+    ...(da.bear_evidence || []).map((x) => `- 偏空：${x}`),
     '',
-    '## 大户',
-    r.whales.site ? `站内：${r.whales.site}` : '',
-    r.whales.external ? `站外：${r.whales.external}` : '',
-    r.whales.details || '',
+    '## 分析模块',
+    ...Object.entries(modules).flatMap(([key, item]) => [`### ${key}｜${item.status || '数据不足'}`, item.summary || '', ...(item.facts || []).map((x) => `- ${x}`), item.limitation ? `限制：${item.limitation}` : '']),
     '',
-    '## 新闻分析',
-    r.news_analysis.sentiment ? `情绪：${r.news_analysis.sentiment}` : '',
-    r.news_analysis.details || '',
-    '',
-    '## 市场情绪',
-    r.market_sentiment.long_short_ratio ? `多空：${r.market_sentiment.long_short_ratio}` : '',
-    r.market_sentiment.funding_rate ? `费率：${r.market_sentiment.funding_rate}` : '',
-    r.market_sentiment.liquidations ? `爆仓：${r.market_sentiment.liquidations}` : '',
-    r.market_sentiment.details || '',
-    '',
-    '## 仓位建议',
-    ps?.headline || '仓位建议',
-    Array.isArray(ps?.basis) && ps.basis.length ? `分析依据：${ps.basis.join(' + ')}` : '',
-    fmtStanceLeg('超短线(5m)', ps?.ultra_short),
-    fmtStanceLeg('短期', ps?.short),
-    fmtStanceLeg('中长期', ps?.mid_long),
-    '',
-    '## 关键证据',
-    ...r.key_evidence.map((e) => `- ${e}`),
-    '',
-    '## 风险与失效条件',
-    ...r.risks_and_invalidation.map((e) => `- ${e}`),
+    '## 数据限制与风险',
+    ...(da.data_limitations || []).map((x) => `- ${x}`),
+    ...(r.risks_and_invalidation || []).map((x) => `- ${x}`),
     '',
     r.disclaimer,
-  ]
-    .filter((l) => l != null)
-    .join('\n');
+  ];
+  return lines.filter((line) => line != null).join('\n');
 }
-
 function markdownFallbackToResult(text) {
   const raw = String(text || '');
   const dir = (raw.match(/方向倾向[：:]\s*([^\s｜|]+)/) || [])[1];

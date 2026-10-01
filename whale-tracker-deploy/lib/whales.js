@@ -1354,7 +1354,8 @@ function buildClosedCycles(related) {
     if (!sz) continue;
     const px = Number(fill.px) || 0;
     const time = Number(fill.time) || 0;
-    const startRaw = Number(fill.startPosition);
+    const startValue = fill.startPosition;
+    const startRaw = startValue == null || startValue === '' ? NaN : Number(startValue);
     const start = Number.isFinite(startRaw) ? startRaw : running == null ? 0 : running;
     const delta = fill.side === 'B' ? sz : -sz;
     const end = start + delta;
