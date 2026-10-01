@@ -83,6 +83,27 @@ export async function fetchTradFiIntel(symbol: string) {
   return data;
 }
 
+export type TradFiAiAnalysis = {
+  direction: string;
+  confidence: string;
+  summary: string;
+  periods?: { ultraShort?: string; short?: string; mediumLong?: string };
+  supportingFactors?: string[];
+  opposingFactors?: string[];
+};
+
+export async function analyzeTradFiMarket(symbol: string) {
+  const { data } = await http.post<{
+    ok: boolean;
+    symbol: string;
+    analysis: TradFiAiAnalysis;
+    model: string;
+    usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null;
+    analyzedAt: string;
+  }>('/tradfi/analyze', { symbol }, { timeout: 110_000 });
+  return data;
+}
+
 export type TradFiWhaleRow = {
   id: string;
   type: '成交' | '持仓' | '挂单';
