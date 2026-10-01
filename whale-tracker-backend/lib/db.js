@@ -281,6 +281,25 @@ function migrate(database) {
       UNIQUE(user_id, trade_id)
     );
     CREATE INDEX IF NOT EXISTS idx_tradfi_manual_closures_user ON tradfi_manual_strategy_closures(user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS tradfi_ai_analyses (
+      analysis_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      context_hash TEXT NOT NULL,
+      engine_version TEXT NOT NULL,
+      prompt_version TEXT NOT NULL,
+      status TEXT NOT NULL,
+      model TEXT,
+      context_json TEXT NOT NULL DEFAULT '{}',
+      direction_json TEXT NOT NULL DEFAULT '{}',
+      explanation_json TEXT NOT NULL DEFAULT '{}',
+      error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(user_id, symbol, context_hash, engine_version, prompt_version)
+    );
+    CREATE INDEX IF NOT EXISTS idx_tradfi_ai_analyses_user ON tradfi_ai_analyses(user_id, symbol, created_at DESC);
   `);
   // 旧策略表（v41_* / whale_ai_runtime_logs）不再创建；user_ai_keys / user_exchange_keys 继续使用。
 

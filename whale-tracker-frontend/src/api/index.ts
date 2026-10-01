@@ -76,6 +76,39 @@ export type TradFiIntelResponse = {
     stale: boolean;
     error?: string;
   };
+  marketContext?: {
+    quote: TradFiQuote | null;
+    klines: Record<string, { available: boolean; stale: boolean; fetchedAt: number | null; latestBarTime: number | null; ageMs: number | null; bars: Array<{ openTime: number; open: number; high: number; low: number; close: number; volume: number; closeTime: number }>; error?: string }>;
+  };
+  directionResult?: TradFiDirectionResult;
+  contextHash?: string;
+  meta?: { symbol: string; generatedAt: string; directionEngineVersion: string };
+};
+
+export type TradFiDirectionFrame = {
+  status: 'FULL' | 'PARTIAL' | 'PRICE_ONLY' | 'INSUFFICIENT';
+  directionAllowed: boolean;
+  direction: 'STRONG_BULLISH' | 'BULLISH' | 'NEUTRAL' | 'BEARISH' | 'STRONG_BEARISH' | null;
+  score: number | null;
+  confidenceScore: number | null;
+  confidenceLevel: 'HIGH' | 'MEDIUM' | 'LOW' | null;
+  coreCoverage: number;
+  auxCoverage: number;
+  technical: Record<string, number | null> | null;
+  bullEvidenceCandidates: string[];
+  bearEvidenceCandidates: string[];
+  neutralFacts: string[];
+  missingCoreData: string[];
+  missingAuxData: string[];
+  invalidationCandidates: string[];
+  mainInterval: string;
+};
+
+export type TradFiDirectionResult = {
+  version: string;
+  overall: { direction: TradFiDirectionFrame['direction']; score: number | null; confidenceScore: number | null; confidenceLevel: TradFiDirectionFrame['confidenceLevel']; sourceTimeframe: string | null };
+  eventRisk: 'LOW' | 'MEDIUM' | 'HIGH';
+  timeframes: { ultraShort: TradFiDirectionFrame; shortTerm: TradFiDirectionFrame; mediumLong: TradFiDirectionFrame };
 };
 
 export async function fetchTradFiIntel(symbol: string) {
@@ -84,23 +117,43 @@ export async function fetchTradFiIntel(symbol: string) {
 }
 
 export type TradFiAiAnalysis = {
-  direction: string;
-  confidence: string;
   summary: string;
-  periods?: { ultraShort?: string; short?: string; mediumLong?: string };
-  supportingFactors?: string[];
-  opposingFactors?: string[];
+  bullEvidence: string[];
+  bearEvidence: string[];
+  neutralFacts: string[];
+  dataLimitations: string[];
+  attention: string[];
+};
+
+export type TradFiAiAnalysisResult = {
+  analysisId: string;
+  symbol: string;
+  contextHash: string;
+  engineVersion: string;
+  promptVersion: string;
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+  directionResult: TradFiDirectionResult;
+  explanation: TradFiAiAnalysis;
+  model: string | null;
+  reused?: boolean;
+  createdAt: number;
+  updatedAt: number;
 };
 
 export async function analyzeTradFiMarket(symbol: string) {
-  const { data } = await http.post<{
-    ok: boolean;
-    symbol: string;
-    analysis: TradFiAiAnalysis;
-    model: string;
-    usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null;
-    analyzedAt: string;
-  }>('/tradfi/analyze', { symbol }, { timeout: 110_000 });
+  const { data } = await http.post<TradFiAiAnalysisResult>('/tradfi/analyze', { symbol }, { timeout: 110_000 });
+  let result = data;
+  for (let attempt = 0; ['PENDING', 'RUNNING'].includes(result.status) && attempt < 90; attempt += 1) {
+    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    result = await fetchTradFiAnalysis(result.analysisId);
+  }
+  if (result.status === 'FAILED') throw new Error('error' in result ? String(result.error || 'TradFi AI 分析失败') : 'TradFi AI 分析失败');
+  if (result.status !== 'COMPLETED') throw new Error('分析仍在进行，请稍后点击查看结果');
+  return result;
+}
+
+export async function fetchTradFiAnalysis(analysisId: string) {
+  const { data } = await http.get<TradFiAiAnalysisResult>(`/tradfi/analysis/${encodeURIComponent(analysisId)}`, { timeout: 20_000 });
   return data;
 }
 

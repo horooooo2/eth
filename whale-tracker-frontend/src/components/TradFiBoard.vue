@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch as watchVue } from 'vue';
-import { analyzeTradFiMarket, fetchTradFiCatalog, fetchTradFiQuotes, fetchTradFiIntel, type TradFiAiAnalysis, type TradFiIntelResponse, type TradFiMarketSymbol, type TradFiQuote } from '@/api';
+import { analyzeTradFiMarket, fetchTradFiCatalog, fetchTradFiQuotes, fetchTradFiIntel, type TradFiAiAnalysisResult, type TradFiDirectionFrame, type TradFiDirectionResult, type TradFiIntelResponse, type TradFiMarketSymbol, type TradFiQuote } from '@/api';
 import { tradfiWatch } from '@/utils/tradfiWatch';
 
 type AssetMeta = { icon: string; name: string; category: string };
@@ -28,9 +28,10 @@ const intel = ref<TradFiIntelResponse | null>(null);
 const intelLoading = ref(false);
 const intelError = ref('');
 const intelCache = new Map<string, TradFiIntelResponse>();
-const aiAnalyses = ref<Record<string, { analysis: TradFiAiAnalysis; analyzedAt: string }>>({});
+const aiAnalyses = ref<Record<string, TradFiAiAnalysisResult>>({});
 const aiLoading = ref(false);
 const aiError = ref('');
+const aiNotice = ref('');
 const now = ref(Date.now());
 let quoteTimer = 0;
 let intelTimer = 0;
@@ -140,44 +141,59 @@ function eventTime(event: TradFiIntelResponse['events']['items'][number]) {
 function hasValue(value: unknown): boolean { return value !== null && value !== undefined && value !== ''; }
 
 // Direction fields are intentionally read only when an API actually supplies them.
-type DirectionView = { direction: string; confidence: string; summary: string; periods: Array<{ label: string; value: string }> };
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+type DirectionView = {
+  direction: string; confidence: string; summary: string; quality: string; insufficient: boolean;
+  periods: Array<{ label: string; value: string }>;
+  bull: string[]; bear: string[]; neutral: string[]; missing: string[]; attention: string[];
+};
+const directionLabels: Record<string, string> = {
+  STRONG_BULLISH: '强偏多', BULLISH: '偏多', NEUTRAL: '中性', BEARISH: '偏空', STRONG_BEARISH: '强偏空',
+};
+const confidenceLabels: Record<string, string> = { HIGH: '高', MEDIUM: '中', LOW: '低' };
+const statusLabels: Record<string, string> = { FULL: '数据完整', PARTIAL: '数据部分缺失', PRICE_ONLY: '仅价格数据', INSUFFICIENT: '数据不足' };
+const currentAiAnalysis = computed(() => {
+  const value = aiAnalyses.value[selected.value];
+  return value && (!intel.value?.contextHash || value.contextHash === intel.value.contextHash) ? value : null;
+});
+function frameDirection(frame?: TradFiDirectionFrame) {
+  if (!frame?.directionAllowed || !frame.direction) return '数据不足';
+  return directionLabels[frame.direction] || '数据不足';
 }
-function directionText(value: unknown, fallback: string) {
-  if (typeof value === 'string' && value.trim()) return value;
-  const obj = asRecord(value);
-  if (!obj) return fallback;
-  const candidate = obj.label ?? obj.direction ?? obj.bias ?? obj.value;
-  return typeof candidate === 'string' && candidate.trim() ? candidate : fallback;
+function explanationItems(items: string[] | undefined, fallback: string[]) {
+  return items?.length ? items : fallback;
 }
 const directionView = computed<DirectionView>(() => {
-  const manual = aiAnalyses.value[selected.value]?.analysis;
-  if (manual) return {
-    direction: manual.direction || '方向不明',
-    confidence: manual.confidence || '不可评估',
-    summary: manual.summary || '本次分析没有返回摘要。',
-    periods: [
-      { label: '超短线', value: manual.periods?.ultraShort || '数据不足' },
-      { label: '短线', value: manual.periods?.short || '数据不足' },
-      { label: '中长期', value: manual.periods?.mediumLong || '数据不足' },
-    ],
-  };
-  const raw = intel.value as (TradFiIntelResponse & Record<string, unknown>) | null;
-  const analysis = asRecord(raw?.analysis);
-  const direction = analysis?.direction ?? raw?.direction ?? raw?.marketDirection ?? raw?.bias;
-  const periods = asRecord(analysis?.periods ?? raw?.periods);
+  const engine: TradFiDirectionResult | undefined = intel.value?.directionResult || aiAnalyses.value[selected.value]?.directionResult;
+  const explanation = currentAiAnalysis.value?.explanation;
+  const overall = engine?.overall;
+  const frames = engine?.timeframes;
+  const overallFrame = overall?.sourceTimeframe === '5m' ? frames?.ultraShort
+    : overall?.sourceTimeframe === '1h' ? frames?.shortTerm
+      : overall?.sourceTimeframe === '1d' ? frames?.mediumLong : undefined;
+  const insufficient = !overall?.direction;
+  const allMissing = [...new Set(Object.values(frames || {}).flatMap((frame) => frame.missingCoreData || []))];
+  const bullFallback = [...new Set(Object.values(frames || {}).flatMap((frame) => frame.bullEvidenceCandidates || []))].slice(0, 4);
+  const bearFallback = [...new Set(Object.values(frames || {}).flatMap((frame) => frame.bearEvidenceCandidates || []))].slice(0, 4);
+  const neutralFallback = [...new Set(Object.values(frames || {}).flatMap((frame) => frame.neutralFacts || []))].slice(0, 4);
+  const missingAuxFallback = [...new Set(Object.values(frames || {}).flatMap((frame) => frame.missingAuxData || []))].slice(0, 5);
   return {
-    direction: directionText(direction, '待分析'),
-    confidence: directionText(analysis?.confidence ?? raw?.confidence, '不可评估'),
-    summary: typeof (analysis?.summary ?? raw?.summary) === 'string'
-      ? String(analysis?.summary ?? raw?.summary)
-      : '当前版本已接入行情、基本面、经济事件与新闻，方向引擎尚未提供可靠结论。',
+    direction: insufficient ? '方向不明' : directionLabels[overall?.direction || ''] || '方向不明',
+    confidence: insufficient ? '不可评估' : confidenceLabels[overall?.confidenceLevel || ''] || '低',
+    quality: statusLabels[overallFrame?.status || ''] || (intelLoading.value ? '加载中' : '等待 K 线数据'),
+    insufficient,
+    summary: explanation?.summary || (insufficient
+      ? `当前缺少建立市场价格结构所需的数据，暂不能形成方向判断。${allMissing.length ? `核心缺失：${allMissing.join('；')}。` : '等待 K 线数据加载。'}`
+      : `当前方向由 ${overall?.sourceTimeframe || '价格'} 周期的确定性价格结构计算；信心反映信号一致性与数据质量，AI 仅在手动点击后补充解释。${overallFrame?.status === 'PRICE_ONLY' ? '目前主要依据价格行为，辅助数据不足。' : ''}`),
     periods: [
-      { label: '超短线', value: directionText(periods?.ultraShort ?? raw?.ultraShortDirection, '数据不足') },
-      { label: '短线', value: directionText(periods?.short ?? raw?.shortTermDirection, '数据不足') },
-      { label: '中长期', value: directionText(periods?.long ?? raw?.mediumTermDirection ?? raw?.longTermDirection, '数据不足') },
+      { label: '超短线', value: frameDirection(frames?.ultraShort) },
+      { label: '短线', value: frameDirection(frames?.shortTerm) },
+      { label: '中长期', value: frameDirection(frames?.mediumLong) },
     ],
+    bull: explanationItems(explanation?.bullEvidence, bullFallback),
+    bear: explanationItems(explanation?.bearEvidence, bearFallback),
+    neutral: explanationItems(explanation?.neutralFacts, neutralFallback),
+    missing: explanationItems(explanation?.dataLimitations, allMissing.length ? allMissing : missingAuxFallback),
+    attention: explanation?.attention || [],
   };
 });
 
@@ -189,7 +205,8 @@ async function runAiAnalysis() {
   try {
     const result = await analyzeTradFiMarket(symbol);
     if (selected.value === symbol) {
-      aiAnalyses.value = { ...aiAnalyses.value, [symbol]: { analysis: result.analysis, analyzedAt: result.analyzedAt } };
+      aiAnalyses.value = { ...aiAnalyses.value, [symbol]: result };
+      aiNotice.value = result.reused ? '市场数据未发生变化，已复用最新分析，没有重复调用 AI。' : '分析完成。';
     }
   } catch (err) {
     if (selected.value === symbol) aiError.value = err instanceof Error ? err.message : 'AI 分析失败';
@@ -224,6 +241,7 @@ function selectAsset(symbol: string) {
 watchVue(selected, (symbol) => {
   intel.value = intelCache.get(symbol) || null;
   aiError.value = '';
+  aiNotice.value = '';
   newsFilter.value = '全部';
   newsQuery.value = '';
   showAllNews.value = false;
@@ -269,16 +287,28 @@ onUnmounted(() => {
       <section class="main-grid">
         <div class="left-stack">
           <article class="panel observation">
-            <header class="panel-head"><div><h2>市场观察</h2><p>方向引擎未提供可靠结论时保持待分析</p></div><div class="observation-actions"><span class="badge">{{ asset.name }}</span><button class="analyze-btn" type="button" :disabled="aiLoading" @click="runAiAnalysis">{{ aiLoading ? '分析中…' : aiAnalyses[selected] ? '重新分析' : 'AI 分析' }}</button></div></header>
+            <header class="panel-head"><div><h2>市场观察</h2><p>方向由多周期价格结构计算；AI 仅在手动点击后解释</p></div><div class="observation-actions"><span class="badge">{{ directionView.quality }}</span><button class="analyze-btn" type="button" :disabled="aiLoading" @click="runAiAnalysis">{{ aiLoading ? '分析中…' : aiAnalyses[selected] ? '重新分析' : 'AI 分析' }}</button></div></header>
             <div class="direction-body">
               <div class="direction-top"><div><small>当前方向</small><b class="direction-value">{{ directionView.direction }}</b></div><div class="confidence"><small>方向信心</small><b>{{ directionView.confidence }}</b></div></div>
               <p class="summary">{{ directionView.summary }}</p>
               <div class="periods"><div v-for="period in directionView.periods" :key="period.label"><span>{{ period.label }}</span><b>{{ period.value }}</b></div></div>
-              <div v-if="aiAnalyses[selected]" class="ai-reasons">
-                <div><b>支持因素</b><span v-for="(item, index) in aiAnalyses[selected].analysis.supportingFactors || []" :key="`support-${index}`">{{ item }}</span><span v-if="!aiAnalyses[selected].analysis.supportingFactors?.length">暂无明确支持项</span></div>
-                <div><b>反向因素</b><span v-for="(item, index) in aiAnalyses[selected].analysis.opposingFactors || []" :key="`oppose-${index}`">{{ item }}</span><span v-if="!aiAnalyses[selected].analysis.opposingFactors?.length">暂无明确反向项</span></div>
+              <div v-if="directionView.insufficient" class="insufficient-notes">
+                <div><b>可观察线索</b><span v-for="(item, index) in directionView.neutral" :key="`neutral-${index}`">{{ item }}</span><span v-if="!directionView.neutral.length">暂无可用价格线索。</span></div>
+                <div><b>关键缺失</b><span v-for="(item, index) in directionView.missing" :key="`missing-${index}`">{{ item }}</span><span v-if="!directionView.missing.length">等待核心 K 线数据恢复。</span></div>
               </div>
-              <p v-if="aiAnalyses[selected]" class="analysis-time">AI 分析于 {{ formatDate(aiAnalyses[selected].analyzedAt) }} · 仅点击按钮时调用</p>
+              <template v-else>
+                <div class="ai-reasons">
+                  <div><b>看多因素</b><span v-for="(item, index) in directionView.bull" :key="`support-${index}`">{{ item }}</span><span v-if="!directionView.bull.length">暂无明确看多因素</span></div>
+                  <div><b>看空因素</b><span v-for="(item, index) in directionView.bear" :key="`oppose-${index}`">{{ item }}</span><span v-if="!directionView.bear.length">暂无明确看空因素</span></div>
+                </div>
+                <div class="direction-details" v-if="directionView.neutral.length || directionView.missing.length || directionView.attention.length">
+                  <section v-if="directionView.neutral.length"><b>中性事实</b><span v-for="(item, index) in directionView.neutral" :key="`fact-${index}`">{{ item }}</span></section>
+                  <section v-if="directionView.missing.length"><b>数据限制</b><span v-for="(item, index) in directionView.missing" :key="`limit-${index}`">{{ item }}</span></section>
+                  <section v-if="directionView.attention.length"><b>关注</b><span v-for="(item, index) in directionView.attention" :key="`attention-${index}`">{{ item }}</span></section>
+                </div>
+              </template>
+              <p v-if="currentAiAnalysis" class="analysis-time">AI 分析于 {{ formatDate(currentAiAnalysis.createdAt) }} · {{ currentAiAnalysis.model || '方向引擎' }}</p>
+              <p v-if="aiNotice" class="analysis-time">{{ aiNotice }}</p>
               <p v-if="aiError" class="analysis-error">{{ aiError }}</p>
             </div>
             <footer class="panel-foot">行情、基本面、日历与新闻用于信息观察，不构成交易执行建议。</footer>
@@ -320,6 +350,7 @@ onUnmounted(() => {
 <style scoped>
 .tradfi{--tradfi-bg:#080d14;--tradfi-panel:#0b1119;--tradfi-panel-2:#0d141e;--tradfi-line:#1f2a3a;--tradfi-line-soft:#172131;--tradfi-text:#e8edf5;--tradfi-muted:#7e8da3;--tradfi-gold:#e1b532;--tradfi-green:#35cf91;--tradfi-red:#ff5f73;height:100%;min-height:0;overflow:auto;background:var(--tradfi-bg);color:var(--tradfi-text);font-size:12px}.mono{font-variant-numeric:tabular-nums}.up{color:var(--tradfi-green)!important}.down{color:var(--tradfi-red)!important}.muted{color:var(--tradfi-muted)!important}.top-line{height:28px;display:flex;align-items:center;gap:14px;padding:0 16px;border-bottom:1px solid #111923;color:var(--tradfi-muted);font-size:10px}.top-line strong{color:var(--tradfi-gold);font-size:11px}.top-line span:last-of-type{margin-left:auto}.retry{border:0;background:none;color:var(--tradfi-gold);cursor:pointer}.content{width:min(1600px,100%);margin:0 auto;padding:0 16px 20px}.watch-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;padding:10px 0}.ticker{min-width:0;border:1px solid var(--tradfi-line-soft);border-radius:7px;background:#0a1018;color:var(--tradfi-text);padding:9px 12px;text-align:left;cursor:pointer}.ticker:hover{border-color:#34445b}.ticker.active{border-color:#8f741c;box-shadow:inset 0 0 0 1px #e1b53218;background:#17160f}.ticker-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#a6b2c2;font-size:11px}.ticker-name small{color:var(--tradfi-muted);font-size:9px}.ticker-bottom{display:flex;justify-content:space-between;align-items:baseline;margin-top:5px}.ticker-bottom b{font-size:19px}.ticker-bottom em{font-style:normal;font-weight:800}.ticker-symbol{display:block;color:var(--tradfi-muted);font-size:10px;margin-top:3px}.hero{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:20px;min-height:78px;padding:10px 16px;margin-bottom:10px;border:1px solid var(--tradfi-line);border-radius:8px;background:#0c131d}.instrument{display:flex;align-items:center;gap:12px}.coin{width:40px;height:40px;flex:none;display:grid;place-items:center;border-radius:50%;background:var(--tradfi-gold);color:#17140a;font-size:15px;font-weight:900}.instrument h1{margin:0;font-size:16px}.instrument p{margin:4px 0 0;color:var(--tradfi-muted);font-size:11px}.hero-price{text-align:center;min-width:190px}.hero-price strong{display:block;font-size:26px}.hero-price span{display:block;margin-top:3px;font-weight:750}.hero-stats{justify-self:end;display:flex;gap:20px}.hero-stats div{display:grid;gap:4px}.hero-stats span{color:var(--tradfi-muted);font-size:10px}.hero-stats b{font-size:11px}.main-grid{display:grid;grid-template-columns:minmax(340px, .62fr) minmax(0,1fr);gap:10px;align-items:stretch}.left-stack{display:grid;align-content:start;gap:10px}.panel{min-width:0;overflow:hidden;border:1px solid var(--tradfi-line-soft);border-radius:8px;background:var(--tradfi-panel)}.panel-head{min-height:48px;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 13px;border-bottom:1px solid var(--tradfi-line-soft)}.panel-head h2{margin:0;font-size:14px;font-weight:800}.panel-head p{margin:3px 0 0;color:var(--tradfi-muted);font-size:10px;line-height:1.5}.badge,.state{flex:none;padding:4px 7px;border:1px solid #403719;border-radius:5px;color:var(--tradfi-gold);font-size:10px}.state.正常{color:var(--tradfi-green);border-color:#235541}.state.过期,.state.缓存{color:#e4bb4a}.state.不可用{color:var(--tradfi-red);border-color:#63313b}.direction-body{padding:13px}.direction-top{display:flex;justify-content:space-between;align-items:flex-start}.direction-top small,.confidence small{display:block;color:var(--tradfi-muted);font-size:10px}.direction-value{display:block;margin-top:5px;color:var(--tradfi-gold);font-size:24px}.confidence{text-align:right}.confidence b{display:block;margin-top:5px;font-size:13px}.summary{margin:10px 0 0;color:#a7b3c3;font-size:11px;line-height:1.65}.periods{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:12px}.periods div{padding:8px 5px;border:1px solid var(--tradfi-line-soft);border-radius:6px;background:var(--tradfi-panel-2);text-align:center}.periods span,.periods b{display:block}.periods span{color:var(--tradfi-muted);font-size:10px}.periods b{margin-top:5px;font-size:11px}.analysis-time{margin:9px 0 0;color:var(--tradfi-muted);font-size:10px}.analysis-error{margin:8px 0 0;color:var(--tradfi-red);font-size:11px}.observation-actions{display:flex;align-items:center;gap:7px}.analyze-btn{height:29px;padding:0 10px;border:1px solid #705b19;border-radius:5px;background:#e1b53212;color:var(--tradfi-gold);font-size:10px;font-weight:800;cursor:pointer}.analyze-btn:hover:not(:disabled){background:#e1b53222}.analyze-btn:disabled{opacity:.55;cursor:wait}.panel-foot{padding:8px 12px;border-top:1px solid var(--tradfi-line-soft);color:var(--tradfi-muted);font-size:10px;line-height:1.5}.driver-list,.event-list{padding:0 12px}.driver{display:grid;grid-template-columns:minmax(100px,1fr) minmax(80px,1fr) minmax(70px,auto);align-items:center;gap:8px;min-height:38px;border-bottom:1px solid var(--tradfi-line-soft)}.driver:last-child,.event:last-child{border-bottom:0}.driver span{color:#a4afbe}.driver b{font-size:11px}.driver small{color:var(--tradfi-muted);font-size:10px;text-align:right}.event{display:grid;grid-template-columns:88px minmax(0,1fr) auto;align-items:center;gap:8px;min-height:48px;border-bottom:1px solid var(--tradfi-line-soft)}.event time{color:#b59a43;font-size:10px;font-variant-numeric:tabular-nums}.event-main{min-width:0}.event-main b,.event-main small{display:block}.event-main b{font-size:11px;line-height:1.45}.event-main small{margin-top:3px;color:var(--tradfi-muted);font-size:10px;line-height:1.45}.event-status{color:#9aabc0;font-size:10px}.news-panel{display:flex;flex-direction:column;min-height:430px}.news-tools{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;border-bottom:1px solid var(--tradfi-line-soft)}.filters{display:flex;gap:5px}.filters button{height:27px;padding:0 9px;border:1px solid var(--tradfi-line);border-radius:5px;background:#101722;color:var(--tradfi-muted);font-size:10px;font-weight:700;cursor:pointer}.filters button.selected{color:var(--tradfi-gold);border-color:#705b19;background:#e1b53212}.news-tools input{width:min(210px,45%);height:28px;padding:0 9px;border:1px solid var(--tradfi-line);border-radius:5px;outline:none;background:#090f16;color:var(--tradfi-text);font-size:11px}.news-list{flex:1;padding:0 13px}.news-row{display:grid;grid-template-columns:78px minmax(0,1fr);gap:10px;padding:12px 0;border-bottom:1px solid var(--tradfi-line-soft)}.news-row time{padding-top:3px;color:var(--tradfi-muted);font-size:10px}.news-content{min-width:0}.news-title{font-size:12px;line-height:1.55}.news-title a{color:#e6c44f;text-decoration:none}.news-title a:hover{color:#ffe16e;text-decoration:underline}.news-tag{display:inline-block;margin-right:7px;padding:2px 5px;border-radius:4px;background:#2a2412;color:#b8992b;font-size:9px;font-weight:800}.news-content p{margin:4px 0;color:#a4afbe;font-size:11px;line-height:1.5}.news-content small{display:block;margin-top:5px;color:var(--tradfi-muted);font-size:10px}.show-more{width:100%;height:34px;border:0;border-top:1px solid var(--tradfi-line-soft);background:#0a1119;color:#9aa8ba;font-size:10px;font-weight:700;cursor:pointer}.show-more:hover{color:var(--tradfi-text)}.empty{padding:18px 8px;color:var(--tradfi-muted);font-size:11px;text-align:center}.empty-inline{padding:12px;color:var(--tradfi-muted)}
 .ai-reasons{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px}.ai-reasons>div{display:grid;align-content:start;gap:5px;padding:8px;border:1px solid var(--tradfi-line-soft);border-radius:6px;background:#0d151f}.ai-reasons b{font-size:10px;color:#d9e1ec}.ai-reasons span{font-size:10px;line-height:1.5;color:#95a4b8}.analysis-time{margin:9px 0 0;color:var(--tradfi-muted);font-size:10px}.analysis-error{margin:8px 0 0;color:var(--tradfi-red);font-size:11px}.observation-actions{display:flex;align-items:center;gap:7px}.analyze-btn{height:29px;padding:0 10px;border:1px solid #705b19;border-radius:5px;background:#e1b53212;color:var(--tradfi-gold);font-size:10px;font-weight:800;cursor:pointer}.analyze-btn:hover:not(:disabled){background:#e1b53222}.analyze-btn:disabled{opacity:.55;cursor:wait}
+.insufficient-notes,.direction-details{display:grid;gap:7px;margin-top:10px}.insufficient-notes>div,.direction-details section{display:grid;gap:4px;padding:8px;border:1px solid var(--tradfi-line-soft);border-radius:6px;background:#0d151f}.insufficient-notes b,.direction-details b{color:#d9e1ec;font-size:10px}.insufficient-notes span,.direction-details span{color:#95a4b8;font-size:10px;line-height:1.5}.direction-details{grid-template-columns:repeat(auto-fit,minmax(130px,1fr))}
 @media(max-width:900px){.content{padding:0 10px 16px}.main-grid{grid-template-columns:1fr}.left-stack{display:contents}.observation{order:0}.left-stack>.panel:nth-child(2){order:1}.left-stack>.panel:nth-child(3){order:2}.news-panel{order:3}.hero{grid-template-columns:1fr auto;}.hero-stats{grid-column:1/-1;justify-self:stretch;justify-content:space-between;border-top:1px solid var(--tradfi-line-soft);padding-top:9px}.hero-price{text-align:right}.news-panel{min-height:350px}}
 @media(max-width:600px){.top-line{padding:0 10px;gap:8px}.top-line span:last-of-type{display:none}.content{padding:0 8px 12px}.watch-strip{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;padding:8px 0}.ticker{flex:0 0 220px;scroll-snap-align:start}.hero{grid-template-columns:1fr;gap:10px;padding:12px}.hero-price{text-align:left;min-width:0}.hero-price strong{font-size:23px}.hero-stats{grid-column:auto;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.hero-stats b{font-size:10px;overflow-wrap:anywhere}.driver{grid-template-columns:minmax(85px,1fr) minmax(70px,1fr);padding:5px 0}.driver small{grid-column:2;text-align:left}.event{grid-template-columns:70px minmax(0,1fr);padding:6px 0}.event-status{grid-column:2}.news-tools{align-items:stretch;flex-direction:column}.news-tools input{width:100%}.news-row{grid-template-columns:62px minmax(0,1fr);gap:7px}.news-title{font-size:11px}}
 .tradfi{display:flex;flex-direction:column;width:100%;height:100%;min-height:0;font-size:13px}.top-line{flex:none;padding-left:12px;padding-right:12px}.content{display:flex;flex:1;flex-direction:column;width:100%;min-height:0;margin:0;padding:0}.watch-strip{flex:none;padding:8px 10px}.ticker-bottom b{font-size:21px}.hero{flex:none;margin:0 10px 8px}.hero-price strong{font-size:30px}.main-grid{flex:1;min-height:0;padding:0 10px 10px;grid-template-columns:minmax(360px,.62fr) minmax(0,1fr)}.left-stack{align-content:stretch;grid-template-rows:auto auto 1fr}.panel{border-radius:7px}.panel-head h2{font-size:15px}.news-panel{height:100%}

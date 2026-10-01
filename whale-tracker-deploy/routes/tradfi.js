@@ -1,9 +1,78 @@
 const express = require('express');
 const { getCatalog, getQuotes } = require('../lib/tradfiMarkets');
-const { getIntel } = require('../lib/tradfiIntel');
 const { getWhaleActivity, getAllWhaleActivity } = require('../lib/tradfiWhales');
+const { requireUser } = require('../lib/authStore');
+const { DEFAULT_PROVIDER, getRawAiKey } = require('../lib/userAiKeys');
+const { deepseekFetch } = require('../lib/deepseekClient');
+const { ENGINE_VERSION } = require('../lib/tradfiDirection');
+const { PROMPT_VERSION, buildTradFiSnapshot, buildExplanationPrompt, parseExplanation, defaultExplanation } = require('../lib/tradfiAnalysis');
+const analysisStore = require('../lib/tradfiAnalysisStore');
 
 const router = express.Router();
+const inFlightAnalyses = new Map();
+
+router.post('/analyze', async (req, res) => {
+  try {
+    const user = requireUser(req);
+    const apiKey = getRawAiKey(user.user.id, DEFAULT_PROVIDER)?.apiKey;
+    if (!apiKey) return res.status(400).json({ error: '请先在 AI 分析设置中配置 DeepSeek API Key' });
+    const symbol = String(req.body?.symbol || '').trim().toUpperCase();
+    if (!symbol) return res.status(400).json({ error: '缺少 TradFi 标的代码' });
+    const snapshot = await buildTradFiSnapshot(symbol);
+    const key = [user.user.id, symbol, snapshot.contextHash, ENGINE_VERSION, PROMPT_VERSION].join(':');
+    const saved = analysisStore.findByContext({ userId: user.user.id, symbol, contextHash: snapshot.contextHash, engineVersion: ENGINE_VERSION, promptVersion: PROMPT_VERSION });
+    if (saved?.status === 'COMPLETED') return res.json({ ...saved, reused: true });
+    if (saved && ['PENDING', 'RUNNING'].includes(saved.status) && !inFlightAnalyses.has(key)) {
+      return res.status(202).json({ ...saved, reused: true });
+    }
+    let task = inFlightAnalyses.get(key);
+    if (!task) {
+      task = (async () => {
+        const row = analysisStore.createPending({ userId: user.user.id, symbol, contextHash: snapshot.contextHash,
+          engineVersion: ENGINE_VERSION, promptVersion: PROMPT_VERSION,
+          context: { marketContext: snapshot.marketContext, intel: snapshot.intel }, directionResult: snapshot.directionResult });
+        analysisStore.updateStatus(row.analysisId, 'RUNNING');
+        try {
+          let explanation; let model = 'deterministic-no-ai';
+          const anyDirectionAvailable = Object.values(snapshot.directionResult.timeframes).some((frame) => frame.directionAllowed);
+          if (anyDirectionAvailable) {
+            const result = await deepseekFetch(apiKey, '/chat/completions', {
+              method: 'POST', timeoutMs: 90_000,
+              body: { model: 'deepseek-chat', temperature: 0.15, max_tokens: 900, messages: [
+                { role: 'system', content: '你是传统金融市场分析解释助手。后端规则引擎负责所有方向与数据充分度，你只能解释已有数据，不能更改结论。' },
+                { role: 'user', content: buildExplanationPrompt(snapshot) },
+              ] },
+            });
+            explanation = parseExplanation(result?.choices?.[0]?.message?.content);
+            model = result?.model || 'deepseek-chat';
+            if (!explanation) throw Object.assign(new Error('AI 返回的解释内容无法解析，请稍后重试'), { status: 502 });
+          } else explanation = defaultExplanation(snapshot.directionResult);
+          return analysisStore.updateStatus(row.analysisId, 'COMPLETED', { explanation, model });
+        } catch (err) {
+          analysisStore.updateStatus(row.analysisId, 'FAILED', { error: err.message || 'TradFi AI 分析失败' });
+          throw err;
+        }
+      })().finally(() => inFlightAnalyses.delete(key));
+      inFlightAnalyses.set(key, task);
+    }
+    const result = await task;
+    res.json({ ...result, reused: false });
+  } catch (err) {
+    console.error('[POST /api/tradfi/analyze]', err.message);
+    res.status(err.status || 500).json({ error: err.message || 'TradFi AI 分析失败' });
+  }
+});
+
+router.get('/analysis/:analysisId', (req, res) => {
+  try {
+    const user = requireUser(req);
+    const result = analysisStore.getById(req.params.analysisId, user.user.id);
+    if (!result) return res.status(404).json({ error: '分析记录不存在' });
+    res.json(result);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message || '读取分析记录失败' });
+  }
+});
 
 router.get('/catalog', async (_req, res) => {
   try {
@@ -26,7 +95,11 @@ router.get('/quotes', async (req, res) => {
 
 router.get('/intel', async (req, res) => {
   try {
-    res.json(await getIntel(req.query.symbol));
+    const symbol = String(req.query.symbol || '').trim().toUpperCase();
+    const snapshot = await buildTradFiSnapshot(symbol);
+    res.json({ ...snapshot.intel, marketContext: snapshot.marketContext, directionResult: snapshot.directionResult,
+      contextHash: snapshot.contextHash,
+      meta: { symbol, generatedAt: new Date().toISOString(), directionEngineVersion: ENGINE_VERSION } });
   } catch (err) {
     console.error('[GET /api/tradfi/intel]', err.message);
     res.status(err.status || 502).json({ error: err.message || 'TradFi 资讯暂不可用' });
