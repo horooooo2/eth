@@ -492,30 +492,6 @@ export async function fetchWhaleTransfers(
   return data;
 }
 
-export type WhaleSpotAsset = {
-  coin: string;
-  label: string;
-  total: number | null;
-  hold: number | null;
-  markPrice: number | null;
-  valueUsd: number | null;
-  priceUnavailable: boolean;
-};
-
-export async function fetchWhaleSpotAssets(id: string) {
-  const { data } = await http.get<{
-    whale: { id: string; name: string; address: string };
-    assets: WhaleSpotAsset[];
-    totalValueUsd: number | null;
-    unpricedCount: number;
-    perpMarkPrices: Record<string, number | null>;
-    updatedAt: number;
-    source: string;
-    priceUnavailable: boolean;
-  }>(`/whales/${encodeURIComponent(id)}/assets`, { timeout: 45000 });
-  return data;
-}
-
 export async function fetchWhalePerpMarkPrices(id: string) {
   const { data } = await http.get<{
     perpMarkPrices: Record<string, number | null>;
@@ -532,7 +508,8 @@ export async function fetchWhaleEquityHistory(id: string, range: WhaleEquityHist
   const { data } = await http.get<{
     points: WhaleEquityHistoryPoint[];
     range: WhaleEquityHistoryRange;
-    sampleIntervalMs: number;
+    updatedAt: number;
+    source: string;
   }>(`/whales/${encodeURIComponent(id)}/equity-history`, { params: { range } });
   return data;
 }

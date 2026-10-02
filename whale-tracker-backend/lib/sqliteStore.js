@@ -947,61 +947,6 @@ function loadRecentEvents(limit = 200) {
   }));
 }
 
-const WHALE_EQUITY_SAMPLE_MS = Math.max(
-  5 * 60 * 1000,
-  Number(process.env.WHALE_EQUITY_SAMPLE_MS) || 60 * 60 * 1000,
-);
-
-/** 每只巨鲸每个采样时段保留一个合约权益点；同一时段后续刷新会更新为较新的值。 */
-function recordWhaleEquitySnapshots(whales = [], sampledAt = Date.now()) {
-  const database = getDb();
-  const upsert = database.prepare(`
-    INSERT INTO whale_equity_snapshots (whale_id, bucket_at, sampled_at, contract_equity)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(whale_id, bucket_at) DO UPDATE SET
-      sampled_at = excluded.sampled_at,
-      contract_equity = excluded.contract_equity
-    WHERE excluded.sampled_at >= whale_equity_snapshots.sampled_at
-  `);
-  const tx = database.transaction(() => {
-    let written = 0;
-    for (const whale of whales) {
-      const id = String(whale?.id || '').trim();
-      const value = Number(whale?.contractAccountValue);
-      const observedAt = Number(whale?.contractAccountValueObservedAt) || 0;
-      const freshnessLimit = Math.min(WHALE_EQUITY_SAMPLE_MS, 15 * 60 * 1000);
-      if (!id || !Number.isFinite(value) || value < 0 || !observedAt || sampledAt - observedAt > freshnessLimit || whale?.error) continue;
-      const bucketAt = Math.floor(observedAt / WHALE_EQUITY_SAMPLE_MS) * WHALE_EQUITY_SAMPLE_MS;
-      written += upsert.run(id, bucketAt, observedAt || sampledAt, value).changes;
-    }
-    return written;
-  });
-  return tx();
-}
-
-function loadWhaleEquityHistory(whaleId, range = 'all') {
-  const durationByRange = {
-    '24h': 24 * 60 * 60 * 1000,
-    '7d': 7 * 24 * 60 * 60 * 1000,
-    '30d': 30 * 24 * 60 * 60 * 1000,
-  };
-  const duration = durationByRange[range];
-  const rows = duration
-    ? getDb().prepare(`
-        SELECT sampled_at AS time, contract_equity AS contractEquity
-        FROM whale_equity_snapshots
-        WHERE whale_id = ? AND sampled_at >= ?
-        ORDER BY sampled_at ASC
-      `).all(String(whaleId), Date.now() - duration)
-    : getDb().prepare(`
-        SELECT sampled_at AS time, contract_equity AS contractEquity
-        FROM whale_equity_snapshots
-        WHERE whale_id = ?
-        ORDER BY sampled_at ASC
-      `).all(String(whaleId));
-  return rows.map((row) => ({ time: Number(row.time), contractEquity: Number(row.contractEquity) }));
-}
-
 module.exports = {
   persistModePayload,
   persistTradesIncremental,
@@ -1016,6 +961,4 @@ module.exports = {
   persistAlerts,
   hasWhaleData,
   eventsFromTrade,
-  recordWhaleEquitySnapshots,
-  loadWhaleEquityHistory,
 };

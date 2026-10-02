@@ -167,6 +167,11 @@ async function hlPost(body, retries = 2) {
   });
 }
 
+/** Bypass configured mirrors and query Hyperliquid's official Info API directly. */
+async function hlPostOfficial(body, retries = 2) {
+  return enqueue(() => postWithRetries(OFFICIAL_INFO_URL, body, retries));
+}
+
 function getHlInfoConfig() {
   return {
     primaryUrl,
@@ -189,6 +194,7 @@ console.info(
 
 module.exports = {
   hlPost,
+  hlPostOfficial,
   getHlInfoConfig,
   OFFICIAL_INFO_URL,
   GOLDRUSH_INFO_URL,

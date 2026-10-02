@@ -10,7 +10,8 @@ const {
   fetchUserNonFundingLedgerUpdates,
   resolveFillsForPosition,
   fetchAllMids,
-  fetchSpotClearinghouseState,
+  fetchUserPortfolio,
+  extractPerpAccountValueHistory,
   fetchCoinNameMap,
   deriveDirection,
   mapFillToTrade,
@@ -19,7 +20,6 @@ const {
   computeSideWinRates,
   computeTopCoins,
   findPerpPosition,
-  findSpotBalance,
   inferOpenTime,
   inferPositionEntries,
   buildPositionEntryFills,
@@ -33,7 +33,6 @@ const {
   FILL_LOOKBACK_MS,
 } = require('./hyperliquid');
 const { getHlInfoConfig, MAX_CONCURRENT } = require('./hlInfoClient');
-const { recordWhaleEquitySnapshots } = require('./sqliteStore');
 
 const WHALE_MODES = ['hf'];
 /** 共振扫描最长窗口 24h，活动流按时间保留而非仅取全局最新 N 条 */
@@ -625,7 +624,6 @@ async function refreshAlertHistory(query = {}) {
 async function finalizeSnapshotFromState(whale, address, state, names, { light, base, prevPositions = [] }) {
   const rawContractAccountValue = state?.marginSummary?.accountValue;
   const contractAccountValue = rawContractAccountValue == null ? Number.NaN : Number(rawContractAccountValue);
-  const contractAccountValueObservedAt = Number.isFinite(contractAccountValue) ? Date.now() : null;
   let fills = [];
   if (!light) {
     try {
@@ -678,7 +676,6 @@ async function finalizeSnapshotFromState(whale, address, state, names, { light, 
     ...base,
     ...derived,
     contractAccountValue: Number.isFinite(contractAccountValue) ? contractAccountValue : null,
-    contractAccountValueObservedAt,
     ...sideRates,
     topCoins,
     positions,
@@ -874,12 +871,6 @@ async function refreshWhalesShard(options = {}) {
         ? fetchWhaleAlerts(MIN_USD, 50).catch(() => ({ alerts: [], warning: null }))
         : Promise.resolve(null),
     ]);
-    try {
-      const recorded = recordWhaleEquitySnapshots(snapshots, Date.now());
-      if (recorded) console.log(`[equity-history] 本轮采集 ${recorded} 个合约账户权益`);
-    } catch (err) {
-      console.warn('[equity-history] 采集失败:', err.message || err);
-    }
     if (needOnchain) shardOnchainAt = Date.now();
 
     const refreshedAt = Date.now();
@@ -1856,64 +1847,6 @@ async function getWhalePosition(id, coin, options = {}) {
   throw error;
 }
 
-/** 按需读取单个巨鲸的现货余额；行情缺失时保留数量，不伪造 USD 估值。 */
-async function getWhaleSpotAssets(id) {
-  const whale = findConfiguredWhale(id);
-  if (!whale) throw Object.assign(new Error('未找到该巨鲸'), { status: 404 });
-  const address = normalizeAddress(whale.address);
-  if (!address) throw Object.assign(new Error('该巨鲸缺少完整 0x 地址'), { status: 400 });
-
-  const [spotResult, midsResult, namesResult] = await Promise.allSettled([
-    fetchSpotClearinghouseState(address),
-    fetchAllMids(),
-    fetchCoinNameMap(),
-  ]);
-  if (spotResult.status === 'rejected') {
-    throw Object.assign(new Error(`现货余额获取失败：${spotResult.reason?.message || '上游暂不可用'}`), { status: 502 });
-  }
-  const spot = spotResult.value || {};
-  const mids = midsResult.status === 'fulfilled' ? midsResult.value || {} : {};
-  const names = namesResult.status === 'fulfilled' ? namesResult.value || {} : {};
-  const midMap = mids.mids && typeof mids.mids === 'object' ? mids.mids : mids;
-  const balances = Array.isArray(spot.balances) ? spot.balances : [];
-  const assets = balances.map((row) => {
-    const coin = String(row?.coin || '');
-    const amount = Number(row?.total);
-    const stable = /^(USDC|USDT|USDH)$/i.test(coin);
-    const markPrice = stable ? 1 : Number(midMap[coin] ?? midMap[coin.toUpperCase()]);
-    const validAmount = Number.isFinite(amount) ? amount : null;
-    const validPrice = Number.isFinite(markPrice) && markPrice > 0 ? markPrice : null;
-    return {
-      coin,
-      label: coinLabel(coin, names) || coin,
-      total: validAmount,
-      hold: Number.isFinite(Number(row?.hold)) ? Number(row.hold) : null,
-      markPrice: validPrice,
-      valueUsd: validAmount != null && validPrice != null ? validAmount * validPrice : null,
-      priceUnavailable: validPrice == null,
-    };
-  }).filter((item) => item.total != null && item.total !== 0);
-  const pricedAssets = assets.filter((item) => item.valueUsd != null);
-  const hasUnpricedAssets = assets.some((item) => item.valueUsd == null);
-  const snapshotWhale = (readActiveWhaleCache()?.data?.whales || []).find((item) => item.id === whale.id);
-  const perpMarkPrices = Object.fromEntries((snapshotWhale?.positions || []).map((position) => {
-    const coin = String(position.coin || '').trim();
-    const rawPrice = midMap[coin] ?? midMap[coin.toUpperCase()];
-    const price = Number(rawPrice);
-    return [coin, Number.isFinite(price) && price > 0 ? price : null];
-  }).filter(([coin]) => coin));
-  return {
-    whale: { id: whale.id, name: whale.name, address },
-    assets,
-    totalValueUsd: hasUnpricedAssets ? null : pricedAssets.reduce((sum, item) => sum + item.valueUsd, 0),
-    unpricedCount: assets.filter((item) => item.valueUsd == null).length,
-    perpMarkPrices,
-    updatedAt: Date.now(),
-    source: 'Hyperliquid spotClearinghouseState + allMids',
-    priceUnavailable: midsResult.status === 'rejected',
-  };
-}
-
 /** 按需读取该巨鲸当前合约仓位的标记价格，不请求现货账户数据。 */
 async function getWhalePerpMarkPrices(id) {
   const whale = findConfiguredWhale(id);
@@ -1928,6 +1861,23 @@ async function getWhalePerpMarkPrices(id) {
     return [coin, Number.isFinite(price) && price > 0 ? price : null];
   }).filter(([coin]) => coin));
   return { perpMarkPrices, updatedAt: Date.now(), source: 'Hyperliquid allMids' };
+}
+
+/** Read historical perpetual account equity directly from Hyperliquid's official portfolio API. */
+async function getWhaleEquityHistory(id, range = 'all') {
+  const whale = findConfiguredWhale(id);
+  if (!whale) throw Object.assign(new Error('未找到该巨鲸'), { status: 404 });
+  const address = normalizeAddress(whale.address);
+  if (!address) throw Object.assign(new Error('该巨鲸缺少完整 0x 地址'), { status: 400 });
+  const portfolio = await fetchUserPortfolio(address);
+  const points = extractPerpAccountValueHistory(portfolio, range);
+  return {
+    whale: { id: whale.id, address },
+    range,
+    points,
+    updatedAt: Date.now(),
+    source: 'Hyperliquid official portfolio API',
+  };
 }
 
 /** 按需读取单个巨鲸未完成订单，使用 Hyperliquid helper 的 20 秒缓存。 */
@@ -2452,8 +2402,8 @@ module.exports = {
   getWhaleTrades,
   getWhaleTransfers,
   getWhalePosition,
-  getWhaleSpotAssets,
   getWhalePerpMarkPrices,
+  getWhaleEquityHistory,
   getWhaleOpenOrders,
   buildActivityFeed,
   getActivitySince,

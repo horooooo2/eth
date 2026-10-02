@@ -366,7 +366,7 @@ async function copyAddress() {
 
         <article class="chart-card">
           <div class="chart-header">
-            <div class="chart-title-area"><span>合约账户权益历史</span><strong>{{ whale.contractAccountValue == null ? '等待合约权益快照' : formatMoney(whale.contractAccountValue) }}</strong></div>
+            <div class="chart-title-area"><span>合约账户权益历史 · 官方数据</span><strong>{{ equityPoints.length ? formatMoney(equityPoints[equityPoints.length - 1].contractEquity) : '暂无官方历史值' }}</strong></div>
             <div class="time-filters">
               <button v-for="item in [{ id: '24h', label: '24小时' }, { id: '7d', label: '7天' }, { id: '30d', label: '30天' }, { id: 'all', label: '全部' }]" :key="item.id" type="button" :class="{ selected: equityRange === item.id }" @click="setEquityRange(item.id as WhaleEquityHistoryRange)">{{ item.label }}</button>
             </div>
@@ -380,9 +380,9 @@ async function copyAddress() {
             </svg>
             <div v-if="equityLoading" class="chart-empty"><b>正在读取权益历史…</b></div>
             <div v-else-if="equityError" class="chart-empty"><b>权益历史暂不可用</b><span>{{ equityError }}</span></div>
-            <div v-else-if="equityPoints.length < 2" class="chart-empty"><b>{{ equityPoints.length ? '正在积累历史快照' : '暂无历史权益快照' }}</b><span>{{ equityPoints.length ? '至少积累两个快照后显示曲线' : '后台按小时记录合约账户权益，采集启动后逐步形成曲线' }}</span></div>
+            <div v-else-if="equityPoints.length < 2" class="chart-empty"><b>{{ equityPoints.length ? '历史点不足以绘制曲线' : '官方暂无历史权益数据' }}</b><span>{{ equityPoints.length ? 'Hyperliquid 当前仅返回一个合约权益历史点' : '请确认钱包地址及 Hyperliquid 是否提供该账户的历史记录' }}</span></div>
           </div>
-          <div class="chart-foot"><span>合约账户权益 · 约每小时一个采样点</span><span>当前浮动盈亏 {{ totalUnrealizedPnl == null ? '—' : formatMoney(totalUnrealizedPnl) }}</span></div>
+          <div class="chart-foot"><span>Hyperliquid 官方 portfolio / perp 历史</span><span>当前浮动盈亏 {{ totalUnrealizedPnl == null ? '—' : formatMoney(totalUnrealizedPnl) }}</span></div>
         </article>
       </section>
 

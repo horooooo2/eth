@@ -1,4 +1,4 @@
-const { hlPost, getHlInfoConfig, MAX_CONCURRENT, isRateLimited } = require('./hlInfoClient');
+const { hlPost, hlPostOfficial, getHlInfoConfig, MAX_CONCURRENT, isRateLimited } = require('./hlInfoClient');
 
 const cache = new Map();
 
@@ -7,7 +7,7 @@ const cache = new Map();
  * @param {string} key
  * @param {number} ttlMs 新鲜期
  * @param {() => Promise<any>} loader
- * @param {{ staleMs?: number }} [options] 失败时允许使用的过期窗口，默认 max(ttl*20, 10min)
+ * @param {{ staleMs?: number, allowStale?: boolean }} [options] 失败时允许使用的过期窗口；allowStale=false 禁止回退旧值
  */
 async function withCache(key, ttlMs, loader, options = {}) {
   const now = Date.now();
@@ -26,7 +26,7 @@ async function withCache(key, ttlMs, loader, options = {}) {
     })
     .catch((err) => {
       const cur = cache.get(key);
-      if (cur?.value !== undefined && Date.now() - (cur.at || 0) < staleMs) {
+      if (options.allowStale !== false && cur?.value !== undefined && Date.now() - (cur.at || 0) < staleMs) {
         console.warn(`[hl] ${key} 上游失败，使用过期缓存:`, err.message || err);
         return cur.value;
       }
@@ -49,6 +49,41 @@ async function fetchClearinghouseState(address) {
   const user = address.toLowerCase();
   return withCache(`state:${user}`, 20000, () =>
     hlPost({ type: 'clearinghouseState', user: address }),
+  );
+}
+
+const PORTFOLIO_PERIOD_BY_RANGE = {
+  '24h': 'perpDay',
+  '7d': 'perpWeek',
+  '30d': 'perpMonth',
+  all: 'perpAllTime',
+};
+
+function extractPerpAccountValueHistory(portfolio, range = 'all') {
+  const period = PORTFOLIO_PERIOD_BY_RANGE[range] || PORTFOLIO_PERIOD_BY_RANGE.all;
+  const section = Array.isArray(portfolio)
+    ? portfolio.find((row) => Array.isArray(row) && row[0] === period)?.[1]
+    : null;
+  const history = Array.isArray(section?.accountValueHistory) ? section.accountValueHistory : [];
+  const byTime = new Map();
+  for (const row of history) {
+    if (!Array.isArray(row) || row.length < 2) continue;
+    const time = Number(row[0]);
+    const contractEquity = Number(row[1]);
+    if (!Number.isFinite(time) || time <= 0 || !Number.isFinite(contractEquity)) continue;
+    byTime.set(time, { time, contractEquity });
+  }
+  return [...byTime.values()].sort((a, b) => a.time - b.time);
+}
+
+async function fetchUserPortfolio(address) {
+  const user = String(address || '').trim().toLowerCase();
+  if (!user) throw new Error('缺少 Hyperliquid 账户地址');
+  return withCache(
+    `portfolio:${user}`,
+    5 * 60 * 1000,
+    () => hlPostOfficial({ type: 'portfolio', user }),
+    { allowStale: false },
   );
 }
 
@@ -577,13 +612,6 @@ function marginOf(pos, positionValue, leverage) {
   return positionValue || null;
 }
 
-async function fetchSpotClearinghouseState(address) {
-  const user = address.toLowerCase();
-  return withCache(`spot:${user}`, 30000, () =>
-    hlPost({ type: 'spotClearinghouseState', user: address }),
-  );
-}
-
 /**
  * 根据净名义价值判断整体方向（统计全部永续合约仓位）。
  * szi > 0 为多，szi < 0 为空。
@@ -696,33 +724,6 @@ function findPerpPosition(state, coin, names = {}, fills = []) {
     };
   }
   return null;
-}
-
-function findSpotBalance(spotState, coin, names = {}, mids = {}) {
-  const balances = Array.isArray(spotState?.balances) ? spotState.balances : [];
-  const row = balances.find((item) => coinMatches(item.coin, coin, names));
-  const total = Number(row?.total) || 0;
-  if (!row || !total) return null;
-  const midMap = mids.mids && typeof mids.mids === 'object' ? mids.mids : mids;
-  const mark = Number(midMap[row.coin] ?? midMap[String(row.coin).toUpperCase()] ?? midMap[coin]) || 0;
-  const value = mark ? Math.abs(total * mark) : null;
-  return {
-    coin: row.coin,
-    coinLabel: coinLabel(row.coin, names) || coinLabel(coin, names),
-    kind: 'spot',
-    side: 'long',
-    size: total,
-    entryPx: mark || null,
-    markPx: mark || null,
-    positionValue: value,
-    unrealizedPnl: null,
-    liquidationPx: null,
-    leverage: null,
-    leverageType: 'spot',
-    leverageLabel: '现货',
-    marginUsed: value,
-    openTime: null,
-  };
 }
 
 function mapFillToTrade(fill, whale, names = {}) {
@@ -892,6 +893,8 @@ function computeTopCoins(fills, names = {}, limit = 5) {
 
 module.exports = {
   fetchClearinghouseState,
+  fetchUserPortfolio,
+  extractPerpAccountValueHistory,
   fetchBatchClearinghouseStates,
   fetchUserFills,
   fetchUserFillsByTime,
@@ -899,7 +902,6 @@ module.exports = {
   fetchUserNonFundingLedgerUpdates,
   resolveFillsForPosition,
   fetchAllMids,
-  fetchSpotClearinghouseState,
   fetchCoinNameMap,
   fetchFrontendOpenOrders,
   extractTpslForCoin,
@@ -913,7 +915,6 @@ module.exports = {
   FILL_AGGREGATE_WINDOW_MS,
   FILL_LOOKBACK_MS,
   findPerpPosition,
-  findSpotBalance,
   inferOpenTime,
   inferPositionEntries,
   analyzePositionEntries,
