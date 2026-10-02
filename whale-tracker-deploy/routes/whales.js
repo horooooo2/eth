@@ -16,7 +16,7 @@ const {
   getActivitySince,
 } = require('../lib/whales');
 const { readConfig, writeConfig, setWhaleMode, normalizeAddress, normalizeMode, addManualWhale, renameWhale } = require('../lib/config');
-const { loadRecentEvents, loadRecentAlerts, loadPagedAlerts, persistAlerts } = require('../lib/sqliteStore');
+const { loadRecentEvents, loadRecentAlerts, loadPagedAlerts, persistAlerts, loadWhaleEquityHistory } = require('../lib/sqliteStore');
 
 const router = express.Router();
 
@@ -182,6 +182,19 @@ router.get('/:id/market-prices', async (req, res) => {
     res.json(await getWhalePerpMarkPrices(req.params.id));
   } catch (err) {
     res.status(err.status || 502).json({ error: err.message || '合约行情获取失败' });
+  }
+});
+
+/** GET /api/whales/:id/equity-history — 合约账户权益历史（本地小时快照） */
+router.get('/:id/equity-history', (req, res) => {
+  try {
+    const allowed = new Set(['24h', '7d', '30d', 'all']);
+    const range = allowed.has(String(req.query.range || 'all')) ? String(req.query.range || 'all') : 'all';
+    const points = loadWhaleEquityHistory(req.params.id, range);
+    res.json({ points, range, sampleIntervalMs: Math.max(5 * 60 * 1000, Number(process.env.WHALE_EQUITY_SAMPLE_MS) || 60 * 60 * 1000) });
+  } catch (err) {
+    console.error('[GET /api/whales/:id/equity-history]', err);
+    res.status(500).json({ error: err.message || '读取合约权益历史失败' });
   }
 });
 

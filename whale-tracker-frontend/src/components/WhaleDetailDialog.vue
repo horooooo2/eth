@@ -3,10 +3,13 @@ import { computed, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import {
   fetchWhaleOpenOrders,
+  fetchWhaleEquityHistory,
   fetchWhalePerpMarkPrices,
   fetchWhaleTrades,
   fetchWhaleTransfers,
   type WhaleOpenOrder,
+  type WhaleEquityHistoryPoint,
+  type WhaleEquityHistoryRange,
   type WhaleTransfer,
 } from '@/api';
 import type { PagedTradesResponse, WhaleProfile, WhaleTrade } from '@/types';
@@ -32,6 +35,15 @@ const openOrders = ref<WhaleOpenOrder[]>([]);
 const ordersLoading = ref(false);
 const ordersError = ref('');
 const ordersLoadedFor = ref('');
+const equityRange = ref<WhaleEquityHistoryRange>('30d');
+const equityPoints = ref<WhaleEquityHistoryPoint[]>([]);
+const equityLoading = ref(false);
+const equityError = ref('');
+let equityRequestSeq = 0;
+let tradeRequestSeq = 0;
+let transferRequestSeq = 0;
+let orderRequestSeq = 0;
+let priceRequestSeq = 0;
 
 const visible = computed({
   get: () => props.modelValue,
@@ -60,6 +72,30 @@ const addressShort = computed(() => {
   const address = props.whale?.address || '';
   return address.length > 18 ? `${address.slice(0, 8)}…${address.slice(-6)}` : address || '地址缺失';
 });
+const equityLinePath = computed(() => {
+  const points = equityPoints.value;
+  if (points.length < 2) return '';
+  const rangeMs: Record<Exclude<WhaleEquityHistoryRange, 'all'>, number> = {
+    '24h': 24 * 60 * 60 * 1000,
+    '7d': 7 * 24 * 60 * 60 * 1000,
+    '30d': 30 * 24 * 60 * 60 * 1000,
+  };
+  const start = equityRange.value === 'all' ? points[0].time : Date.now() - rangeMs[equityRange.value];
+  const end = Math.max(Date.now(), points[points.length - 1].time);
+  const { min, max } = points.reduce((range, point) => ({
+    min: Math.min(range.min, point.contractEquity),
+    max: Math.max(range.max, point.contractEquity),
+  }), { min: Number.POSITIVE_INFINITY, max: Number.NEGATIVE_INFINITY });
+  const spread = max - min || Math.max(Math.abs(max) * 0.01, 1);
+  return points.map((point, index) => {
+    const x = 20 + Math.max(0, Math.min(1, (point.time - start) / Math.max(end - start, 1))) * 960;
+    const y = 280 - ((point.contractEquity - min) / spread) * 250;
+    return `${index ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+});
+const equityAreaPath = computed(() => equityLinePath.value
+  ? `${equityLinePath.value} L980,290 L20,290 Z`
+  : '');
 function formatMoney(value: unknown) {
   if (value == null || value === '') return '—';
   const amount = Number(value);
@@ -129,58 +165,95 @@ function holdDuration(position: { firstOpenTime?: number | null; openTime?: numb
 
 async function loadTrades() {
   if (!props.whale?.id) return;
+  const requestSeq = ++tradeRequestSeq;
+  const whaleId = props.whale.id;
+  const page = tradePage.value;
   tradesLoading.value = true;
   tradeError.value = '';
   try {
-    tradesResult.value = await fetchWhaleTrades(props.whale.id, { page: tradePage.value, limit: tradeLimit });
+    const result = await fetchWhaleTrades(whaleId, { page, limit: tradeLimit });
+    if (requestSeq === tradeRequestSeq) tradesResult.value = result;
   } catch (error) {
-    tradeError.value = error instanceof Error ? error.message : '成交记录加载失败';
+    if (requestSeq === tradeRequestSeq) tradeError.value = error instanceof Error ? error.message : '成交记录加载失败';
   } finally {
-    tradesLoading.value = false;
+    if (requestSeq === tradeRequestSeq) tradesLoading.value = false;
   }
 }
 
 async function loadTransfers() {
   if (!props.whale?.id || transfersLoadedFor.value === props.whale.id || transfersLoading.value) return;
+  const requestSeq = ++transferRequestSeq;
+  const whaleId = props.whale.id;
   transfersLoading.value = true;
   transferError.value = '';
   try {
-    const result = await fetchWhaleTransfers(props.whale.id, { days: 30, limit: 100 });
+    const result = await fetchWhaleTransfers(whaleId, { days: 30, limit: 100 });
+    if (requestSeq !== transferRequestSeq) return;
     transfers.value = result.transfers || [];
-    transfersLoadedFor.value = props.whale.id;
+    transfersLoadedFor.value = whaleId;
   } catch (error) {
-    transferError.value = error instanceof Error ? error.message : '资金记录加载失败';
+    if (requestSeq === transferRequestSeq) transferError.value = error instanceof Error ? error.message : '资金记录加载失败';
   } finally {
-    transfersLoading.value = false;
+    if (requestSeq === transferRequestSeq) transfersLoading.value = false;
   }
 }
 
 async function loadPerpMarkPrices() {
   if (!props.whale?.id || pricesLoadedFor.value === props.whale.id || pricesLoading.value) return;
+  const requestSeq = ++priceRequestSeq;
+  const whaleId = props.whale.id;
   pricesLoading.value = true;
   try {
-    const result = await fetchWhalePerpMarkPrices(props.whale.id);
+    const result = await fetchWhalePerpMarkPrices(whaleId);
+    if (requestSeq !== priceRequestSeq) return;
     perpMarkPrices.value = result.perpMarkPrices || {};
-    pricesLoadedFor.value = props.whale.id;
+    pricesLoadedFor.value = whaleId;
   } catch {
     // Keep market prices unavailable if the upstream price request fails.
   } finally {
-    pricesLoading.value = false;
+    if (requestSeq === priceRequestSeq) pricesLoading.value = false;
   }
+}
+
+async function loadEquityHistory() {
+  if (!props.whale?.id || !props.modelValue) return;
+  const requestSeq = ++equityRequestSeq;
+  const whaleId = props.whale.id;
+  const range = equityRange.value;
+  equityLoading.value = true;
+  equityError.value = '';
+  try {
+    const result = await fetchWhaleEquityHistory(whaleId, range);
+    if (requestSeq !== equityRequestSeq) return;
+    equityPoints.value = result.points || [];
+  } catch (error) {
+    if (requestSeq !== equityRequestSeq) return;
+    equityError.value = error instanceof Error ? error.message : '合约权益历史读取失败';
+    equityPoints.value = [];
+  } finally {
+    if (requestSeq === equityRequestSeq) equityLoading.value = false;
+  }
+}
+
+function setEquityRange(range: WhaleEquityHistoryRange) {
+  equityRange.value = range;
 }
 
 async function loadOrders() {
   if (!props.whale?.id || ordersLoadedFor.value === props.whale.id || ordersLoading.value) return;
+  const requestSeq = ++orderRequestSeq;
+  const whaleId = props.whale.id;
   ordersLoading.value = true;
   ordersError.value = '';
   try {
-    const result = await fetchWhaleOpenOrders(props.whale.id);
+    const result = await fetchWhaleOpenOrders(whaleId);
+    if (requestSeq !== orderRequestSeq) return;
     openOrders.value = result.orders || [];
-    ordersLoadedFor.value = props.whale.id;
+    ordersLoadedFor.value = whaleId;
   } catch (error) {
-    ordersError.value = error instanceof Error ? error.message : '未完成订单加载失败';
+    if (requestSeq === orderRequestSeq) ordersError.value = error instanceof Error ? error.message : '未完成订单加载失败';
   } finally {
-    ordersLoading.value = false;
+    if (requestSeq === orderRequestSeq) ordersLoading.value = false;
   }
 }
 
@@ -198,21 +271,33 @@ function changeTradePage(page: number) {
 
 watch(() => [props.modelValue, props.whale?.id] as const, ([isOpen, id], previous) => {
   if (!isOpen || !id) return;
-  void loadPerpMarkPrices();
   const changedWhale = previous?.[1] !== id;
   if (changedWhale) {
+    tradeRequestSeq += 1;
+    transferRequestSeq += 1;
+    orderRequestSeq += 1;
+    priceRequestSeq += 1;
     activeTab.value = 'contracts';
     tradePage.value = 1;
     tradesResult.value = null;
+    tradesLoading.value = false;
     transfers.value = [];
     transfersLoadedFor.value = '';
     transferError.value = '';
+    transfersLoading.value = false;
     perpMarkPrices.value = {};
     pricesLoadedFor.value = '';
+    pricesLoading.value = false;
     openOrders.value = [];
     ordersLoadedFor.value = '';
     ordersError.value = '';
+    ordersLoading.value = false;
   }
+  void loadPerpMarkPrices();
+}, { immediate: true });
+
+watch(() => [props.modelValue, props.whale?.id, equityRange.value] as const, ([isOpen, id]) => {
+  if (isOpen && id) void loadEquityHistory();
 }, { immediate: true });
 
 async function copyAddress() {
@@ -247,8 +332,8 @@ async function copyAddress() {
       <section class="metrics-grid">
         <div class="left-metrics">
           <article class="asset-card">
-            <div class="card-title">合约账户权益 <span class="source-tag">列表快照</span></div>
-            <div class="asset-total">{{ whale.accountValue && whale.accountValue > 0 ? formatMoney(whale.accountValue) : '—' }}</div>
+            <div class="card-title">合约账户权益 <span class="source-tag">合约快照</span></div>
+            <div class="asset-total">{{ whale.contractAccountValue == null ? '—' : formatMoney(whale.contractAccountValue) }}</div>
             <div class="account-switch"><span class="selected">合约仓位 {{ formatMoney(grossPositionUsd) }}</span></div>
           </article>
           <article class="sentiment-card">
@@ -276,19 +361,28 @@ async function copyAddress() {
               <small>无榜单值时不估算</small>
             </article>
           </div>
-          <p class="data-note">“盈亏、交易量、账户权益”来自巨鲸榜单快照；若上游未返回则显示 —。</p>
+          <p class="data-note">盈亏和交易量来自巨鲸榜单快照；合约账户权益来自最近一次成功的合约账户快照。</p>
         </div>
 
         <article class="chart-card">
           <div class="chart-header">
-            <div class="chart-title-area"><span>合约账户权益历史</span><strong>{{ whale.accountValue && whale.accountValue > 0 ? formatMoney(whale.accountValue) : '暂无账户权益' }}</strong></div>
-            <div class="time-filters"><span>24小时</span><span>7天</span><span>30天</span><span class="selected">全部</span></div>
+            <div class="chart-title-area"><span>合约账户权益历史</span><strong>{{ whale.contractAccountValue == null ? '等待合约权益快照' : formatMoney(whale.contractAccountValue) }}</strong></div>
+            <div class="time-filters">
+              <button v-for="item in [{ id: '24h', label: '24小时' }, { id: '7d', label: '7天' }, { id: '30d', label: '30天' }, { id: 'all', label: '全部' }]" :key="item.id" type="button" :class="{ selected: equityRange === item.id }" @click="setEquityRange(item.id as WhaleEquityHistoryRange)">{{ item.label }}</button>
+            </div>
           </div>
           <div class="chart-container">
             <div class="chart-grid"><i /><i /><i /></div>
-            <div class="chart-empty"><b>暂无历史权益快照</b><span>从开始采集后，积累到足够数据再绘制曲线</span></div>
+            <svg v-if="equityLinePath" class="equity-chart" viewBox="0 0 1000 300" preserveAspectRatio="none" aria-label="合约账户权益历史曲线">
+              <defs><linearGradient id="equityArea" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#2962ff" stop-opacity=".32" /><stop offset="100%" stop-color="#2962ff" stop-opacity="0" /></linearGradient></defs>
+              <path :d="equityAreaPath" fill="url(#equityArea)" />
+              <path :d="equityLinePath" fill="none" stroke="#4b83ff" stroke-width="2.5" vector-effect="non-scaling-stroke" />
+            </svg>
+            <div v-if="equityLoading" class="chart-empty"><b>正在读取权益历史…</b></div>
+            <div v-else-if="equityError" class="chart-empty"><b>权益历史暂不可用</b><span>{{ equityError }}</span></div>
+            <div v-else-if="equityPoints.length < 2" class="chart-empty"><b>{{ equityPoints.length ? '正在积累历史快照' : '暂无历史权益快照' }}</b><span>{{ equityPoints.length ? '至少积累两个快照后显示曲线' : '后台按小时记录合约账户权益，采集启动后逐步形成曲线' }}</span></div>
           </div>
-          <div class="chart-foot"><span>未接入历史账户权益采样</span><span>当前浮动盈亏 {{ totalUnrealizedPnl == null ? '—' : formatMoney(totalUnrealizedPnl) }}</span></div>
+          <div class="chart-foot"><span>合约账户权益 · 约每小时一个采样点</span><span>当前浮动盈亏 {{ totalUnrealizedPnl == null ? '—' : formatMoney(totalUnrealizedPnl) }}</span></div>
         </article>
       </section>
 
@@ -482,9 +576,10 @@ async function copyAddress() {
 .whale-detail-dialog .chart-title-area > span { color: var(--detail-muted); font-size: 12px; }
 .whale-detail-dialog .chart-title-area > strong { color: #e2e8f0; font: 700 21px ui-monospace, SFMono-Regular, Consolas, monospace; }
 .whale-detail-dialog .time-filters { display: flex; flex-wrap: wrap; gap: 3px; padding: 4px; border-radius: 7px; background: #0b0e14; }
-.whale-detail-dialog .time-filters span { padding: 6px 8px; border-radius: 4px; color: var(--detail-muted); font-size: 10px; }
-.whale-detail-dialog .time-filters .selected { color: #e2e8f0; background: #273140; }
+.whale-detail-dialog .time-filters button { padding: 6px 8px; border: 0; border-radius: 4px; color: var(--detail-muted); background: transparent; font-size: 10px; cursor: pointer; }
+.whale-detail-dialog .time-filters button.selected { color: #e2e8f0; background: #273140; }
 .whale-detail-dialog .chart-container { position: relative; display: grid; flex: 1; min-height: 195px; place-items: center; overflow: hidden; }
+.whale-detail-dialog .equity-chart { position: absolute; inset: 0; width: 100%; height: 100%; }
 .whale-detail-dialog .chart-grid { position: absolute; inset: 10px 0; display: flex; flex-direction: column; justify-content: space-between; }
 .whale-detail-dialog .chart-grid i { border-top: 1px dashed #293240; }
 .whale-detail-dialog .chart-empty { z-index: 1; display: grid; gap: 8px; justify-items: center; padding: 14px; border: 1px solid rgba(40, 50, 65, .75); border-radius: 10px; background: rgba(16, 21, 30, .9); text-align: center; }

@@ -119,6 +119,8 @@ export interface WhaleProfile {
   monthVlm?: number;
   /** 账户权益（榜单） */
   accountValue?: number;
+  /** Hyperliquid 永续账户合约权益（clearinghouseState.marginSummary.accountValue） */
+  contractAccountValue?: number | null;
   /** 近月盈亏（榜单） */
   monthPnl?: number;
   /** 累计盈亏（榜单 allTime） */

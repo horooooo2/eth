@@ -153,6 +153,16 @@ function migrate(database) {
       updated_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS whale_equity_snapshots (
+      whale_id TEXT NOT NULL,
+      bucket_at INTEGER NOT NULL,
+      sampled_at INTEGER NOT NULL,
+      contract_equity REAL NOT NULL,
+      PRIMARY KEY (whale_id, bucket_at)
+    );
+    CREATE INDEX IF NOT EXISTS idx_whale_equity_time
+      ON whale_equity_snapshots(whale_id, sampled_at);
+
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       username TEXT NOT NULL UNIQUE,

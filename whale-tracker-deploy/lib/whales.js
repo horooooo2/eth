@@ -33,6 +33,7 @@ const {
   FILL_LOOKBACK_MS,
 } = require('./hyperliquid');
 const { getHlInfoConfig, MAX_CONCURRENT } = require('./hlInfoClient');
+const { recordWhaleEquitySnapshots } = require('./sqliteStore');
 
 const WHALE_MODES = ['hf'];
 /** 共振扫描最长窗口 24h，活动流按时间保留而非仅取全局最新 N 条 */
@@ -622,6 +623,9 @@ async function refreshAlertHistory(query = {}) {
 }
 
 async function finalizeSnapshotFromState(whale, address, state, names, { light, base, prevPositions = [] }) {
+  const rawContractAccountValue = state?.marginSummary?.accountValue;
+  const contractAccountValue = rawContractAccountValue == null ? Number.NaN : Number(rawContractAccountValue);
+  const contractAccountValueObservedAt = Number.isFinite(contractAccountValue) ? Date.now() : null;
   let fills = [];
   if (!light) {
     try {
@@ -673,6 +677,8 @@ async function finalizeSnapshotFromState(whale, address, state, names, { light, 
   return {
     ...base,
     ...derived,
+    contractAccountValue: Number.isFinite(contractAccountValue) ? contractAccountValue : null,
+    contractAccountValueObservedAt,
     ...sideRates,
     topCoins,
     positions,
@@ -868,6 +874,12 @@ async function refreshWhalesShard(options = {}) {
         ? fetchWhaleAlerts(MIN_USD, 50).catch(() => ({ alerts: [], warning: null }))
         : Promise.resolve(null),
     ]);
+    try {
+      const recorded = recordWhaleEquitySnapshots(snapshots, Date.now());
+      if (recorded) console.log(`[equity-history] 本轮采集 ${recorded} 个合约账户权益`);
+    } catch (err) {
+      console.warn('[equity-history] 采集失败:', err.message || err);
+    }
     if (needOnchain) shardOnchainAt = Date.now();
 
     const refreshedAt = Date.now();

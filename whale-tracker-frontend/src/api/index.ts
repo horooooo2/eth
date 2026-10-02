@@ -525,6 +525,18 @@ export async function fetchWhalePerpMarkPrices(id: string) {
   return data;
 }
 
+export type WhaleEquityHistoryRange = '24h' | '7d' | '30d' | 'all';
+export type WhaleEquityHistoryPoint = { time: number; contractEquity: number };
+
+export async function fetchWhaleEquityHistory(id: string, range: WhaleEquityHistoryRange = 'all') {
+  const { data } = await http.get<{
+    points: WhaleEquityHistoryPoint[];
+    range: WhaleEquityHistoryRange;
+    sampleIntervalMs: number;
+  }>(`/whales/${encodeURIComponent(id)}/equity-history`, { params: { range } });
+  return data;
+}
+
 export type WhaleOpenOrder = {
   id: string;
   coin: string;
