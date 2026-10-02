@@ -55,6 +55,10 @@ const accountLongUsd = computed(() => Number(props.whale?.longUsd) || 0);
 const accountShortUsd = computed(() => Number(props.whale?.shortUsd) || 0);
 const grossPositionUsd = computed(() => accountLongUsd.value + accountShortUsd.value);
 const longPct = computed(() => grossPositionUsd.value > 0 ? accountLongUsd.value / grossPositionUsd.value * 100 : null);
+const shortPct = computed(() => longPct.value == null ? null : 100 - longPct.value);
+const longBarPct = computed(() => grossPositionUsd.value > 0 ? accountLongUsd.value / grossPositionUsd.value * 100 : 0);
+const shortBarPct = computed(() => grossPositionUsd.value > 0 ? accountShortUsd.value / grossPositionUsd.value * 100 : 0);
+const netPositionBias = computed(() => accountLongUsd.value - accountShortUsd.value);
 const totalUnrealizedPnl = computed(() => positions.value.length
   ? positions.value.reduce((sum, pos) => sum + (Number(pos.unrealizedPnl) || 0), 0)
   : null);
@@ -64,42 +68,66 @@ const netBiasLabel = computed(() => {
   if (longPct.value <= 35) return '偏空';
   return '多空均衡';
 });
-const positionRatio = computed(() => {
-  if (accountLongUsd.value <= 0 || accountShortUsd.value <= 0) return null;
-  return Math.max(accountLongUsd.value / accountShortUsd.value, accountShortUsd.value / accountLongUsd.value);
-});
 const addressShort = computed(() => {
   const address = props.whale?.address || '';
   return address.length > 18 ? `${address.slice(0, 8)}…${address.slice(-6)}` : address || '地址缺失';
 });
-const equityLinePath = computed(() => {
+const equityChart = computed(() => {
   const points = equityPoints.value;
-  if (points.length < 2) return '';
+  if (!points.length) return { line: '', area: '', plotted: [], yLabels: [], xLabels: [] as string[] };
   const rangeMs: Record<Exclude<WhaleEquityHistoryRange, 'all'>, number> = {
     '24h': 24 * 60 * 60 * 1000,
     '7d': 7 * 24 * 60 * 60 * 1000,
     '30d': 30 * 24 * 60 * 60 * 1000,
   };
-  const start = equityRange.value === 'all' ? points[0].time : Date.now() - rangeMs[equityRange.value];
-  const end = Math.max(Date.now(), points[points.length - 1].time);
+  const rangeStart = equityRange.value === 'all' ? points[0].time : Date.now() - rangeMs[equityRange.value];
+  const visible = points.filter((point) => point.time >= rangeStart);
+  const plottedPoints = visible.length ? visible : points.slice(-1);
+  const start = plottedPoints[0].time;
+  const end = plottedPoints[plottedPoints.length - 1].time;
   const { min, max } = points.reduce((range, point) => ({
     min: Math.min(range.min, point.contractEquity),
     max: Math.max(range.max, point.contractEquity),
   }), { min: Number.POSITIVE_INFINITY, max: Number.NEGATIVE_INFINITY });
   const spread = max - min || Math.max(Math.abs(max) * 0.01, 1);
-  return points.map((point, index) => {
-    const x = 20 + Math.max(0, Math.min(1, (point.time - start) / Math.max(end - start, 1))) * 960;
-    const y = 280 - ((point.contractEquity - min) / spread) * 250;
-    return `${index ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
+  const plotted = plottedPoints.map((point, index) => ({
+    ...point,
+    x: 90 + (plottedPoints.length === 1 ? 450 : (point.time - start) / Math.max(end - start, 1) * 880),
+    y: 24 + (1 - (point.contractEquity - min) / spread) * 218,
+    key: `${point.time}-${index}`,
+  }));
+  const line = plotted.map((point, index) => `${index ? 'L' : 'M'}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(' ');
+  const area = plotted.length > 1 ? `${line} L${plotted[plotted.length - 1].x.toFixed(1)},264 L${plotted[0].x.toFixed(1)},264 Z` : '';
+  const moneyAxis = [max, (max + min) / 2, min].map((value) => formatMoney(value));
+  const dateAxis = plotted.length > 1
+    ? [formatChartDate(plotted[0].time), formatChartDate(plotted[Math.floor((plotted.length - 1) / 2)].time), formatChartDate(plotted[plotted.length - 1].time)]
+    : [formatChartDate(plotted[0].time)];
+  return { line, area, plotted, yLabels: moneyAxis, xLabels: dateAxis };
 });
-const equityAreaPath = computed(() => equityLinePath.value
-  ? `${equityLinePath.value} L980,290 L20,290 Z`
-  : '');
+const equityDataRows = computed(() => {
+  const points = equityPoints.value;
+  if (points.length <= 5) return points;
+  const indexes = Array.from({ length: 5 }, (_, index) => Math.round(index * (points.length - 1) / 4));
+  return [...new Set(indexes)].map((index) => points[index]);
+});
 function formatMoney(value: unknown) {
   if (value == null || value === '') return '—';
   const amount = Number(value);
   return Number.isFinite(amount) ? formatUsd(amount) : '—';
+}
+
+function formatChartDate(value: number) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit', day: '2-digit',
+    ...(equityRange.value === '24h' ? { hour: '2-digit', minute: '2-digit' } : {}),
+  }).format(date);
+}
+
+function formatChartTooltip(point: WhaleEquityHistoryPoint) {
+  const date = new Date(point.time);
+  return `${new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(date)} · ${formatMoney(point.contractEquity)}`;
 }
 
 function formatPrice(value: unknown) {
@@ -342,12 +370,20 @@ async function copyAddress() {
                 <div class="sentiment-value" :class="longPct == null ? '' : longPct >= 50 ? 'positive' : 'negative'">{{ netBiasLabel }}</div>
                 <div class="sentiment-caption">多空仓位价值偏差</div>
               </div>
-              <div class="gauge" :class="longPct == null ? 'gauge-empty' : longPct >= 50 ? 'gauge-long' : 'gauge-short'">
-                <svg viewBox="0 0 60 60" aria-hidden="true"><circle class="gauge-bg" cx="30" cy="30" r="24" /><circle class="gauge-value" cx="30" cy="30" r="24" :style="{ strokeDashoffset: longPct == null ? 125 : 125 * (1 - Math.max(longPct, 100 - longPct) / 100) }" /></svg>
-                <span>{{ positionRatio == null ? '—' : `${positionRatio.toFixed(2)}x` }}</span>
+              <div class="bias-net" :class="signedClass(netPositionBias)">
+                <small>净偏差</small>
+                <b>{{ grossPositionUsd > 0 ? formatMoney(Math.abs(netPositionBias)) : '—' }}</b>
+                <small>{{ netPositionBias > 0 ? '多头占优' : netPositionBias < 0 ? '空头占优' : grossPositionUsd > 0 ? '多空相等' : '暂无仓位' }}</small>
               </div>
             </div>
-            <div class="bias-detail"><span class="positive">多 {{ longPct == null ? '—' : `${longPct.toFixed(1)}%` }}</span><span class="negative">空 {{ longPct == null ? '—' : `${(100 - longPct).toFixed(1)}%` }}</span></div>
+            <div class="bias-bar" role="img" :aria-label="`多头 ${formatMoney(accountLongUsd)}，空头 ${formatMoney(accountShortUsd)}`">
+              <span class="bias-bar-long" :style="{ width: `${longBarPct}%` }" />
+              <span class="bias-bar-short" :style="{ width: `${shortBarPct}%` }" />
+            </div>
+            <div class="bias-detail">
+              <span class="positive"><b>多头</b><strong>{{ formatMoney(accountLongUsd) }}</strong><small>{{ longPct == null ? '—' : `${longPct.toFixed(1)}%` }}</small></span>
+              <span class="negative"><b>空头</b><strong>{{ formatMoney(accountShortUsd) }}</strong><small>{{ shortPct == null ? '—' : `${shortPct.toFixed(1)}%` }}</small></span>
+            </div>
           </article>
           <div class="stats-row">
             <article class="stat-card">
@@ -372,15 +408,20 @@ async function copyAddress() {
             </div>
           </div>
           <div class="chart-container">
-            <div class="chart-grid"><i /><i /><i /></div>
-            <svg v-if="equityLinePath" class="equity-chart" viewBox="0 0 1000 300" preserveAspectRatio="none" aria-label="合约账户权益历史曲线">
+            <svg v-if="equityChart.line" class="equity-chart" viewBox="0 0 1000 300" preserveAspectRatio="none" aria-label="合约账户权益历史曲线">
               <defs><linearGradient id="equityArea" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#2962ff" stop-opacity=".32" /><stop offset="100%" stop-color="#2962ff" stop-opacity="0" /></linearGradient></defs>
-              <path :d="equityAreaPath" fill="url(#equityArea)" />
-              <path :d="equityLinePath" fill="none" stroke="#4b83ff" stroke-width="2.5" vector-effect="non-scaling-stroke" />
+              <g v-for="(label, index) in equityChart.yLabels" :key="`y-${index}`"><text x="4" :y="[29, 138, 247][index]" class="chart-axis-label">{{ label }}</text><line x1="86" x2="990" :y1="[24, 133, 242][index]" :y2="[24, 133, 242][index]" class="chart-axis-grid" /></g>
+              <path v-if="equityChart.area" :d="equityChart.area" fill="url(#equityArea)" />
+              <path :d="equityChart.line" fill="none" stroke="#4b83ff" stroke-width="2.5" vector-effect="non-scaling-stroke" />
+              <circle v-for="point in equityChart.plotted" :key="point.key" :cx="point.x" :cy="point.y" r="3.5" class="equity-point"><title>{{ formatChartTooltip(point) }}</title></circle>
+              <g v-for="(label, index) in equityChart.xLabels" :key="`x-${index}`"><text :x="[90, 530, 970][index]" y="292" :text-anchor="['start', 'middle', 'end'][index]" class="chart-axis-label">{{ label }}</text></g>
             </svg>
             <div v-if="equityLoading" class="chart-empty"><b>正在读取权益历史…</b></div>
             <div v-else-if="equityError" class="chart-empty"><b>权益历史暂不可用</b><span>{{ equityError }}</span></div>
             <div v-else-if="equityPoints.length < 2" class="chart-empty"><b>{{ equityPoints.length ? '历史点不足以绘制曲线' : '官方暂无历史权益数据' }}</b><span>{{ equityPoints.length ? 'Hyperliquid 当前仅返回一个合约权益历史点' : '请确认钱包地址及 Hyperliquid 是否提供该账户的历史记录' }}</span></div>
+          </div>
+          <div v-if="equityPoints.length" class="equity-data-list" aria-label="权益历史采样数据">
+            <div v-for="(point, index) in equityDataRows" :key="`${point.time}-${index}`"><span>{{ formatChartDate(point.time) }}</span><strong>{{ formatMoney(point.contractEquity) }}</strong></div>
           </div>
           <div class="chart-foot"><span>Hyperliquid 官方 portfolio / perp 历史</span><span>当前浮动盈亏 {{ totalUnrealizedPnl == null ? '—' : formatMoney(totalUnrealizedPnl) }}</span></div>
         </article>
@@ -556,15 +597,17 @@ async function copyAddress() {
 .whale-detail-dialog .sentiment-text { display: flex; flex-direction: column; gap: 5px; }
 .whale-detail-dialog .sentiment-value { color: #bdc8d6; font-size: 17px; font-weight: 700; }
 .whale-detail-dialog .sentiment-caption { color: var(--detail-muted); font-size: 11px; }
-.whale-detail-dialog .gauge { position: relative; width: 62px; height: 62px; flex: none; }
-.whale-detail-dialog .gauge svg { width: 100%; height: 100%; transform: rotate(-90deg); }
-.whale-detail-dialog .gauge circle { fill: none; stroke-width: 6; }
-.whale-detail-dialog .gauge-bg { stroke: #293240; }
-.whale-detail-dialog .gauge-value { stroke: #0ecb81; stroke-dasharray: 125; stroke-linecap: round; transition: stroke-dashoffset .2s ease; }
-.whale-detail-dialog .gauge-short .gauge-value { stroke: #f6465d; }
-.whale-detail-dialog .gauge-empty .gauge-value { stroke: #626d7b; }
-.whale-detail-dialog .gauge > span { position: absolute; inset: 0; display: grid; place-items: center; color: #dce5ef; font: 700 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
-.whale-detail-dialog .bias-detail { display: flex; justify-content: space-between; padding: 9px 3px 0; font: 600 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.whale-detail-dialog .bias-net { display: grid; gap: 3px; text-align: right; }
+.whale-detail-dialog .bias-net b { color: #dce5ef; font: 700 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.whale-detail-dialog .bias-net small { color: var(--detail-muted); font-size: 9px; }
+.whale-detail-dialog .bias-bar { display: flex; height: 8px; margin: 13px 3px 0; overflow: hidden; border-radius: 99px; background: #242c38; }
+.whale-detail-dialog .bias-bar-long { background: #0ecb81; transition: width .2s ease; }
+.whale-detail-dialog .bias-bar-short { background: #f6465d; transition: width .2s ease; }
+.whale-detail-dialog .bias-detail { display: flex; justify-content: space-between; gap: 10px; padding: 10px 3px 0; font: 600 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.whale-detail-dialog .bias-detail > span { display: grid; gap: 4px; }
+.whale-detail-dialog .bias-detail > span:last-child { text-align: right; }
+.whale-detail-dialog .bias-detail strong { color: #dce5ef; font-size: 11px; }
+.whale-detail-dialog .bias-detail small { color: var(--detail-muted); font-size: 10px; }
 .whale-detail-dialog .stats-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .whale-detail-dialog .stat-card { display: flex; min-width: 0; flex-direction: column; gap: 8px; padding: 14px; border: 1px solid var(--detail-border); border-radius: 12px; background: var(--detail-card); }
 .whale-detail-dialog .stat-label, .whale-detail-dialog .stat-card small { color: var(--detail-muted); font-size: 11px; }
@@ -580,8 +623,13 @@ async function copyAddress() {
 .whale-detail-dialog .time-filters button.selected { color: #e2e8f0; background: #273140; }
 .whale-detail-dialog .chart-container { position: relative; display: grid; flex: 1; min-height: 195px; place-items: center; overflow: hidden; }
 .whale-detail-dialog .equity-chart { position: absolute; inset: 0; width: 100%; height: 100%; }
-.whale-detail-dialog .chart-grid { position: absolute; inset: 10px 0; display: flex; flex-direction: column; justify-content: space-between; }
-.whale-detail-dialog .chart-grid i { border-top: 1px dashed #293240; }
+.whale-detail-dialog .chart-axis-label { fill: #8994a3; font: 11px system-ui, sans-serif; }
+.whale-detail-dialog .chart-axis-grid { stroke: #293240; stroke-dasharray: 3 5; stroke-width: 1; }
+.whale-detail-dialog .equity-point { fill: #172b52; stroke: #74a0ff; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.whale-detail-dialog .equity-data-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
+.whale-detail-dialog .equity-data-list > div { display: grid; gap: 5px; min-width: 0; padding: 8px 10px; border: 1px solid var(--detail-border); border-radius: 8px; background: #10151e; }
+.whale-detail-dialog .equity-data-list span { overflow: hidden; color: var(--detail-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.whale-detail-dialog .equity-data-list strong { overflow: hidden; color: #dce5ef; font: 600 11px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .whale-detail-dialog .chart-empty { z-index: 1; display: grid; gap: 8px; justify-items: center; padding: 14px; border: 1px solid rgba(40, 50, 65, .75); border-radius: 10px; background: rgba(16, 21, 30, .9); text-align: center; }
 .whale-detail-dialog .chart-empty b { color: #c9d4e2; font-size: 13px; }
 .whale-detail-dialog .chart-empty span { color: var(--detail-muted); font-size: 11px; }
