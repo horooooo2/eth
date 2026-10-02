@@ -1844,6 +1844,112 @@ async function getWhalePosition(id, coin, options = {}) {
   throw error;
 }
 
+/** 按需读取单个巨鲸的现货余额；行情缺失时保留数量，不伪造 USD 估值。 */
+async function getWhaleSpotAssets(id) {
+  const whale = findConfiguredWhale(id);
+  if (!whale) throw Object.assign(new Error('未找到该巨鲸'), { status: 404 });
+  const address = normalizeAddress(whale.address);
+  if (!address) throw Object.assign(new Error('该巨鲸缺少完整 0x 地址'), { status: 400 });
+
+  const [spotResult, midsResult, namesResult] = await Promise.allSettled([
+    fetchSpotClearinghouseState(address),
+    fetchAllMids(),
+    fetchCoinNameMap(),
+  ]);
+  if (spotResult.status === 'rejected') {
+    throw Object.assign(new Error(`现货余额获取失败：${spotResult.reason?.message || '上游暂不可用'}`), { status: 502 });
+  }
+  const spot = spotResult.value || {};
+  const mids = midsResult.status === 'fulfilled' ? midsResult.value || {} : {};
+  const names = namesResult.status === 'fulfilled' ? namesResult.value || {} : {};
+  const midMap = mids.mids && typeof mids.mids === 'object' ? mids.mids : mids;
+  const balances = Array.isArray(spot.balances) ? spot.balances : [];
+  const assets = balances.map((row) => {
+    const coin = String(row?.coin || '');
+    const amount = Number(row?.total);
+    const stable = /^(USDC|USDT|USDH)$/i.test(coin);
+    const markPrice = stable ? 1 : Number(midMap[coin] ?? midMap[coin.toUpperCase()]);
+    const validAmount = Number.isFinite(amount) ? amount : null;
+    const validPrice = Number.isFinite(markPrice) && markPrice > 0 ? markPrice : null;
+    return {
+      coin,
+      label: coinLabel(coin, names) || coin,
+      total: validAmount,
+      hold: Number.isFinite(Number(row?.hold)) ? Number(row.hold) : null,
+      markPrice: validPrice,
+      valueUsd: validAmount != null && validPrice != null ? validAmount * validPrice : null,
+      priceUnavailable: validPrice == null,
+    };
+  }).filter((item) => item.total != null && item.total !== 0);
+  const pricedAssets = assets.filter((item) => item.valueUsd != null);
+  const hasUnpricedAssets = assets.some((item) => item.valueUsd == null);
+  const snapshotWhale = (readActiveWhaleCache()?.data?.whales || []).find((item) => item.id === whale.id);
+  const perpMarkPrices = Object.fromEntries((snapshotWhale?.positions || []).map((position) => {
+    const coin = String(position.coin || '').trim();
+    const rawPrice = midMap[coin] ?? midMap[coin.toUpperCase()];
+    const price = Number(rawPrice);
+    return [coin, Number.isFinite(price) && price > 0 ? price : null];
+  }).filter(([coin]) => coin));
+  return {
+    whale: { id: whale.id, name: whale.name, address },
+    assets,
+    totalValueUsd: hasUnpricedAssets ? null : pricedAssets.reduce((sum, item) => sum + item.valueUsd, 0),
+    unpricedCount: assets.filter((item) => item.valueUsd == null).length,
+    perpMarkPrices,
+    updatedAt: Date.now(),
+    source: 'Hyperliquid spotClearinghouseState + allMids',
+    priceUnavailable: midsResult.status === 'rejected',
+  };
+}
+
+/** 按需读取该巨鲸当前合约仓位的标记价格，不请求现货账户数据。 */
+async function getWhalePerpMarkPrices(id) {
+  const whale = findConfiguredWhale(id);
+  if (!whale) throw Object.assign(new Error('未找到该巨鲸'), { status: 404 });
+  const snapshotWhale = (readActiveWhaleCache()?.data?.whales || []).find((item) => item.id === whale.id);
+  const mids = await fetchAllMids();
+  const midMap = mids?.mids && typeof mids.mids === 'object' ? mids.mids : mids || {};
+  const perpMarkPrices = Object.fromEntries((snapshotWhale?.positions || []).map((position) => {
+    const coin = String(position.coin || '').trim();
+    const rawPrice = midMap[coin] ?? midMap[coin.toUpperCase()];
+    const price = Number(rawPrice);
+    return [coin, Number.isFinite(price) && price > 0 ? price : null];
+  }).filter(([coin]) => coin));
+  return { perpMarkPrices, updatedAt: Date.now(), source: 'Hyperliquid allMids' };
+}
+
+/** 按需读取单个巨鲸未完成订单，使用 Hyperliquid helper 的 20 秒缓存。 */
+async function getWhaleOpenOrders(id) {
+  const whale = findConfiguredWhale(id);
+  if (!whale) throw Object.assign(new Error('未找到该巨鲸'), { status: 404 });
+  const address = normalizeAddress(whale.address);
+  if (!address) throw Object.assign(new Error('该巨鲸缺少完整 0x 地址'), { status: 400 });
+  const [rows, names] = await Promise.all([fetchFrontendOpenOrders(address), fetchCoinNameMap().catch(() => ({}))]);
+  const orders = (Array.isArray(rows) ? rows : []).map((row) => {
+    const size = Number(row?.sz ?? row?.origSz);
+    const price = Number(row?.limitPx ?? row?.triggerPx);
+    return {
+      id: String(row?.oid ?? row?.orderId ?? `${row?.coin || ''}-${row?.timestamp || ''}`),
+      coin: String(row?.coin || ''),
+      coinLabel: coinLabel(row?.coin, names) || String(row?.coin || ''),
+      side: row?.side === 'B' ? '买入' : row?.side === 'A' ? '卖出' : String(row?.side || '—'),
+      size: Number.isFinite(size) ? size : null,
+      price: Number.isFinite(price) && price > 0 ? price : null,
+      notionalUsd: Number.isFinite(size) && Number.isFinite(price) && price > 0 ? Math.abs(size * price) : null,
+      orderType: String(row?.orderType || (row?.isTrigger ? '条件单' : '限价单')),
+      reduceOnly: Boolean(row?.reduceOnly),
+      triggerCondition: row?.triggerCondition || null,
+      timestamp: Number(row?.timestamp) || null,
+    };
+  });
+  return {
+    whale: { id: whale.id, name: whale.name, address },
+    orders,
+    updatedAt: Date.now(),
+    source: 'Hyperliquid frontendOpenOrders',
+  };
+}
+
 function fillsExplainEnough(fills, pos) {
   if (!pos) return false;
   const meta = analyzePositionEntries(fills, pos.coin, pos.size, pos.side);
@@ -2334,6 +2440,9 @@ module.exports = {
   getWhaleTrades,
   getWhaleTransfers,
   getWhalePosition,
+  getWhaleSpotAssets,
+  getWhalePerpMarkPrices,
+  getWhaleOpenOrders,
   buildActivityFeed,
   getActivitySince,
   ACTIVITY_WINDOW_MS,

@@ -181,7 +181,7 @@ function analyzeTimeframe(timeframe, config, input) {
   const coverage = coreCoverage * 0.75 + aux.coverage * 0.25;
   const stability = 0.55;
   let confidenceScore = 0.35 * agreement + 0.3 * dataQuality + 0.2 * coverage + 0.15 * stability;
-  if (status === 'PRICE_ONLY') confidenceScore = Math.min(confidenceScore, 0.74);
+  if (status === 'PARTIAL' || status === 'PRICE_ONLY') confidenceScore = Math.min(confidenceScore, 0.74);
   if (stale) confidenceScore = Math.min(confidenceScore, 0.54);
   const direction = classify(score);
   const components = [

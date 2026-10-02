@@ -8,6 +8,9 @@ const {
   getWhaleTrades,
   getWhaleTransfers,
   getWhalePosition,
+  getWhaleSpotAssets,
+  getWhalePerpMarkPrices,
+  getWhaleOpenOrders,
   invalidateWhaleCache,
   buildActivityFeed,
   getActivitySince,
@@ -161,6 +164,33 @@ router.get('/:id/positions/:coin', async (req, res) => {
     const status = err.status || 502;
     console.error('[GET /api/whales/:id/positions/:coin]', err);
     res.status(status).json({ error: err.message || '持仓详情获取失败' });
+  }
+});
+
+/** GET /api/whales/:id/assets — 单个巨鲸现货余额（按需、走上游短缓存） */
+router.get('/:id/assets', async (req, res) => {
+  try {
+    res.json(await getWhaleSpotAssets(req.params.id));
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message || '现货资产获取失败' });
+  }
+});
+
+/** GET /api/whales/:id/market-prices — 当前合约仓位标记价，不读取现货账户 */
+router.get('/:id/market-prices', async (req, res) => {
+  try {
+    res.json(await getWhalePerpMarkPrices(req.params.id));
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message || '合约行情获取失败' });
+  }
+});
+
+/** GET /api/whales/:id/orders — 单个巨鲸未完成订单（含条件单） */
+router.get('/:id/orders', async (req, res) => {
+  try {
+    res.json(await getWhaleOpenOrders(req.params.id));
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message || '未完成订单获取失败' });
   }
 });
 

@@ -492,6 +492,63 @@ export async function fetchWhaleTransfers(
   return data;
 }
 
+export type WhaleSpotAsset = {
+  coin: string;
+  label: string;
+  total: number | null;
+  hold: number | null;
+  markPrice: number | null;
+  valueUsd: number | null;
+  priceUnavailable: boolean;
+};
+
+export async function fetchWhaleSpotAssets(id: string) {
+  const { data } = await http.get<{
+    whale: { id: string; name: string; address: string };
+    assets: WhaleSpotAsset[];
+    totalValueUsd: number | null;
+    unpricedCount: number;
+    perpMarkPrices: Record<string, number | null>;
+    updatedAt: number;
+    source: string;
+    priceUnavailable: boolean;
+  }>(`/whales/${encodeURIComponent(id)}/assets`, { timeout: 45000 });
+  return data;
+}
+
+export async function fetchWhalePerpMarkPrices(id: string) {
+  const { data } = await http.get<{
+    perpMarkPrices: Record<string, number | null>;
+    updatedAt: number;
+    source: string;
+  }>(`/whales/${encodeURIComponent(id)}/market-prices`, { timeout: 45000 });
+  return data;
+}
+
+export type WhaleOpenOrder = {
+  id: string;
+  coin: string;
+  coinLabel: string;
+  side: string;
+  size: number | null;
+  price: number | null;
+  notionalUsd: number | null;
+  orderType: string;
+  reduceOnly: boolean;
+  triggerCondition?: string | null;
+  timestamp: number | null;
+};
+
+export async function fetchWhaleOpenOrders(id: string) {
+  const { data } = await http.get<{
+    whale: { id: string; name: string; address: string };
+    orders: WhaleOpenOrder[];
+    updatedAt: number;
+    source: string;
+  }>(`/whales/${encodeURIComponent(id)}/orders`, { timeout: 45000 });
+  return data;
+}
+
 export async function fetchWhalePosition(
   id: string,
   coin: string,

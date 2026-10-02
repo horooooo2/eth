@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, shallowRef, watch } from 'vue';
-import { CopyDocument } from '@element-plus/icons-vue';
+import { CopyDocument, View } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import PnlProgressBar from '@/components/PnlProgressBar.vue';
 import PositionDetailDialog from '@/components/PositionDetailDialog.vue';
@@ -51,7 +51,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  query: [whale: WhaleProfile];
+  detail: [whale: WhaleProfile];
   focusWhale: [payload: { id: string; name: string; coin?: string }];
   selectTransfers: [whale: WhaleProfile];
 }>();
@@ -643,31 +643,13 @@ onUnmounted(() => {
   clearProgressTimers();
 });
 
-async function onWhaleClick(whale: WhaleProfile) {
-  // 点卡刷新：避免与定位/展开互相抢占
-  if (whale.error && !whaleStore.refreshingWhaleIds[whale.id]) {
-    try {
-      const updated = await whaleStore.refreshWhale(whale.id);
-      if (updated) {
-        frozenWhales.value = frozenWhales.value.map((item) =>
-          item.id === updated.id ? updated : item,
-        );
-        if (updated.error) {
-          ElMessage.warning(`${whaleCardTitle(updated)}：${updated.error}`);
-        }
-      }
-    } catch (err) {
-      ElMessage.error(err instanceof Error ? err.message : '刷新失败');
-    }
-    return;
-  }
-  emit('query', whale);
-}
-
 function onWhaleNameClick(whale: WhaleProfile, event?: Event) {
   event?.stopPropagation();
   emit('selectTransfers', whale);
-  emit('query', whale);
+}
+
+function openWhaleDetail(whale: WhaleProfile) {
+  emit('detail', whale);
 }
 
 async function copyWhaleAddress(whale: WhaleProfile, event?: Event) {
@@ -903,7 +885,6 @@ defineExpose({ focusWhale });
           'has-error': Boolean(whale.error),
           refreshing: Boolean(whaleStore.refreshingWhaleIds[whale.id]),
         }"
-        @click="onWhaleClick(whale)"
       >
         <div class="card-head">
           <span class="rank">{{ displayRank(index) }}</span>
@@ -921,6 +902,15 @@ defineExpose({ focusWhale });
               :content="buildWhaleAiPayload(whale).content"
               :meta="buildWhaleAiPayload(whale).meta"
             />
+            <button
+              type="button"
+              class="detail-btn"
+              title="查看巨鲸详情"
+              aria-label="查看巨鲸详情"
+              @click.stop="openWhaleDetail(whale)"
+            >
+              <el-icon :size="15"><View /></el-icon>
+            </button>
             <button
               type="button"
               class="monitor-btn"
@@ -1453,7 +1443,6 @@ defineExpose({ focusWhale });
   border: 1px solid var(--border);
   border-radius: 10px;
   background: color-mix(in srgb, var(--card) 80%, #000 8%);
-  cursor: pointer;
   box-shadow: inset 0 0 0 1px transparent;
 }
 .whale-item.active {
@@ -1573,6 +1562,21 @@ defineExpose({ focusWhale });
   align-items: center;
   gap: 6px;
   flex: 0 0 auto;
+}
+.detail-btn {
+  display: grid;
+  width: 26px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.detail-btn:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
 }
 .row {
   display: flex;

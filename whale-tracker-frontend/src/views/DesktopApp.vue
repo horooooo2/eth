@@ -12,6 +12,7 @@ import WhaleAlertDock from '@/components/WhaleAlertDock.vue';
 import WhaleList from '@/components/WhaleList.vue';
 import DataModule from '@/components/DataModule.vue';
 import TradFiBoard from '@/components/TradFiBoard.vue';
+import WhaleDetailDialog from '@/components/WhaleDetailDialog.vue';
 import { useNewsStore } from '@/stores/news';
 import { useWhaleStore } from '@/stores/whale';
 import {
@@ -57,6 +58,8 @@ watch(sideTab, (tab) => {
   try { window.localStorage.setItem(SIDE_TAB_STORAGE_KEY, tab); } catch { /* storage unavailable */ }
 });
 const whaleListRef = ref<InstanceType<typeof WhaleList> | null>(null);
+const whaleDetailOpen = ref(false);
+const whaleDetailProfile = ref<WhaleProfile | null>(null);
 const newsListRef = ref<InstanceType<typeof NewsList> | null>(null);
 const quotes = ref<RecoQuotes>({});
 const fundingRates = ref<Record<string, number>>({});
@@ -108,12 +111,14 @@ function onFocusWhaleCard(payload: { id: string; name: string; coin?: string }) 
   });
 }
 
-function onSelectWhale(whale: { id: string; name: string }) {
+function onSelectWhale(whale: WhaleProfile) {
   whaleStore.loadWhaleTrades(whale);
+  whaleDetailProfile.value = whale;
+  whaleDetailOpen.value = true;
 }
 
-function onSelectTransfers(whale: { id: string; name: string }) {
-  onSelectWhale(whale);
+function onSelectTransfers(whale: WhaleProfile) {
+  whaleStore.loadWhaleTrades(whale);
 }
 
 async function loadQuotes() {
@@ -397,7 +402,7 @@ onUnmounted(() => {
             :loading="whaleStore.loading"
             :selected-id="whaleStore.selectedWhaleId"
             :quotes="quotes"
-            @query="onSelectWhale"
+            @detail="onSelectWhale"
             @select-transfers="onSelectTransfers"
             @focus-whale="onFocusWhaleCard"
           />
@@ -418,6 +423,7 @@ onUnmounted(() => {
       </div>
       <TradFiBoard v-show="sideTab === 'tradfi'" class="tradfi-host" />
     </div>
+    <WhaleDetailDialog v-model="whaleDetailOpen" :whale="whaleDetailProfile" :snapshot-updated-at="whaleStore.updatedAt" />
     </template>
   </div>
 </template>
