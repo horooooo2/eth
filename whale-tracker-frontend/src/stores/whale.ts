@@ -862,18 +862,6 @@ export const useWhaleStore = defineStore('whale', () => {
     }
   }
 
-  /**
-   * 异动刷新：只重拉巨鲸仓位并做 diff，不再批量补成交/openTime。
-   */
-  async function refreshAlertHistory(_maxWhales = 40) {
-    await load(false, true);
-    return {
-      enriched: 0,
-      tradeCount: 0,
-      warning: null as string | null,
-    };
-  }
-
   /** 已关闭后台成交补历史；保留空实现避免旧调用报错 */
   function ensureAlertHistory() {
     // no-op
@@ -973,7 +961,6 @@ export const useWhaleStore = defineStore('whale', () => {
     ensureWhaleInDisplay,
     patchWhalePosition,
     ensureDisplayRoster,
-    refreshAlertHistory,
     ensureAlertHistory,
     pollAlerts,
     pollActivityIncremental,

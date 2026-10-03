@@ -52,11 +52,9 @@ const props = defineProps<{
 const emit = defineEmits<{
   focusWhale: [whale: { id: string; name: string }];
   locateWhale: [payload: { id: string; name: string; coin?: string }];
-  clearWhaleFilter: [];
 }>();
 
 const preferredCoins = preferredCoinsState;
-const DEFAULT_ALERT_MIN_USD = 0;
 
 const alertSideFilter = ref<'all' | 'long' | 'short'>('all');
 const openOnly = ref(false);
@@ -346,29 +344,17 @@ function toggleSideFilter(side: 'long' | 'short') {
   alertSideFilter.value = alertSideFilter.value === side ? 'all' : side;
 }
 
-function resetAlertFilters() {
-  alertCoinFilter.value = 'all';
-  alertSideFilter.value = 'all';
-  openOnly.value = false;
-  alertMinUsd.value = DEFAULT_ALERT_MIN_USD;
-  writeAlertMinUsd(DEFAULT_ALERT_MIN_USD);
-  emit('clearWhaleFilter');
-}
-
 const whaleStore = useWhaleStore();
 const alertRefreshing = ref(false);
 
-/** 重置筛选，并重拉仓位做 diff（不再补成交反推） */
+/** 只重新请求异动列表当前页；不触发巨鲸仓位刷新或批次加载。 */
 async function onRefreshAlerts() {
   if (alertRefreshing.value) return;
   alertRefreshing.value = true;
   suppressAutoAlertReload = true;
   try {
-    resetAlertFilters();
-    await whaleStore.refreshAlertHistory();
-    alertPage.value = 1;
     await loadAlertPage();
-    ElMessage.success('异动已按最新仓位刷新');
+    ElMessage.success('异动记录已刷新');
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '异动刷新失败');
   } finally {

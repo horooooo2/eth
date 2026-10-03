@@ -457,7 +457,6 @@ onUnmounted(() => {
             :realtime-connected="realtimeStatus === 'connected'"
             @locate-whale="onFocusWhaleCard"
             @focus-whale="onFocusWhale"
-            @clear-whale-filter="whaleStore.clearWhaleFilter"
           />
         </div>
       </div>
