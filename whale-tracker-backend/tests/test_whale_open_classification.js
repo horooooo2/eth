@@ -3,7 +3,7 @@ const test = require('node:test');
 
 require('./helpers/isolateSqlite');
 const { mapFillToTrade, normalizeToHlFill, aggregateTradesByWindow } = require('../lib/hyperliquid');
-const { eventsFromTrade, persistAlerts, loadPagedAlerts } = require('../lib/sqliteStore');
+const { eventsFromTrade, persistAlerts, loadPagedAlerts, loadAlertFlowSummary } = require('../lib/sqliteStore');
 const { alertsFromPositionDiff, alertFromLiveFill, rememberPositionFill, pickLiveAddresses } = require('../lib/realtimeBridge');
 
 const whale = { id: 'w1', name: 'whale', address: '0xabc' };
@@ -158,4 +158,41 @@ test('retrying a source alert after merge does not double-count its notional', (
   assert.equal(result.total, 1);
   assert.equal(result.alerts[0].items[0].usd, 3000);
   assert.equal(result.alerts[0].mergedCount, 2);
+});
+
+test('server alert flow summary scopes by event time and coin, and nets shorts', () => {
+  const at = Date.now() + 180_000;
+  persistAlerts([
+    { id: `flow-long-${at}`, at, whaleId: 'flow-a', kind: 'open', items: [
+      { kind: 'open', coin: 'BTC', side: 'long', usd: 1000, time: at },
+      { kind: 'increase', coin: 'ETH', side: 'long', usd: 400, time: at },
+    ] },
+    { id: `flow-short-${at}`, at, whaleId: 'flow-b', kind: 'increase', items: [
+      { kind: 'increase', coin: 'KBTC', side: 'short', usd: 1500, time: at },
+    ] },
+  ]);
+  const btc = loadAlertFlowSummary({ sinceMs: at - 1, untilMs: at + 1, coin: 'BTC' });
+  assert.equal(btc.longUsd, 1000);
+  assert.equal(btc.shortUsd, 1500);
+  assert.equal(btc.netUsd, -500);
+  assert.equal(btc.events, 2);
+  assert.equal(btc.whales, 2);
+});
+
+test('server alert pagination applies side, coin and exotic filters before slicing', () => {
+  const at = Date.now() + 240_000;
+  persistAlerts([
+    { id: `page-a-${at}`, at, whaleId: 'page-a', kind: 'open', items: [
+      { kind: 'open', coin: '@123', side: 'long', usd: 2000, time: at },
+      { kind: 'open', coin: 'BTC', side: 'long', usd: 3000, time: at },
+    ] },
+    { id: `page-b-${at}`, at: at - 1000, whaleId: 'page-b', kind: 'open', items: [
+      { kind: 'open', coin: 'ETH', side: 'short', usd: 2500, time: at - 1000 },
+    ] },
+  ]);
+  const page = loadPagedAlerts({ sinceMs: at - 5000, page: 1, limit: 1, side: 'long', excludeExotic: true });
+  assert.equal(page.total, 1);
+  assert.equal(page.alerts.length, 1);
+  assert.equal(page.facets.all, 2, 'the all facet remains side-independent');
+  assert.deepEqual(page.facets.byCoin, { BTC: 1, ETH: 1 });
 });

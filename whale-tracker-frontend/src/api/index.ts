@@ -348,15 +348,6 @@ export function scheduleSilentRetry(key: string, run: () => void, delayMs = 4000
   silentRetryTimers.set(key, timer);
 }
 
-export async function fetchWhales(refresh = false) {
-  const { data } = await http.get<WhaleResponse>('/whales', {
-    // Explicit compatibility escape hatch; normal UI loading uses paged fetchWhalesBatch.
-    params: { full: 1, ...(refresh ? { refresh: 1 } : {}) },
-    timeout: refresh ? 120000 : 20000,
-  });
-  return data;
-}
-
 /** 增量成交：只拉 since 之后的新记录 */
 export async function fetchActivitySince(since: number) {
   const { data } = await http.get<{
@@ -375,14 +366,48 @@ export async function fetchWhalesBatch(query: {
   limit?: number;
   refresh?: boolean;
 } = {}) {
-  const { data } = await http.get<WhaleResponse>('/whales', {
+  const { data } = await http.get<WhaleResponse>('/whales/cache-page', {
+    // Business snapshots are collected by the backend scheduler. Browser reads
+    // only the currently available cache and never starts upstream collection.
+    params: { offset: query.offset ?? 0, limit: query.limit ?? 12 },
+    timeout: 20000,
+  });
+  return data;
+}
+
+export type WhaleCacheQuery = {
+  whales: WhaleProfile[];
+  total: number;
+  page: number;
+  limit: number;
+  directionCounts: Record<string, number>;
+  coinCounts: Record<string, number>;
+  stale: boolean;
+  updatedAt: number;
+};
+
+export async function fetchWhaleCacheQuery(query: {
+  page: number;
+  limit: number;
+  coin: string;
+  direction: string;
+  sort: string;
+  followedIds: string[];
+  coins: string[];
+  pinId?: string;
+}) {
+  const { data } = await http.get<WhaleCacheQuery>('/whales/cache-query', {
     params: {
-      batch: 1,
-      offset: query.offset ?? 0,
-      limit: query.limit ?? 1,
-      refresh: query.refresh ? 1 : undefined,
+      offset: (query.page - 1) * query.limit,
+      limit: query.limit,
+      coin: query.coin,
+      direction: query.direction,
+      sort: query.sort,
+      followedIds: query.followedIds.join(','),
+      coins: query.coins.join(','),
+      pinId: query.pinId || '',
     },
-    timeout: 120000,
+    timeout: 20000,
   });
   return data;
 }
@@ -437,6 +462,7 @@ export type AlertHistoryQuery = {
   side?: 'all' | 'long' | 'short';
   minUsd?: number;
   sinceMs?: number;
+  excludeExotic?: boolean;
 };
 
 /** 异动服务端分页 */
@@ -468,19 +494,31 @@ export async function fetchPagedAlertHistory(query: AlertHistoryQuery = {}) {
       side: query.side && query.side !== 'all' ? query.side : undefined,
       minUsd: query.minUsd || undefined,
       sinceMs: query.sinceMs || undefined,
+      excludeExotic: query.excludeExotic ? 1 : undefined,
     },
     timeout: 20000,
   });
   return data;
 }
 
-/** 把前端异动历史同步到服务端 SQLite */
-export async function pushPersistedAlertHistory(alerts: unknown[]) {
-  const { data } = await http.post<{ ok: boolean; saved: number }>(
-    '/whales/alert-history',
-    { alerts },
-    { timeout: 20000 },
-  );
+/** 服务端异动资金聚合，避免从浏览器本地历史推导实时横幅。 */
+export async function fetchAlertFlowSummary(query: { window: '15m' | '1h' | '4h' | '24h'; coin?: string }) {
+  const { data } = await http.get<{
+    longUsd: number; shortUsd: number; netUsd: number; events: number; whales: number;
+    sinceMs: number; untilMs: number;
+  }>('/whales/alert-history/summary', { params: query, timeout: 15000 });
+  return data;
+}
+
+export type WhaleServerSummary = {
+  total: number; knownCount: number; longUsd: number; shortUsd: number;
+  longPct: number; shortPct: number; longAddrPct: number; shortAddrPct: number;
+  longCount: number; shortCount: number; neutralCount: number; deviationPct: number;
+  hint: string; scopeLabel: string; positionCount: number; updatedAt: number; stale: boolean;
+};
+
+export async function fetchWhaleSummary() {
+  const { data } = await http.get<WhaleServerSummary>('/whales/summary', { timeout: 15000 });
   return data;
 }
 

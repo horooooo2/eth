@@ -44,12 +44,17 @@ test('only the alert-history POST route gets a raised body limit', () => {
   assert.doesNotMatch(src, /limit: Infinity|limit: '0'|limit: 0\b/);
 });
 
-test('whale summary aggregation layer is fully removed', () => {
+test('server summary endpoints are wired to cached whale and alert data', () => {
   const backend = path.join(__dirname, '..');
   assert.equal(fs.existsSync(path.join(backend, 'lib', 'whaleSummary.js')), false);
 
   const routes = fs.readFileSync(path.join(backend, 'routes', 'whales.js'), 'utf8');
-  assert.doesNotMatch(routes, /whaleSummary|\/summary/);
+  assert.match(routes, /router\.get\('\/summary'/);
+  assert.match(routes, /getWhaleSummary\(\)/);
+  assert.match(routes, /router\.get\('\/cache-query'/);
+  assert.match(routes, /queryWhaleCache\(req\.query\)/);
+  assert.match(routes, /router\.get\('\/alert-history\/summary'/);
+  assert.match(routes, /loadAlertFlowSummary\(/);
 
   const files = fs.readFileSync(path.join(backend, 'scripts', 'sync-deploy.js'), 'utf8');
   assert.doesNotMatch(files, /whaleSummary/);

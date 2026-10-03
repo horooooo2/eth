@@ -6,6 +6,7 @@ export type RealtimeMessage =
   | { type: 'fill'; trade: Record<string, unknown>; at?: number }
   | { type: 'alert'; alert: Record<string, unknown>; at?: number }
   | { type: 'whalePatch'; whaleId: string; patch: Record<string, unknown>; at?: number }
+  | { type: 'whaleSnapshotUpdated'; mode: string; updatedAt: number; total: number }
   | {
       type: 'xTweet';
       at?: number;

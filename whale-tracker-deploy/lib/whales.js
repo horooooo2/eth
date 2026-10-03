@@ -163,6 +163,21 @@ function readActiveWhaleCache() {
   return readWhaleModeCache(mode);
 }
 
+/** JSON 缓存缺失时回退 SQLite，保证重启后先显示服务器已有快照。 */
+function readActiveWhaleSnapshot() {
+  const cached = readActiveWhaleCache();
+  if (cached?.data?.whales?.length) return cached;
+  try {
+    const stored = require('./sqliteStore').loadModePayload();
+    if (stored?.data?.whales?.length) {
+      return { data: stored.data, updatedAt: stored.updatedAt, stale: true };
+    }
+  } catch (err) {
+    console.warn('[sqlite] 读取巨鲸快照回退失败:', err.message);
+  }
+  return cached;
+}
+
 function isWhaleCacheCompatible(cached) {
   if (!cached?.data?.whales?.length) return false;
   return cached.data.whales.length === getActiveWhales().length;
@@ -321,6 +336,7 @@ async function loadWhaleSnapshot(whale, names = {}, fallback = null, options = {
     shortWinRate: usableFallback.shortWinRate,
     topCoins: usableFallback.topCoins,
     error: null,
+    __snapshotFresh: false,
     trades: [],
   });
 
@@ -336,17 +352,21 @@ async function loadWhaleSnapshot(whale, names = {}, fallback = null, options = {
       throw err;
     }
 
-    return finalizeSnapshotFromState(whale, address, state, names, {
+    return {
+      ...(await finalizeSnapshotFromState(whale, address, state, names, {
       light,
       base,
       prevPositions: usableFallback?.positions || [],
-    });
+      })),
+      __snapshotFresh: true,
+    };
   } catch (err) {
     console.warn(`[whales] ${whale.name} Hyperliquid 查询失败:`, err.message);
     if (usableFallback) return fromFallback();
     return {
       ...base,
       error: err.message,
+      __snapshotFresh: false,
       trades: [],
     };
   }
@@ -726,16 +746,19 @@ async function loadWhaleSnapshotsBatch(whales, names = {}, fallbackById = new Ma
       };
       try {
         const prevPositions = Array.isArray(fallback?.positions) ? fallback.positions : [];
-        return await finalizeSnapshotFromState(whale, address, state, names, {
+        return {
+          ...(await finalizeSnapshotFromState(whale, address, state, names, {
           light,
           base,
           prevPositions,
-        });
+          })),
+          __snapshotFresh: true,
+        };
       } catch (err) {
         if (fallback && !isPendingPlaceholder(fallback)) {
-          return { ...fallback, ...base, error: null, trades: [] };
+          return { ...fallback, ...base, error: null, __snapshotFresh: false, trades: [] };
         }
-        return { ...base, error: err.message, trades: [] };
+        return { ...base, error: err.message, __snapshotFresh: false, trades: [] };
       }
     }
     return loadWhaleSnapshot(whale, names, fallback, { light });
@@ -866,6 +889,7 @@ async function refreshWhalesShard(options = {}) {
 
     const cachedBefore = readWhaleModeCache(mode);
     const prevCachedWhales = Array.isArray(cachedBefore?.data?.whales) ? cachedBefore.data.whales : [];
+    const prevWhales = prevCachedWhales;
     const slice = pickShardSlice(roster, prevCachedWhales, WHALE_SHARD_SIZE);
     const hotCount = slice.filter((whale) => {
       const snap = prevCachedWhales.find((item) => item.id === whale.id);
@@ -884,16 +908,35 @@ async function refreshWhalesShard(options = {}) {
     if (needOnchain) shardOnchainAt = Date.now();
 
     const refreshedAt = Date.now();
+    // 只用上游成功返回的快照产生持仓事件。首次成功仅建立基线；沿用旧缓存
+    // 或查询失败都不生成事件，避免冷启动假开仓和故障期间重复/虚假异动。
+    const snapshotAlerts = [];
+    const freshSnapshotIds = new Set();
+    const { alertsFromPositionDiff } = require('./realtimeBridge');
     for (const snap of snapshots) {
-      if (snap?.id && !snap.error) lastShardAtById.set(snap.id, refreshedAt);
+      const isFresh = snap?.__snapshotFresh === true;
+      delete snap.__snapshotFresh;
+      if (!snap?.id || !isFresh || snap.error) continue;
+      freshSnapshotIds.add(snap.id);
+      const previous = prevWhales.find((item) => item.id === snap.id);
+      if (!previous || previous.error || isPendingPlaceholder(previous) || !Array.isArray(previous.positions)) continue;
+      snapshotAlerts.push(...alertsFromPositionDiff(snap, previous.positions, snap.positions || []));
+    }
+    const monitorAlerts = snapshotAlerts.filter((item) => item && (item.kind === 'open' || item.kind === 'increase'));
+    if (monitorAlerts.length) {
+      // 先持久化异动再推进仓位基线；若写入失败则中止本轮，下一次采集可重试 diff。
+      const { persistAlerts } = require('./sqliteStore');
+      persistAlerts(monitorAlerts);
+      const { broadcast } = require('./realtimeHub');
+      for (const alert of monitorAlerts) broadcast({ type: 'alert', alert, at: Date.now() });
     }
 
     const cached = cachedBefore || readWhaleModeCache(mode);
-    const prevWhales = Array.isArray(cached?.data?.whales) ? cached.data.whales : [];
+    const previousWhales = Array.isArray(cached?.data?.whales) ? cached.data.whales : [];
     const prevTrades = Array.isArray(cached?.data?.trades) ? cached.data.trades : [];
     const prevWarnings = Array.isArray(cached?.data?.warnings) ? cached.data.warnings : [];
 
-    const byId = new Map(prevWhales.map((item) => [item.id, item]));
+    const byId = new Map(previousWhales.map((item) => [item.id, item]));
     for (const snap of snapshots) {
       const { trades: _t, ...rest } = snap;
       const prev = byId.get(snap.id);
@@ -953,6 +996,13 @@ async function refreshWhalesShard(options = {}) {
       minUsd: MIN_USD,
     };
     const saved = writeWhaleModeCache(mode, payload);
+    for (const snap of snapshots) {
+      if (snap?.id && freshSnapshotIds.has(snap.id)) lastShardAtById.set(snap.id, refreshedAt);
+    }
+    if (slice.length) {
+      const { broadcast } = require('./realtimeHub');
+      broadcast({ type: 'whaleSnapshotUpdated', mode, updatedAt: saved.updatedAt, total: whales.filter((item) => !isPendingPlaceholder(item)).length });
+    }
     const pendingLeft = countPendingWhales(whales);
     console.log(
       `[cache] 分片刷新 ${slice.length}/${total}（优先热门≈${hotCount}，待补 ${pendingLeft}），写入完成`,
@@ -1857,6 +1907,156 @@ async function getWhalePosition(id, coin, options = {}) {
   throw error;
 }
 
+/** 前端只读当前服务器缓存；此接口不启动 HL 拉取/渐进采集任务。 */
+function formatKnownCachedBatchPayload(cached, mode, options = {}) {
+  const knownWhales = (cached.data.whales || []).filter((whale) =>
+    !isPendingPlaceholder(whale) && !whale.error,
+  );
+  return formatCachedBatchPayload({
+    ...cached,
+    data: { ...cached.data, whales: knownWhales },
+  }, mode || cached.data.mode || 'hf', options);
+}
+
+function getWhaleCacheBatch(query = {}) {
+  const { offset, limit } = parseBatchQuery(query);
+  const cached = readActiveWhaleSnapshot();
+  if (!cached?.data) {
+    return {
+      mode: normalizeMode(readConfig().mode || 'hf'), whales: [], trades: [], activity: [],
+      warnings: [], total: 0, loaded: 0, offset, nextOffset: offset, limit,
+      done: true, progressive: true, stale: true, updatedAt: 0,
+    };
+  }
+  return formatKnownCachedBatchPayload(cached, cached.data.mode || 'hf', { offset, limit });
+}
+
+/** Server-side filter/sort/page over the current cached snapshot; never starts collection. */
+function queryWhaleCache(query = {}) {
+  const cached = readActiveWhaleSnapshot();
+  const { offset, limit } = parseBatchQuery(query);
+  const mode = cached?.data?.mode || normalizeMode(readConfig().mode || 'hf');
+  const configured = new Map(getActiveWhales().map((item) => [String(item.id), item]));
+  let rows = (cached?.data?.whales || []).filter((whale) =>
+    configured.has(String(whale.id)) && !isPendingPlaceholder(whale) && !whale.error &&
+    (whale.positions || []).some((pos) => Math.abs(Number(pos.size) || 0) > 0 || Math.abs(Number(pos.positionValue) || 0) > 0),
+  );
+  const coin = String(query.coin || 'all').toUpperCase();
+  const direction = String(query.direction || 'all');
+  const sort = String(query.sort || 'all');
+  const followedIds = new Set(String(query.followedIds || '').split(',').map((id) => id.trim()).filter(Boolean));
+  const visiblePositions = (whale, coinFilter = coin) => (whale.positions || []).filter((pos) => {
+    const rawName = String(pos.coin || pos.coinLabel || '').toUpperCase();
+    if (/^@\d+$/.test(rawName) || rawName.includes(':')) return false;
+    const name = String(pos.coinLabel || pos.coin || '').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/^K(?=[A-Z])/, '');
+    const target = String(coinFilter || 'ALL').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/^K(?=[A-Z])/, '');
+    return target === 'ALL' || name === target;
+  });
+  const directionOf = (positions) => {
+    let long = 0; let short = 0;
+    for (const pos of positions) {
+      const value = Math.abs(Number(pos.positionValue) || 0);
+      if (pos.side === 'long') long += value;
+      if (pos.side === 'short') short += value;
+    }
+    return long > short ? 'long' : short > long ? 'short' : 'neutral';
+  };
+  const allRows = rows;
+  const coinRows = coin === 'ALL' ? rows : rows.filter((whale) => visiblePositions(whale).length > 0);
+  const directionCounts = { all: coinRows.length, long: 0, short: 0, neutral: 0, followed: coinRows.filter((whale) => followedIds.has(String(whale.id))).length };
+  for (const whale of coinRows) directionCounts[directionOf(visiblePositions(whale))] += 1;
+  const coinCounts = { all: allRows.length };
+  for (const item of String(query.coins || '').split(',').map((value) => value.trim().toUpperCase()).filter(Boolean)) {
+    coinCounts[item] = allRows.filter((whale) => visiblePositions(whale, item).length > 0).length;
+  }
+  if (coin !== 'ALL') rows = coinRows;
+  if (direction === 'followed') rows = rows.filter((whale) => followedIds.has(String(whale.id)));
+  else if (direction !== 'all') rows = rows.filter((whale) => directionOf(visiblePositions(whale)) === direction);
+  const valueOf = (whale) => visiblePositions(whale, 'ALL').reduce((sum, pos) => sum + Math.abs(Number(pos.positionValue) || 0), 0);
+  const pnlOf = (whale) => visiblePositions(whale, 'ALL').reduce((sum, pos) => sum + (Number(pos.unrealizedPnl) || 0), 0);
+  const latestOf = (whale) => visiblePositions(whale, 'ALL').reduce((max, pos) => Math.max(max, Number(pos.lastAddTime || pos.openTime) || 0), 0);
+  const fillsOf = (whale) => Number(whale.fills24h ?? whale.closedTrades) || 0;
+  const priorityOf = (whale) => Number(configured.get(String(whale.id))?.priority) || Number(whale.priority) || 0;
+  const compareDefault = (a, b) => (Number(valueOf(b) >= 1000) - Number(valueOf(a) >= 1000)) || fillsOf(b) - fillsOf(a) || priorityOf(b) - priorityOf(a) || (Number(b.closedTrades) || 0) - (Number(a.closedTrades) || 0);
+  rows.sort((a, b) => {
+    if (sort === 'positionValue') return valueOf(b) - valueOf(a) || compareDefault(a, b);
+    if (sort === 'positionPnl') return pnlOf(b) - pnlOf(a) || compareDefault(a, b);
+    if (sort === 'latest') return latestOf(b) - latestOf(a) || compareDefault(a, b);
+    return compareDefault(a, b);
+  });
+  const pinId = String(query.pinId || '');
+  if (pinId && offset === 0) {
+    const pinIndex = rows.findIndex((whale) => String(whale.id) === pinId);
+    if (pinIndex > 0) rows.unshift(rows.splice(pinIndex, 1)[0]);
+  }
+  const total = rows.length;
+  const pageRows = rows.slice(offset, offset + limit);
+  return {
+    mode, whales: pageRows, activity: [], warnings: [], total, loaded: pageRows.length,
+    offset, nextOffset: Math.min(total, offset + pageRows.length), limit,
+    done: offset + pageRows.length >= total, progressive: false,
+    stale: Boolean(cached?.stale), updatedAt: Number(cached?.updatedAt) || 0,
+    page: Math.floor(offset / limit) + 1, directionCounts, coinCounts,
+  };
+}
+
+/** 从服务端最新已知快照计算总览；未采集占位和无效失败快照不当作零仓位。 */
+function getWhaleSummary() {
+  const cached = readActiveWhaleSnapshot();
+  const roster = getActiveWhales();
+  const byId = new Map((cached?.data?.whales || []).map((item) => [String(item.id), item]));
+  let longUsd = 0;
+  let shortUsd = 0;
+  let knownCount = 0;
+  let longWhales = 0;
+  let shortWhales = 0;
+  let positionCount = 0;
+  for (const config of roster) {
+    const whale = byId.get(String(config.id));
+    if (!whale || isPendingPlaceholder(whale) || (whale.error && !Array.isArray(whale.positions))) continue;
+    knownCount += 1;
+    const positions = (whale.positions || []).filter((pos) => Math.abs(Number(pos.positionValue) || 0) > 0);
+    positionCount += positions.length;
+    const long = positions.some((pos) => pos.side === 'long');
+    const short = positions.some((pos) => pos.side === 'short');
+    if (long) longWhales += 1;
+    if (short) shortWhales += 1;
+    longUsd += positions.filter((pos) => pos.side === 'long').reduce((sum, pos) => sum + Math.abs(Number(pos.positionValue) || 0), 0);
+    shortUsd += positions.filter((pos) => pos.side === 'short').reduce((sum, pos) => sum + Math.abs(Number(pos.positionValue) || 0), 0);
+  }
+  return {
+    total: roster.length,
+    knownCount,
+    longUsd,
+    shortUsd,
+    longPct: longUsd + shortUsd ? Math.round((longUsd / (longUsd + shortUsd)) * 100) : 0,
+    shortPct: longUsd + shortUsd ? 100 - Math.round((longUsd / (longUsd + shortUsd)) * 100) : 0,
+    longAddrPct: longWhales + shortWhales ? Math.round((longWhales / (longWhales + shortWhales)) * 100) : 0,
+    shortAddrPct: longWhales + shortWhales ? 100 - Math.round((longWhales / (longWhales + shortWhales)) * 100) : 0,
+    longCount: longWhales,
+    shortCount: shortWhales,
+    neutralCount: Math.max(0, knownCount - longWhales - shortWhales),
+    deviationPct: longUsd + shortUsd && longWhales + shortWhales
+      ? Math.abs(Math.round((longUsd / (longUsd + shortUsd)) * 100) - Math.round((longWhales / (longWhales + shortWhales)) * 100))
+      : 0,
+    hint: Math.abs(
+      (longUsd + shortUsd ? Math.round((longUsd / (longUsd + shortUsd)) * 100) : 0) -
+      (longWhales + shortWhales ? Math.round((longWhales / (longWhales + shortWhales)) * 100) : 0),
+    ) > 20
+      ? longUsd / Math.max(1, longUsd + shortUsd) > longWhales / Math.max(1, longWhales + shortWhales)
+        ? '资金与人数分歧显著，少数巨鲸重仓押注多头'
+        : '资金与人数分歧显著，少数巨鲸重仓押注空头'
+      : '',
+    scopeLabel: '全部',
+    netUsd: longUsd - shortUsd,
+    longWhales,
+    shortWhales,
+    positionCount,
+    updatedAt: Number(cached?.updatedAt) || 0,
+    stale: Boolean(cached?.stale),
+  };
+}
+
 /** 按需读取该巨鲸当前合约仓位的标记价格，不请求现货账户数据。 */
 async function getWhalePerpMarkPrices(id) {
   const whale = findConfiguredWhale(id);
@@ -2401,7 +2601,11 @@ async function getWhalesBatch(query = {}) {
 module.exports = {
   getWhales,
   getWhalesBatch,
+  getWhaleCacheBatch,
+  queryWhaleCache,
+  getWhaleSummary,
   formatCachedBatchPayload,
+  formatKnownCachedBatchPayload,
   refreshSingleWhale,
   refreshAlertHistory,
   closedPositionFromFills,

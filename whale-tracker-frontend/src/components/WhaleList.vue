@@ -14,7 +14,7 @@ import {
   positionLastAddTime,
   resolveReferenceTier,
 } from '@/utils/whaleReference';
-import { WHALE_PAGE_SIZE, compareWhalesForDisplay, sortWhalesForDisplay } from '@/utils/topWhales';
+import { WHALE_PAGE_SIZE } from '@/utils/topWhales';
 import type { RecoQuotes } from '@/utils/recommend';
 import {
   buildWhaleMarketSummary,
@@ -38,16 +38,20 @@ import { preferredCoinsState } from '@/utils/watchedCoins';
 import {
   isWhaleMonitored,
   monitoredCount,
+  monitoredWhaleIds,
   toggleWhaleMonitor,
 } from '@/utils/monitoredWhales';
 import AiAnalyzeButton from '@/components/AiAnalyzeButton.vue';
-import { fetchWhalePosition } from '@/api';
+import { fetchWhalePosition, fetchWhaleCacheQuery } from '@/api';
+import type { WhaleServerSummary } from '@/api';
 
 const props = defineProps<{
   whales: WhaleProfile[];
   loading: boolean;
   selectedId: string;
   quotes?: RecoQuotes;
+  serverSummary?: WhaleServerSummary | null;
+  snapshotVersion?: number;
 }>();
 
 const emit = defineEmits<{
@@ -60,94 +64,17 @@ const whaleStore = useWhaleStore();
 const entryFillLoading = ref<Record<string, boolean>>({});
 
 /** 展示名单与 store 同步；定位时可暂冻结为 frozenWhales */
-const displayLoaded = ref(0);
-const displayTotal = ref(0);
-const progressVisible = ref(false);
-const progressLeaving = ref(false);
-let progressAnimRaf = 0;
-let progressHideTimer: ReturnType<typeof setTimeout> | null = null;
-let lastProgressTotal = 0;
-
-function clearProgressTimers() {
-  if (progressAnimRaf) {
-    cancelAnimationFrame(progressAnimRaf);
-    progressAnimRaf = 0;
-  }
-  if (progressHideTimer) {
-    clearTimeout(progressHideTimer);
-    progressHideTimer = null;
-  }
-}
-
-function animateLoadedTo(target: number, onDone?: () => void) {
-  if (progressAnimRaf) cancelAnimationFrame(progressAnimRaf);
-  const start = displayLoaded.value;
-  const end = Math.max(0, Math.round(target));
-  if (end === start) {
-    onDone?.();
-    return;
-  }
-  const diff = end - start;
-  // 确保目标在展示名单中
-  const duration = Math.min(1100, Math.max(320, Math.abs(diff) * 36));
-  const t0 = performance.now();
-  const tick = (now: number) => {
-    const t = Math.min(1, (now - t0) / duration);
-    const eased = 1 - (1 - t) ** 2.2;
-    displayLoaded.value = Math.round(start + diff * eased);
-    if (t < 1) {
-      progressAnimRaf = requestAnimationFrame(tick);
-      return;
-    }
-    displayLoaded.value = end;
-    progressAnimRaf = 0;
-    onDone?.();
-  };
-  progressAnimRaf = requestAnimationFrame(tick);
-}
-
-function hideProgressSoon() {
-  progressLeaving.value = true;
-  progressHideTimer = setTimeout(() => {
-    progressVisible.value = false;
-    progressLeaving.value = false;
-    displayLoaded.value = 0;
-    progressHideTimer = null;
-  }, 780);
-}
-
-watch(
-  () => whaleStore.loadProgress,
-  (progress) => {
-    if (progress && progress.total > 0) {
-      if (progressHideTimer) {
-        clearTimeout(progressHideTimer);
-        progressHideTimer = null;
-      }
-      progressLeaving.value = false;
-      progressVisible.value = true;
-      lastProgressTotal = progress.total;
-      displayTotal.value = progress.total;
-      animateLoadedTo(progress.loaded);
-      return;
-    }
-    // store 已有数据时不再用 props 覆盖展示名单
-    if (!progressVisible.value || !lastProgressTotal) return;
-    displayTotal.value = lastProgressTotal;
-    animateLoadedTo(lastProgressTotal, hideProgressSoon);
-  },
-);
-
-const loadedDigits = computed(() => {
-  const width = Math.max(2, String(displayTotal.value || 0).length);
-  return String(displayLoaded.value).padStart(width, '0').split('');
-});
-
-const showLoadProgress = computed(() => progressVisible.value);
 
 const directionFilter = ref<'all' | WhaleDirection | 'followed'>('all');
 const sortMode = ref<'all' | 'positionValue' | 'positionPnl' | 'latest'>('all');
 const page = ref(1);
+const serverPageWhales = ref<WhaleProfile[]>([]);
+const serverTotal = ref(0);
+const serverDirectionCounts = ref<Record<string, number>>({});
+const serverCoinCounts = ref<Record<string, number>>({});
+const queryLoading = ref(false);
+const queryError = ref('');
+let querySeq = 0;
 const coinFilter = ref<'all' | string>('all');
 const positionDialog = ref<{
   open: (
@@ -202,7 +129,9 @@ const coinScopedWhales = computed(() => {
 });
 
 const marketSummary = computed(() =>
-  buildWhaleMarketSummary(coinScopedWhales.value, coinFilter.value),
+  coinFilter.value === 'all' && props.serverSummary
+    ? props.serverSummary
+    : buildWhaleMarketSummary(coinScopedWhales.value, coinFilter.value),
 );
 
 const riskSummary = computed(() =>
@@ -234,7 +163,7 @@ const directionCounts = computed(() => {
     else if (direction === 'short') counts.short += 1;
     else counts.neutral += 1;
   }
-  return counts;
+  return { ...counts, ...serverDirectionCounts.value };
 });
 
 const DIRECTION_FILTERS = [
@@ -253,134 +182,48 @@ const SORT_MODES = [
 
 const isFollowTab = computed(() => directionFilter.value === 'followed');
 
-const filteredWhales = computed(() => {
-  let list = coinScopedWhales.value;
-  if (isFollowTab.value) {
-    list = list.filter((item) => isWhaleMonitored(item.id));
-  } else if (directionFilter.value !== 'all') {
-    list = list.filter(
-      (item) =>
-        scopedWhaleDirection(item, coinFilter.value) === directionFilter.value,
-    );
-  }
-  return list;
-});
-
-/** 币种计数：仅统计当前筛选可见的巨鲸 */
-function whaleLastAddTime(whale: WhaleProfile) {
-  let latest = 0;
-  for (const pos of whale.positions || []) {
-    const ts = positionLastAddTime(pos) || 0;
-    if (ts > latest) latest = ts;
-  }
-  return latest;
-}
-
-/** 币种筛选只决定哪些巨鲸入列，卡片内仍展示全部持仓 */
-function hoistLocatePin(list: WhaleProfile[]) {
-  const id = locatePinId.value;
-  if (!id) return list;
-  const index = list.findIndex((item) => item.id === id);
-  if (index <= 0) return list;
-  const next = list.slice();
-  const [pinned] = next.splice(index, 1);
-  next.unshift(pinned);
-  return next;
-}
-
-/** 按仓位价值/盈亏/开单时间排序 */
-function whalePositionValueUsd(whale: WhaleProfile) {
-  return cardExposure(whale)?.positionUsd || 0;
-}
-
-/** 市场多空仓位价值汇总 */
-function whalePositionPnlUsd(whale: WhaleProfile) {
-  const positions = cardPositions(whale);
-  if (positions.length) {
-    return positions.reduce((sum, pos) => sum + (Number(pos.unrealizedPnl) || 0), 0);
-  }
-  return 0;
-}
-
-/** 风险控制：按当前筛选范围汇总未实现盈亏 */
-function computeSortedIds(list: WhaleProfile[]) {
-  const next = [...list];
-  if (sortMode.value === 'positionValue') {
-    next.sort(
-      (a, b) => whalePositionValueUsd(b) - whalePositionValueUsd(a) || compareWhalesForDisplay(a, b),
-    );
-  } else if (sortMode.value === 'positionPnl') {
-    next.sort(
-      (a, b) => whalePositionPnlUsd(b) - whalePositionPnlUsd(a) || compareWhalesForDisplay(a, b),
-    );
-  } else if (sortMode.value === 'latest') {
-    next.sort((a, b) => whaleLastAddTime(b) - whaleLastAddTime(a) || compareWhalesForDisplay(a, b));
-  } else {
-    return hoistLocatePin(sortWhalesForDisplay(next)).map((item) => item.id);
-  }
-  return hoistLocatePin(next).map((item) => item.id);
-}
-
-/**
- * 锁定排序：定位/手动操作时保持卡片顺序，避免刷新导致跳动 */
-const lockedOrderIds = ref<string[]>([]);
-
-function resortLockedOrder() {
-  lockedOrderIds.value = computeSortedIds(filteredWhales.value);
-}
-
 watch([directionFilter, sortMode, coinFilter], () => {
   page.value = 1;
-  resortLockedOrder();
 });
 
 watch(
-  filteredWhales,
-  (list) => {
-    if (!list.length) {
-      lockedOrderIds.value = [];
-      return;
+  [directionFilter, sortMode, coinFilter, page, locatePinId, () => monitoredWhaleIds.value.join(','), () => props.snapshotVersion],
+  async () => {
+    const seq = ++querySeq;
+    queryLoading.value = true;
+    try {
+      const result = await fetchWhaleCacheQuery({
+        page: page.value,
+        limit: WHALE_PAGE_SIZE,
+        coin: coinFilter.value,
+        direction: directionFilter.value,
+        sort: sortMode.value,
+        followedIds: monitoredWhaleIds.value,
+        coins: preferredCoins.value,
+        pinId: locatePinId.value || undefined,
+      });
+      if (seq !== querySeq) return;
+      queryError.value = '';
+      serverPageWhales.value = result.whales || [];
+      serverTotal.value = Number(result.total) || 0;
+      serverDirectionCounts.value = result.directionCounts || {};
+      serverCoinCounts.value = result.coinCounts || {};
+      const maxPage = Math.max(1, Math.ceil(serverTotal.value / WHALE_PAGE_SIZE));
+      if (page.value > maxPage) page.value = maxPage;
+    } catch {
+      if (seq === querySeq) {
+        serverPageWhales.value = [];
+        serverTotal.value = 0;
+        queryError.value = '巨鲸列表读取失败，请稍后重试';
+      }
+    } finally {
+      if (seq === querySeq) queryLoading.value = false;
     }
-    if (!lockedOrderIds.value.length) {
-      resortLockedOrder();
-      return;
-    }
-    // 异动定位不带币种：顶部币种筛选保持「全部」?
-    const byId = new Map(list.map((item) => [item.id, item]));
-    const kept = lockedOrderIds.value.filter((id) => byId.has(id));
-    const known = new Set(kept);
-    const appended = list.filter((item) => !known.has(item.id)).map((item) => item.id);
-    lockedOrderIds.value = [...kept, ...appended];
   },
-  { flush: 'post' },
+  { immediate: true },
 );
 
-watch(locatePinId, (id) => {
-  if (!id || !lockedOrderIds.value.length) return;
-  const idx = lockedOrderIds.value.indexOf(id);
-  if (idx <= 0) return;
-  const next = lockedOrderIds.value.slice();
-  next.splice(idx, 1);
-  next.unshift(id);
-  lockedOrderIds.value = next;
-  page.value = 1;
-});
-
-/** 格式化盈亏行（含百分比） */
-const sortedWhales = computed(() => {
-  const byId = new Map(filteredWhales.value.map((item) => [item.id, item]));
-  const ids = lockedOrderIds.value.length
-    ? lockedOrderIds.value
-    : computeSortedIds(filteredWhales.value);
-  const ordered: WhaleProfile[] = [];
-  for (const id of ids) {
-    const hit = byId.get(id);
-    if (hit) ordered.push(hit);
-  }
-  return hoistLocatePin(ordered);
-});
-
-const pageCount = computed(() => Math.max(1, Math.ceil(sortedWhales.value.length / WHALE_PAGE_SIZE)));
+const pageCount = computed(() => Math.max(1, Math.ceil(serverTotal.value / WHALE_PAGE_SIZE)));
 
 watch(pageCount, (count) => {
   if (page.value > count) page.value = count;
@@ -396,7 +239,7 @@ const coinCounts = computed(() => {
   for (const coin of preferredCoins.value) {
     counts[coin] = pool.filter((whale) => whaleHasPositionCoin(whale, coin)).length;
   }
-  return counts;
+  return { ...counts, ...serverCoinCounts.value };
 });
 
 function cardPositions(whale: WhaleProfile) {
@@ -405,8 +248,7 @@ function cardPositions(whale: WhaleProfile) {
 }
 
 const displayedWhales = computed(() => {
-  const start = (page.value - 1) * WHALE_PAGE_SIZE;
-  return sortedWhales.value.slice(start, start + WHALE_PAGE_SIZE);
+  return serverPageWhales.value;
 });
 
 /** 开仓成交笔数；>1 标为多笔 */
@@ -463,31 +305,6 @@ function cardHeadInline(whale: WhaleProfile) {
 
 function cardIdentityLine(whale: WhaleProfile) {
   return whaleCardIdentityLine(whale);
-}
-
-/** 仓位曝光 + 保证金摘要 */
-function cardExposure(whale: WhaleProfile) {
-  const positions = cardPositions(whale);
-  if (positions.length) {
-    const positionUsd = positions.reduce(
-      (sum, pos) => sum + Math.abs(Number(pos.positionValue) || 0),
-      0,
-    );
-    const marginUsd = positions.reduce(
-      (sum, pos) => sum + Math.abs(Number(pos.marginUsed) || 0),
-      0,
-    );
-    if (positionUsd <= 0 && marginUsd <= 0) return null;
-    return {
-      positionUsd: positionUsd > 0 ? positionUsd : null,
-      marginUsd: marginUsd > 0 ? marginUsd : null,
-    };
-  }
-  const longUsd = Math.abs(Number(whale.longUsd) || 0);
-  const shortUsd = Math.abs(Number(whale.shortUsd) || 0);
-  const positionUsd = longUsd + shortUsd;
-  if (positionUsd <= 0) return null;
-  return { positionUsd, marginUsd: null as number | null };
 }
 
 /** 关注页：展开后才显示详细仓位；默认收起为简洁条 */
@@ -639,7 +456,6 @@ function selectCoinFilter(value: 'all' | string) {
 
 onUnmounted(() => {
   if (highlightTimer) clearTimeout(highlightTimer);
-  clearProgressTimers();
 });
 
 function onWhaleNameClick(whale: WhaleProfile, event?: Event) {
@@ -708,6 +524,25 @@ async function focusWhale(payload: { id: string; coin?: string }) {
 
   // 定位高亮
   locatePinId.value = payload.id;
+  try {
+    const result = await fetchWhaleCacheQuery({
+      page: 1,
+      limit: WHALE_PAGE_SIZE,
+      coin: 'all',
+      direction: 'all',
+      sort: sortMode.value,
+      followedIds: monitoredWhaleIds.value,
+      coins: preferredCoins.value,
+      pinId: payload.id,
+    });
+    serverPageWhales.value = result.whales || [];
+    serverTotal.value = Number(result.total) || 0;
+    serverDirectionCounts.value = result.directionCounts || {};
+    serverCoinCounts.value = result.coinCounts || {};
+  } catch {
+    ElMessage.warning('巨鲸列表暂时无法定位，请稍后重试');
+    return;
+  }
   expandedIds.value = { ...expandedIds.value, [payload.id]: true };
   flashWhaleCard(payload.id);
   nextTick(() => {
@@ -778,32 +613,6 @@ defineExpose({ focusWhale });
               {{ coin }} {{ coinCounts[coin] ?? 0 }}
             </button>
           </div>
-          <div class="head-toolbar">
-            <span
-              v-if="showLoadProgress"
-              class="load-progress"
-              :class="{ leaving: progressLeaving }"
-              title="巨鲸加载进度"
-            >
-              <span class="load-dot spin" aria-hidden="true" />
-              <span class="odometer" aria-label="已加载数量">
-                <span
-                  v-for="(digit, index) in loadedDigits"
-                  :key="`d-${index}-${loadedDigits.length}`"
-                  class="digit-slot"
-                >
-                  <span
-                    class="digit-reel"
-                    :style="{ transform: `translateY(-${Number(digit) * 10}%)` }"
-                  >
-                    <span v-for="n in 10" :key="n" class="digit-cell">{{ n - 1 }}</span>
-                  </span>
-                </span>
-              </span>
-              <span class="progress-slash">/</span>
-              <span class="progress-total">{{ displayTotal }}</span>
-            </span>
-          </div>
         </div>
         <div v-if="whales.length" class="insight-strip market-summary">
           <div class="summary-line value-line">
@@ -852,7 +661,8 @@ defineExpose({ focusWhale });
         </div>
       </div>
     </template>
-    <el-skeleton v-if="loading && !whales.length" :rows="6" animated />
+    <el-alert v-if="queryError" :title="queryError" type="warning" :closable="false" />
+    <el-skeleton v-if="(loading || queryLoading) && !displayedWhales.length" :rows="6" animated />
     <el-empty
       v-else-if="isFollowTab && !displayedWhales.length"
       description="当前没有关注的巨鲸"
@@ -1048,7 +858,7 @@ defineExpose({ focusWhale });
       </div>
     </div>
 
-    <div v-if="!(loading && !whales.length) && sortedWhales.length > WHALE_PAGE_SIZE" class="pager">
+    <div v-if="!(loading && !whales.length) && serverTotal > WHALE_PAGE_SIZE" class="pager">
       <button
         type="button"
         class="pager-btn"
@@ -1065,7 +875,7 @@ defineExpose({ focusWhale });
       >
         上一页
       </button>
-      <span class="pager-info">第 {{ page }}/{{ pageCount }} 页 · 共 {{ sortedWhales.length }} 条</span>
+      <span class="pager-info">第 {{ page }}/{{ pageCount }} 页 · 共 {{ serverTotal }} 条</span>
       <button
         type="button"
         class="pager-btn"
@@ -1112,87 +922,6 @@ defineExpose({ focusWhale });
   flex-direction: column;
   gap: 6px;
   font-weight: 600;
-}
-.head-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  flex: 0 0 auto;
-  margin-left: auto;
-}
-.load-progress {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--card) 80%, transparent);
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-  transition:
-    opacity 0.55s ease,
-    transform 0.55s ease,
-    border-color 0.3s ease;
-}
-.load-progress.leaving {
-  opacity: 0;
-  transform: translateY(-4px) scale(0.96);
-  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
-}
-.odometer {
-  display: inline-flex;
-  align-items: stretch;
-  height: 1.15em;
-  overflow: hidden;
-  line-height: 1;
-}
-.digit-slot {
-  position: relative;
-  display: inline-block;
-  width: 0.72em;
-  height: 1.15em;
-  overflow: hidden;
-}
-.digit-reel {
-  display: flex;
-  flex-direction: column;
-  transition: transform 0.38s cubic-bezier(0.2, 0.8, 0.2, 1);
-  will-change: transform;
-}
-.digit-cell {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 1.15em;
-  font-variant-numeric: tabular-nums;
-}
-.progress-slash {
-  opacity: 0.55;
-  margin: 0 1px;
-}
-.progress-total {
-  font-variant-numeric: tabular-nums;
-}
-.load-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  border: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
-  border-top-color: var(--accent);
-  box-sizing: border-box;
-}
-.load-dot.spin {
-  animation: whale-spin 0.8s linear infinite;
-}
-@keyframes whale-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 .insight-strip {
   display: flex;

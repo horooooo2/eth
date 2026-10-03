@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { fetchQuotes, fetchPagedTrades, fetchCalendar } from '@/api';
+import { fetchQuotes, fetchPagedTrades, fetchCalendar, fetchAlertFlowSummary, fetchWhaleSummary } from '@/api';
 import CoinPreferences from '@/components/CoinPreferences.vue';
 import ApiSettings from '@/components/ApiSettings.vue';
 import NewsList from '@/components/NewsList.vue';
@@ -27,14 +27,13 @@ import { refreshAiKeyStatus } from '@/stores/aiKey';
 import { useRealtime } from '@/composables/useRealtime';
 import type { RecoQuotes } from '@/utils/recommend';
 import { readFocusCoin } from '@/utils/recoPrefs';
-import { coinMatchesWatch, preferredCoinsState } from '@/utils/watchedCoins';
+import { preferredCoinsState } from '@/utils/watchedCoins';
 import { coinIconCandidates } from '@/utils/coinIcons';
 import { formatUsd } from '@/utils/format';
 import { unlockAlertSound } from '@/utils/alertSound';
 import type { WhaleAlert } from '@/utils/whaleAlerts';
-import { alertItemSide } from '@/utils/whaleAlerts';
 import { noteXTweets } from '@/stores/xFeed';
-import type { XFeedTweet } from '@/api';
+import type { WhaleServerSummary, XFeedTweet } from '@/api';
 import type { WhaleProfile, WhaleTrade } from '@/types';
 
 const whaleStore = useWhaleStore();
@@ -63,40 +62,28 @@ const whaleDetailProfile = ref<WhaleProfile | null>(null);
 const newsListRef = ref<InstanceType<typeof NewsList> | null>(null);
 const quotes = ref<RecoQuotes>({});
 const fundingRates = ref<Record<string, number>>({});
-const flowClock = ref(Date.now());
 const flowCoin = ref<string>(readFocusCoin());
 const flowWindow = ref<'15m' | '1h' | '4h' | '24h'>('1h');
-const whaleNetFlow = computed(() => {
-  const windowMs: Record<typeof flowWindow.value, number> = {
-    '15m': 15 * 60_000,
-    '1h': 60 * 60_000,
-    '4h': 4 * 60 * 60_000,
-    '24h': 24 * 60 * 60_000,
-  };
-  const cutoff = flowClock.value - windowMs[flowWindow.value];
-  let longUsd = 0;
-  let shortUsd = 0;
-  let events = 0;
-  const whales = new Set<string>();
-  for (const alert of whaleStore.alertHistory) {
-    for (const item of alert.items || []) {
-      const kind = item.kind || alert.kind;
-      if (kind !== 'open' && kind !== 'increase') continue;
-      const eventTime = Number(item.time) || Number(alert.at) || 0;
-      if (eventTime < cutoff || eventTime > flowClock.value) continue;
-      if (flowCoin.value !== 'ALL' && !coinMatchesWatch(item.coin || '', [flowCoin.value])) continue;
-      const usd = Math.abs(Number(item.usd) || 0);
-      if (!usd) continue;
-      const side = alertItemSide(alert, item);
-      if (side === 'long') longUsd += usd;
-      else if (side === 'short') shortUsd += usd;
-      else continue;
-      events += 1;
-      whales.add(alert.whaleId);
-    }
-  }
-  return { longUsd, shortUsd, netUsd: longUsd - shortUsd, events, whales: whales.size };
-});
+const whaleSummary = ref<WhaleServerSummary | null>(null);
+const whaleSnapshotVersion = ref(0);
+let summaryRequestSeq = 0;
+async function loadWhaleSummary() {
+  const seq = ++summaryRequestSeq;
+  const data = await fetchWhaleSummary().catch(() => null);
+  if (seq === summaryRequestSeq && data) whaleSummary.value = data;
+}
+const whaleNetFlow = ref({ longUsd: 0, shortUsd: 0, netUsd: 0, events: 0, whales: 0 });
+let flowRequestSeq = 0;
+async function loadWhaleNetFlow() {
+  const seq = ++flowRequestSeq;
+  const data = await fetchAlertFlowSummary({
+    window: flowWindow.value,
+    coin: flowCoin.value === 'ALL' ? undefined : flowCoin.value,
+  }).catch(() => null);
+  if (seq !== flowRequestSeq || !data) return;
+  whaleNetFlow.value = data;
+}
+watch([flowWindow, flowCoin], () => void loadWhaleNetFlow());
 
 const loginUser = ref('');
 const loginPass = ref('');
@@ -195,8 +182,12 @@ const {
   } else if (msg.type === 'alert' && msg.alert) {
     const alert = msg.alert as unknown as WhaleAlert;
     whaleStore.ingestRealtimeAlert(alert);
+    void loadWhaleNetFlow();
     // 直接喂给异动列表（不依赖仅 store 序号）
     newsListRef.value?.pushRealtimeAlert?.(alert);
+  } else if (msg.type === 'whaleSnapshotUpdated') {
+    whaleSnapshotVersion.value += 1;
+    void loadWhaleSummary();
   } else if (msg.type === 'whalePatch' && msg.whaleId && msg.patch) {
     whaleStore.ingestRealtimeWhalePatch(msg.whaleId, msg.patch as Partial<WhaleProfile>);
     // 仓位 diff 也可能写出新异动，稍后对齐列表
@@ -213,6 +204,7 @@ watch(
       flowCoin.value = readFocusCoin();
     }
     void loadQuotes();
+    void loadWhaleNetFlow();
   },
   { deep: true },
 );
@@ -225,12 +217,18 @@ async function startAppSession() {
   void getAuthUiSettings();
   void refreshAiKeyStatus(true);
   await loadAll(false);
+  void loadWhaleSummary();
+  void loadWhaleNetFlow();
   whaleStore.startActivityPolling();
   startRealtime();
   if (!timer) {
     timer = window.setInterval(() => {
-      flowClock.value = Date.now();
       void pollNewsAndQuotes();
+      void loadWhaleNetFlow();
+      void loadWhaleSummary();
+      if (realtimeStatus.value !== 'connected') {
+        void whaleStore.syncAlertHistoryFromServer();
+      }
     }, 60 * 1000);
   }
 }
@@ -442,6 +440,8 @@ onUnmounted(() => {
             :loading="whaleStore.loading"
             :selected-id="whaleStore.selectedWhaleId"
             :quotes="quotes"
+            :server-summary="whaleSummary"
+            :snapshot-version="whaleSnapshotVersion"
             @detail="onSelectWhale"
             @select-transfers="onSelectTransfers"
             @focus-whale="onFocusWhaleCard"

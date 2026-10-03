@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { formatCachedBatchPayload } = require('../lib/whales');
+const { formatCachedBatchPayload, formatKnownCachedBatchPayload } = require('../lib/whales');
 
 test('cached whale batch honors offset/limit and partitions activity by page', () => {
   const whales = Array.from({ length: 5 }, (_, index) => ({
@@ -29,5 +29,27 @@ test('cached whale batch honors offset/limit and partitions activity by page', (
   const last = formatCachedBatchPayload(cached, 'hf', { offset: 4, limit: 2 });
   assert.deepEqual(last.whales.map((whale) => whale.id), ['whale-4']);
   assert.deepEqual(last.trades.map((trade) => trade.id), ['trade-4']);
+  assert.equal(last.done, true);
+});
+
+test('read-only cache pages omit uncollected and failed placeholders without changing total semantics', () => {
+  const cached = {
+    updatedAt: 5678, stale: true, data: {
+      mode: 'hf',
+      whales: [
+        { id: 'known-1', positions: [{ coin: 'BTC', size: 1 }] },
+        { id: 'pending', positions: [], error: '等待刷新' },
+        { id: 'failed', positions: [], error: 'upstream unavailable' },
+        { id: 'known-2', positions: [{ coin: 'ETH', size: 1 }] },
+      ],
+      trades: [], warnings: [],
+    },
+  };
+  const page = formatKnownCachedBatchPayload(cached, 'hf', { offset: 0, limit: 1 });
+  assert.deepEqual(page.whales.map((whale) => whale.id), ['known-1']);
+  assert.equal(page.total, 2);
+  assert.equal(page.done, false);
+  const last = formatKnownCachedBatchPayload(cached, 'hf', { offset: 1, limit: 1 });
+  assert.deepEqual(last.whales.map((whale) => whale.id), ['known-2']);
   assert.equal(last.done, true);
 });

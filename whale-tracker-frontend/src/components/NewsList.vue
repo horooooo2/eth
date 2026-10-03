@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Refresh } from '@element-plus/icons-vue';
 import type { WhaleProfile } from '@/types';
@@ -8,7 +8,6 @@ import {
   alertItemSide,
   scopeAlertToCoin,
   scopeAlertToSide,
-  alertEventTime,
   type AlertLayer,
   type WhaleAlert,
 } from '@/utils/whaleAlerts';
@@ -155,116 +154,34 @@ async function loadAlertPage(silent = false) {
   const seq = ++alertReqSeq;
   if (!silent) alertLoading.value = true;
   try {
-    const baseQuery = {
+    const selectedCoin = alertCoinFilter.value === 'all' ? '' : alertCoinFilter.value.toUpperCase();
+    const normalizedCoin = selectedCoin.replace(/^[UK]/, '');
+    const data = await fetchPagedAlertHistory({
       whaleId: props.filterWhaleId || undefined,
       kind: (openOnly.value ? 'open' : 'all') as 'open' | 'all',
-      // 多空计数要两边都有：请求时不带 side，展示时再筛
       minUsd: alertMinUsd.value || undefined,
-    };
-
-    // 「全部」= 全币种（仅排除美股等 exotic）；点具体币种才按单币拉
-    const coinTargets =
-      alertCoinFilter.value === 'all' ? [] : [alertCoinFilter.value];
-
-    const map = new Map<string, WhaleAlert>();
-    const byCoinRaw: Record<string, number> = {};
-    let serverLong = 0;
-    let serverShort = 0;
-    let serverAll = 0;
-
-    if (!coinTargets.length) {
-      const data = await fetchPagedAlertHistory({
-        ...baseQuery,
-        page: 1,
-        limit: Math.min(100, Math.max(ALERT_PAGE_SIZE * alertPage.value, ALERT_PAGE_SIZE)),
-      });
-      if (seq !== alertReqSeq) return;
-      for (const raw of data.alerts || []) {
-        const item = normalizeStoredAlert(raw as WhaleAlert);
-        if (item?.id) map.set(item.id, item);
-      }
-      serverAll = Number(data.total) || 0;
-      serverLong = Number(data.facets?.long) || 0;
-      serverShort = Number(data.facets?.short) || 0;
-      Object.assign(byCoinRaw, data.facets?.byCoin || {});
-    } else {
-      const need = Math.min(100, Math.max(ALERT_PAGE_SIZE, alertPage.value * ALERT_PAGE_SIZE));
-      const pages = await Promise.all(
-        coinTargets.map((coin) =>
-          fetchPagedAlertHistory({
-            ...baseQuery,
-            page: 1,
-            limit: need,
-            coin,
-          }),
-        ),
-      );
-      if (seq !== alertReqSeq) return;
-      for (let i = 0; i < coinTargets.length; i += 1) {
-        const coin = coinTargets[i];
-        const data = pages[i];
-        byCoinRaw[coin] = Number(data.total) || 0;
-        serverAll += Number(data.total) || 0;
-        for (const raw of data.alerts || []) {
-          const item = normalizeStoredAlert(raw as WhaleAlert);
-          if (item?.id) map.set(item.id, item);
-        }
-        if (data.facets) {
-          serverLong = Number(data.facets.long) || 0;
-          serverShort = Number(data.facets.short) || 0;
-          Object.assign(byCoinRaw, data.facets.byCoin || {});
-        }
-      }
-    }
-
-    const pool = [...map.values()]
-      .filter((alert) => hasListEligibleItem(alert))
-      .sort((a, b) => alertEventTime(b) - alertEventTime(a));
-
-    // 与列表同一套闸门后的多空 / 币种计数
-    const byCoin: Record<string, number> = {};
-    let long = 0;
-    let short = 0;
-    for (const alert of pool) {
-      const items = eligibleItems(alert);
-      const sides = new Set(items.map((item) => alertItemSide(alert, item)));
-      if (sides.has('long')) long += 1;
-      if (sides.has('short')) short += 1;
-      for (const coin of new Set(items.map((item) => String(item.coin || '').trim().toUpperCase()).filter(Boolean))) {
-        byCoin[coin] = (byCoin[coin] || 0) + 1;
-      }
-    }
-
-    // 样本可能被 limit 截断时，优先用服务端 facet
-    const truncated = serverAll > pool.length;
-    if (truncated) {
-      long = serverLong;
-      short = serverShort;
-      for (const [k, v] of Object.entries(byCoinRaw)) {
-        byCoin[k] = v;
-      }
-    }
-
-    const side = alertSideFilter.value;
-    const sided = side === 'all' ? pool : pool.filter((alert) =>
-      eligibleItems(alert).some((item) => alertItemSide(alert, item) === side),
-    );
-    const start = (alertPage.value - 1) * ALERT_PAGE_SIZE;
-    const list = sided.slice(start, start + ALERT_PAGE_SIZE);
-
+      page: alertPage.value,
+      limit: ALERT_PAGE_SIZE,
+      side: alertSideFilter.value,
+      coins: selectedCoin ? [...new Set([selectedCoin, `K${normalizedCoin}`, `U${normalizedCoin}`])] : undefined,
+      excludeExotic: true,
+    });
+    if (seq !== alertReqSeq) return;
+    const list = (data.alerts || [])
+      .map((raw) => normalizeStoredAlert(raw as WhaleAlert))
+      .filter((item): item is WhaleAlert => Boolean(item?.id && hasListEligibleItem(item)));
     pageAlerts.value = list;
-    if (truncated) {
-      if (side === 'long') alertTotal.value = long;
-      else if (side === 'short') alertTotal.value = short;
-      else alertTotal.value = serverAll;
-    } else {
-      alertTotal.value = sided.length;
+    alertTotal.value = Number(data.total) || 0;
+    const byCoin: Record<string, number> = {};
+    for (const [rawCoin, count] of Object.entries(data.facets?.byCoin || {})) {
+      const key = String(rawCoin).toUpperCase().replace(/^[UK]/, '');
+      byCoin[key] = (byCoin[key] || 0) + (Number(count) || 0);
     }
     facets.value = {
-      all: truncated ? serverAll : pool.length,
-      byCoin: truncated ? { ...byCoinRaw, ...byCoin } : byCoin,
-      long,
-      short,
+      all: Number(data.facets?.all) || 0,
+      byCoin,
+      long: Number(data.facets?.long) || 0,
+      short: Number(data.facets?.short) || 0,
     };
   } catch (err) {
     if (seq !== alertReqSeq) return;
@@ -353,6 +270,14 @@ async function onRefreshAlerts() {
   alertRefreshing.value = true;
   suppressAutoAlertReload = true;
   try {
+    // 刷新入口回到初始「全部异动」视图，不沿用当前巨鲸/币种/方向筛选。
+    whaleStore.clearWhaleFilter();
+    alertPage.value = 1;
+    alertSideFilter.value = 'all';
+    openOnly.value = false;
+    alertCoinFilter.value = 'all';
+    alertMinUsd.value = 0;
+    await nextTick();
     await loadAlertPage();
     ElMessage.success('异动记录已刷新');
   } catch (err) {

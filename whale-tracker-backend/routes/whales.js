@@ -2,6 +2,9 @@ const express = require('express');
 const {
   getWhales,
   getWhalesBatch,
+  getWhaleCacheBatch,
+  queryWhaleCache,
+  getWhaleSummary,
   refreshSingleWhale,
   refreshAlertHistory,
   listTrades,
@@ -16,9 +19,56 @@ const {
   getActivitySince,
 } = require('../lib/whales');
 const { readConfig, writeConfig, setWhaleMode, normalizeAddress, normalizeMode, addManualWhale, renameWhale } = require('../lib/config');
-const { loadRecentEvents, loadRecentAlerts, loadPagedAlerts, persistAlerts } = require('../lib/sqliteStore');
+const { loadRecentEvents, loadRecentAlerts, loadPagedAlerts, loadAlertFlowSummary, persistAlerts } = require('../lib/sqliteStore');
 
 const router = express.Router();
+
+/** 总览读取服务端快照，不触发上游采集，也不要求前端遍历分页。 */
+router.get('/summary', (_req, res) => {
+  try {
+    res.json(getWhaleSummary());
+  } catch (err) {
+    console.error('[GET /api/whales/summary]', err);
+    res.status(500).json({ error: err.message || '读取巨鲸汇总失败' });
+  }
+});
+
+/** 净流入资金只查服务器异动库，时间窗口和币种由参数明确限定。 */
+router.get('/alert-history/summary', (req, res) => {
+  try {
+    const windows = { '15m': 15 * 60_000, '1h': 60 * 60_000, '4h': 4 * 60 * 60_000, '24h': 24 * 60 * 60_000 };
+    const windowKey = String(req.query.window || '1h');
+    const duration = windows[windowKey];
+    if (!duration) return res.status(400).json({ error: '不支持的异动统计时间范围' });
+    res.json(loadAlertFlowSummary({ sinceMs: Date.now() - duration, coin: req.query.coin }));
+  } catch (err) {
+    console.error('[GET /api/whales/alert-history/summary]', err);
+    res.status(500).json({ error: err.message || '读取异动汇总失败' });
+  }
+});
+
+/** GET /api/whales/cache-page — 前端只读缓存页，不触发上游采集。 */
+router.get('/cache-page', (req, res) => {
+  try {
+    const data = getWhaleCacheBatch(req.query);
+    const { trades, ...rest } = data;
+    res.json({ ...rest, whales: compactWhaleList(rest.whales), activity: rest.activity || buildActivityFeed(trades) });
+  } catch (err) {
+    console.error('[GET /api/whales/cache-page]', err);
+    res.status(500).json({ error: err.message || '读取巨鲸缓存失败' });
+  }
+});
+
+/** 列表条件在服务端执行，只返回当前页和筛选计数。 */
+router.get('/cache-query', (req, res) => {
+  try {
+    const data = queryWhaleCache(req.query);
+    res.json({ ...data, whales: compactWhaleList(data.whales) });
+  } catch (err) {
+    console.error('[GET /api/whales/cache-query]', err);
+    res.status(500).json({ error: err.message || '查询巨鲸列表失败' });
+  }
+});
 
 /** 列表只传持仓摘要；成交明细由已有的单仓位详情接口按需加载。 */
 function compactWhaleList(whales = []) {

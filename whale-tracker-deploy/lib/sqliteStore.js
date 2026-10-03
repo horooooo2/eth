@@ -327,6 +327,46 @@ function loadRecentAlerts(limit = 500) {
     .filter((item) => item && item.id);
 }
 
+/** 服务器侧净流入横幅聚合；按异动发生时间过滤，不把客户端本地历史当作数据源。 */
+function loadAlertFlowSummary({ sinceMs = 0, untilMs = Date.now(), coin = '' } = {}) {
+  const from = Math.max(Number(sinceMs) || 0, Date.now() - CLOSED_POSITION_RETENTION_MS);
+  const to = Math.max(from, Number(untilMs) || Date.now());
+  const normalizedCoin = String(coin || '').trim().toUpperCase();
+  const where = [
+    `alerts.kind IN ('open', 'increase')`,
+    `COALESCE(NULLIF(alert_item.time, 0), alerts.time) >= ?`,
+    `COALESCE(NULLIF(alert_item.time, 0), alerts.time) <= ?`,
+    `ABS(COALESCE(alert_item.usd, 0)) > 0`,
+    `alert_item.side IN ('long', 'short')`,
+  ];
+  const params = [from, to];
+  if (normalizedCoin && normalizedCoin !== 'ALL') {
+    // Hyperliquid 的 K 前缀代表千倍币种；与前端 watched coin 归一逻辑保持一致。
+    where.push(`UPPER(alert_item.coin) IN (?, ?, ?)`);
+    params.push(normalizedCoin, `K${normalizedCoin}`, `U${normalizedCoin}`);
+  }
+  const db = getDb();
+  const rows = db.prepare(
+    `SELECT alert_item.side AS side,
+            SUM(ABS(COALESCE(alert_item.usd, 0))) AS usd,
+            COUNT(*) AS events
+       FROM alerts
+       JOIN alert_items AS alert_item ON alert_item.alert_id = alerts.id
+      WHERE ${where.join(' AND ')}
+      GROUP BY alert_item.side`,
+  ).all(...params);
+  const longUsd = Number(rows.find((row) => row.side === 'long')?.usd) || 0;
+  const shortUsd = Number(rows.find((row) => row.side === 'short')?.usd) || 0;
+  const events = rows.reduce((sum, row) => sum + (Number(row.events) || 0), 0);
+  const whales = Number(db.prepare(
+    `SELECT COUNT(DISTINCT alerts.whale_id) AS c
+       FROM alerts
+       JOIN alert_items AS alert_item ON alert_item.alert_id = alerts.id
+      WHERE ${where.join(' AND ')}`,
+  ).get(...params)?.c) || 0;
+  return { longUsd, shortUsd, netUsd: longUsd - shortUsd, events, whales, sinceMs: from, untilMs: to };
+}
+
 /**
  * 异动分页查询（仅开仓 / 加仓）。
  */
@@ -351,13 +391,14 @@ function loadPagedAlerts(query = {}) {
   ];
   const side = String(query.side || 'all').trim().toLowerCase();
   const minUsd = Math.max(0, Number(query.minUsd) || 0);
+  const excludeExotic = String(query.excludeExotic || '') === '1' || query.excludeExotic === true;
   const cacheKey = JSON.stringify({
     page, limit,
     // The default rolling 180d cutoff changes every millisecond and otherwise
     // makes the short cache unreachable. Writes/purges invalidate it, and the
     // 10s TTL bounds staleness at the retention boundary. Explicit sinceMs is exact.
     cutoff: Number(query.sinceMs) > 0 ? cutoff : 'rolling-180d',
-    whaleId, kind, coins, side, minUsd,
+    whaleId, kind, coins, side, minUsd, excludeExotic,
   });
   const cached = pagedAlertCache.get(cacheKey);
   if (cached && Date.now() - cached.createdAt < PAGED_ALERT_CACHE_TTL_MS) return cached.data;
@@ -376,10 +417,15 @@ function loadPagedAlerts(query = {}) {
       itemWhere.push('alert_item.side = ?');
       itemParams.push(side);
     }
+    if (kind === 'open' || kind === 'increase') {
+      itemWhere.push('alert_item.kind = ?');
+      itemParams.push(kind);
+    }
     if (minUsd > 0) {
       itemWhere.push('ABS(COALESCE(alert_item.usd, 0)) >= ?');
       itemParams.push(minUsd);
     }
+    if (excludeExotic) itemWhere.push(`alert_item.coin NOT LIKE '@%' AND instr(alert_item.coin, ':') = 0`);
     return {
       sql: `EXISTS (SELECT 1 FROM alert_items AS alert_item WHERE alert_item.alert_id = alerts.id${itemWhere.length ? ` AND ${itemWhere.join(' AND ')}` : ''})`,
       params: itemParams,
@@ -456,6 +502,7 @@ function loadPagedAlerts(query = {}) {
        JOIN alert_items AS alert_item ON alert_item.alert_id = alerts.id
        WHERE ${facetSql}
          AND ABS(COALESCE(alert_item.usd, 0)) >= ?
+         ${excludeExotic ? `AND alert_item.coin NOT LIKE '@%' AND instr(alert_item.coin, ':') = 0` : ''}
          ${coins.length ? `AND alert_item.coin IN (${coins.map(() => '?').join(', ')})` : ''}
        GROUP BY coin`,
     )
@@ -476,6 +523,7 @@ function loadPagedAlerts(query = {}) {
                          WHERE alert_item.alert_id = alerts.id
                            AND alert_item.side = 'long'
                            AND ABS(COALESCE(alert_item.usd, 0)) >= ?
+                           ${excludeExotic ? `AND alert_item.coin NOT LIKE '@%' AND instr(alert_item.coin, ':') = 0` : ''}
                            ${coins.length ? `AND alert_item.coin IN (${coins.map(() => '?').join(', ')})` : ''})`,
         )
         .get(...facetParams, minUsd, ...coins)?.c,
@@ -490,6 +538,7 @@ function loadPagedAlerts(query = {}) {
                          WHERE alert_item.alert_id = alerts.id
                            AND alert_item.side = 'short'
                            AND ABS(COALESCE(alert_item.usd, 0)) >= ?
+                           ${excludeExotic ? `AND alert_item.coin NOT LIKE '@%' AND instr(alert_item.coin, ':') = 0` : ''}
                            ${coins.length ? `AND alert_item.coin IN (${coins.map(() => '?').join(', ')})` : ''})`,
         )
         .get(...facetParams, minUsd, ...coins)?.c,
@@ -1008,6 +1057,7 @@ module.exports = {
   loadModePayload,
   loadRecentEvents,
   loadRecentAlerts,
+  loadAlertFlowSummary,
   loadPagedAlerts,
   loadDbBrowse,
   loadFillsByWhale,
