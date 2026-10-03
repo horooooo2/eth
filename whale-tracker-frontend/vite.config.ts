@@ -4,8 +4,8 @@ import { fileURLToPath, URL } from 'node:url';
 
 export default defineConfig(({ mode, command }) => {
   const env = loadEnv(mode, process.cwd(), '');
-  /** 本地开发默认代理到本机后端；连线上可设 VITE_API_PROXY_TARGET=http://43.160.208.168 */
-  const apiTarget = (process.env.VITE_API_PROXY_TARGET || env.VITE_API_PROXY_TARGET || 'http://127.0.0.1').replace(/\/$/, '');
+  /** 本地后端默认监听 3000；连线上可设 VITE_API_PROXY_TARGET=http://43.160.208.168 */
+  const apiTarget = (process.env.VITE_API_PROXY_TARGET || env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:3000').replace(/\/$/, '');
   const wsTarget = apiTarget.replace(/^http/i, 'ws');
 
   return {

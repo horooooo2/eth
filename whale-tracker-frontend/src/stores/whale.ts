@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { computed, ref, watch } from 'vue';
+import { computed, ref } from 'vue';
 import {
   fetchWhales,
   fetchWhalesBatch,
@@ -16,7 +16,7 @@ import {
   alertEventTime,
   alertKindLabel,
   diffWhaleActivity,
-  filterFreshDockAlerts,
+  filterRecentDockAlerts,
   filterRecentAlerts,
   isTrackedAlertKind,
   mergeDockAlerts,
@@ -29,7 +29,6 @@ import {
   type WhaleAlert,
 } from '@/utils/whaleAlerts';
 import { isWhaleMonitored } from '@/utils/monitoredWhales';
-import { alertPassesFreshGate, absorbOpenEvidence, freshModeEnabled, freshWindowHours } from '@/utils/freshMode';
 import {
   DISPLAY_TOP_N,
   pickDisplayWhales,
@@ -179,8 +178,6 @@ export const useWhaleStore = defineStore('whale', () => {
         .slice(0, MAX_HISTORY);
       // 只写本地，避免立刻把合并结果再 POST 打满
       localStorage.setItem(HISTORY_KEY, JSON.stringify(alertHistory.value));
-      // 近时过滤：同步轻量开仓证据
-      absorbOpenEvidence(alertHistory.value.filter((a) => (a.items?.[0]?.kind || a.kind) === 'open'));
     } catch {
       // 服务端不可用时仍用 localStorage
     }
@@ -191,21 +188,31 @@ export const useWhaleStore = defineStore('whale', () => {
     whales.value.filter((item) => item.enabled !== false),
   );
 
+  function hasAnyOpenPosition(whale: WhaleProfile | null | undefined) {
+    return Boolean(whale?.positions?.some((position) => Math.abs(Number(position.size) || 0) > 0));
+  }
+
+  const whalesWithPositions = computed(() => enabledWhales.value.filter(hasAnyOpenPosition));
+
   const rankedWhales = computed(() => sortWhalesHf(whales.value));
 
   const displayWhales = computed(() => {
     if (!displayIds.value.length) {
-      return pickDisplayWhales(enabledWhales.value, { limit: DISPLAY_TOP_N });
+      return pickDisplayWhales(whalesWithPositions.value, { limit: DISPLAY_TOP_N });
     }
     const byId = new Map(whales.value.map((item) => [item.id, item]));
-    return displayIds.value.map((id) => byId.get(id)).filter(Boolean) as WhaleProfile[];
+    return displayIds.value
+      .map((id) => byId.get(id))
+      .filter((item): item is WhaleProfile => Boolean(item && item.enabled !== false && hasAnyOpenPosition(item)));
   });
 
   function ensureDisplayRoster(force = false) {
-    if (!force && displayIds.value.length >= Math.min(DISPLAY_TOP_N, enabledWhales.value.length)) {
+    const activeIds = new Set(whalesWithPositions.value.map((item) => item.id));
+    if (!force) displayIds.value = displayIds.value.filter((id) => activeIds.has(id));
+    if (!force && displayIds.value.length >= Math.min(DISPLAY_TOP_N, whalesWithPositions.value.length)) {
       // 用最新对象刷新，但保持 id 顺序；踢出后缺额时补人
-      if (displayIds.value.length < DISPLAY_TOP_N && enabledWhales.value.length > displayIds.value.length) {
-        const next = pickDisplayWhales(enabledWhales.value, {
+      if (displayIds.value.length < DISPLAY_TOP_N && whalesWithPositions.value.length > displayIds.value.length) {
+        const next = pickDisplayWhales(whalesWithPositions.value, {
           limit: DISPLAY_TOP_N,
           preferIds: displayIds.value,
         });
@@ -213,7 +220,7 @@ export const useWhaleStore = defineStore('whale', () => {
       }
       return;
     }
-    displayIds.value = pickDisplayWhales(enabledWhales.value, {
+    displayIds.value = pickDisplayWhales(whalesWithPositions.value, {
       limit: DISPLAY_TOP_N,
       preferIds: displayIds.value,
     }).map((item) => item.id);
@@ -222,7 +229,7 @@ export const useWhaleStore = defineStore('whale', () => {
   async function replaceDisplayWhale(removeId: string) {
     const key = String(removeId || '');
     if (!key) return null;
-    const pool = enabledWhales.value;
+    const pool = whalesWithPositions.value;
     const current = displayIds.value.length ? displayIds.value : displayWhales.value.map((w) => w.id);
     const replacement = pickReplacementWhale(pool, current, key);
     if (!replacement) return null;
@@ -242,7 +249,8 @@ export const useWhaleStore = defineStore('whale', () => {
   function ensureWhaleInDisplay(whaleId: string) {
     const id = String(whaleId || '');
     if (!id) return false;
-    if (!whales.value.some((item) => item.id === id && item.enabled !== false)) return false;
+    const whale = whales.value.find((item) => item.id === id && item.enabled !== false);
+    if (!hasAnyOpenPosition(whale)) return false;
     if (!displayIds.value.length) ensureDisplayRoster(true);
     if (displayIds.value.includes(id)) return true;
     displayIds.value = [id, ...displayIds.value.filter((item) => item !== id)].slice(0, DISPLAY_TOP_N);
@@ -299,13 +307,7 @@ export const useWhaleStore = defineStore('whale', () => {
       })
       .filter(Boolean) as Array<WhaleAlert & { monitored?: boolean; watchType?: 'whale' | 'position' }>;
 
-    return mapped
-      .filter((alert) => {
-        if (!freshModeEnabled.value) return true;
-        const whale = whales.value.find((item) => item.id === alert.whaleId) || null;
-        return alertPassesFreshGate(alert, whale, Date.now());
-      })
-      .sort((a, b) => alertEventTime(b) - alertEventTime(a));
+    return mapped.sort((a, b) => alertEventTime(b) - alertEventTime(a));
   }
 
   function ingestAlerts(
@@ -331,8 +333,8 @@ export const useWhaleStore = defineStore('whale', () => {
     mergeAlertHistory(historyAlerts);
     if (historyAlerts.length) alertRealtimeSeq.value += 1;
 
-    const freshDiffs = filterFreshDockAlerts(historyAlerts);
-    const dockAlerts = mergeDockAlerts(filterDockAlerts(freshDiffs));
+    const recentDiffs = filterRecentDockAlerts(historyAlerts);
+    const dockAlerts = mergeDockAlerts(filterDockAlerts(recentDiffs));
     // 新异动可入栏；已展示卡片不按时间老化踢掉，仅手动关闭；顺带清掉减仓/平仓旧卡
     alerts.value = mergeDockAlerts(
       filterDockAlerts([...dockAlerts, ...alerts.value]),
@@ -373,13 +375,6 @@ export const useWhaleStore = defineStore('whale', () => {
       .sort((a, b) => alertEventTime(b) - alertEventTime(a))
       .slice(0, MAX_HISTORY);
     writeAlertHistory(alertHistory.value);
-    absorbOpenEvidence(entries.filter((a) => (a.items?.[0]?.kind || a.kind) === 'open'));
-  }
-
-  /** 异动分页：只吸收 open 到轻量证据池（不写全量 localStorage） */
-  function absorbAlertPage(entries: WhaleAlert[]) {
-    if (!entries?.length) return;
-    absorbOpenEvidence(entries);
   }
 
   /** WebSocket 实时成交 */
@@ -395,11 +390,6 @@ export const useWhaleStore = defineStore('whale', () => {
     mergeAlertHistory([normalized]);
     // 无论是否重复 id，都通知异动列表重拉（避免只靠 history 顶栏 id）
     alertRealtimeSeq.value += 1;
-    // 近时过滤开启时：老仓补仓不进 dock
-    if (freshModeEnabled.value) {
-      const whale = whales.value.find((item) => item.id === normalized.whaleId) || null;
-      if (!alertPassesFreshGate(normalized, whale, Date.now())) return;
-    }
     if (!isTrackedAlertKind(normalized.kind) && !normalized.items?.some((i) => isTrackedAlertKind(i.kind))) {
       return;
     }
@@ -417,6 +407,8 @@ export const useWhaleStore = defineStore('whale', () => {
     const next = whales.value.slice();
     next[idx] = { ...prev, ...patch, id } as WhaleProfile;
     whales.value = next;
+    if (hasAnyOpenPosition(next[idx])) ensureWhaleInDisplay(id);
+    ensureDisplayRoster(true);
     // 实时 patch 后端会紧接着广播同一份 position diff alert。此处不能再调用
     // ingestAlerts 生成一份前端 diff，否则一笔实时开仓会同时以 ws-pos-* 和
     // pos-* 两个 ID 写入历史（dock 虽会合并，异动列表仍会重复显示）。
@@ -773,6 +765,8 @@ export const useWhaleStore = defineStore('whale', () => {
       } else {
         whales.value = [...whales.value, profile];
       }
+      if (hasAnyOpenPosition(profile)) ensureWhaleInDisplay(profile.id);
+      ensureDisplayRoster(true);
 
       if (Array.isArray(data.trades)) {
         const others = activity.value.filter((item) => item.whaleId !== profile.id);
@@ -869,15 +863,6 @@ export const useWhaleStore = defineStore('whale', () => {
     await load(false);
   }
 
-  /** 开启/调整近时窗口时，清掉 dock 里不符合开仓门禁的卡片 */
-  watch([freshModeEnabled, freshWindowHours], () => {
-    if (!freshModeEnabled.value) return;
-    alerts.value = alerts.value.filter((alert) => {
-      const whale = whales.value.find((item) => item.id === alert.whaleId) || null;
-      return alertPassesFreshGate(alert, whale, Date.now());
-    });
-  });
-
   return {
     whales,
     displayWhales,
@@ -919,7 +904,6 @@ export const useWhaleStore = defineStore('whale', () => {
     resetForHardRefresh,
     dismissAlert,
     clearAlerts,
-    absorbAlertPage,
     ingestRealtimeFill,
     ingestRealtimeAlert,
     ingestRealtimeWhalePatch,

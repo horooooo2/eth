@@ -15,6 +15,19 @@ function isWhaleAlertMonitored(alert: WhaleAlert) {
   return isWhaleMonitored(alert.whaleId);
 }
 
+function watchedCoinItems(alert: WhaleAlert) {
+  return alert.items.filter((item) => coinMatchesWatch(item.coin, watchedCoins.value));
+}
+
+function isWatchedCoinAlert(alert: WhaleAlert) {
+  return watchedCoinItems(alert).length > 0;
+}
+
+function scopeAlertToWatchedCoins(alert: WhaleAlert): WhaleAlert {
+  const items = watchedCoinItems(alert);
+  return items.length === alert.items.length ? alert : { ...alert, items };
+}
+
 const props = withDefaults(
   defineProps<{
     /** 当前是否在 HL 工作区：否时不展示卡片、不播声音（由侧栏红点承接） */
@@ -46,8 +59,8 @@ const whaleMonitorCards = computed(() => {
   if (!props.dockActive) return [];
   return [
     ...whaleStore.alerts.filter(
-      (alert) => isWhaleAlertMonitored(alert) && isTrackedAlertKind(alert.kind),
-    ),
+      (alert) => isWhaleAlertMonitored(alert) && isTrackedAlertKind(alert.kind) && isWatchedCoinAlert(alert),
+    ).map(scopeAlertToWatchedCoins),
   ].sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0));
 });
 
@@ -87,7 +100,7 @@ function dismissAll() {
 }
 
 function openAlert(alert: WhaleAlert) {
-  active.value = alert;
+  active.value = scopeAlertToWatchedCoins(alert);
   dialogVisible.value = true;
 }
 
@@ -137,12 +150,21 @@ const currentWhale = computed(() =>
 );
 
 watch(
-  () =>
-    whaleStore.alerts.filter((alert) => isWhaleAlertMonitored(alert)).map((item) => item.id),
+  () => whaleStore.alerts.map((item) => item.id),
   (ids, prev) => {
     if (!props.dockActive) return;
     const prevSet = new Set(prev || []);
-    if (ids.some((id) => !prevSet.has(id))) playAlertDing();
+    if (ids.some((id) => !prevSet.has(id) && whaleStore.alerts.some(
+      (alert) => alert.id === id && isWhaleAlertMonitored(alert) && isWatchedCoinAlert(alert),
+    ))) playAlertDing();
+  },
+);
+
+watch(
+  () => [...watchedCoins.value],
+  () => {
+    if (active.value && !isWatchedCoinAlert(active.value)) dialogVisible.value = false;
+    else if (active.value) active.value = scopeAlertToWatchedCoins(active.value);
   },
 );
 

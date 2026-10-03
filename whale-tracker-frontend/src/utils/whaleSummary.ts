@@ -1,7 +1,6 @@
 import type { WhalePosition, WhaleProfile } from '@/types';
 import { positionPnlPct, scopedWhaleDirection, visibleWhalePositions } from '@/utils/whaleCardUtils';
 import { formatPct, formatPnl } from '@/utils/format';
-import type { WhaleAlert } from '@/utils/whaleAlerts';
 
 export interface WhaleMarketSummary {
   longUsd: number;
@@ -44,7 +43,6 @@ function scopeLabel(coinFilter: string) {
 function collectScopedPositions(
   whales: WhaleProfile[],
   coinFilter: string,
-  alerts?: WhaleAlert[],
 ) {
   const longPositions: WhalePosition[] = [];
   const shortPositions: WhalePosition[] = [];
@@ -53,10 +51,10 @@ function collectScopedPositions(
   let neutralCount = 0;
 
   for (const whale of whales) {
-    const positions = visibleWhalePositions(whale, coinFilter, alerts);
+    const positions = visibleWhalePositions(whale, coinFilter);
     if (!positions.length) continue;
 
-    const direction = scopedWhaleDirection(whale, coinFilter, alerts);
+    const direction = scopedWhaleDirection(whale, coinFilter);
     if (direction === 'long') longCount += 1;
     else if (direction === 'short') shortCount += 1;
     else neutralCount += 1;
@@ -95,12 +93,10 @@ function sidePnlStats(positions: WhalePosition[]) {
 export function buildWhaleMarketSummary(
   whales: WhaleProfile[],
   coinFilter: string = 'all',
-  alerts?: WhaleAlert[],
 ): WhaleMarketSummary {
   const { longPositions, shortPositions, longCount, shortCount, neutralCount } = collectScopedPositions(
     whales,
     coinFilter,
-    alerts,
   );
 
   const longUsd = sumPositionUsd(longPositions);
@@ -180,9 +176,8 @@ function buildRiskLabel(tone: WhaleRiskSummary['tone']) {
 export function buildWhaleRiskSummary(
   whales: WhaleProfile[],
   coinFilter: string = 'all',
-  alerts?: WhaleAlert[],
 ): WhaleRiskSummary {
-  const { longPositions, shortPositions } = collectScopedPositions(whales, coinFilter, alerts);
+  const { longPositions, shortPositions } = collectScopedPositions(whales, coinFilter);
   const longStats = sidePnlStats(longPositions);
   const shortStats = sidePnlStats(shortPositions);
   const tone = buildRiskTone(longStats, shortStats);

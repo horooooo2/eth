@@ -34,6 +34,26 @@ export function isClosingTrade(trade: WhaleTrade) {
   return Math.abs(Number(trade.closedPnl) || 0) > 1;
 }
 
+/** Whether a fill can be identified as an increase rather than an opening/closing fill. */
+export function isClearlyIncreaseTrade(trade: WhaleTrade) {
+  if (!trade || trade.source === 'onchain') return false;
+  if (Math.abs(Number(trade.closedPnl) || 0) > 1) return false;
+  const dir = String(trade.dir || '');
+  if (/close|reduce|long\s*>|short\s*>/i.test(dir)) return false;
+  const start = trade.startPosition == null ? NaN : Number(trade.startPosition);
+  return Number.isFinite(start) && Math.abs(start) >= 1e-8;
+}
+
+/** Whether a fill can be identified as opening from a flat position. */
+export function isOpeningFillTrade(trade: WhaleTrade) {
+  if (!trade || trade.source === 'onchain') return false;
+  if (Math.abs(Number(trade.closedPnl) || 0) > 1) return false;
+  const dir = String(trade.dir || '');
+  if (/close|long >|short >/i.test(dir)) return false;
+  const start = trade.startPosition == null ? NaN : Number(trade.startPosition);
+  return Number.isFinite(start) && Math.abs(start) < 1e-8;
+}
+
 export function tradeOpenTime(trade: WhaleTrade, whale?: WhaleProfile) {
   const pos = findWhalePosition(whale, trade.asset);
   if (pos?.openTime && Number(pos.openTime) > 0 && !isClosingTrade(trade)) {

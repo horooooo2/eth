@@ -1,5 +1,5 @@
 const express = require('express');
-const { getCatalog, getQuotes } = require('../lib/tradfiMarkets');
+const { getCatalog, getQuotes, getRadarCatalog, getRadarQuotes, getRadarMarketQuotes, getRadarAvailableContracts, getRadarMarketCap, getTradFiKlines } = require('../lib/tradfiMarkets');
 const { getWhaleActivity, getAllWhaleActivity } = require('../lib/tradfiWhales');
 const { requireUser } = require('../lib/authStore');
 const { DEFAULT_PROVIDER, getRawAiKey } = require('../lib/userAiKeys');
@@ -7,6 +7,7 @@ const { deepseekFetch } = require('../lib/deepseekClient');
 const { ENGINE_VERSION } = require('../lib/tradfiDirection');
 const { PROMPT_VERSION, buildTradFiSnapshot, buildExplanationPrompt, parseExplanation, defaultExplanation } = require('../lib/tradfiAnalysis');
 const analysisStore = require('../lib/tradfiAnalysisStore');
+const { getRadarNews } = require('../lib/tradfiIntel');
 
 const router = express.Router();
 const inFlightAnalyses = new Map();
@@ -90,6 +91,81 @@ router.get('/quotes', async (req, res) => {
   } catch (err) {
     console.error('[GET /api/tradfi/quotes]', err.message);
     res.status(502).json({ error: 'TradFi 行情暂不可用', details: err.message });
+  }
+});
+
+router.get('/radar/catalog', async (_req, res) => {
+  try {
+    const result = await getRadarCatalog(_req.query.symbols || '');
+    res.json({ symbols: result.symbols, updatedAt: result.updatedAt, stale: Boolean(result.stale), source: 'Binance USDⓈ-M Futures' });
+  } catch (err) {
+    console.error('[GET /api/tradfi/radar/catalog]', err.message);
+    res.status(502).json({ error: '雷达合约清单暂不可用', details: err.message });
+  }
+});
+
+router.get('/radar/available', async (_req, res) => {
+  try {
+    const result = await getRadarAvailableContracts();
+    res.json({ contracts: result.contracts, updatedAt: result.updatedAt, stale: Boolean(result.stale), source: 'Binance USDⓈ-M Futures' });
+  } catch (err) {
+    console.error('[GET /api/tradfi/radar/available]', err.message);
+    res.status(502).json({ error: '可添加合约清单暂不可用', details: err.message });
+  }
+});
+
+router.get('/radar/quotes', async (req, res) => {
+  try {
+    res.json(await getRadarQuotes(req.query.symbols));
+  } catch (err) {
+    console.error('[GET /api/tradfi/radar/quotes]', err.message);
+    res.status(502).json({ error: '雷达行情暂不可用', details: err.message });
+  }
+});
+
+router.get('/radar/market', async (_req, res) => {
+  try {
+    const result = await getRadarMarketQuotes();
+    res.json({ quotes: result.quotes, updatedAt: result.updatedAt, stale: Boolean(result.stale), source: 'Binance USDⓈ-M Futures' });
+  } catch (err) {
+    console.error('[GET /api/tradfi/radar/market]', err.message);
+    res.status(502).json({ error: '雷达全市场行情暂不可用', details: err.message });
+  }
+});
+
+router.get('/radar/market-cap', async (req, res) => {
+  try {
+    const symbol = String(req.query.symbol || '').trim().toUpperCase();
+    if (!/^[A-Z0-9]{3,30}USDT$/.test(symbol)) return res.status(400).json({ error: '无效的雷达合约' });
+    res.json(await getRadarMarketCap(symbol));
+  } catch (err) {
+    console.error('[GET /api/tradfi/radar/market-cap]', err.message);
+    res.status(502).json({ error: '市值数据暂不可用', details: err.message });
+  }
+});
+
+router.get('/radar/news', async (req, res) => {
+  try {
+    const symbol = String(req.query.symbol || '').trim().toUpperCase();
+    if (!/^[A-Z0-9]{3,30}USDT$/.test(symbol)) return res.status(400).json({ error: '无效的雷达合约' });
+    res.json(await getRadarNews(symbol));
+  } catch (err) {
+    console.error('[GET /api/tradfi/radar/news]', err.message);
+    res.status(err.status || 502).json({ error: err.message || '相关新闻暂不可用' });
+  }
+});
+
+router.get('/radar/klines', async (req, res) => {
+  try {
+    const symbol = String(req.query.symbol || '').trim().toUpperCase();
+    const interval = String(req.query.interval || '15m');
+    const catalog = await getRadarCatalog([symbol]);
+    if (!catalog.symbols.some((item) => item.symbol === symbol)) return res.status(400).json({ error: '无效的雷达合约' });
+    if (!['5m', '15m', '1h'].includes(interval)) return res.status(400).json({ error: '无效的走势图周期' });
+    res.json(await getTradFiKlines(symbol, interval));
+  } catch (err) {
+    console.error('[GET /api/tradfi/radar/klines]', err.message);
+    res.status(502).json({ error: '雷达走势图暂不可用', details: err.message });
   }
 });
 

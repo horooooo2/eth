@@ -11,11 +11,6 @@ import {
 } from '@/utils/format';
 import type { RecoQuotes } from '@/utils/recommend';
 import { preferredCoinsState } from '@/utils/watchedCoins';
-import {
-  filterFreshAlerts,
-  filterFreshTrades,
-  filterFreshWhales,
-} from '@/utils/freshMode';
 import { resolveWhaleTitle } from '@/utils/whaleReference';
 import {
   readResonanceConfig,
@@ -48,9 +43,9 @@ watch(windowHours, (value) => writeResonanceWindowHours(value));
 
 const scan = computed(() =>
   scanResonanceSignals({
-    whales: filterFreshWhales(props.whales, Date.now(), props.alerts),
-    activity: filterFreshTrades(props.activity, props.whales, Date.now(), props.alerts),
-    alerts: filterFreshAlerts(props.alerts, props.whales),
+    whales: props.whales,
+    activity: props.activity,
+    alerts: props.alerts,
     config: { ...readResonanceConfig(), windowHours: windowHours.value },
     watchedCoins: preferredCoinsState.value,
   }),

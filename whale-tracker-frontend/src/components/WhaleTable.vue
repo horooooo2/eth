@@ -9,16 +9,13 @@ import {
 } from '@/api';
 import type { WhaleProfile, WhaleTrade } from '@/types';
 import { preferredCoinFilterOptions, preferredCoinsState } from '@/utils/watchedCoins';
-import { enrichTrade, type EnrichedTrade } from '@/utils/tradeEnrichment';
-import type { RecoQuotes } from '@/utils/recommend';
 import {
-  freshModeEnabled,
-  freshWindowHours,
-  freshWindowMs,
+  enrichTrade,
   isClearlyIncreaseTrade,
   isOpeningFillTrade,
-  tradePassesFreshGate,
-} from '@/utils/freshMode';
+  type EnrichedTrade,
+} from '@/utils/tradeEnrichment';
+import type { RecoQuotes } from '@/utils/recommend';
 import {
   formatPrice,
   formatPnl,
@@ -63,41 +60,26 @@ const coinOptions = computed(() => preferredCoinFilterOptions());
 const filtered = computed(() => Boolean(props.selectedId));
 const busy = computed(() => pageLoading.value || Boolean(props.loading && !trades.value.length));
 const scopeHint = computed(() => {
-  const freshHint = freshModeEnabled.value
-    ? ` · 闪电模式近 ${freshWindowHours.value}h`
-    : '';
   if (props.selectedId) {
     const title = resolveWhaleTitle(props.whales, {
       id: props.selectedId,
       name: props.selectedName,
     });
-    return `筛选：${title} · 开仓 / 补仓 / 减仓 / 平仓${freshHint}`;
+    return `筛选：${title} · 开仓 / 补仓 / 减仓 / 平仓`;
   }
-  return `全部资金动态 · 开仓 / 补仓 / 减仓 / 平仓${freshHint}`;
+  return `全部资金动态 · 开仓 / 补仓 / 减仓 / 平仓`;
 });
-
-function tradeSinceMs() {
-  if (!freshModeEnabled.value) return undefined;
-  return Date.now() - freshWindowMs();
-}
 
 /** 分页接口结果为主；仅第 1 页合并实时 activity，并截断到 PAGE_SIZE */
 const rows = computed(() => {
-  // 显式依赖，开关/切窗后立即重算
-  void freshModeEnabled.value;
-  void freshWindowHours.value;
-  const now = Date.now();
-  const since = tradeSinceMs();
   const map = new Map<string, WhaleTrade>();
   for (const trade of trades.value) {
     if (trade.source === 'onchain') continue;
-    if (since && Number(trade.time || 0) < since) continue;
     map.set(String(trade.id || trade.hash || ''), trade);
   }
   if (page.value === 1) {
     for (const trade of activity.value) {
       if (trade.source === 'onchain') continue;
-      if (since && Number(trade.time || 0) < since) continue;
       if (props.selectedId && trade.whaleId !== props.selectedId) continue;
       const id = String(trade.id || trade.hash || '');
       if (!id || map.has(id)) continue;
@@ -114,15 +96,7 @@ const rows = computed(() => {
     .map((trade) => {
       const whale = props.whales.find((item) => item.id === trade.whaleId);
       return enrichTrade(trade, whale, props.quotes || {});
-    })
-    .filter((row) =>
-      tradePassesFreshGate(
-        row.trade,
-        props.whales.find((w) => w.id === row.trade.whaleId) || null,
-        now,
-        whaleStore.alertHistory,
-      ),
-    );
+    });
 });
 
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)));
@@ -144,7 +118,6 @@ async function loadPage(silent = false) {
       page: page.value,
       limit: PAGE_SIZE,
       asset: assetFilter.value || undefined,
-      sinceMs: tradeSinceMs(),
     };
     const data = props.selectedId
       ? await fetchWhaleTrades(props.selectedId, query)
@@ -172,21 +145,17 @@ async function loadPage(silent = false) {
 watch(
   [
     () => props.selectedId,
-    assetFilter,
-    page,
-    () => props.updatedAt,
-    freshModeEnabled,
-    freshWindowHours,
+      assetFilter,
+      page,
+      () => props.updatedAt,
     () => props.bootReady,
   ],
-  ([selectedId, , pageVal, , freshOn, freshHours, ready], prev) => {
+  ([selectedId, , pageVal, , ready], prev) => {
     if (!ready) return;
     if (
       prev &&
       (selectedId !== prev[0] ||
-        assetFilter.value !== prev[1] ||
-        freshOn !== prev[4] ||
-        freshHours !== prev[5]) &&
+        assetFilter.value !== prev[1]) &&
       pageVal !== 1
     ) {
       pageLoading.value = true;
@@ -199,9 +168,7 @@ watch(
       assetFilter.value === prev![1] &&
       pageVal === prev![2] &&
       props.updatedAt !== prev![3] &&
-      freshOn === prev![4] &&
-      freshHours === prev![5] &&
-      ready === prev![6];
+      ready === prev![4];
     if (!soft) pageLoading.value = true;
     void loadPage(soft);
   },

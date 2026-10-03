@@ -35,6 +35,21 @@ function loadEnvFile(filePath) {
 
 loadEnvFile(path.join(__dirname, '.env'));
 
+// Local backend may run behind a desktop HTTP proxy. Use this app-specific
+// setting to override inherited proxy variables (which can be stale in shells).
+const outboundProxyUrl = String(process.env.OUTBOUND_PROXY_URL || '').trim();
+if (outboundProxyUrl) {
+  for (const name of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) {
+    process.env[name] = outboundProxyUrl;
+  }
+  try {
+    const proxy = new URL(outboundProxyUrl);
+    console.info(`[proxy] outbound HTTP proxy ${proxy.protocol}//${proxy.hostname}:${proxy.port || '(default)'}`);
+  } catch {
+    console.warn('[proxy] OUTBOUND_PROXY_URL is not a valid URL');
+  }
+}
+
 const express = require('express');
 const { createApp } = require('./lib/createApp');
 const { refreshWhalesShard, isProgressiveLoading } = require('./lib/whales');

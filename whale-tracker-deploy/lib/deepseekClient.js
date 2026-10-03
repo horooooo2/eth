@@ -1,9 +1,41 @@
 /**
  * DeepSeek OpenAI-compatible API 客户端
  */
+const axios = require('axios');
+const { Readable } = require('node:stream');
+const { HttpsProxyAgent } = require('https-proxy-agent');
 const DEEPSEEK_BASE = 'https://api.deepseek.com';
 const DEFAULT_MODEL = 'deepseek-chat';
 const MARKET_BRIEF_MAX_TOKENS = 8192;
+
+/** Node 20 的原生 fetch 不读取 HTTP(S)_PROXY；本地配置了代理时用代理 Agent 转发并保持 Web Response 接口。 */
+async function deepseekHttpFetch(url, options = {}) {
+  const proxyUrl = String(process.env.HTTPS_PROXY || process.env.https_proxy || '').trim();
+  if (!proxyUrl) return fetch(url, options);
+
+  const agent = new HttpsProxyAgent(proxyUrl);
+  try {
+    const response = await axios.request({
+      url,
+      method: options.method || 'GET',
+      headers: options.headers,
+      data: options.body,
+      signal: options.signal,
+      httpsAgent: agent,
+      proxy: false,
+      responseType: 'stream',
+      validateStatus: () => true,
+    });
+    response.data?.once('close', () => agent.destroy());
+    const body = response.status === 204 || response.status === 304 || !response.data
+      ? null
+      : Readable.toWeb(response.data);
+    return new Response(body, { status: response.status });
+  } catch (error) {
+    agent.destroy();
+    throw error;
+  }
+}
 
 async function deepseekFetch(apiKey, path, { method = 'GET', body, timeoutMs = 60_000 } = {}) {
   const key = String(apiKey || '').trim();
@@ -15,7 +47,7 @@ async function deepseekFetch(apiKey, path, { method = 'GET', body, timeoutMs = 6
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`${DEEPSEEK_BASE}${path}`, {
+    const res = await deepseekHttpFetch(`${DEEPSEEK_BASE}${path}`, {
       method,
       headers: {
         Authorization: `Bearer ${key}`,
@@ -216,7 +248,7 @@ async function streamAnalyzeWithDeepseek(
 
   let res;
   try {
-    res = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
+    res = await deepseekHttpFetch(`${DEEPSEEK_BASE}/chat/completions`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${key}`,
@@ -521,7 +553,7 @@ async function streamAnalyzeMarketBrief(
 
   let res;
   try {
-    res = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
+    res = await deepseekHttpFetch(`${DEEPSEEK_BASE}/chat/completions`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${key}`,
@@ -548,7 +580,7 @@ async function streamAnalyzeMarketBrief(
     }
     // response_format 可能不被流式支持，回退无 format
     try {
-      res = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
+      res = await deepseekHttpFetch(`${DEEPSEEK_BASE}/chat/completions`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${key}`,
@@ -681,15 +713,17 @@ function buildMarketChatMessages({ coin, contextText, analysis, messages = [], m
         }))
     : [];
 
+  const radarNewsMode = String(contextText || '').includes('【雷达相关新闻依据】');
   const system = [
-    '你是加密资产研究助手，正在与用户讨论一份基于站内数据的诊币简报。',
-    '规则：优先依据「简报」与「上下文」；不足时明确说明；用中文简洁回答；不构成投资建议；不下单指令。',
+    '你是市场合约研究助手，正在讨论虚拟资产或传统金融标的的行情变化。',
+    '规则：优先依据「简报」与「上下文」；区分观测事实与可能解释；没有新闻证据时不要断言具体事件是涨跌原因；信息不足时明确说明；用中文简洁回答；不构成投资建议，不给下单指令。',
+    radarNewsMode ? '雷达分析专属要求：给出有信息量、分层清楚的事件归因，采用“先说结论—主要催化—其他背景—风险与不确定性—总结”的结构，可按证据多少合并章节，不要为凑结构编造内容。优先综合上下文里的相关新闻标题、摘要、媒体来源、发布时间，再说明这些事件如何可能影响该标的；每个新闻事实都必须用对应编号引用，如[新闻1]，编号严格对应上下文新闻顺序，并只引用实际提供的新闻。若新闻来源有冲突，指出冲突和日期；若仅有标题、缺少正文佐证，要明确其证据有限。可以用具体事件和数字，但必须能在新闻摘要/标题或行情数据中找到依据。严禁补造机构评级、目标价、估值、公司表态、发射任务细节或未提供的任何事实。没有可靠相关新闻时，直说暂时找不到充分的新闻解释。不要进行技术分析，不讨论K线形态、均线、指标、支撑阻力、成交量形态等术语。用自然、亲切、有判断但不武断的中文写成几段清楚的解释；区分已报道事实与“这可能是市场在交易的逻辑”，说明新闻和涨跌之间未必存在已证实因果。最后简短点明主要风险或仍待确认的消息，不给买卖指令。不要假装自己是人。' : '',
   ].join('');
 
   const bootstrap = [
     `标的：${symbol}`,
     '',
-    '【诊币简报】',
+    '【行情分析】',
     clip(analysis, 6000) || '（暂无）',
     '',
     '【站内上下文摘要】',
@@ -704,7 +738,7 @@ function buildMarketChatMessages({ coin, contextText, analysis, messages = [], m
       { role: 'user', content: bootstrap },
       {
         role: 'assistant',
-        content: '已读完简报与上下文。请提出你想探讨的问题，我会基于这些材料回答。',
+        content: '已读完行情资料与上下文。我会基于现有材料回答，并标明不确定之处。',
       },
       ...history,
       { role: 'user', content: clip(question, 1500) },
@@ -770,7 +804,7 @@ async function streamChatMarketBrief(
 
   let res;
   try {
-    res = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
+    res = await deepseekHttpFetch(`${DEEPSEEK_BASE}/chat/completions`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${key}`,

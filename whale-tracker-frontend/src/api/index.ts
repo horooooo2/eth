@@ -24,16 +24,26 @@ export type TradFiMarketSymbol = {
   quoteAsset: string;
   name: string;
   category: string;
+  assetType?: 'CRYPTO' | 'TRADFI';
+  radarTier?: 'CORE' | 'VOLATILE';
   status: string;
+};
+
+export type RadarAvailableContract = TradFiMarketSymbol & {
+  lastPrice: string | null;
+  priceChangePercent: string | null;
+  quoteVolume24h: string | null;
 };
 
 export type TradFiQuote = {
   symbol: string;
   lastPrice: string | null;
   priceChangePercent: string | null;
+  quoteVolume24h?: string | null;
   closeTime: number | null;
   source: string;
   stale: boolean;
+  changes?: { '5m': number | null; '15m': number | null; '1h': number | null };
   error?: string;
 };
 
@@ -46,6 +56,47 @@ export async function fetchTradFiQuotes(symbols: string[]) {
   const { data } = await http.get<{ quotes: TradFiQuote[]; invalidSymbols: string[]; updatedAt: string; source: string }>('/tradfi/quotes', {
     params: { symbols: symbols.join(',') },
   });
+  return data;
+}
+
+export async function fetchRadarCatalog(includeSymbols: string[] = []) {
+  const { data } = await http.get<{ symbols: TradFiMarketSymbol[]; updatedAt: string; stale: boolean; source: string }>('/tradfi/radar/catalog', {
+    params: includeSymbols.length ? { symbols: includeSymbols.join(',') } : undefined,
+  });
+  return data;
+}
+
+export async function fetchRadarAvailableContracts() {
+  const { data } = await http.get<{ contracts: RadarAvailableContract[]; updatedAt: string; stale: boolean; source: string }>('/tradfi/radar/available');
+  return data;
+}
+
+export async function fetchRadarQuotes(symbols: string[]) {
+  const { data } = await http.get<{ quotes: TradFiQuote[]; invalidSymbols: string[]; updatedAt: string; source: string }>('/tradfi/radar/quotes', {
+    params: { symbols: symbols.join(',') },
+  });
+  return data;
+}
+
+export async function fetchRadarMarket() {
+  const { data } = await http.get<{ quotes: TradFiQuote[]; updatedAt: string; stale: boolean; source: string }>('/tradfi/radar/market');
+  return data;
+}
+
+export async function fetchRadarMarketCap(symbol: string) {
+  const { data } = await http.get<{ symbol: string; marketCapUsd: string | null; source: string | null; updatedAt: string | null; stale?: boolean }>('/tradfi/radar/market-cap', { params: { symbol } });
+  return data;
+}
+
+export type RadarNewsItem = { title: string; category: string; publishedAt: string | null; source: string; url: string; summary: string };
+export async function fetchRadarNews(symbol: string) {
+  const { data } = await http.get<{ symbol: string; items: RadarNewsItem[]; source: string; updatedAt: string; stale?: boolean; error?: string }>('/tradfi/radar/news', { params: { symbol } });
+  return data;
+}
+
+export type RadarKline = { openTime: number; open: number; high: number; low: number; close: number; volume: number; closeTime: number };
+export async function fetchRadarKlines(symbol: string, interval: '5m' | '15m' | '1h') {
+  const { data } = await http.get<{ symbol: string; interval: string; available: boolean; stale: boolean; bars: RadarKline[]; error?: string }>('/tradfi/radar/klines', { params: { symbol, interval } });
   return data;
 }
 

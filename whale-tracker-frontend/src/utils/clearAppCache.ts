@@ -1,9 +1,8 @@
 import { writeMonitoredPositions } from '@/utils/monitoredPositions';
 import { writeMonitoredWhales } from '@/utils/monitoredWhales';
-import { FRESH_HOURS_KEY, FRESH_MODE_KEY } from '@/utils/freshMode';
 import { PREFERRED_COINS_KEY } from '@/utils/watchedCoins';
 
-const KEEP_KEYS = new Set([PREFERRED_COINS_KEY, FRESH_MODE_KEY, FRESH_HOURS_KEY]);
+const KEEP_KEYS = new Set([PREFERRED_COINS_KEY]);
 
 function clearStorage(storage: Storage) {
   const toRemove: string[] = [];

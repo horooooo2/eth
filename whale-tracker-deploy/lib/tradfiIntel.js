@@ -1,5 +1,5 @@
 const axios = require('axios');
-const { getCatalog } = require('./tradfiMarkets');
+const { getCatalog, getRadarCatalog } = require('./tradfiMarkets');
 const { getCalendar } = require('./calendar');
 
 const http = axios.create({ timeout: 14000, proxy: false, headers: { 'User-Agent': 'WhaleTracker/1.0 (personal market dashboard)' } });
@@ -33,14 +33,26 @@ function decodeXml(value) {
 function xmlField(block, name) {
   return decodeXml((block.match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`, 'i')) || [])[1] || '');
 }
+function plainText(value) {
+  return decodeXml(value).replace(/<[^>]*>/g, ' ').replace(/<[^>]*$/g, ' ').replace(/\s+/g, ' ').trim();
+}
 function newsQuery(market) {
   const base = market.baseAsset;
+  if (market.assetType === 'CRYPTO') return `${market.name || base} ${base} 加密货币 cryptocurrency 价格 新闻`;
   if (base === 'XAU') return '黄金 金价 美联储';
   if (base === 'XAG') return '白银 银价 工业需求';
   if (base === 'TSLA') return 'Tesla 特斯拉 财报 交付';
   if (base === 'EWY') return '韩国 股票 ETF 半导体';
   const name = market.name && market.name !== base ? market.name : base;
   return market.category === 'COMMODITY' ? `${name} ${base} 商品价格` : `${name} ${base} 股票 财报`;
+}
+
+async function getRadarNews(symbolInput) {
+  const symbol = String(symbolInput || '').trim().toUpperCase();
+  const catalog = await getRadarCatalog([symbol]);
+  const market = catalog.symbols.find((item) => item.symbol === symbol);
+  if (!market) { const error = new Error('该合约不在雷达标的清单中'); error.status = 404; throw error; }
+  return { symbol, ...(await getNews(market)) };
 }
 function newsCategory(title, market) {
   if (/美联储|Fed|通胀|CPI|PCE|利率|非农|央行|汇率|GDP/i.test(title)) return '宏观';
@@ -66,7 +78,7 @@ function rssRows(xml, market) {
       publishedAt: Number.isFinite(date.getTime()) ? date.toISOString() : null,
       source: xmlField(block, 'source') || 'Google 新闻收录',
       url: link,
-      summary: '',
+      summary: plainText(xmlField(block, 'description')).slice(0, 700),
     });
     if (out.length >= 15) break;
   }
@@ -207,4 +219,4 @@ async function getIntel(symbol) {
   return { symbol: market.symbol, news, fundamentals, events };
 }
 
-module.exports = { getIntel, rssRows, latestUsdFact, parseTreasuryCsv, issuerValue };
+module.exports = { getIntel, getRadarNews, rssRows, latestUsdFact, parseTreasuryCsv, issuerValue };

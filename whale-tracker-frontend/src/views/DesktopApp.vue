@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { fetchQuotes, fetchPagedAlertHistory, fetchPagedTrades, fetchCalendar } from '@/api';
+import { fetchQuotes, fetchPagedTrades, fetchCalendar } from '@/api';
 import CoinPreferences from '@/components/CoinPreferences.vue';
 import ApiSettings from '@/components/ApiSettings.vue';
-import FreshModeControl from '@/components/FreshModeControl.vue';
 import NewsList from '@/components/NewsList.vue';
 import MarketBriefBanner from '@/components/MarketBriefBanner.vue';
 import WhaleResonanceBanner from '@/components/WhaleResonanceBanner.vue';
@@ -28,11 +27,12 @@ import { refreshAiKeyStatus } from '@/stores/aiKey';
 import { useRealtime } from '@/composables/useRealtime';
 import type { RecoQuotes } from '@/utils/recommend';
 import { readFocusCoin } from '@/utils/recoPrefs';
-import { preferredCoinsState } from '@/utils/watchedCoins';
+import { coinMatchesWatch, preferredCoinsState } from '@/utils/watchedCoins';
 import { coinIconCandidates } from '@/utils/coinIcons';
+import { formatUsd } from '@/utils/format';
 import { unlockAlertSound } from '@/utils/alertSound';
 import type { WhaleAlert } from '@/utils/whaleAlerts';
-import { normalizeStoredAlert } from '@/utils/whaleAlerts';
+import { alertItemSide } from '@/utils/whaleAlerts';
 import { noteXTweets } from '@/stores/xFeed';
 import type { XFeedTweet } from '@/api';
 import type { WhaleProfile, WhaleTrade } from '@/types';
@@ -63,11 +63,40 @@ const whaleDetailProfile = ref<WhaleProfile | null>(null);
 const newsListRef = ref<InstanceType<typeof NewsList> | null>(null);
 const quotes = ref<RecoQuotes>({});
 const fundingRates = ref<Record<string, number>>({});
-const focusCoin = ref<string>(readFocusCoin());
-
-function reloadNewsAlerts() {
-  return Promise.resolve(newsListRef.value?.reloadAlerts?.(false));
-}
+const flowClock = ref(Date.now());
+const flowCoin = ref<string>(readFocusCoin());
+const flowWindow = ref<'15m' | '1h' | '4h' | '24h'>('1h');
+const whaleNetFlow = computed(() => {
+  const windowMs: Record<typeof flowWindow.value, number> = {
+    '15m': 15 * 60_000,
+    '1h': 60 * 60_000,
+    '4h': 4 * 60 * 60_000,
+    '24h': 24 * 60 * 60_000,
+  };
+  const cutoff = flowClock.value - windowMs[flowWindow.value];
+  let longUsd = 0;
+  let shortUsd = 0;
+  let events = 0;
+  const whales = new Set<string>();
+  for (const alert of whaleStore.alertHistory) {
+    for (const item of alert.items || []) {
+      const kind = item.kind || alert.kind;
+      if (kind !== 'open' && kind !== 'increase') continue;
+      const eventTime = Number(item.time) || Number(alert.at) || 0;
+      if (eventTime < cutoff || eventTime > flowClock.value) continue;
+      if (flowCoin.value !== 'ALL' && !coinMatchesWatch(item.coin || '', [flowCoin.value])) continue;
+      const usd = Math.abs(Number(item.usd) || 0);
+      if (!usd) continue;
+      const side = alertItemSide(alert, item);
+      if (side === 'long') longUsd += usd;
+      else if (side === 'short') shortUsd += usd;
+      else continue;
+      events += 1;
+      whales.add(alert.whaleId);
+    }
+  }
+  return { longUsd, shortUsd, netUsd: longUsd - shortUsd, events, whales: whales.size };
+});
 
 const loginUser = ref('');
 const loginPass = ref('');
@@ -137,15 +166,6 @@ async function loadAll(refresh = false, silent = false) {
   secondaryReady.value = false;
   try {
     await whaleStore.load(refresh, silent);
-    try {
-      const data = await fetchPagedAlertHistory({ page: 1, limit: 50 });
-      const list = (data.alerts || [])
-        .map((item) => normalizeStoredAlert(item as WhaleAlert))
-        .filter((item): item is WhaleAlert => Boolean(item));
-      whaleStore.absorbAlertPage(list);
-    } catch {
-      // 子组件会再拉
-    }
   } finally {
     secondaryReady.value = true;
     // 新闻 / 行情 / 资金动态 / 日历：首屏后静默加载
@@ -189,7 +209,9 @@ const {
 watch(
   preferredCoinsState,
   () => {
-    focusCoin.value = readFocusCoin();
+    if (flowCoin.value !== 'ALL' && !preferredCoinsState.value.includes(flowCoin.value)) {
+      flowCoin.value = readFocusCoin();
+    }
     void loadQuotes();
   },
   { deep: true },
@@ -207,6 +229,7 @@ async function startAppSession() {
   startRealtime();
   if (!timer) {
     timer = window.setInterval(() => {
+      flowClock.value = Date.now();
       void pollNewsAndQuotes();
     }, 60 * 1000);
   }
@@ -328,7 +351,7 @@ onUnmounted(() => {
         type="button"
         class="nav-item"
         :class="{ active: sideTab === 'tradfi' }"
-        title="TradFi"
+        title="雷达"
         @click="sideTab = 'tradfi'"
       >
         <span class="nav-mark fi" aria-hidden="true">
@@ -339,11 +362,10 @@ onUnmounted(() => {
             <path d="M2 21h20" />
           </svg>
         </span>
-        <span>TradFi</span>
+        <span>雷达</span>
       </button>
 
       <div class="bottom-nav">
-        <FreshModeControl variant="sidebar" :reload-alerts="reloadNewsAlerts" />
         <CoinPreferences variant="sidebar" :active-market="sideTab" />
         <ApiSettings variant="sidebar" />
         <button
@@ -361,7 +383,25 @@ onUnmounted(() => {
     <div class="layout" :class="{ 'is-tradfi': sideTab === 'tradfi' }">
       <div v-show="sideTab === 'virtual'" class="virtual-view">
       <header class="topbar">
-        <div class="topbar-spacer" aria-hidden="true" />
+        <div class="net-position-banner" :title="`所选时段内巨鲸开仓/加仓名义金额：多头 +${formatUsd(whaleNetFlow.longUsd)}，空头 −${formatUsd(whaleNetFlow.shortUsd)}；不含减仓和平仓`">
+          <div class="net-flow-filters">
+            <select v-model="flowWindow" aria-label="净流入统计时段">
+              <option value="15m">15分钟</option>
+              <option value="1h">1小时</option>
+              <option value="4h">4小时</option>
+              <option value="24h">24小时</option>
+            </select>
+            <select v-model="flowCoin" aria-label="净流入统计币种">
+              <option value="ALL">全部</option>
+              <option v-for="coin in preferredCoinsState" :key="coin" :value="coin">{{ coin }}</option>
+            </select>
+          </div>
+          <div class="net-flow-value" :class="whaleNetFlow.netUsd >= 0 ? 'net-long' : 'net-short'">
+            <strong>{{ whaleNetFlow.netUsd < 0 ? '−' : '+' }}{{ formatUsd(Math.abs(whaleNetFlow.netUsd)) }}</strong>
+            <span>{{ whaleNetFlow.netUsd >= 0 ? '净流入' : '净流出' }}</span>
+            <small>{{ whaleNetFlow.whales }} 巨鲸 · {{ whaleNetFlow.events }} 笔</small>
+          </div>
+        </div>
         <WhaleResonanceBanner
           :whales="whaleStore.displayWhales"
           :activity="whaleStore.activity"
@@ -398,7 +438,7 @@ onUnmounted(() => {
 
           <WhaleList
             ref="whaleListRef"
-            :whales="whaleStore.enabledWhales"
+            :whales="whaleStore.displayWhales"
             :loading="whaleStore.loading"
             :selected-id="whaleStore.selectedWhaleId"
             :quotes="quotes"
@@ -714,8 +754,11 @@ onUnmounted(() => {
 }
 .tradfi-host {
   flex: 1;
+  width: 100%;
   min-height: 0;
-  overflow: hidden;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 .topbar {
   /* 与下方 .grid 三列对齐：共振信号落在巨鲸列正上方 */
@@ -730,9 +773,16 @@ onUnmounted(() => {
   min-width: 0;
   min-height: 44px;
 }
-.topbar-spacer {
-  min-width: 0;
-}
+.net-position-banner { display: flex; align-items: center; justify-content: space-between; gap: 7px; min-width: 0; height: 44px; padding: 0 8px 0 10px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--panel-2) 82%, transparent); box-sizing: border-box; }
+.net-flow-filters,.net-flow-value { display: flex; align-items: center; min-width: 0; }
+.net-flow-filters { gap: 4px; }
+.net-flow-title { flex: none; color: var(--muted); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.net-flow-filters select { max-width: 68px; height: 28px; padding: 0 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2); color: var(--text); font-size: 11px; cursor: pointer; }
+.net-flow-value { justify-content: flex-end; gap: 5px; overflow: hidden; white-space: nowrap; }
+.net-flow-value strong { overflow: hidden; color: var(--green); font: 700 14px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; }
+.net-flow-value.net-short strong,.net-flow-value.net-short span { color: var(--red); }
+.net-flow-value span { color: var(--green); font-size: 10px; font-weight: 700; }
+.net-flow-value small { color: var(--muted); font-size: 9px; }
 .topbar-right {
   display: flex;
   justify-content: flex-end;

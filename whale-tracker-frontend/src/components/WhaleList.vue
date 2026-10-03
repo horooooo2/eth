@@ -33,7 +33,6 @@ import {
   visibleWhalePositions,
   whaleHasPositionCoin,
 } from '@/utils/whaleCardUtils';
-import { freshModeEnabled, whaleHasFreshActivity } from '@/utils/freshMode';
 import { useWhaleStore } from '@/stores/whale';
 import { preferredCoinsState } from '@/utils/watchedCoins';
 import {
@@ -182,16 +181,6 @@ const sourceWhales = computed(() => frozenWhales.value);
 
 const coinScopedWhales = computed(() => {
   let pool = sourceWhales.value;
-  if (freshModeEnabled.value) {
-    // 近时/闪电模式：以 openTime 与开仓证据为门槛
-    pool = pool.filter((whale) => {
-      if (!whaleHasFreshActivity(whale, Date.now())) return false;
-      return (
-        scopedWhaleDirection(whale, coinFilter.value === 'all' ? 'all' : coinFilter.value) !==
-        'neutral'
-      );
-    });
-  }
   // 若有定位 pin，确保其仍在 pool 中
   const pinned = locatePinId.value
     ? sourceWhales.value.find((item) => item.id === locatePinId.value) || null
@@ -203,12 +192,7 @@ const coinScopedWhales = computed(() => {
     }
     return pool;
   }
-  let list = pool.filter((whale) => {
-    if (freshModeEnabled.value) {
-      return visibleWhalePositions(whale, coinFilter.value).length > 0;
-    }
-    return whaleHasPositionCoin(whale, coinFilter.value);
-  });
+  let list = pool.filter((whale) => whaleHasPositionCoin(whale, coinFilter.value));
   if (pinned && !list.some((item) => item.id === pinned.id)) {
     list = [pinned, ...list];
   }
@@ -406,27 +390,15 @@ function displayDirection(whale: WhaleProfile) {
 
 const coinCounts = computed(() => {
   let pool = sourceWhales.value;
-  if (freshModeEnabled.value) {
-    pool = pool.filter((whale) => {
-      if (!whaleHasFreshActivity(whale, Date.now())) return false;
-      return scopedWhaleDirection(whale, 'all') !== 'neutral';
-    });
-  }
   const counts: Record<string, number> = { all: pool.length };
   for (const coin of preferredCoins.value) {
-    counts[coin] = pool.filter((whale) => {
-      if (freshModeEnabled.value) {
-        if (scopedWhaleDirection(whale, coin) === 'neutral') return false;
-        return visibleWhalePositions(whale, coin).length > 0;
-      }
-      return whaleHasPositionCoin(whale, coin);
-    }).length;
+    counts[coin] = pool.filter((whale) => whaleHasPositionCoin(whale, coin)).length;
   }
   return counts;
 });
 
 function cardPositions(whale: WhaleProfile) {
-  // 币种筛选只决定哪些巨鲸入列，卡片内仍展示全部（含近时）持仓
+  // 币种筛选只决定哪些巨鲸入列，卡片内仍展示全部持仓
   return sortedPositions(visibleWhalePositions(whale, 'all'));
 }
 
@@ -707,14 +679,6 @@ async function focusWhale(payload: { id: string; coin?: string }) {
   await nextTick();
   frozenWhales.value = props.whales.length ? props.whales : [whale];
 
-  // 异动点击始终定位；「无新鲜开仓」不拦截（老仓加仓也算有动作）
-  if (freshModeEnabled.value && !whaleHasFreshActivity(whale, Date.now())) {
-    // 仍展示卡片：临时钉住，避免被近时列表滤掉
-    frozenWhales.value = [
-      whale,
-      ...frozenWhales.value.filter((item) => item.id !== whale.id),
-    ];
-  }
   // 定位高亮
   locatePinId.value = payload.id;
   expandedIds.value = { ...expandedIds.value, [payload.id]: true };

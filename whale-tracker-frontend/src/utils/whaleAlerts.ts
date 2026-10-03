@@ -156,7 +156,7 @@ export function isFreshDockAlert(alert: WhaleAlert, now = Date.now()) {
   return alertEventTime(alert) >= now - DOCK_ALERT_MAX_AGE_MS;
 }
 
-export function filterFreshDockAlerts(alerts: WhaleAlert[], now = Date.now()) {
+export function filterRecentDockAlerts(alerts: WhaleAlert[], now = Date.now()) {
   return alerts.filter((item) => isFreshDockAlert(item, now));
 }
 
@@ -832,7 +832,7 @@ export function diffWhaleActivity(input: {
       layer: 'position',
     };
     if (!isFreshDockAlert(alert, now) && eventAt < now - DOCK_ALERT_MAX_AGE_MS) {
-      // 仍写入历史由调用方 merge；dock 由 filterFreshDockAlerts 过滤
+      // 仍写入历史由调用方 merge；dock 仅展示近期异动
     }
     alerts.push(alert);
   }

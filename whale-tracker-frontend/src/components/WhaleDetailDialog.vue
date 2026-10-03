@@ -39,6 +39,13 @@ const equityRange = ref<WhaleEquityHistoryRange>('30d');
 const equityPoints = ref<WhaleEquityHistoryPoint[]>([]);
 const equityLoading = ref(false);
 const equityError = ref('');
+const hoveredEquity = ref<{
+  time: number;
+  contractEquity: number;
+  x: number;
+  y: number;
+} | null>(null);
+type EquityAxisLabel = { x: number; anchor: 'start' | 'middle' | 'end'; label: string };
 let equityRequestSeq = 0;
 let tradeRequestSeq = 0;
 let transferRequestSeq = 0;
@@ -74,7 +81,7 @@ const addressShort = computed(() => {
 });
 const equityChart = computed(() => {
   const points = equityPoints.value;
-  if (!points.length) return { line: '', area: '', plotted: [], yLabels: [], xLabels: [] as string[] };
+  if (!points.length) return { line: '', area: '', plotted: [], yLabels: [], xLabels: [] as EquityAxisLabel[] };
   const rangeMs: Record<Exclude<WhaleEquityHistoryRange, 'all'>, number> = {
     '24h': 24 * 60 * 60 * 1000,
     '7d': 7 * 24 * 60 * 60 * 1000,
@@ -99,16 +106,14 @@ const equityChart = computed(() => {
   const line = plotted.map((point, index) => `${index ? 'L' : 'M'}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(' ');
   const area = plotted.length > 1 ? `${line} L${plotted[plotted.length - 1].x.toFixed(1)},264 L${plotted[0].x.toFixed(1)},264 Z` : '';
   const moneyAxis = [max, (max + min) / 2, min].map((value) => formatMoney(value));
-  const dateAxis = plotted.length > 1
-    ? [formatChartDate(plotted[0].time), formatChartDate(plotted[Math.floor((plotted.length - 1) / 2)].time), formatChartDate(plotted[plotted.length - 1].time)]
-    : [formatChartDate(plotted[0].time)];
+  const dateAxis: EquityAxisLabel[] = plotted.length > 1
+    ? [
+      { x: 90, anchor: 'start', label: formatChartDate(start) },
+      { x: 530, anchor: 'middle', label: formatChartDate(start + (end - start) / 2) },
+      { x: 970, anchor: 'end', label: formatChartDate(end) },
+    ]
+    : [{ x: 540, anchor: 'middle', label: formatChartDate(plotted[0].time) }];
   return { line, area, plotted, yLabels: moneyAxis, xLabels: dateAxis };
-});
-const equityDataRows = computed(() => {
-  const points = equityPoints.value;
-  if (points.length <= 5) return points;
-  const indexes = Array.from({ length: 5 }, (_, index) => Math.round(index * (points.length - 1) / 4));
-  return [...new Set(indexes)].map((index) => points[index]);
 });
 function formatMoney(value: unknown) {
   if (value == null || value === '') return '—';
@@ -125,10 +130,37 @@ function formatChartDate(value: number) {
   }).format(date);
 }
 
-function formatChartTooltip(point: WhaleEquityHistoryPoint) {
+function formatChartTooltipDate(point: Pick<WhaleEquityHistoryPoint, 'time'>) {
   const date = new Date(point.time);
-  return `${new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(date)} · ${formatMoney(point.contractEquity)}`;
+  return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
+
+function onEquityChartMove(event: MouseEvent) {
+  const svg = event.currentTarget as SVGSVGElement;
+  const rect = svg.getBoundingClientRect();
+  if (!rect.width || !equityChart.value.plotted.length) return;
+
+  // The SVG stretches to the chart container, so map the pointer to the viewBox
+  // and snap to the closest timestamp. This works even when points are dense.
+  const pointerX = (event.clientX - rect.left) / rect.width * 1000;
+  const point = equityChart.value.plotted.reduce((closest, candidate) =>
+    Math.abs(candidate.x - pointerX) < Math.abs(closest.x - pointerX) ? candidate : closest,
+  );
+  hoveredEquity.value = point;
+}
+
+function clearEquityHover() {
+  hoveredEquity.value = null;
+}
+
+const equityHoverStyle = computed(() => {
+  const point = hoveredEquity.value;
+  if (!point) return {};
+  return {
+    left: `${Math.max(12, Math.min(88, point.x / 10))}%`,
+    top: `${Math.max(12, Math.min(78, point.y / 3))}%`,
+  };
+});
 
 function formatPrice(value: unknown) {
   if (value == null || value === '') return '—';
@@ -172,12 +204,24 @@ function positionRoe(position: { unrealizedPnl?: number | null; marginUsed?: num
   return Number.isFinite(margin) && margin > 0 && Number.isFinite(pnl) ? `${(pnl / margin * 100).toFixed(2)}%` : '—';
 }
 
-function liquidationDistance(position: { side?: string; coin?: string; liquidationPx?: string | number | null }) {
+function liquidationDistancePct(position: { side?: string; coin?: string; liquidationPx?: string | number | null }) {
   const mark = Number(perpMarkPrices.value[String(position.coin || '')]);
   const liquidation = Number(position.liquidationPx);
-  if (!Number.isFinite(mark) || mark <= 0 || !Number.isFinite(liquidation) || liquidation <= 0) return '—';
+  if (!Number.isFinite(mark) || mark <= 0 || !Number.isFinite(liquidation) || liquidation <= 0) return null;
   const pct = position.side === 'short' ? (liquidation - mark) / mark * 100 : (mark - liquidation) / mark * 100;
-  return `${Math.max(0, pct).toFixed(2)}%`;
+  return pct;
+}
+
+function liquidationDistanceLabel(position: { side?: string; coin?: string; liquidationPx?: string | number | null }) {
+  const distance = liquidationDistancePct(position);
+  if (distance == null) return '—';
+  return distance <= 0 ? '已触及' : `${distance.toFixed(2)}%`;
+}
+
+function liquidationDistanceTone(position: { side?: string; coin?: string; liquidationPx?: string | number | null }) {
+  const distance = liquidationDistancePct(position);
+  if (distance == null) return 'unknown';
+  return distance <= 10 ? 'critical' : distance <= 25 ? 'warning' : 'safe';
 }
 
 function holdDuration(position: { firstOpenTime?: number | null; openTime?: number | null; openHistoryComplete?: boolean }) {
@@ -264,6 +308,7 @@ async function loadEquityHistory() {
 }
 
 function setEquityRange(range: WhaleEquityHistoryRange) {
+  clearEquityHover();
   equityRange.value = range;
 }
 
@@ -408,20 +453,23 @@ async function copyAddress() {
             </div>
           </div>
           <div class="chart-container">
-            <svg v-if="equityChart.line" class="equity-chart" viewBox="0 0 1000 300" preserveAspectRatio="none" aria-label="合约账户权益历史曲线">
+            <svg v-if="equityChart.line" class="equity-chart" viewBox="0 0 1000 300" preserveAspectRatio="none" aria-label="合约账户权益历史曲线" @mousemove="onEquityChartMove" @mouseleave="clearEquityHover">
               <defs><linearGradient id="equityArea" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#2962ff" stop-opacity=".32" /><stop offset="100%" stop-color="#2962ff" stop-opacity="0" /></linearGradient></defs>
               <g v-for="(label, index) in equityChart.yLabels" :key="`y-${index}`"><text x="4" :y="[29, 138, 247][index]" class="chart-axis-label">{{ label }}</text><line x1="86" x2="990" :y1="[24, 133, 242][index]" :y2="[24, 133, 242][index]" class="chart-axis-grid" /></g>
               <path v-if="equityChart.area" :d="equityChart.area" fill="url(#equityArea)" />
               <path :d="equityChart.line" fill="none" stroke="#4b83ff" stroke-width="2.5" vector-effect="non-scaling-stroke" />
-              <circle v-for="point in equityChart.plotted" :key="point.key" :cx="point.x" :cy="point.y" r="3.5" class="equity-point"><title>{{ formatChartTooltip(point) }}</title></circle>
-              <g v-for="(label, index) in equityChart.xLabels" :key="`x-${index}`"><text :x="[90, 530, 970][index]" y="292" :text-anchor="['start', 'middle', 'end'][index]" class="chart-axis-label">{{ label }}</text></g>
+              <line v-if="hoveredEquity" :x1="hoveredEquity.x" :x2="hoveredEquity.x" y1="24" y2="264" class="equity-hover-line" />
+              <circle v-for="point in equityChart.plotted" :key="point.key" :cx="point.x" :cy="point.y" r="3.5" class="equity-point" />
+              <circle v-if="hoveredEquity" :cx="hoveredEquity.x" :cy="hoveredEquity.y" r="6" class="equity-hover-point" />
+              <g v-for="(label, index) in equityChart.xLabels" :key="`x-${index}`"><text :x="label.x" y="292" :text-anchor="label.anchor" class="chart-axis-label">{{ label.label }}</text></g>
             </svg>
+            <div v-if="hoveredEquity" class="equity-hover-tooltip" :style="equityHoverStyle">
+              <strong>{{ formatMoney(hoveredEquity.contractEquity) }}</strong>
+              <span>{{ formatChartTooltipDate(hoveredEquity) }}</span>
+            </div>
             <div v-if="equityLoading" class="chart-empty"><b>正在读取权益历史…</b></div>
             <div v-else-if="equityError" class="chart-empty"><b>权益历史暂不可用</b><span>{{ equityError }}</span></div>
             <div v-else-if="equityPoints.length < 2" class="chart-empty"><b>{{ equityPoints.length ? '历史点不足以绘制曲线' : '官方暂无历史权益数据' }}</b><span>{{ equityPoints.length ? 'Hyperliquid 当前仅返回一个合约权益历史点' : '请确认钱包地址及 Hyperliquid 是否提供该账户的历史记录' }}</span></div>
-          </div>
-          <div v-if="equityPoints.length" class="equity-data-list" aria-label="权益历史采样数据">
-            <div v-for="(point, index) in equityDataRows" :key="`${point.time}-${index}`"><span>{{ formatChartDate(point.time) }}</span><strong>{{ formatMoney(point.contractEquity) }}</strong></div>
           </div>
           <div class="chart-foot"><span>Hyperliquid 官方 portfolio / perp 历史</span><span>当前浮动盈亏 {{ totalUnrealizedPnl == null ? '—' : formatMoney(totalUnrealizedPnl) }}</span></div>
         </article>
@@ -450,7 +498,13 @@ async function copyAddress() {
                 <td>{{ formatPrice(pos.entryPx) }}<small class="sub-row">标记价 {{ pricesLoading && perpMarkPrices[pos.coin] == null ? '读取中…' : formatPrice(perpMarkPrices[pos.coin]) }}</small></td>
                 <td :class="signedClass(pos.unrealizedPnl)">{{ formatMoney(pos.unrealizedPnl) }}<small class="sub-row">ROE {{ positionRoe(pos) }}</small></td>
                 <td class="missing-field">—</td>
-                <td>{{ formatPrice(pos.liquidationPx) }}<small class="sub-row">距离 {{ liquidationDistance(pos) }}</small></td>
+                <td>
+                  <div class="liq-distance-cell">
+                    <div class="liq-distance-label"><span>距离</span><b :class="`liq-${liquidationDistanceTone(pos)}`">{{ liquidationDistanceLabel(pos) }}</b></div>
+                    <div class="liq-distance-track" :class="`liq-${liquidationDistanceTone(pos)}`" role="img" :aria-label="`清算距离 ${liquidationDistanceLabel(pos)}`"><i :style="{ width: `${Math.min(100, Math.max(0, liquidationDistancePct(pos) || 0))}%` }" /></div>
+                  </div>
+                  <small class="sub-row">清算价 {{ formatPrice(pos.liquidationPx) }}</small>
+                </td>
                 <td>{{ formatLeverage(pos.leverage) }}</td>
                 <td><span :class="pos.side === 'long' ? 'positive' : 'negative'">{{ sideLabel(pos.side) }}</span><small class="sub-row">{{ holdDuration(pos) }}</small></td>
               </tr>
@@ -574,6 +628,17 @@ async function copyAddress() {
 .whale-detail-dialog .table-scroll th:first-child, .whale-detail-dialog .table-scroll td:first-child { text-align: left; }
 .whale-detail-dialog .table-scroll tr:last-child td { border-bottom: 0; }
 .whale-detail-dialog .table-scroll tbody tr:hover { background: #1b2533; }
+.whale-detail-dialog .liq-distance-cell { display: grid; min-width: 90px; gap: 6px; }
+.whale-detail-dialog .liq-distance-label { display: flex; justify-content: space-between; gap: 8px; color: var(--detail-muted); font: 10px system-ui, sans-serif; }
+.whale-detail-dialog .liq-distance-label b { font: 600 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.whale-detail-dialog .liq-distance-track { height: 5px; overflow: hidden; border-radius: 99px; background: #293240; }
+.whale-detail-dialog .liq-distance-track i { display: block; height: 100%; border-radius: inherit; background: #0ecb81; transition: width .2s ease; }
+.whale-detail-dialog .liq-distance-track.liq-warning i { background: #f0b90b; }
+.whale-detail-dialog .liq-distance-track.liq-critical i { background: #f6465d; }
+.whale-detail-dialog .liq-distance-track.liq-unknown i { background: #626d7b; }
+.whale-detail-dialog .liq-warning { color: #f0b90b !important; }
+.whale-detail-dialog .liq-critical { color: #f6465d !important; }
+.whale-detail-dialog .liq-unknown { color: var(--detail-muted) !important; }
 .whale-detail-dialog .footnote { margin: 12px 0 0; line-height: 1.6; }
 .whale-detail-dialog .panel-heading { display: flex; justify-content: space-between; margin: 0 0 12px; }
 .whale-detail-dialog .loading-state { display: grid; min-height: 160px; place-items: center; color: var(--detail-muted); }
@@ -625,11 +690,12 @@ async function copyAddress() {
 .whale-detail-dialog .equity-chart { position: absolute; inset: 0; width: 100%; height: 100%; }
 .whale-detail-dialog .chart-axis-label { fill: #8994a3; font: 11px system-ui, sans-serif; }
 .whale-detail-dialog .chart-axis-grid { stroke: #293240; stroke-dasharray: 3 5; stroke-width: 1; }
-.whale-detail-dialog .equity-point { fill: #172b52; stroke: #74a0ff; stroke-width: 2; vector-effect: non-scaling-stroke; }
-.whale-detail-dialog .equity-data-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
-.whale-detail-dialog .equity-data-list > div { display: grid; gap: 5px; min-width: 0; padding: 8px 10px; border: 1px solid var(--detail-border); border-radius: 8px; background: #10151e; }
-.whale-detail-dialog .equity-data-list span { overflow: hidden; color: var(--detail-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.whale-detail-dialog .equity-data-list strong { overflow: hidden; color: #dce5ef; font: 600 11px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.whale-detail-dialog .equity-point { fill: #172b52; stroke: #74a0ff; stroke-width: 2; vector-effect: non-scaling-stroke; cursor: crosshair; }
+.whale-detail-dialog .equity-hover-line { stroke: rgba(145, 175, 230, .55); stroke-dasharray: 4 4; stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; }
+.whale-detail-dialog .equity-hover-point { fill: #dce8ff; stroke: #4b83ff; stroke-width: 2; vector-effect: non-scaling-stroke; pointer-events: none; }
+.whale-detail-dialog .equity-hover-tooltip { position: absolute; z-index: 2; display: grid; gap: 4px; max-width: min(280px, 90%); padding: 9px 11px; border: 1px solid rgba(116, 160, 255, .55); border-radius: 8px; background: rgba(12, 17, 26, .96); box-shadow: 0 8px 24px rgba(0, 0, 0, .32); transform: translate(-50%, -100%); pointer-events: none; white-space: nowrap; }
+.whale-detail-dialog .equity-hover-tooltip strong { color: #eff4ff; font: 700 13px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.whale-detail-dialog .equity-hover-tooltip span { color: #aab6c7; font-size: 10px; }
 .whale-detail-dialog .chart-empty { z-index: 1; display: grid; gap: 8px; justify-items: center; padding: 14px; border: 1px solid rgba(40, 50, 65, .75); border-radius: 10px; background: rgba(16, 21, 30, .9); text-align: center; }
 .whale-detail-dialog .chart-empty b { color: #c9d4e2; font-size: 13px; }
 .whale-detail-dialog .chart-empty span { color: var(--detail-muted); font-size: 11px; }

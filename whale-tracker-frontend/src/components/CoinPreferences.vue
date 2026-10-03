@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Close } from '@element-plus/icons-vue';
-import { fetchTradFiCatalog, lookupMarketCoin, searchMarketCoins, type TradFiMarketSymbol } from '@/api';
+import { fetchRadarCatalog, lookupMarketCoin, searchMarketCoins, type TradFiMarketSymbol } from '@/api';
 import { tradfiWatch, writeTradFiWatch } from '@/utils/tradfiWatch';
 import {
   MAX_PREFERRED_COINS,
@@ -74,9 +74,9 @@ function openPrefs() {
 async function loadTradfiCatalog() {
   tradfiLoading.value = true;
   try {
-    tradfiCatalog.value = (await fetchTradFiCatalog()).symbols;
+    tradfiCatalog.value = (await fetchRadarCatalog()).symbols;
   } catch (err) {
-    ElMessage.warning(err instanceof Error ? err.message : 'TradFi 合约清单获取失败');
+    ElMessage.warning(err instanceof Error ? err.message : '雷达合约清单获取失败');
   } finally {
     tradfiLoading.value = false;
   }
@@ -86,7 +86,7 @@ function addTradfi() {
   const symbol = tradfiPick.value;
   if (!tradfiAddable.value.some((item) => item.symbol === symbol)) return;
   if (draftTradfi.value.length >= 30) {
-    ElMessage.warning('最多添加 30 个 TradFi 标的');
+    ElMessage.warning('最多添加 30 个雷达合约');
     return;
   }
   draftTradfi.value = [...draftTradfi.value, symbol];
@@ -95,7 +95,7 @@ function addTradfi() {
 
 function removeTradfi(symbol: string) {
   if (draftTradfi.value.length <= 1) {
-    ElMessage.warning('至少保留 1 个 TradFi 标的');
+    ElMessage.warning('至少保留 1 个雷达合约');
     return;
   }
   draftTradfi.value = draftTradfi.value.filter((item) => item !== symbol);
@@ -193,7 +193,7 @@ async function confirmPrefs() {
       <div class="dialog-body">
         <div class="market-tabs" role="tablist" aria-label="币种类型">
           <button type="button" role="tab" :aria-selected="activeTab === 'virtual'" :class="{ active: activeTab === 'virtual' }" @click="activeTab = 'virtual'">虚拟币币种</button>
-          <button type="button" role="tab" :aria-selected="activeTab === 'tradfi'" :class="{ active: activeTab === 'tradfi' }" @click="activeTab = 'tradfi'">TradFi 标的</button>
+          <button type="button" role="tab" :aria-selected="activeTab === 'tradfi'" :class="{ active: activeTab === 'tradfi' }" @click="activeTab = 'tradfi'">雷达合约</button>
         </div>
         <section v-if="activeTab === 'virtual'" class="setting-block" role="tabpanel">
           <h4 class="block-title">虚拟币币种偏好</h4>
@@ -235,8 +235,8 @@ async function confirmPrefs() {
           </div>
         </section>
         <section v-else class="setting-block" role="tabpanel">
-          <h4 class="block-title">TradFi 自选标的</h4>
-          <p class="intro">只影响 TradFi 页面，与虚拟币币种列表分开。至少保留 1 个标的。</p>
+          <h4 class="block-title">雷达观察合约</h4>
+          <p class="intro">虚拟币与传统金融合约共用此列表，最多 30 个。至少保留 1 个合约。</p>
           <div class="coin-grid">
             <div v-for="symbol in draftTradfi" :key="symbol" class="coin-chip">
               <span class="coin-label">{{ symbol }}</span>
@@ -244,8 +244,8 @@ async function confirmPrefs() {
             </div>
           </div>
           <div class="pref-add">
-            <el-select v-model="tradfiPick" class="tradfi-select" filterable clearable :loading="tradfiLoading" :disabled="tradfiLoading || !tradfiAddable.length" placeholder="搜索代码或名称，例如 XAU、黄金" aria-label="搜索 TradFi 标的">
-              <el-option v-for="item in tradfiAddable" :key="item.symbol" :value="item.symbol" :label="`${item.symbol} · ${item.name}`" />
+            <el-select v-model="tradfiPick" class="tradfi-select" filterable clearable :loading="tradfiLoading" :disabled="tradfiLoading || !tradfiAddable.length" placeholder="搜索代码或名称，例如 BTC、黄金、闪迪" aria-label="搜索雷达合约">
+              <el-option v-for="item in tradfiAddable" :key="item.symbol" :value="item.symbol" :label="`${item.symbol} · ${item.name} · ${item.assetType === 'CRYPTO' ? '虚拟币' : '传统金融'}`" />
             </el-select>
             <button type="button" class="dlg-btn primary" :disabled="!tradfiPick" @click="addTradfi">添加</button>
           </div>

@@ -4,8 +4,6 @@ import type {
   WhalePosition,
   WhaleProfile,
 } from '@/types';
-import { filterFreshPositions, freshModeEnabled, freshOpenCoinsForWhale } from '@/utils/freshMode';
-import type { WhaleAlert } from '@/utils/whaleAlerts';
 import { normalizeCoinId } from '@/utils/watchedCoins';
 
 export function whaleCoinKey(coin: string | undefined | null) {
@@ -56,14 +54,8 @@ export function perpWhalePositions(whale: WhaleProfile) {
 export function visibleWhalePositions(
   whale: WhaleProfile,
   coinFilter: string,
-  alerts?: WhaleAlert[],
 ) {
-  let positions = perpWhalePositions(whale);
-  // 「近时」模式：只展示窗口内新开仓的持仓（缺 openTime 时用开仓异动兜底）
-  if (freshModeEnabled.value) {
-    const openCoins = freshOpenCoinsForWhale(whale.id, alerts);
-    positions = filterFreshPositions(positions, Date.now(), { openCoins });
-  }
+  const positions = perpWhalePositions(whale);
   if (!coinFilter || coinFilter === 'all') return positions;
   return positions.filter((pos) => positionMatchesCoin(pos, coinFilter));
 }
@@ -72,11 +64,10 @@ export function visibleWhalePositions(
 export function scopedWhaleDirection(
   whale: WhaleProfile,
   coinFilter: string = 'all',
-  alerts?: WhaleAlert[],
 ): 'long' | 'short' | 'neutral' {
-  // 「近时」模式或筛了币种：按可见持仓重算方向，避免旧仓位干扰
-  if (freshModeEnabled.value || (coinFilter && coinFilter !== 'all')) {
-    const positions = visibleWhalePositions(whale, coinFilter, alerts);
+  // 筛选币种时按该币种仓位重算方向，避免其他币种仓位干扰
+  if (coinFilter && coinFilter !== 'all') {
+    const positions = visibleWhalePositions(whale, coinFilter);
     if (!positions.length) return 'neutral';
     let longUsd = 0;
     let shortUsd = 0;

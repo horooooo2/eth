@@ -58,6 +58,36 @@ let abortCtrl: AbortController | null = null;
 
 const preferredCoins = computed(() => preferredCoinsState.value);
 const historyList = computed(() => briefHistoryState.value);
+const streamProgressSections = computed(() => {
+  const text = streamDraft.value;
+  if (!text.trim()) return [];
+  const matches: Array<{ label: string; text: string }> = [];
+  const labels: Record<string, string> = {
+    summary: '综合摘要',
+    analysis: '方向分析',
+    observation: '市场观察',
+    focus: '关注条件',
+    limitation: '数据限制',
+  };
+  const pattern = /"(summary|analysis|observation|focus|limitation)"\s*:\s*"((?:\\.|[^"\\])*)/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text))) {
+    const key = match[1];
+    const encoded = match[2];
+    let value = '';
+    try {
+      value = JSON.parse(`"${encoded}"`);
+    } catch {
+      value = encoded.replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+    }
+    value = value.trim();
+    if (value) matches.push({ label: labels[key], text: value });
+  }
+  if (matches.length) return matches.slice(-8);
+  // 兼容流式服务回退到非 JSON 文本的情况。
+  if (!text.trimStart().startsWith('{')) return [{ label: 'AI 实时输出', text: text.trim() }];
+  return [];
+});
 
 function ensureCoin() {
   const list = preferredCoinsState.value;
@@ -571,10 +601,18 @@ onUnmounted(() => {
             <div ref="streamScrollRef" class="result-scroll">
               <div v-if="phase === 'streaming'" class="stream-banner">
                 <span class="stream-dot" />
-                正在整理行情结构、方向依据与风险提示…
+                正在接收 AI 分析过程，生成结束后自动展开完整研判页面…
               </div>
 
-              <div v-if="phase === 'streaming'" class="quiet-analysis">程序方向评估已完成，AI 正在补充市场背景与证据解释。</div>
+              <section v-if="phase === 'streaming'" class="streaming-analysis" aria-live="polite" aria-label="AI 流式分析过程">
+                <div v-if="streamProgressSections.length" class="streaming-sections">
+                  <article v-for="(section, index) in streamProgressSections" :key="`${section.label}-${index}`" class="streaming-section">
+                    <strong>{{ section.label }}</strong>
+                    <p>{{ section.text }}<span v-if="index === streamProgressSections.length - 1" class="stream-cursor" aria-hidden="true">▍</span></p>
+                  </article>
+                </div>
+                <div v-else class="stream-waiting"><span class="spinner small" />{{ statusMessage || 'AI 正在组织方向依据与风险说明…' }}</div>
+              </section>
 
               <div v-else-if="structured || sections.length" class="research-dashboard">
                 <section class="dashboard-hero">
@@ -1133,6 +1171,16 @@ onUnmounted(() => {
   font-weight: 650;
 }
 
+.streaming-analysis { min-height: 220px; padding: 8px 2px 28px; }
+.streaming-sections { display: grid; gap: 12px; }
+.streaming-section { padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); }
+.streaming-section strong { color: var(--accent, #a5b4fc); font-size: 12px; }
+.streaming-section p { margin: 8px 0 0; color: var(--text); font-size: 13px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+.stream-waiting { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 170px; color: var(--muted); font-size: 13px; }
+.spinner.small { width: 20px; height: 20px; border-width: 2px; }
+.stream-cursor { color: #a5b4fc; animation: stream-cursor-blink 1s step-end infinite; }
+@keyframes stream-cursor-blink { 50% { opacity: 0; } }
+
 .stream-dot {
   width: 8px;
   height: 8px;
@@ -1608,7 +1656,6 @@ onUnmounted(() => {
 .entry-validation { margin: 6px 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; color: var(--muted); }
 .entry-validation summary { cursor: pointer; }
 .entry-validation p { margin: 5px 0; line-height: 1.45; }
-.quiet-analysis { color: var(--muted); padding: 28px 0; text-align: center; }
 .analysis-details { border-top: 1px solid var(--border); padding-top: 12px; }
 .analysis-details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .analysis-details .analysis-tabs-wrap { margin-top: 14px; }

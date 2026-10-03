@@ -15,12 +15,6 @@ import {
 import { preferredCoinsState, coinMatchesWatch } from '@/utils/watchedCoins';
 import { isExoticAsset } from '@/utils/assets';
 import {
-  alertPassesFreshListGate,
-  freshModeEnabled,
-  freshWindowHours,
-  freshWindowMs,
-} from '@/utils/freshMode';
-import {
   ALERT_MIN_USD_OPTIONS,
   enrichAlertView,
   readAlertMinUsd,
@@ -148,7 +142,6 @@ async function loadAlertPage(silent = false) {
       kind: (openOnly.value ? 'open' : 'all') as 'open' | 'all',
       // 多空计数要两边都有：请求时不带 side，展示时再筛
       minUsd: alertMinUsd.value || undefined,
-      sinceMs: freshModeEnabled.value ? Date.now() - freshWindowMs() : undefined,
     };
 
     // 「全部」= 全币种（仅排除美股等 exotic）；点具体币种才按单币拉
@@ -165,7 +158,6 @@ async function loadAlertPage(silent = false) {
       const data = await fetchPagedAlertHistory({
         ...baseQuery,
         page: 1,
-        // 闪电模式下多拉一些，避免全币分页被已平仓挤掉后列表过空
         limit: Math.min(100, Math.max(ALERT_PAGE_SIZE * alertPage.value, ALERT_PAGE_SIZE)),
       });
       if (seq !== alertReqSeq) return;
@@ -208,7 +200,7 @@ async function loadAlertPage(silent = false) {
     }
 
     const pool = [...map.values()]
-      .filter((alert) => hasListEligibleItem(alert) && alertPassesFreshListGate(alert, whaleOf(alert)))
+      .filter((alert) => hasListEligibleItem(alert))
       .sort((a, b) => alertEventTime(b) - alertEventTime(a));
 
     // 与列表同一套闸门后的多空 / 币种计数
@@ -225,9 +217,8 @@ async function loadAlertPage(silent = false) {
       }
     }
 
-    // 非闪电且样本可能被 limit 截断时，优先用服务端 facet
-    const truncated =
-      !freshModeEnabled.value && serverAll > pool.length;
+    // 样本可能被 limit 截断时，优先用服务端 facet
+    const truncated = serverAll > pool.length;
     if (truncated) {
       long = serverLong;
       short = serverShort;
@@ -251,7 +242,6 @@ async function loadAlertPage(silent = false) {
     } else {
       alertTotal.value = sided.length;
     }
-    whaleStore.absorbAlertPage(list);
     facets.value = {
       all: truncated ? serverAll : pool.length,
       byCoin: truncated ? { ...byCoinRaw, ...byCoin } : byCoin,
@@ -403,8 +393,6 @@ watch(
     alertCoinFilter,
     alertMinUsd,
     () => props.filterWhaleId,
-    freshModeEnabled,
-    freshWindowHours,
     preferredCoins,
   ],
   () => {
@@ -458,7 +446,7 @@ function alertMatchesListFilters(alert: WhaleAlert) {
     alertSideFilter.value !== 'all' &&
     !items.some((item) => alertItemSide(alert, item) === alertSideFilter.value)
   ) return false;
-  return alertPassesFreshListGate(alert, whaleOf(alert));
+  return true;
 }
 
 function eligibleItems(alert: WhaleAlert) {
@@ -482,7 +470,6 @@ function pushRealtimeAlert(raw: WhaleAlert | Record<string, unknown>) {
     scheduleRealtimeReload();
     return false;
   }
-  whaleStore.absorbAlertPage([alert]);
   if (alertMatchesListFilters(alert)) {
     if (alertPage.value !== 1) alertPage.value = 1;
     if (!pageAlerts.value.some((item) => item.id === alert.id)) {
@@ -1311,6 +1298,7 @@ function alertFundingWarn(row: {
 .news-scroll :deep(.el-loading-mask) {
   position: absolute;
   inset: 0;
+  z-index: 10 !important;
 }
 .news {
   flex: 1;
