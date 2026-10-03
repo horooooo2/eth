@@ -38,6 +38,7 @@ import {
 
 /** v3：异动只保留开仓/补仓 */
 const HISTORY_KEY = 'whale-tracker-alert-history-v3';
+const HISTORY_SYNC_KEY = 'whale-tracker-alert-history-sync-v1';
 const LEGACY_HISTORY_KEYS = ['whale-tracker-alert-history', 'whale-tracker-alert-history-v2'];
 const MAX_HISTORY = 3000;
 /** GoldRush 并发更高：每批拉多个，缩短 200+ 名单首屏时间 */
@@ -107,22 +108,100 @@ function readAlertHistory(): WhaleAlert[] {
   }
 }
 
-function writeAlertHistory(items: WhaleAlert[]) {
+function writeAlertHistory(items: WhaleAlert[], syncCandidates: WhaleAlert[] = []) {
   const recent = filterRecentAlerts(items.filter(isPositionDiffAlert))
     .sort((a, b) => alertEventTime(b) - alertEventTime(a))
     .slice(0, MAX_HISTORY);
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(recent));
-  schedulePushAlertHistory(recent);
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(recent));
+  } catch {
+    // Keep the in-memory history usable when browser storage is full/unavailable.
+  }
+  schedulePushAlertHistory(syncCandidates);
 }
 
+const pendingAlertSync = new Map<string, WhaleAlert>();
 let pushAlertTimer: number | undefined;
-function schedulePushAlertHistory(items: WhaleAlert[]) {
+let alertSyncRunning = false;
+function readAlertSyncAcks(): Record<string, string> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(HISTORY_SYNC_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+function alertFingerprint(alert: WhaleAlert) {
+  // Store a compact, deterministic fingerprint instead of duplicating up to
+  // 3,000 full payloads in localStorage. Two independent 32-bit hashes plus
+  // length make accidental collisions vanishingly unlikely in this cache.
+  const value = JSON.stringify(alert);
+  let first = 0x811c9dc5;
+  let second = 0x9e3779b9;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    first = Math.imul(first ^ code, 0x01000193);
+    second = Math.imul(second ^ code, 0x85ebca6b);
+  }
+  return `${value.length}:${first >>> 0}:${second >>> 0}`;
+}
+function queueAlertSync(items: WhaleAlert[]) {
+  const acks = readAlertSyncAcks();
+  for (const item of items) {
+    const id = String(item?.id || '');
+    if (!id || !isPositionDiffAlert(item)) continue;
+    if (acks[id] === alertFingerprint(item)) continue;
+    pendingAlertSync.set(id, item);
+  }
+  scheduleAlertSyncFlush(800);
+}
+function scheduleAlertSyncFlush(delayMs: number) {
   if (typeof window === 'undefined') return;
-  if (pushAlertTimer) window.clearTimeout(pushAlertTimer);
+  // Debounce from the first queued change, so a busy stream cannot postpone
+  // persistence forever by continually resetting the timer.
+  if (pushAlertTimer) return;
   pushAlertTimer = window.setTimeout(() => {
     pushAlertTimer = undefined;
-    void pushPersistedAlertHistory(items).catch(() => null);
-  }, 800);
+    void flushAlertSync();
+  }, delayMs);
+}
+async function flushAlertSync() {
+  if (alertSyncRunning || !pendingAlertSync.size) return;
+  alertSyncRunning = true;
+  const batch = [...pendingAlertSync.entries()].slice(0, 100);
+  for (const [id] of batch) pendingAlertSync.delete(id);
+  let succeeded = false;
+  try {
+    const result = await pushPersistedAlertHistory(batch.map(([, alert]) => alert));
+    if (!result?.ok) throw new Error('alert history sync rejected');
+    succeeded = true;
+    const acks = readAlertSyncAcks();
+    for (const [id, alert] of batch) {
+      const fingerprint = alertFingerprint(alert);
+      acks[id] = fingerprint;
+      if (pendingAlertSync.has(id) && alertFingerprint(pendingAlertSync.get(id)!) === fingerprint) {
+        pendingAlertSync.delete(id);
+      }
+    }
+    // Bound the local acknowledgement index to the retained client history.
+    const retainedIds = new Set(readAlertHistory().map((item) => String(item.id)));
+    for (const id of Object.keys(acks)) if (!retainedIds.has(id)) delete acks[id];
+    try {
+      localStorage.setItem(HISTORY_SYNC_KEY, JSON.stringify(acks));
+    } catch {
+      // If ack persistence fails, a later page load safely resends these rows.
+    }
+  } catch {
+    // Failed batches remain retryable; newer versions already in the map win.
+    for (const [id, alert] of batch) if (!pendingAlertSync.has(id)) pendingAlertSync.set(id, alert);
+  } finally {
+    alertSyncRunning = false;
+    if (pendingAlertSync.size) scheduleAlertSyncFlush(succeeded ? 100 : 5000);
+  }
+}
+function schedulePushAlertHistory(items: WhaleAlert[]) {
+  if (typeof window === 'undefined' || !items.length) return;
+  queueAlertSync(items);
 }
 
 function sortWhalesHf(list: WhaleProfile[]) {
@@ -148,6 +227,8 @@ export const useWhaleStore = defineStore('whale', () => {
   const selectedWhaleName = ref('');
   const alerts = ref<WhaleAlert[]>([]);
   const alertHistory = ref<WhaleAlert[]>(readAlertHistory());
+  // Reconcile old local-only history; subsequent events sync only changed IDs.
+  if (typeof window !== 'undefined') queueAlertSync(alertHistory.value);
   /** 实时异动序号：供异动列表监听并静默重拉分页 */
   const alertRealtimeSeq = ref(0);
   /** 活动流最新一条时间，用于增量拉取 */
@@ -374,7 +455,7 @@ export const useWhaleStore = defineStore('whale', () => {
     alertHistory.value = filterRecentAlerts([...map.values()])
       .sort((a, b) => alertEventTime(b) - alertEventTime(a))
       .slice(0, MAX_HISTORY);
-    writeAlertHistory(alertHistory.value);
+    writeAlertHistory(alertHistory.value, entries);
   }
 
   /** WebSocket 实时成交 */

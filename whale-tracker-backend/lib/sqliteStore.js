@@ -148,6 +148,9 @@ function upsertAlertRows(database, alerts) {
       payload_json = excluded.payload_json
   `);
   const exists = database.prepare('SELECT 1 AS x FROM alerts WHERE id = ?');
+  const sourceSeen = database.prepare('SELECT 1 AS x FROM alert_sources WHERE source_id = ?');
+  const rememberSource = database.prepare('INSERT OR IGNORE INTO alert_sources(source_id, alert_id) VALUES (?, ?)');
+  const moveSources = database.prepare('UPDATE alert_sources SET alert_id = ? WHERE alert_id = ?');
   const findMerge = database.prepare(`
     SELECT id, time, kind, payload_json FROM alerts
     WHERE whale_id = ?
@@ -156,11 +159,21 @@ function upsertAlertRows(database, alerts) {
     ORDER BY time DESC LIMIT 40
   `);
   const delById = database.prepare('DELETE FROM alerts WHERE id = ?');
+  const delItemsById = database.prepare('DELETE FROM alert_items WHERE alert_id = ?');
+  const insertItem = database.prepare(`
+    INSERT INTO alert_items (alert_id, item_index, kind, coin, side, usd, time)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
 
   let written = 0;
   let added = 0;
+  const retiredAlertIds = [];
   alertLoop: for (const alert of alerts) {
     if (!alert?.id) continue;
+    const sourceId = String(alert.id);
+    // HTTP retries and server-generated copies of the same event must never
+    // add their notional a second time after a nearby event was merged.
+    if (sourceSeen.get(sourceId)) continue;
     const kind = String(alert.kind || '');
     if (!OPEN_KINDS.has(kind)) continue;
     const time = Number(alert.at || alert.time) || 0;
@@ -198,9 +211,14 @@ function upsertAlertRows(database, alerts) {
           // 成交流是具体成交金额，快照流是最终仓位变化。两者可能描述同一次
           // 操作：以 fill 为权威金额，避免交叉重复相加；同来源的拆单仍按下方合并。
           if (previousSource === 'fill') {
-            if (incomingSource === 'snapshot') continue alertLoop;
+            if (incomingSource === 'snapshot') {
+              rememberSource.run(sourceId, String(row.id));
+              continue alertLoop;
+            }
           } else if (incomingSource === 'fill') {
             delById.run(String(row.id));
+            delItemsById.run(String(row.id));
+            retiredAlertIds.push(String(row.id));
             continue;
           }
         }
@@ -253,13 +271,28 @@ function upsertAlertRows(database, alerts) {
       kind: String(target.kind || kind),
       payload_json: safeJson(target),
     });
+    for (const retiredId of retiredAlertIds.splice(0)) moveSources.run(id, retiredId);
+    delItemsById.run(id);
+    for (const [itemIndex, item] of (Array.isArray(target.items) ? target.items : []).entries()) {
+      insertItem.run(
+        id,
+        itemIndex,
+        String(item?.kind || ''),
+        String(item?.coin || '').trim().toUpperCase(),
+        String(item?.side || '').trim().toLowerCase(),
+        Number(item?.usd) || 0,
+        Number(item?.time) || 0,
+      );
+    }
     if (mergedIntoExisting && String(alert.id) !== id) {
       try {
         delById.run(String(alert.id));
+        delItemsById.run(String(alert.id));
       } catch {
         // ignore
       }
     }
+    rememberSource.run(sourceId, id);
     written += 1;
   }
   if (written) pagedAlertCache.clear();
@@ -274,6 +307,7 @@ function persistAlerts(alerts = []) {
   const result = tx();
   if (result.added) bumpDailyAdded(result.added);
   const purged = purgeOlderThan(CLOSED_POSITION_RETENTION_MS);
+  if (purged.alertsDeleted) pagedAlertCache.clear();
   return { saved: result.written, added: result.added, purged };
 }
 
@@ -318,7 +352,7 @@ function loadPagedAlerts(query = {}) {
   const side = String(query.side || 'all').trim().toLowerCase();
   const minUsd = Math.max(0, Number(query.minUsd) || 0);
   const cacheKey = JSON.stringify({
-    page, limit, cutoffBucket: Math.floor(cutoff / PAGED_ALERT_CACHE_TTL_MS),
+    page, limit, cutoff,
     whaleId, kind, coins, side, minUsd,
   });
   const cached = pagedAlertCache.get(cacheKey);
@@ -331,19 +365,19 @@ function loadPagedAlerts(query = {}) {
     const itemWhere = [];
     const itemParams = [];
     if (includeCoins && coins.length) {
-      itemWhere.push(`UPPER(COALESCE(json_extract(alert_item.value, '$.coin'), '')) IN (${coins.map(() => '?').join(', ')})`);
+      itemWhere.push(`alert_item.coin IN (${coins.map(() => '?').join(', ')})`);
       itemParams.push(...coins);
     }
     if (includeSide && (side === 'long' || side === 'short')) {
-      itemWhere.push(`LOWER(COALESCE(json_extract(alert_item.value, '$.side'), '')) = ?`);
+      itemWhere.push('alert_item.side = ?');
       itemParams.push(side);
     }
     if (minUsd > 0) {
-      itemWhere.push(`ABS(COALESCE(json_extract(alert_item.value, '$.usd'), 0)) >= ?`);
+      itemWhere.push('ABS(COALESCE(alert_item.usd, 0)) >= ?');
       itemParams.push(minUsd);
     }
     return {
-      sql: `EXISTS (SELECT 1 FROM json_each(alerts.payload_json, '$.items') AS alert_item${itemWhere.length ? ` WHERE ${itemWhere.join(' AND ')}` : ''})`,
+      sql: `EXISTS (SELECT 1 FROM alert_items AS alert_item WHERE alert_item.alert_id = alerts.id${itemWhere.length ? ` AND ${itemWhere.join(' AND ')}` : ''})`,
       params: itemParams,
     };
   }
@@ -388,16 +422,16 @@ function loadPagedAlerts(query = {}) {
     .filter((item) => item && item.id);
 
   const facetWhere = [
-    `time >= ?`,
-    `kind IN ('open', 'increase')`,
+    `alerts.time >= ?`,
+    `alerts.kind IN ('open', 'increase')`,
   ];
   const facetParams = [cutoff];
   if (whaleId) {
-    facetWhere.push('whale_id = ?');
+    facetWhere.push('alerts.whale_id = ?');
     facetParams.push(whaleId);
   }
   if (kind === 'open' || kind === 'increase') {
-    facetWhere.push('kind = ?');
+    facetWhere.push('alerts.kind = ?');
     facetParams.push(kind);
   }
   // 多空计数需跟当前币种一致（否则选 BTC 仍显示全市场多空数）
@@ -412,12 +446,13 @@ function loadPagedAlerts(query = {}) {
     ) || 0;
   const coinRows = database
     .prepare(
-      `SELECT UPPER(COALESCE(json_extract(alert_item.value, '$.coin'), '')) AS coin,
+      `SELECT alert_item.coin AS coin,
               COUNT(DISTINCT alerts.id) AS c
-       FROM alerts, json_each(alerts.payload_json, '$.items') AS alert_item
+       FROM alerts
+       JOIN alert_items AS alert_item ON alert_item.alert_id = alerts.id
        WHERE ${facetSql}
-         AND ABS(COALESCE(json_extract(alert_item.value, '$.usd'), 0)) >= ?
-         ${coins.length ? `AND UPPER(COALESCE(json_extract(alert_item.value, '$.coin'), '')) IN (${coins.map(() => '?').join(', ')})` : ''}
+         AND ABS(COALESCE(alert_item.usd, 0)) >= ?
+         ${coins.length ? `AND alert_item.coin IN (${coins.map(() => '?').join(', ')})` : ''}
        GROUP BY coin`,
     )
     .all(...facetParams, ...(minUsd > 0 ? [minUsd] : [0]), ...coins);
@@ -433,10 +468,11 @@ function loadPagedAlerts(query = {}) {
         .prepare(
           `SELECT COUNT(*) AS c FROM alerts
            WHERE ${facetSql}
-             AND EXISTS (SELECT 1 FROM json_each(alerts.payload_json, '$.items') AS alert_item
-                         WHERE LOWER(COALESCE(json_extract(alert_item.value, '$.side'), '')) = 'long'
-                           AND ABS(COALESCE(json_extract(alert_item.value, '$.usd'), 0)) >= ?
-                           ${coins.length ? `AND UPPER(COALESCE(json_extract(alert_item.value, '$.coin'), '')) IN (${coins.map(() => '?').join(', ')})` : ''})`,
+             AND EXISTS (SELECT 1 FROM alert_items AS alert_item
+                         WHERE alert_item.alert_id = alerts.id
+                           AND alert_item.side = 'long'
+                           AND ABS(COALESCE(alert_item.usd, 0)) >= ?
+                           ${coins.length ? `AND alert_item.coin IN (${coins.map(() => '?').join(', ')})` : ''})`,
         )
         .get(...facetParams, minUsd, ...coins)?.c,
     ) || 0;
@@ -446,10 +482,11 @@ function loadPagedAlerts(query = {}) {
         .prepare(
           `SELECT COUNT(*) AS c FROM alerts
            WHERE ${facetSql}
-             AND EXISTS (SELECT 1 FROM json_each(alerts.payload_json, '$.items') AS alert_item
-                         WHERE LOWER(COALESCE(json_extract(alert_item.value, '$.side'), '')) = 'short'
-                           AND ABS(COALESCE(json_extract(alert_item.value, '$.usd'), 0)) >= ?
-                           ${coins.length ? `AND UPPER(COALESCE(json_extract(alert_item.value, '$.coin'), '')) IN (${coins.map(() => '?').join(', ')})` : ''})`,
+             AND EXISTS (SELECT 1 FROM alert_items AS alert_item
+                         WHERE alert_item.alert_id = alerts.id
+                           AND alert_item.side = 'short'
+                           AND ABS(COALESCE(alert_item.usd, 0)) >= ?
+                           ${coins.length ? `AND alert_item.coin IN (${coins.map(() => '?').join(', ')})` : ''})`,
         )
         .get(...facetParams, minUsd, ...coins)?.c,
     ) || 0;

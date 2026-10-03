@@ -147,6 +147,27 @@ function migrate(database) {
     CREATE INDEX IF NOT EXISTS idx_alerts_time ON alerts(time);
     CREATE INDEX IF NOT EXISTS idx_alerts_whale_time ON alerts(whale_id, time);
 
+    CREATE TABLE IF NOT EXISTS alert_items (
+      alert_id TEXT NOT NULL,
+      item_index INTEGER NOT NULL,
+      kind TEXT,
+      coin TEXT NOT NULL DEFAULT '',
+      side TEXT NOT NULL DEFAULT '',
+      usd REAL DEFAULT 0,
+      time INTEGER DEFAULT 0,
+      PRIMARY KEY (alert_id, item_index)
+    );
+    CREATE INDEX IF NOT EXISTS idx_alert_items_alert_coin_side_usd
+      ON alert_items(alert_id, coin, side, usd);
+    CREATE INDEX IF NOT EXISTS idx_alert_items_coin_side_usd_alert
+      ON alert_items(coin, side, usd, alert_id);
+
+    CREATE TABLE IF NOT EXISTS alert_sources (
+      source_id TEXT PRIMARY KEY,
+      alert_id TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_alert_sources_alert_id ON alert_sources(alert_id);
+
     CREATE TABLE IF NOT EXISTS sync_meta (
       key TEXT PRIMARY KEY,
       value TEXT,
@@ -301,6 +322,31 @@ function migrate(database) {
     );
     CREATE INDEX IF NOT EXISTS idx_tradfi_ai_analyses_user ON tradfi_ai_analyses(user_id, symbol, created_at DESC);
   `);
+  // Backfill legacy alert items only once. Re-scanning the full alert history
+  // on every restart would negate the query optimization on a small server.
+  const marker = database.prepare('SELECT 1 FROM sync_meta WHERE key = ?').get('alert_items_backfill_v2');
+  if (!marker) {
+    const backfill = database.transaction(() => {
+      database.exec(`
+        INSERT OR IGNORE INTO alert_items (alert_id, item_index, kind, coin, side, usd, time)
+        SELECT a.id,
+               CAST(item.key AS INTEGER),
+               COALESCE(json_extract(item.value, '$.kind'), ''),
+               UPPER(TRIM(COALESCE(json_extract(item.value, '$.coin'), ''))),
+               LOWER(TRIM(COALESCE(json_extract(item.value, '$.side'), ''))),
+               COALESCE(json_extract(item.value, '$.usd'), 0),
+               COALESCE(json_extract(item.value, '$.time'), 0)
+        FROM (SELECT id, payload_json FROM alerts WHERE json_valid(payload_json)) AS a,
+             json_each(a.payload_json, '$.items') AS item
+        WHERE json_type(a.payload_json, '$.items') = 'array';
+        INSERT OR IGNORE INTO alert_sources(source_id, alert_id)
+        SELECT id, id FROM alerts;
+      `);
+      database.prepare('INSERT INTO sync_meta(key, value, updated_at) VALUES (?, ?, ?)')
+        .run('alert_items_backfill_v2', 'done', Date.now());
+    });
+    backfill();
+  }
   // 旧策略表（v41_* / whale_ai_runtime_logs）不再创建；user_ai_keys / user_exchange_keys 继续使用。
 
   // soft migrations
@@ -480,6 +526,10 @@ function purgeOlderThan(retentionMs = RETENTION_MS) {
          )`,
     )
     .run(closedCutoff);
+  database.prepare(`DELETE FROM alert_items WHERE NOT EXISTS
+    (SELECT 1 FROM alerts WHERE alerts.id = alert_items.alert_id)`).run();
+  database.prepare(`DELETE FROM alert_sources WHERE NOT EXISTS
+    (SELECT 1 FROM alerts WHERE alerts.id = alert_sources.alert_id)`).run();
 
   const liveCount =
     Number(

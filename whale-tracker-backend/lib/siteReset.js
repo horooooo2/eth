@@ -11,6 +11,8 @@ function clearMarketTables() {
   const tx = database.transaction(() => {
     database.prepare('DELETE FROM fills').run();
     database.prepare('DELETE FROM events').run();
+    database.prepare('DELETE FROM alert_items').run();
+    database.prepare('DELETE FROM alert_sources').run();
     database.prepare('DELETE FROM alerts').run();
     database.prepare('DELETE FROM positions').run();
     database.prepare('DELETE FROM whales').run();

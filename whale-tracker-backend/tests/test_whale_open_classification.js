@@ -99,3 +99,55 @@ test('fill and snapshot evidence for one open do not double the notional', () =>
   assert.equal(result.alerts[0].items[0].usd, 50000);
   assert.equal(result.alerts[0].items[0].evidenceSource, 'fill');
 });
+
+test('indexed alert filters preserve multi-coin and long/short facet counts', () => {
+  // Future cutoff isolates this case from earlier tests sharing the same DB.
+  const now = Date.now() + 60_000;
+  const multi = {
+    id: `multi-${now}`, at: now, whaleId: 'multi-whale', whaleName: 'multi',
+    kind: 'open', items: [
+      { kind: 'open', coin: 'btc', side: 'long', usd: 500, time: now },
+      { kind: 'increase', coin: 'eth', side: 'short', usd: 2500, time: now - 1 },
+      { kind: 'open', coin: 'BTC', side: 'short', usd: 3000, time: now - 2 },
+    ],
+  };
+  const second = {
+    id: `single-${now}`, at: now - 5_000, whaleId: 'other-whale', whaleName: 'other',
+    kind: 'open', items: [{ kind: 'open', coin: 'BTC', side: 'long', usd: 1200, time: now - 5_000 }],
+  };
+  persistAlerts([multi, second]);
+
+  const all = loadPagedAlerts({ sinceMs: now - 10_000, minUsd: 1000, limit: 10 });
+  assert.equal(all.total, 2, 'an alert counts once even when multiple items match');
+  assert.equal(all.facets.all, 2);
+  assert.equal(all.facets.byCoin.BTC, 2);
+  assert.equal(all.facets.byCoin.ETH, 1);
+  assert.equal(all.facets.long, 1);
+  assert.equal(all.facets.short, 1);
+
+  const ethShort = loadPagedAlerts({ sinceMs: now - 10_000, coin: 'eth', side: 'short', minUsd: 1000, limit: 10 });
+  assert.equal(ethShort.total, 1);
+  assert.equal(ethShort.facets.all, 1);
+  assert.deepEqual(ethShort.alerts[0].items.map((item) => item.coin), ['btc', 'eth', 'BTC']);
+  assert.deepEqual(ethShort.facets.byCoin, { ETH: 1 });
+  assert.equal(ethShort.facets.long, 0);
+  assert.equal(ethShort.facets.short, 1);
+});
+
+test('retrying a source alert after merge does not double-count its notional', () => {
+  const at = Date.now() + 120_000;
+  const make = (id, time) => ({
+    id, at: time, whaleId: 'retry-whale', whaleName: 'retry', kind: 'increase',
+    items: [{ kind: 'increase', coin: 'SOL', side: 'long', usd: 1500, time }],
+  });
+  const first = make(`retry-a-${at}`, at);
+  const second = make(`retry-b-${at}`, at + 1);
+  persistAlerts([first]);
+  persistAlerts([second]);
+  persistAlerts([second]); // simulate a request retry after an ambiguous timeout
+
+  const result = loadPagedAlerts({ sinceMs: at - 1, limit: 10 });
+  assert.equal(result.total, 1);
+  assert.equal(result.alerts[0].items[0].usd, 3000);
+  assert.equal(result.alerts[0].mergedCount, 2);
+});
