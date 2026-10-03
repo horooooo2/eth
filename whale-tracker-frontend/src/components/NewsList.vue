@@ -5,6 +5,7 @@ import { Refresh } from '@element-plus/icons-vue';
 import type { WhaleProfile } from '@/types';
 import {
   normalizeStoredAlert,
+  alertEventTime,
   alertItemSide,
   scopeAlertToCoin,
   scopeAlertToSide,
@@ -59,13 +60,13 @@ const alertSideFilter = ref<'all' | 'long' | 'short'>('all');
 const openOnly = ref(false);
 const alertCoinFilter = ref<'all' | string>('all');
 const alertMinUsd = ref(readAlertMinUsd());
-const ALERT_PAGE_SIZE = 50;
-const alertPage = ref(1);
+const ALERT_DISPLAY_LIMIT = 100;
 const activeAlert = ref<WhaleAlert | null>(null);
 const alertVisible = ref(false);
 const pageAlerts = ref<WhaleAlert[]>([]);
 const alertTotal = ref(0);
 const alertLoading = ref(false);
+const alertFiltersReady = ref(false);
 const facets = ref<{ all: number; byCoin: Record<string, number>; long: number; short: number }>({
   all: 0,
   byCoin: {},
@@ -79,7 +80,7 @@ let suppressAutoAlertReload = false;
 const nowTick = ref(Date.now());
 let nowTickTimer: ReturnType<typeof setInterval> | undefined;
 
-onMounted(() => {
+onMounted(async () => {
   const s = getAuthUiSettings();
   if (s.alertSideFilter === 'long' || s.alertSideFilter === 'short') {
     alertSideFilter.value = s.alertSideFilter;
@@ -93,6 +94,10 @@ onMounted(() => {
   if (typeof s.alertMinUsd === 'number') {
     alertMinUsd.value = s.alertMinUsd;
   }
+  await nextTick();
+  alertFiltersReady.value = true;
+  // Only initialize filters here; the page scheduler starts the first request.
+
   nowTickTimer = setInterval(() => {
     nowTick.value = Date.now();
   }, 30_000);
@@ -100,46 +105,14 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (nowTickTimer) clearInterval(nowTickTimer);
-  if (realtimeReloadTimer) clearTimeout(realtimeReloadTimer);
-  if (alertPollTimer) clearInterval(alertPollTimer);
+
 });
 
-/** WebSocket 断开时才做兜底轮询；连接正常后由实时推送驱动列表。 */
-let alertPollTimer: ReturnType<typeof setInterval> | undefined;
-function syncAlertPoll() {
-  if (props.realtimeConnected || !props.bootReady) {
-    if (alertPollTimer) clearInterval(alertPollTimer);
-    alertPollTimer = undefined;
-    return;
-  }
-  if (alertPollTimer) return;
-  alertPollTimer = setInterval(() => {
-    if (!props.bootReady) return;
-    if (props.realtimeConnected) return;
-    if (typeof document !== 'undefined' && document.hidden) return;
-    void loadAlertPage(true);
-  }, 30_000);
+let initialLoad: Promise<void> | null = null;
+let started = false;
+function initialize() {
+  return initialLoad ||= (async () => { await nextTick(); started = true; await loadAlertPage(); })();
 }
-
-watch(
-  () => props.bootReady,
-  (ready) => {
-    if (ready) void loadAlertPage();
-    syncAlertPoll();
-  },
-);
-
-watch(
-  () => props.realtimeConnected,
-  (connected, wasConnected) => {
-    syncAlertPoll();
-    // Reconcile once after a reconnect to cover any notifications missed
-    // while the socket was down.
-    if (connected && !wasConnected && props.bootReady && !suppressAutoAlertReload) {
-      void loadAlertPage(true);
-    }
-  },
-);
 
 watch([alertSideFilter, openOnly, alertCoinFilter, alertMinUsd], () => {
   patchAuthUiSettings({
@@ -160,8 +133,8 @@ async function loadAlertPage(silent = false) {
       whaleId: props.filterWhaleId || undefined,
       kind: (openOnly.value ? 'open' : 'all') as 'open' | 'all',
       minUsd: alertMinUsd.value || undefined,
-      page: alertPage.value,
-      limit: ALERT_PAGE_SIZE,
+      page: 1,
+      limit: ALERT_DISPLAY_LIMIT,
       side: alertSideFilter.value,
       coins: selectedCoin ? [...new Set([selectedCoin, `K${normalizedCoin}`, `U${normalizedCoin}`])] : undefined,
       excludeExotic: true,
@@ -171,6 +144,7 @@ async function loadAlertPage(silent = false) {
       .map((raw) => normalizeStoredAlert(raw as WhaleAlert))
       .filter((item): item is WhaleAlert => Boolean(item?.id && hasListEligibleItem(item)));
     pageAlerts.value = list;
+    whaleStore.acceptAlertPage(list);
     alertTotal.value = Number(data.total) || 0;
     const byCoin: Record<string, number> = {};
     for (const [rawCoin, count] of Object.entries(data.facets?.byCoin || {})) {
@@ -272,7 +246,6 @@ async function onRefreshAlerts() {
   try {
     // 刷新入口回到初始「全部异动」视图，不沿用当前巨鲸/币种/方向筛选。
     whaleStore.clearWhaleFilter();
-    alertPage.value = 1;
     alertSideFilter.value = 'all';
     openOnly.value = false;
     alertCoinFilter.value = 'all';
@@ -313,10 +286,6 @@ const filteredAlerts = computed(() => {
     .filter((row) => Boolean(row.alert?.items?.length));
 });
 
-const alertPageCount = computed(() =>
-  Math.max(1, Math.ceil(alertTotal.value / ALERT_PAGE_SIZE)),
-);
-
 const pagedAlerts = computed(() => filteredAlerts.value);
 
 watch(
@@ -329,23 +298,10 @@ watch(
     preferredCoins,
   ],
   () => {
-    if (!props.bootReady || suppressAutoAlertReload) return;
-    if (alertPage.value !== 1) {
-      alertPage.value = 1;
-      return;
-    }
+    if (!started || !alertFiltersReady.value || suppressAutoAlertReload) return;
     void loadAlertPage();
   },
 );
-
-watch(alertPage, () => {
-  if (!props.bootReady || suppressAutoAlertReload) return;
-  void loadAlertPage();
-});
-
-watch(alertPageCount, (count) => {
-  if (alertPage.value > count) alertPage.value = count;
-});
 
 watch(alertMinUsd, (value) => {
   writeAlertMinUsd(value);
@@ -355,22 +311,6 @@ watch(preferredCoinsState, (coins) => {
   if (alertCoinFilter.value === 'all') return;
   if (!coins.includes(alertCoinFilter.value)) alertCoinFilter.value = 'all';
 });
-
-/** 实时新异动：静默重拉分页（防抖，避免连发刷爆） */
-let realtimeReloadTimer: ReturnType<typeof setTimeout> | undefined;
-function scheduleRealtimeReload() {
-  if (suppressAutoAlertReload) return;
-  if (realtimeReloadTimer) clearTimeout(realtimeReloadTimer);
-  realtimeReloadTimer = setTimeout(() => {
-    realtimeReloadTimer = undefined;
-    if (!props.bootReady) return;
-    if (alertPage.value !== 1) {
-      alertPage.value = 1;
-      return;
-    }
-    void loadAlertPage(true);
-  }, 350);
-}
 
 function alertMatchesListFilters(alert: WhaleAlert) {
   if (props.filterWhaleId && alert.whaleId !== props.filterWhaleId) return false;
@@ -397,44 +337,21 @@ function hasListEligibleItem(alert: WhaleAlert) {
   return eligibleItems(alert).length > 0;
 }
 
-/** Socket 推送：先插入列表，再静默对齐服务端 */
+/** Apply server push directly; never turn a notification into another HTTP refresh. */
 function pushRealtimeAlert(raw: WhaleAlert | Record<string, unknown>) {
   const alert = normalizeStoredAlert(raw as WhaleAlert);
-  if (!alert) {
-    scheduleRealtimeReload();
-    return false;
-  }
+  if (!alert) return false;
   if (alertMatchesListFilters(alert)) {
-    if (alertPage.value !== 1) alertPage.value = 1;
-    if (!pageAlerts.value.some((item) => item.id === alert.id)) {
-      pageAlerts.value = [alert, ...pageAlerts.value].slice(0, ALERT_PAGE_SIZE);
-      alertTotal.value += 1;
-      const items = eligibleItems(alert);
-      const nextFacets = { ...facets.value, byCoin: { ...facets.value.byCoin } };
-      nextFacets.all += 1;
-      const sides = new Set(items.map((item) => alertItemSide(alert, item)));
-      if (sides.has('long')) nextFacets.long += 1;
-      if (sides.has('short')) nextFacets.short += 1;
-      for (const coin of new Set(items.map((item) => String(item.coin || '').trim().toUpperCase()).filter(Boolean))) {
-        nextFacets.byCoin[coin] = (nextFacets.byCoin[coin] || 0) + 1;
-      }
-      facets.value = nextFacets;
-    }
+    pageAlerts.value = [alert, ...pageAlerts.value.filter(item => item.id !== alert.id)]
+      .sort((a, b) => alertEventTime(b) - alertEventTime(a)).slice(0, ALERT_DISPLAY_LIMIT);
+    // Counts remain the server's snapshot; a limited browser page cannot recalculate totals.
   }
-  scheduleRealtimeReload();
+
   return true;
 }
 
-watch(
-  () => whaleStore.alertRealtimeSeq,
-  (seq, prev) => {
-    if (!props.bootReady) return;
-    if (!seq || seq === prev) return;
-    scheduleRealtimeReload();
-  },
-);
-
 defineExpose({
+  initialize,
   reloadAlerts: (silent = true) => loadAlertPage(silent),
   pushRealtimeAlert,
 });
@@ -661,35 +578,6 @@ function alertFundingWarn(row: {
           </div>
         </button>
         </div>
-      </div>
-      <div v-if="alertTotal > 0" class="alert-pager">
-        <button
-          type="button"
-          class="pager-btn"
-          :disabled="alertPage <= 1 || alertLoading"
-          @click="alertPage = 1"
-        >
-          首页
-        </button>
-        <button
-          type="button"
-          class="pager-btn"
-          :disabled="alertPage <= 1 || alertLoading"
-          @click="alertPage = Math.max(1, alertPage - 1)"
-        >
-          上一页
-        </button>
-        <span class="pager-info">
-          第 {{ alertPage }}/{{ alertPageCount }} 页 · 共 {{ alertTotal }} 条
-        </span>
-        <button
-          type="button"
-          class="pager-btn"
-          :disabled="alertPage >= alertPageCount || alertLoading"
-          @click="alertPage = Math.min(alertPageCount, alertPage + 1)"
-        >
-          下一页
-        </button>
       </div>
     </div>
 
@@ -1243,41 +1131,6 @@ function alertFundingWarn(row: {
   min-width: 0;
   overflow-x: hidden;
   overflow-y: auto;
-}
-.alert-pager {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-}
-.pager-btn {
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 700;
-  padding: 4px 12px;
-  cursor: pointer;
-}
-.pager-btn:hover:not(:disabled) {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-}
-.pager-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-.pager-info {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
 }
 .news-bottom-panel .news {
   max-height: 240px;

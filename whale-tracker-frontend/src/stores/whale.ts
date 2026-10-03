@@ -4,10 +4,6 @@ import {
   fetchWhalesBatch,
   refreshWhaleById,
   fetchPersistedAlertHistory,
-  isRetryableLoadError,
-  retryableErrorText,
-  scheduleSilentRetry,
-  withRetrySuffix,
 } from '@/api';
 import type { WhaleProfile, WhaleTrade, WhalePosition } from '@/types';
 import {
@@ -31,21 +27,12 @@ import {
 const HISTORY_KEY = 'whale-tracker-alert-history-v3';
 const LEGACY_HISTORY_KEYS = ['whale-tracker-alert-history', 'whale-tracker-alert-history-v2'];
 const MAX_HISTORY = 3000;
-/** GoldRush 并发更高：每批拉多个，缩短 200+ 名单首屏时间 */
-const WHALE_BATCH_SIZE = 12;
-/** 单次拉取最多重试 3 次，避免一次超时/限流就让整轮分段加载停在半路 */
-const BATCH_RETRY_LIMIT = 3;
-const BATCH_RETRY_DELAY_MS = 2000;
-/** 进度超过该时长未推进即视为失效，允许后续轮询重新接管 */
-const PROGRESS_STALE_MS = 90 * 1000;
 const PENDING_REFRESH_ERROR = '等待刷新';
 const ACTIVITY_MAX = 3000;
 const ACTIVITY_POLL_MS = 60_000;
 /** v4：异动不再前端分页刷 /trades */
 
-function sleep(ms: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
+
 
 function isPendingPlaceholder(whale: WhaleProfile) {
   return whale.error === PENDING_REFRESH_ERROR;
@@ -53,11 +40,6 @@ function isPendingPlaceholder(whale: WhaleProfile) {
 
 function hasPendingPlaceholders(list: WhaleProfile[]) {
   return list.some(isPendingPlaceholder);
-}
-
-function isIncompletePayload(data: { incomplete?: boolean; whales?: WhaleProfile[] }) {
-  if (data.incomplete) return true;
-  return hasPendingPlaceholders(data.whales || []);
 }
 
 function isPositionDiffAlert(alert: WhaleAlert) {
@@ -132,7 +114,7 @@ export const useWhaleStore = defineStore('whale', () => {
   const selectedWhaleName = ref('');
   const alerts = ref<WhaleAlert[]>([]);
   const alertHistory = ref<WhaleAlert[]>(readAlertHistory());
-  /** 实时异动序号：供异动列表监听并静默重拉分页 */
+  /** 实时异动序号。 */
   const alertRealtimeSeq = ref(0);
   /** 活动流最新一条时间，用于增量拉取 */
   const activityLastSeenTime = ref(0);
@@ -174,7 +156,7 @@ export const useWhaleStore = defineStore('whale', () => {
     })();
     return alertHistoryFetch;
   }
-  void syncAlertHistoryFromServer();
+
 
   const enabledWhales = computed(() =>
     whales.value.filter((item) => item.enabled !== false),
@@ -328,7 +310,7 @@ export const useWhaleStore = defineStore('whale', () => {
     const normalized = normalizeStoredAlert(alert);
     if (!normalized || !isPositionDiffAlert(normalized)) return;
     mergeAlertHistory([normalized]);
-    // 无论是否重复 id，都通知异动列表重拉（避免只靠 history 顶栏 id）
+    // Duplicate IDs are legitimate server updates, not a reason to reload the list.
     alertRealtimeSeq.value += 1;
     if (!isTrackedAlertKind(normalized.kind) && !normalized.items?.some((i) => isTrackedAlertKind(i.kind))) {
       return;
@@ -481,192 +463,32 @@ export const useWhaleStore = defineStore('whale', () => {
     loadProgressAt.value = value ? Date.now() : 0;
   }
 
-  function isBatchSessionReset(err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err || '');
-    return /分段加载会话已失效|分段加载会话已中断|WHALE_BATCH_RESET/.test(msg);
-  }
 
-  /** 分段卡住时：若磁盘已有完整缓存（无「等待刷新」占位），直接收尾 */
-  async function tryTakeFullCache(seq: number, minTotal = 0) {
-    try {
-      const profiles = new Map<string, WhaleProfile>();
-      const activityRows = new Map<string, WhaleTrade>();
-      const warnings = new Set<string>();
-      let offset = 0;
-      let total = 0;
-      let updatedAt = 0;
-      let complete = false;
-      for (let pageIndex = 0; pageIndex < 1000; pageIndex += 1) {
-        const page = await fetchWhalesBatch({ offset, limit: WHALE_BATCH_SIZE });
-        if (seq !== loadSeq) return false;
-        total = Number(page.total) || total;
-        updatedAt = Math.max(updatedAt, Number(page.updatedAt) || 0);
-        for (const profile of page.whales || []) {
-          if (profile?.id) profiles.set(profile.id, profile);
-        }
-        for (const trade of page.activity || []) {
-          const id = tradeDedupKey(trade);
-          if (id) activityRows.set(id, trade);
-        }
-        for (const warning of page.warnings || []) warnings.add(warning);
-        if (page.done) {
-          complete = true;
-          break;
-        }
-        const nextOffset = Number(page.nextOffset) || 0;
-        if (nextOffset <= offset || nextOffset >= total) return false;
-        offset = nextOffset;
-      }
-      if (!complete || !total || profiles.size < total || (minTotal > 0 && total < minTotal)) return false;
-      const cached = {
-        whales: [...profiles.values()],
-        activity: [...activityRows.values()],
-        warnings: [...warnings],
-        total,
-        loaded: profiles.size,
-        done: true,
-        updatedAt,
-      };
-      if (isIncompletePayload(cached)) return false;
-      applyWhalePayload(cached);
-      setProgress({ loaded: profiles.size, total });
-      error.value = '';
-      return true;
-    } catch {
-      return false;
-    }
-  }
 
-  async function loadProgressive(
-    refresh = false,
-    _silent = false,
-    seq: number,
-    options: { merge?: boolean } = {},
-  ) {
-    let offset = 0;
-    let firstBatch = true;
-    let restarted = false;
-    let lastError: unknown = null;
-    let expectedTotal = 0;
-
-    try {
-      while (true) {
-        if (seq !== loadSeq) return;
-
-        // 单批失败不再整条链路中断：重试若干次，仍失败则抛给上层
-        let data: Awaited<ReturnType<typeof fetchWhalesBatch>> | null = null;
-        for (let attempt = 0; attempt < BATCH_RETRY_LIMIT; attempt += 1) {
-          try {
-            data = await fetchWhalesBatch({
-              offset,
-              limit: WHALE_BATCH_SIZE,
-              refresh: refresh && firstBatch,
-            });
-            lastError = null;
-            break;
-          } catch (err) {
-            if (seq !== loadSeq) return;
-            lastError = err;
-            // 批次卡住期间缓存可能已被分片写满，优先收尾
-            if (await tryTakeFullCache(seq, expectedTotal || 20)) {
-              lastError = null;
-              return;
-            }
-            // 后端会话被并发刷新顶掉时，从头重来一次
-            if (isBatchSessionReset(err) && !restarted) {
-              restarted = true;
-              offset = 0;
-              firstBatch = true;
-              lastError = null;
-              break;
-            }
-            if (attempt === BATCH_RETRY_LIMIT - 1) throw err;
-            await sleep(BATCH_RETRY_DELAY_MS * (attempt + 1));
-          }
-        }
-        if (seq !== loadSeq) return;
-        if (!data) {
-          if (lastError) throw lastError;
-          continue;
-        }
-
-        applyWhalePayload(data, { merge: options.merge || whales.value.length > 0 });
-        const total = Number(data.total) || data.whales?.length || 0;
-        const loaded = Number(data.loaded) || data.whales?.length || 0;
-        expectedTotal = Math.max(expectedTotal, total);
-        setProgress(total > 0 ? { loaded, total } : null);
-        firstBatch = false;
-        if (data.done || !data.whales?.length) break;
-        const nextOffset = Number(data.nextOffset ?? loaded) || 0;
-        // 偏移没有前进说明后端已到边界，避免死循环
-        if (nextOffset <= offset || nextOffset >= total) break;
-        offset = nextOffset;
-
-      }
-
-      if (seq === loadSeq) error.value = '';
-    } catch (err) {
-      if (seq === loadSeq && (await tryTakeFullCache(seq, expectedTotal))) {
-        lastError = null;
-        return;
-      }
-      throw err;
-    } finally {
-      // 先落到满值，让右上角滚字动画跑完再清空
-      if (seq === loadSeq) {
-        if (expectedTotal > 0) {
-          setProgress({ loaded: expectedTotal, total: expectedTotal });
-          window.setTimeout(() => {
-            if (seq === loadSeq) setProgress(null);
-          }, 900);
-        } else {
-          setProgress(null);
-        }
-      }
-    }
-  }
-
-  async function load(refresh = false, silent = false) {
+  /** Only fetch one server cache page; the UI owns explicit paging. */
+  async function load(_refresh = false, silent = false) {
     const seq = ++loadSeq;
-    const first = !whales.value.length;
-    const progressFresh =
-      Boolean(loadProgress.value) && Date.now() - loadProgressAt.value < PROGRESS_STALE_MS;
-    // 只在进度确实还在推进时让静默轮询避让；进度僵死则由本轮接管
-    if (silent && progressFresh && !refresh) return;
-    if (!silent || first) loading.value = true;
-    if (!silent) error.value = '';
-    let retrying = false;
+    if (!silent) loading.value = true;
     try {
-      // 静默轮询：读缓存；若仍有占位则继续分段补齐
-      if (silent && whales.value.length && !refresh) {
-        await loadProgressive(false, true, seq, { merge: true });
-        return;
-      }
-
-      // 强制刷新：直接分段拉取
-      if (refresh) {
-        await loadProgressive(true, silent, seq);
-        return;
-      }
-
-      // 即使服务端已有完整缓存也走 limit/offset 分页，避免热缓存路径
-      // 把全量巨鲸和整段成交活动作为一个巨大响应返回。
-      await loadProgressive(false, silent, seq, { merge: whales.value.length > 0 });
-    } catch (err) {
+      const data = await fetchWhalesBatch({ offset: 0, limit: 20 });
       if (seq !== loadSeq) return;
-      setProgress(null);
-      retrying = isRetryableLoadError(err);
-      if (retrying) {
-        if (!silent || first) {
-          error.value = withRetrySuffix(retryableErrorText(err, '巨鲸数据加载失败'));
-        }
-        scheduleSilentRetry('whales', () => load(refresh, true));
-      } else if (!silent || first) {
-        error.value = err instanceof Error ? err.message : '巨鲸数据加载失败';
-      }
+      applyWhalePayload(data, { merge: true });
+      error.value = '';
+    } catch (err) {
+      if (seq === loadSeq) error.value = err instanceof Error ? err.message : '巨鲸数据加载失败';
     } finally {
-      if (seq === loadSeq && !(retrying && first)) loading.value = false;
+      if (seq === loadSeq) { loading.value = false; setProgress(null); }
     }
+  }
+
+  function acceptCachePage(rows: WhaleProfile[]) {
+    applyWhalePayload({ whales: rows, done: true }, { merge: true });
+  }
+
+  function acceptAlertPage(rows: WhaleAlert[]) {
+    const merged = new Map([...alertHistory.value, ...rows].map(row => [row.id, row]));
+    alertHistory.value = filterRecentAlerts([...merged.values()]).sort((a, b) => alertEventTime(b) - alertEventTime(a)).slice(0, MAX_HISTORY);
+    writeAlertHistory(alertHistory.value);
   }
 
   function loadWhaleTrades(whale: Pick<WhaleProfile, 'id' | 'name'>) {
@@ -783,6 +605,8 @@ export const useWhaleStore = defineStore('whale', () => {
   }
 
   return {
+    acceptCachePage,
+    acceptAlertPage,
     whales,
     displayWhales,
     displayIds,

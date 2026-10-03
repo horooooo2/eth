@@ -511,14 +511,26 @@ export async function fetchAlertFlowSummary(query: { window: '15m' | '1h' | '4h'
 }
 
 export type WhaleServerSummary = {
+  alertTotal: number;
   total: number; knownCount: number; longUsd: number; shortUsd: number;
+  longPnlUsd: number; shortPnlUsd: number; longPnlPct: number | null; shortPnlPct: number | null;
   longPct: number; shortPct: number; longAddrPct: number; shortAddrPct: number;
   longCount: number; shortCount: number; neutralCount: number; deviationPct: number;
   hint: string; scopeLabel: string; positionCount: number; updatedAt: number; stale: boolean;
 };
 
-export async function fetchWhaleSummary() {
-  const { data } = await http.get<WhaleServerSummary>('/whales/summary', { timeout: 15000 });
+export async function fetchWhaleSummary(coin?: string) {
+  const { data } = await http.get<WhaleServerSummary>('/whales/summary', {
+    params: coin && coin !== 'all' ? { coin } : undefined,
+    timeout: 15000,
+  });
+  return data;
+}
+
+export async function fetchWhaleResonance(windowHours: number, coins: string[]) {
+  const { data } = await http.get<import('@/utils/whaleResonanceSignal').ResonanceScanResult>('/whales/resonance', {
+    params: { windowHours, coins: coins.join(',') }, timeout: 20000,
+  });
   return data;
 }
 

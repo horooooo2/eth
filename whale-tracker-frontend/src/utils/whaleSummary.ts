@@ -194,6 +194,26 @@ export function buildWhaleRiskSummary(
   };
 }
 
+/** Build the same risk card from server aggregates so progressive client hydration cannot move totals. */
+export function buildWhaleRiskSummaryFromTotals(
+  totals: { longPnlUsd: number; shortPnlUsd: number; longPnlPct: number | null; shortPnlPct: number | null },
+  coinFilter: string = 'all',
+): WhaleRiskSummary {
+  const longStats = { pnlUsd: Number(totals.longPnlUsd) || 0, pnlPct: totals.longPnlPct };
+  const shortStats = { pnlUsd: Number(totals.shortPnlUsd) || 0, pnlPct: totals.shortPnlPct };
+  const tone = buildRiskTone(longStats, shortStats);
+  return {
+    longPnlUsd: longStats.pnlUsd,
+    shortPnlUsd: shortStats.pnlUsd,
+    longPnlPct: longStats.pnlPct,
+    shortPnlPct: shortStats.pnlPct,
+    tone,
+    label: buildRiskLabel(tone),
+    detail: buildRiskDetail(longStats, shortStats),
+    scopeLabel: scopeLabel(coinFilter),
+  };
+}
+
 export function formatRiskPnlLine(pnlUsd: number, pnlPct: number | null) {
   const usd = formatPnl(pnlUsd);
   if (pnlPct == null) return usd;

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { ref } from 'vue';
 import { fetchCalendar } from '@/api';
 import type { CalendarEvent, WhaleProfile } from '@/types';
 import type { RecoQuotes } from '@/utils/recommend';
@@ -124,14 +124,9 @@ async function loadMacro(force = false) {
   }
 }
 
-watch(
-  () => props.bootReady,
-  (ready) => {
-    if (!ready) return;
-    void loadMacro(false);
-  },
-  { immediate: true },
-);
+let initialLoad: Promise<void> | null = null;
+function initialize() { return initialLoad ||= loadMacro(false); }
+defineExpose({ initialize });
 </script>
 
 <template>

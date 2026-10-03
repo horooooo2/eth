@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { ref, watch } from 'vue';
 import { ArrowRight } from '@element-plus/icons-vue';
 import type { WhaleProfile, WhaleTrade } from '@/types';
 import type { WhaleAlert } from '@/utils/whaleAlerts';
@@ -11,14 +11,15 @@ import {
 } from '@/utils/format';
 import type { RecoQuotes } from '@/utils/recommend';
 import { preferredCoinsState } from '@/utils/watchedCoins';
+import { fetchWhaleResonance } from '@/api';
 import { resolveWhaleTitle } from '@/utils/whaleReference';
 import {
   readResonanceConfig,
-  scanResonanceSignals,
   WINDOW_HOUR_OPTIONS,
   writeResonanceWindowHours,
   type ResonanceSignal,
   type ResonanceOpenRow,
+  type ResonanceScanResult,
 } from '@/utils/whaleResonanceSignal';
 
 const props = defineProps<{
@@ -39,17 +40,22 @@ const detailVisible = ref(false);
 const windowHours = ref(readResonanceConfig().windowHours);
 const activeSignal = ref<ResonanceSignal | null>(null);
 
-watch(windowHours, (value) => writeResonanceWindowHours(value));
-
-const scan = computed(() =>
-  scanResonanceSignals({
-    whales: props.whales,
-    activity: props.activity,
-    alerts: props.alerts,
-    config: { ...readResonanceConfig(), windowHours: windowHours.value },
-    watchedCoins: preferredCoinsState.value,
-  }),
-);
+const scan = ref<ResonanceScanResult>({ hit: false, primary: null, signals: [], emptyText: '正在读取共振信号…' });
+let initialLoad: Promise<void> | null = null;
+let requestSeq = 0;
+async function loadSignals() {
+  const seq = ++requestSeq;
+  try {
+    const result = await fetchWhaleResonance(windowHours.value, preferredCoinsState.value);
+    if (seq === requestSeq) scan.value = result;
+  } catch {
+    if (seq === requestSeq) scan.value = { hit: false, primary: null, signals: [], emptyText: '共振信号读取失败，请切换时间范围重试' };
+  }
+}
+function initialize() { return initialLoad ||= loadSignals(); }
+watch(windowHours, (value) => { writeResonanceWindowHours(value); if (initialLoad) void loadSignals(); });
+watch(preferredCoinsState, () => { if (initialLoad) void loadSignals(); }, { deep: true });
+defineExpose({ initialize });
 
 function signalKindLabel(kind: ResonanceSignal['kind']) {
   return kind === 'accumulation' ? '持续加仓' : '共振信号';

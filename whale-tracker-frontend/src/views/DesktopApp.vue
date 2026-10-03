@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { fetchQuotes, fetchPagedTrades, fetchCalendar, fetchAlertFlowSummary, fetchWhaleSummary } from '@/api';
+import { fetchQuotes, fetchAlertFlowSummary, fetchWhaleSummary } from '@/api';
 import CoinPreferences from '@/components/CoinPreferences.vue';
 import ApiSettings from '@/components/ApiSettings.vue';
 import NewsList from '@/components/NewsList.vue';
@@ -12,7 +12,7 @@ import WhaleList from '@/components/WhaleList.vue';
 import DataModule from '@/components/DataModule.vue';
 import TradFiBoard from '@/components/TradFiBoard.vue';
 import WhaleDetailDialog from '@/components/WhaleDetailDialog.vue';
-import { useNewsStore } from '@/stores/news';
+import { createPageLoadScheduler } from '@/utils/pageLoadScheduler';
 import { useWhaleStore } from '@/stores/whale';
 import {
   authLoading,
@@ -21,9 +21,7 @@ import {
   isLoggedIn,
   login as authLogin,
   logout as authLogout,
-  getAuthUiSettings,
 } from '@/stores/auth';
-import { refreshAiKeyStatus } from '@/stores/aiKey';
 import { useRealtime } from '@/composables/useRealtime';
 import type { RecoQuotes } from '@/utils/recommend';
 import { readFocusCoin } from '@/utils/recoPrefs';
@@ -37,7 +35,7 @@ import type { WhaleServerSummary, XFeedTweet } from '@/api';
 import type { WhaleProfile, WhaleTrade } from '@/types';
 
 const whaleStore = useWhaleStore();
-const newsStore = useNewsStore();
+
 const brandIcons = coinIconCandidates('BTC');
 const brandIconIdx = ref(0);
 const brandIcon = computed(() => brandIcons[brandIconIdx.value] || '');
@@ -56,6 +54,10 @@ const sideTab = ref<'virtual' | 'tradfi'>(readSideTab());
 watch(sideTab, (tab) => {
   try { window.localStorage.setItem(SIDE_TAB_STORAGE_KEY, tab); } catch { /* storage unavailable */ }
 });
+const radarRef = ref<InstanceType<typeof TradFiBoard> | null>(null);
+const macroRef = ref<InstanceType<typeof DataModule> | null>(null);
+const resonanceRef = ref<InstanceType<typeof WhaleResonanceBanner> | null>(null);
+let pageLoader: ReturnType<typeof createPageLoadScheduler<'virtual' | 'tradfi'>> | null = null;
 const whaleListRef = ref<InstanceType<typeof WhaleList> | null>(null);
 const whaleDetailOpen = ref(false);
 const whaleDetailProfile = ref<WhaleProfile | null>(null);
@@ -83,7 +85,7 @@ async function loadWhaleNetFlow() {
   if (seq !== flowRequestSeq || !data) return;
   whaleNetFlow.value = data;
 }
-watch([flowWindow, flowCoin], () => void loadWhaleNetFlow());
+watch([flowWindow, flowCoin], () => { if (pageLoader) void loadWhaleNetFlow(); });
 
 const loginUser = ref('');
 const loginPass = ref('');
@@ -118,7 +120,7 @@ function onLogout() {
 
 function onFocusWhale(whale: { id: string; name: string }) {
   onFocusWhaleCard({ id: whale.id, name: whale.name });
-  void whaleStore.refreshWhale(whale.id);
+
 }
 
 function onFocusWhaleCard(payload: { id: string; name: string; coin?: string }) {
@@ -149,29 +151,6 @@ async function loadQuotes() {
   if (funding && typeof funding === 'object') fundingRates.value = funding;
 }
 
-async function loadAll(refresh = false, silent = false) {
-  secondaryReady.value = false;
-  try {
-    await whaleStore.load(refresh, silent);
-  } finally {
-    secondaryReady.value = true;
-    // 新闻 / 行情 / 资金动态 / 日历：首屏后静默加载
-    void Promise.all([
-      newsStore.load(refresh, true).catch(() => null),
-      loadQuotes().catch(() => null),
-      fetchPagedTrades({ page: 1, limit: 50 }).catch(() => null),
-      fetchCalendar().catch(() => null),
-    ]);
-  }
-}
-
-/** 新闻 / 日历 / 行情：定时刷新；巨鲸等仅首屏 loadAll */
-async function pollNewsAndQuotes() {
-  await Promise.all([newsStore.load(false, true), loadQuotes()]);
-}
-
-const secondaryReady = ref(false);
-
 const {
   status: realtimeStatus,
   start: startRealtime,
@@ -182,16 +161,12 @@ const {
   } else if (msg.type === 'alert' && msg.alert) {
     const alert = msg.alert as unknown as WhaleAlert;
     whaleStore.ingestRealtimeAlert(alert);
-    void loadWhaleNetFlow();
     // 直接喂给异动列表（不依赖仅 store 序号）
     newsListRef.value?.pushRealtimeAlert?.(alert);
-  } else if (msg.type === 'whaleSnapshotUpdated') {
-    whaleSnapshotVersion.value += 1;
-    void loadWhaleSummary();
+
   } else if (msg.type === 'whalePatch' && msg.whaleId && msg.patch) {
     whaleStore.ingestRealtimeWhalePatch(msg.whaleId, msg.patch as Partial<WhaleProfile>);
-    // 仓位 diff 也可能写出新异动，稍后对齐列表
-    window.setTimeout(() => newsListRef.value?.reloadAlerts?.(true), 600);
+
   } else if (msg.type === 'xTweet' && Array.isArray(msg.tweets)) {
     noteXTweets(msg.tweets as unknown as XFeedTweet[]);
   }
@@ -203,42 +178,40 @@ watch(
     if (flowCoin.value !== 'ALL' && !preferredCoinsState.value.includes(flowCoin.value)) {
       flowCoin.value = readFocusCoin();
     }
-    void loadQuotes();
-    void loadWhaleNetFlow();
+    if (pageLoader) { void loadQuotes(); void loadWhaleNetFlow(); }
   },
   { deep: true },
 );
 
-let timer: number | undefined;
-
+let sessionGeneration = 0;
 async function startAppSession() {
   if (sessionStarted) return;
   sessionStarted = true;
-  void getAuthUiSettings();
-  void refreshAiKeyStatus(true);
-  await loadAll(false);
-  void loadWhaleSummary();
-  void loadWhaleNetFlow();
-  whaleStore.startActivityPolling();
-  startRealtime();
-  if (!timer) {
-    timer = window.setInterval(() => {
-      void pollNewsAndQuotes();
-      void loadWhaleNetFlow();
-      void loadWhaleSummary();
-      if (realtimeStatus.value !== 'connected') {
-        void whaleStore.syncAlertHistoryFromServer();
-      }
-    }, 60 * 1000);
-  }
+  const generation = ++sessionGeneration;
+  await nextTick();
+  if (!sessionStarted || generation !== sessionGeneration) return;
+  pageLoader = createPageLoadScheduler({
+    virtual: async () => {
+      await Promise.allSettled([
+        whaleListRef.value?.initialize(), newsListRef.value?.initialize(),
+        macroRef.value?.initialize(), resonanceRef.value?.initialize(),
+        loadWhaleSummary(), loadWhaleNetFlow(), loadQuotes(),
+      ]);
+      if (sessionStarted && generation === sessionGeneration) startRealtime();
+    },
+    tradfi: async () => { await radarRef.value?.initialize(); },
+  });
+  const primary = sideTab.value;
+  await pageLoader.start(primary, primary === 'virtual' ? 'tradfi' : 'virtual',
+    () => sessionStarted && generation === sessionGeneration);
+  if (!sessionStarted || generation !== sessionGeneration) return;
 }
+watch(sideTab, (tab) => { if (sessionStarted && pageLoader) void pageLoader.load(tab); });
 
 function stopAppSession() {
   sessionStarted = false;
-  if (timer) {
-    window.clearInterval(timer);
-    timer = undefined;
-  }
+  sessionGeneration += 1;
+  pageLoader = null;
   whaleStore.stopActivityPolling();
   stopRealtime();
 }
@@ -401,11 +374,12 @@ onUnmounted(() => {
           </div>
         </div>
         <WhaleResonanceBanner
+          ref="resonanceRef"
           :whales="whaleStore.displayWhales"
           :activity="whaleStore.activity"
           :alerts="whaleStore.alertHistory"
           :quotes="quotes"
-          :ready="whaleStore.displayWhales.length > 0"
+          :ready="true"
           @focus-whale="onFocusWhaleCard"
         />
         <div class="topbar-right">
@@ -414,23 +388,24 @@ onUnmounted(() => {
       </header>
 
       <el-alert
-        v-if="whaleStore.error || newsStore.error"
+        v-if="whaleStore.error"
         class="warn"
         type="warning"
         :closable="false"
-        :title="whaleStore.error || newsStore.error"
+        :title="whaleStore.error"
       />
 
       <div class="whales-shell">
         <div class="grid">
           <DataModule
+            ref="macroRef"
             :whales="whaleStore.displayWhales"
             :loading="whaleStore.loading"
             :selected-id="whaleStore.selectedWhaleId"
             :selected-name="whaleStore.selectedWhaleName"
             :updated-at="whaleStore.updatedAt"
             :quotes="quotes"
-            :boot-ready="secondaryReady"
+            :boot-ready="true"
             @focus-whale="onFocusWhaleCard"
           />
 
@@ -453,7 +428,7 @@ onUnmounted(() => {
             :whales="whaleStore.enabledWhales"
             :funding-rates="fundingRates"
             :filter-whale-id="whaleStore.selectedWhaleId"
-            :boot-ready="secondaryReady"
+            :boot-ready="true"
             :realtime-connected="realtimeStatus === 'connected'"
             @locate-whale="onFocusWhaleCard"
             @focus-whale="onFocusWhale"
@@ -461,7 +436,7 @@ onUnmounted(() => {
         </div>
       </div>
       </div>
-      <TradFiBoard v-show="sideTab === 'tradfi'" class="tradfi-host" />
+      <TradFiBoard ref="radarRef" v-show="sideTab === 'tradfi'" class="tradfi-host" />
     </div>
     <WhaleDetailDialog v-model="whaleDetailOpen" :whale="whaleDetailProfile" :snapshot-updated-at="whaleStore.updatedAt" />
     </template>

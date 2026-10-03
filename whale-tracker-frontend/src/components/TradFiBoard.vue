@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch as watchVue } from 'vue';
+import { computed, nextTick, onUnmounted, ref, watch as watchVue } from 'vue';
 import { ElMessage } from 'element-plus';
 import { fetchRadarAvailableContracts, fetchRadarCatalog, fetchRadarKlines, fetchRadarMarket, fetchRadarMarketCap, fetchRadarNews, fetchRadarQuotes, streamChatMarketBrief, type MarketChatMessage, type RadarAvailableContract, type RadarKline, type RadarNewsItem, type TradFiMarketSymbol, type TradFiQuote } from '@/api';
 import { DEFAULT_RADAR_WATCH, isDefaultRadarWatch, tradfiWatch, writeTradFiWatch } from '@/utils/tradfiWatch';
@@ -34,11 +34,14 @@ const chartHover = ref<{ index: number; x: number; y: number } | null>(null);
 const failedLogos = ref(new Set<string>());
 const WATCH_PAGE_SIZE = 6;
 const MARKET_PAGE_SIZE = 10;
-let refreshTimer = 0;
+let started = false;
+const radarReady = ref(false);
+const radarRefreshing = ref(false);
+let initialLoad: Promise<void> | null = null;
 let refreshInFlight = false;
 let refreshQueued = false;
 let chartRequestId = 0;
-const REFRESH_INTERVAL_MS = 15_000;
+
 const addDialogVisible = ref(false);
 const addSearch = ref('');
 const availableContracts = ref<RadarAvailableContract[]>([]);
@@ -509,16 +512,28 @@ function selectSymbol(symbol: string) {
 }
 watchVue(watch, (symbols) => {
   if (!symbols.includes(selected.value)) selected.value = symbols[0] || 'BTCUSDT';
-  void refreshQuotes();
+  if (started) void refreshQuotes();
 });
-watchVue(() => [selected.value, chartInterval.value] as const, () => { void loadChart(); });
-watchVue(selected, (symbol) => { void loadMarketCap(symbol); }, { immediate: true });
-onMounted(() => {
-  void loadCatalog().then(() => loadChart());
-  refreshTimer = window.setInterval(() => { void refreshQuotes(); }, REFRESH_INTERVAL_MS);
-});
+watchVue(() => [selected.value, chartInterval.value] as const, () => { if (started) void loadChart(); });
+watchVue(selected, (symbol) => { if (started) void loadMarketCap(symbol); });
+function initialize() {
+  return initialLoad ||= (async () => {
+    await loadCatalog();
+    await nextTick();
+    await Promise.allSettled([loadChart(), loadMarketCap(selected.value)]);
+    started = true;
+    radarReady.value = true;
+  })();
+}
+defineExpose({ initialize });
+async function refreshRadar() {
+  if (!started || radarRefreshing.value) return;
+  radarRefreshing.value = true;
+  try { await Promise.allSettled([refreshQuotes(), loadChart(), loadMarketCap(selected.value)]); }
+  finally { radarRefreshing.value = false; }
+}
 onUnmounted(() => {
-  window.clearInterval(refreshTimer);
+
   aiRequestSeq += 1;
   aiAbort?.abort();
 });
@@ -536,7 +551,7 @@ onUnmounted(() => {
         </div>
         <div class="periods direction-filter" aria-label="涨跌类型"><button v-for="item in [{id:'ALL',label:'涨跌全部'},{id:'UP',label:'涨幅'},{id:'DOWN',label:'跌幅'}] as const" :key="item.id" type="button" :class="{ active: directionFilter === item.id }" @click="directionFilter = item.id">{{ item.label }}</button></div>
         <label class="search"><span>⌕</span><input v-model="searchText" type="search" placeholder="搜索代码或名称"></label>
-        <button type="button" class="refresh" :disabled="refreshInFlight" @click="refreshQuotes">{{ refreshInFlight ? '更新中…' : '刷新行情' }}</button>
+        <button type="button" class="refresh" :disabled="!radarReady || radarRefreshing" @click="refreshRadar">{{ radarRefreshing ? '更新中…' : '刷新行情' }}</button>
         <label class="threshold"><input v-model="anomalyOnly" type="checkbox"><span>只看异动</span></label>
         <label v-if="anomalyOnly" class="threshold-value"><input v-model.number="anomalyThreshold" type="number" min="0.1" step="0.1"><span>%</span></label>
         <button type="button" class="add-contract-button" @click="openAddContractDialog">＋ 新增币种</button>

@@ -19,6 +19,7 @@ import type { RecoQuotes } from '@/utils/recommend';
 import {
   buildWhaleMarketSummary,
   buildWhaleRiskSummary,
+  buildWhaleRiskSummaryFromTotals,
   formatRiskPnlLine,
   formatScopePositionTitle,
 } from '@/utils/whaleSummary';
@@ -42,7 +43,7 @@ import {
   toggleWhaleMonitor,
 } from '@/utils/monitoredWhales';
 import AiAnalyzeButton from '@/components/AiAnalyzeButton.vue';
-import { fetchWhalePosition, fetchWhaleCacheQuery } from '@/api';
+import { fetchWhalePosition, fetchWhaleCacheQuery, fetchWhaleSummary } from '@/api';
 import type { WhaleServerSummary } from '@/api';
 
 const props = defineProps<{
@@ -129,14 +130,29 @@ const coinScopedWhales = computed(() => {
 });
 
 const marketSummary = computed(() =>
-  coinFilter.value === 'all' && props.serverSummary
-    ? props.serverSummary
-    : buildWhaleMarketSummary(coinScopedWhales.value, coinFilter.value),
+  activeServerSummary.value || buildWhaleMarketSummary([], coinFilter.value),
 );
 
 const riskSummary = computed(() =>
-  buildWhaleRiskSummary(coinScopedWhales.value, coinFilter.value),
+  activeServerSummary.value
+    ? buildWhaleRiskSummaryFromTotals(activeServerSummary.value, coinFilter.value)
+    : buildWhaleRiskSummary([], coinFilter.value),
 );
+
+const scopedServerSummary = ref<{ coin: string; data: WhaleServerSummary } | null>(null);
+const summaryRequestSeq = ref(0);
+const activeServerSummary = computed(() => {
+  if (coinFilter.value === 'all') return props.serverSummary || null;
+  return scopedServerSummary.value?.coin === coinFilter.value ? scopedServerSummary.value.data : null;
+});
+
+watch([coinFilter, () => props.snapshotVersion], async () => {
+  if (coinFilter.value === 'all') return;
+  const coin = coinFilter.value;
+  const seq = ++summaryRequestSeq.value;
+  const data = await fetchWhaleSummary(coin).catch(() => null);
+  if (seq === summaryRequestSeq.value && data) scopedServerSummary.value = { coin, data };
+});
 
 const marketDonutStyle = computed(() => {
   const long = marketSummary.value.longPct;
@@ -186,9 +202,9 @@ watch([directionFilter, sortMode, coinFilter], () => {
   page.value = 1;
 });
 
-watch(
-  [directionFilter, sortMode, coinFilter, page, locatePinId, () => monitoredWhaleIds.value.join(','), () => props.snapshotVersion],
-  async () => {
+let initialLoad: Promise<void> | null = null;
+let started = false;
+async function loadServerPage() {
     const seq = ++querySeq;
     queryLoading.value = true;
     try {
@@ -205,6 +221,7 @@ watch(
       if (seq !== querySeq) return;
       queryError.value = '';
       serverPageWhales.value = result.whales || [];
+      whaleStore.acceptCachePage(serverPageWhales.value);
       serverTotal.value = Number(result.total) || 0;
       serverDirectionCounts.value = result.directionCounts || {};
       serverCoinCounts.value = result.coinCounts || {};
@@ -219,8 +236,14 @@ watch(
     } finally {
       if (seq === querySeq) queryLoading.value = false;
     }
-  },
-  { immediate: true },
+}
+function initialize() {
+  if (!initialLoad) { started = true; initialLoad = loadServerPage(); }
+  return initialLoad;
+}
+watch(
+  [directionFilter, sortMode, coinFilter, page, locatePinId, () => monitoredWhaleIds.value.join(','), () => preferredCoins.value.join(',')],
+  () => { if (started) void loadServerPage(); },
 );
 
 const pageCount = computed(() => Math.max(1, Math.ceil(serverTotal.value / WHALE_PAGE_SIZE)));
@@ -500,47 +523,12 @@ async function focusWhale(payload: { id: string; coin?: string }) {
   // 异动定位不带币种：顶部币种筛选保持「全部」
   coinFilter.value = 'all';
 
-  // 确保目标在展示名单中
-  let whale =
-    whaleStore.whales.find((item) => item.id === payload.id) ||
-    props.whales.find((item) => item.id === payload.id) ||
-    null;
-
-  if (!whale) {
-    try {
-      whale = (await whaleStore.refreshWhale(payload.id)) || null;
-    } catch {
-      whale = null;
-    }
-  }
-  if (!whale) {
-    ElMessage.warning('当前列表中找不到该巨鲸');
-    return;
-  }
-
-  whaleStore.ensureWhaleInDisplay(whale.id);
-  await nextTick();
-  frozenWhales.value = props.whales.length ? props.whales : [whale];
-
-  // 定位高亮
   locatePinId.value = payload.id;
-  try {
-    const result = await fetchWhaleCacheQuery({
-      page: 1,
-      limit: WHALE_PAGE_SIZE,
-      coin: 'all',
-      direction: 'all',
-      sort: sortMode.value,
-      followedIds: monitoredWhaleIds.value,
-      coins: preferredCoins.value,
-      pinId: payload.id,
-    });
-    serverPageWhales.value = result.whales || [];
-    serverTotal.value = Number(result.total) || 0;
-    serverDirectionCounts.value = result.directionCounts || {};
-    serverCoinCounts.value = result.coinCounts || {};
-  } catch {
-    ElMessage.warning('巨鲸列表暂时无法定位，请稍后重试');
+  await nextTick();
+  // The filter watcher owns the request; wait for it instead of issuing a second request.
+  while (queryLoading.value) await new Promise(resolve => window.setTimeout(resolve, 20));
+  if (!serverPageWhales.value.some(item => item.id === payload.id)) {
+    ElMessage.warning('当前服务端缓存中找不到该巨鲸的持仓');
     return;
   }
   expandedIds.value = { ...expandedIds.value, [payload.id]: true };
@@ -559,21 +547,10 @@ async function focusWhale(payload: { id: string; coin?: string }) {
     });
   });
 
-  if (whaleStore.refreshingWhaleIds[payload.id]) return;
-  void whaleStore
-    .refreshWhale(payload.id)
-    .then((updated) => {
-      if (!updated) return;
-      frozenWhales.value = frozenWhales.value.map((item) =>
-        item.id === updated.id ? updated : item,
-      );
-    })
-    .catch(() => {
-      // 确保目标在展示名单中
-    });
+
 }
 
-defineExpose({ focusWhale });
+defineExpose({ focusWhale, initialize });
 </script>
 
 <template>

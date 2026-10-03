@@ -26,6 +26,7 @@ const FILES = [
   'lib/opsMonitor.js',
   'lib/sqliteStore.js',
   'lib/whales.js',
+  'lib/resonanceEngine.js',
   'lib/news.js',
   'lib/newsService.js',
   'lib/markets.js',

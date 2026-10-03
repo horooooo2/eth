@@ -5,6 +5,7 @@ const {
   getWhaleCacheBatch,
   queryWhaleCache,
   getWhaleSummary,
+  getWhaleResonance,
   refreshSingleWhale,
   refreshAlertHistory,
   listTrades,
@@ -19,18 +20,26 @@ const {
   getActivitySince,
 } = require('../lib/whales');
 const { readConfig, writeConfig, setWhaleMode, normalizeAddress, normalizeMode, addManualWhale, renameWhale } = require('../lib/config');
-const { loadRecentEvents, loadRecentAlerts, loadPagedAlerts, loadAlertFlowSummary, persistAlerts } = require('../lib/sqliteStore');
+const { loadRecentEvents, loadRecentAlerts, loadPagedAlerts, loadAlertFlowSummary, countStoredAlerts, persistAlerts } = require('../lib/sqliteStore');
 
 const router = express.Router();
 
 /** 总览读取服务端快照，不触发上游采集，也不要求前端遍历分页。 */
-router.get('/summary', (_req, res) => {
+router.get('/summary', (req, res) => {
   try {
-    res.json(getWhaleSummary());
+    res.json({ ...getWhaleSummary({ coin: req.query.coin }), alertTotal: countStoredAlerts() });
   } catch (err) {
     console.error('[GET /api/whales/summary]', err);
     res.status(500).json({ error: err.message || '读取巨鲸汇总失败' });
   }
+});
+
+router.get('/resonance', (req, res) => {
+  const windowHours = Number(req.query.windowHours || 6);
+  if (![2, 4, 6, 12, 24].includes(windowHours)) return res.status(400).json({ error: '不支持的共振时间范围' });
+  const watchedCoins = String(req.query.coins || 'BTC,ETH').split(',').map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 12);
+  try { res.json(getWhaleResonance({ windowHours, watchedCoins })); }
+  catch (err) { console.error('[GET /api/whales/resonance]', err); res.status(500).json({ error: '读取共振信号失败' }); }
 });
 
 /** 净流入资金只查服务器异动库，时间窗口和币种由参数明确限定。 */

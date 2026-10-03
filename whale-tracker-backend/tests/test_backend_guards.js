@@ -50,7 +50,7 @@ test('server summary endpoints are wired to cached whale and alert data', () => 
 
   const routes = fs.readFileSync(path.join(backend, 'routes', 'whales.js'), 'utf8');
   assert.match(routes, /router\.get\('\/summary'/);
-  assert.match(routes, /getWhaleSummary\(\)/);
+  assert.match(routes, /getWhaleSummary\(\{ coin: req\.query\.coin \}\)/);
   assert.match(routes, /router\.get\('\/cache-query'/);
   assert.match(routes, /queryWhaleCache\(req\.query\)/);
   assert.match(routes, /router\.get\('\/alert-history\/summary'/);

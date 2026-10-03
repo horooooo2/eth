@@ -311,6 +311,27 @@ function persistAlerts(alerts = []) {
   return { saved: result.written, added: result.added, purged };
 }
 
+/** Full event window for resonance: pagination and display limits must not bias signals. */
+function loadResonanceInputs(sinceMs, untilMs, minUsd) {
+  const database = getDb();
+  const alerts = database.prepare(`SELECT payload_json FROM alerts
+    WHERE EXISTS (SELECT 1 FROM alert_items i WHERE i.alert_id = alerts.id
+      AND i.kind IN ('open', 'increase') AND ABS(i.usd) >= ?
+      AND COALESCE(NULLIF(i.time, 0), alerts.time) BETWEEN ? AND ?)
+    ORDER BY time DESC`).all(minUsd, sinceMs, untilMs)
+    .map(row => parseJson(row.payload_json, null)).filter(Boolean);
+  const activity = database.prepare(`SELECT payload_json FROM fills
+    WHERE time BETWEEN ? AND ? AND COALESCE(source, '') != 'onchain'
+    AND ABS(COALESCE(amount_usd, 0)) >= ?
+    ORDER BY time DESC`).all(sinceMs, untilMs, minUsd)
+    .map(row => parseJson(row.payload_json, null)).filter(Boolean);
+  return { alerts, activity };
+}
+
+function countStoredAlerts() {
+  return Number(getDb().prepare('SELECT COUNT(*) AS total FROM alerts').get()?.total) || 0;
+}
+
 function loadRecentAlerts(limit = 500) {
   const database = getDb();
   // 持仓中事件不按固定天数砍；查询侧取较宽窗口 + 当前仓过滤由 purge 保证
@@ -1052,6 +1073,8 @@ function loadRecentEvents(limit = 200) {
 }
 
 module.exports = {
+  loadResonanceInputs,
+  countStoredAlerts,
   persistModePayload,
   persistTradesIncremental,
   loadModePayload,

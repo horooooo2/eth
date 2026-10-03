@@ -2001,12 +2001,30 @@ function queryWhaleCache(query = {}) {
 }
 
 /** 从服务端最新已知快照计算总览；未采集占位和无效失败快照不当作零仓位。 */
-function getWhaleSummary() {
+function getWhaleResonance({ windowHours = 6, watchedCoins = [] } = {}) {
+  const { scanResonanceSignals, DEFAULT_RESONANCE_CONFIG } = require('./resonanceEngine');
+  const { loadResonanceInputs } = require('./sqliteStore');
+  const now = Date.now();
+  const config = { ...DEFAULT_RESONANCE_CONFIG, windowHours };
+  const since = now - Math.max(windowHours, config.accumulationWindowHours) * 3600000;
+  const cached = readActiveWhaleSnapshot();
+  const ids = new Set(getActiveWhales().map(item => String(item.id)));
+  const whales = (cached?.data?.whales || []).filter(item => ids.has(String(item.id)) && !isPendingPlaceholder(item));
+  const inputs = loadResonanceInputs(since, now, config.minNotionalUsd);
+  return { ...scanResonanceSignals({ ...inputs, whales, config, now, watchedCoins }), updatedAt: cached?.updatedAt || 0 };
+}
+
+function getWhaleSummary({ coin = 'all' } = {}) {
   const cached = readActiveWhaleSnapshot();
   const roster = getActiveWhales();
   const byId = new Map((cached?.data?.whales || []).map((item) => [String(item.id), item]));
+  const normalizedCoin = String(coin || 'all').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/^K(?=[A-Z])/, '');
   let longUsd = 0;
   let shortUsd = 0;
+  let longPnlUsd = 0;
+  let shortPnlUsd = 0;
+  let longMarginUsd = 0;
+  let shortMarginUsd = 0;
   let knownCount = 0;
   let longWhales = 0;
   let shortWhales = 0;
@@ -2014,21 +2032,48 @@ function getWhaleSummary() {
   for (const config of roster) {
     const whale = byId.get(String(config.id));
     if (!whale || isPendingPlaceholder(whale) || (whale.error && !Array.isArray(whale.positions))) continue;
+    const positions = (whale.positions || []).filter((pos) => {
+      if (Math.abs(Number(pos.positionValue) || 0) <= 0) return false;
+      if (normalizedCoin === 'ALL') return true;
+      const raw = String(pos.coin || pos.coinLabel || '').toUpperCase();
+      if (/^@\d+$/.test(raw) || raw.includes(':')) return false;
+      const name = String(pos.coinLabel || pos.coin || '').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/^K(?=[A-Z])/, '');
+      return name === normalizedCoin;
+    });
+    if (normalizedCoin !== 'ALL' && !positions.length) continue;
     knownCount += 1;
-    const positions = (whale.positions || []).filter((pos) => Math.abs(Number(pos.positionValue) || 0) > 0);
     positionCount += positions.length;
-    const long = positions.some((pos) => pos.side === 'long');
-    const short = positions.some((pos) => pos.side === 'short');
-    if (long) longWhales += 1;
-    if (short) shortWhales += 1;
-    longUsd += positions.filter((pos) => pos.side === 'long').reduce((sum, pos) => sum + Math.abs(Number(pos.positionValue) || 0), 0);
-    shortUsd += positions.filter((pos) => pos.side === 'short').reduce((sum, pos) => sum + Math.abs(Number(pos.positionValue) || 0), 0);
+    let whaleLongUsd = 0;
+    let whaleShortUsd = 0;
+    for (const pos of positions) {
+      const value = Math.abs(Number(pos.positionValue) || 0);
+      const pnl = Number(pos.unrealizedPnl) || 0;
+      const leverage = Number(pos.leverage) || 0;
+      const margin = Number(pos.marginUsed) > 0 ? Number(pos.marginUsed) : leverage > 0 ? value / leverage : value;
+      if (pos.side === 'long') {
+        longUsd += value;
+        whaleLongUsd += value;
+        longPnlUsd += pnl;
+        longMarginUsd += margin;
+      } else if (pos.side === 'short') {
+        shortUsd += value;
+        whaleShortUsd += value;
+        shortPnlUsd += pnl;
+        shortMarginUsd += margin;
+      }
+    }
+    if (whaleLongUsd > whaleShortUsd && whaleLongUsd > 0) longWhales += 1;
+    else if (whaleShortUsd > whaleLongUsd && whaleShortUsd > 0) shortWhales += 1;
   }
   return {
-    total: roster.length,
+    total: normalizedCoin === 'ALL' ? roster.length : knownCount,
     knownCount,
     longUsd,
     shortUsd,
+    longPnlUsd,
+    shortPnlUsd,
+    longPnlPct: longMarginUsd > 0 ? longPnlUsd / longMarginUsd * 100 : null,
+    shortPnlPct: shortMarginUsd > 0 ? shortPnlUsd / shortMarginUsd * 100 : null,
     longPct: longUsd + shortUsd ? Math.round((longUsd / (longUsd + shortUsd)) * 100) : 0,
     shortPct: longUsd + shortUsd ? 100 - Math.round((longUsd / (longUsd + shortUsd)) * 100) : 0,
     longAddrPct: longWhales + shortWhales ? Math.round((longWhales / (longWhales + shortWhales)) * 100) : 0,
@@ -2047,7 +2092,7 @@ function getWhaleSummary() {
         ? '资金与人数分歧显著，少数巨鲸重仓押注多头'
         : '资金与人数分歧显著，少数巨鲸重仓押注空头'
       : '',
-    scopeLabel: '全部',
+    scopeLabel: normalizedCoin === 'ALL' ? '全部' : normalizedCoin,
     netUsd: longUsd - shortUsd,
     longWhales,
     shortWhales,
@@ -2599,6 +2644,7 @@ async function getWhalesBatch(query = {}) {
 }
 
 module.exports = {
+  getWhaleResonance,
   getWhales,
   getWhalesBatch,
   getWhaleCacheBatch,
