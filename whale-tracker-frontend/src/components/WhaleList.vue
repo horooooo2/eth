@@ -41,6 +41,7 @@ import {
   toggleWhaleMonitor,
 } from '@/utils/monitoredWhales';
 import AiAnalyzeButton from '@/components/AiAnalyzeButton.vue';
+import { fetchWhalePosition } from '@/api';
 
 const props = defineProps<{
   whales: WhaleProfile[];
@@ -56,6 +57,7 @@ const emit = defineEmits<{
 }>();
 
 const whaleStore = useWhaleStore();
+const entryFillLoading = ref<Record<string, boolean>>({});
 
 /** 展示名单与 store 同步；定位时可暂冻结为 frozenWhales */
 const displayLoaded = ref(0);
@@ -599,10 +601,35 @@ function isEntryFillsExpanded(whaleId: string, pos: WhalePosition) {
   return Boolean(expandedEntryKeys.value[entryFillKey(whaleId, pos)]);
 }
 
-function toggleEntryFills(whaleId: string, pos: WhalePosition) {
+async function toggleEntryFills(whaleId: string, pos: WhalePosition) {
   if (entryFillCount(pos) <= 1) return;
   const key = entryFillKey(whaleId, pos);
-  expandedEntryKeys.value = { ...expandedEntryKeys.value, [key]: !expandedEntryKeys.value[key] };
+  const expanding = !expandedEntryKeys.value[key];
+  expandedEntryKeys.value = { ...expandedEntryKeys.value, [key]: expanding };
+  if (!expanding || (pos.entryFills?.length && pos.entryFillsOmitted === 0) || entryFillLoading.value[key]) return;
+
+  entryFillLoading.value = { ...entryFillLoading.value, [key]: true };
+  try {
+    const { position } = await fetchWhalePosition(whaleId, pos.coin, pos.side);
+    whaleStore.patchWhalePosition(whaleId, pos.coin, pos.side, {
+      entryFills: position.entryFills || [],
+      entryFillsOmitted: position.entryFillsOmitted || 0,
+      openTime: position.openTime ?? undefined,
+      firstOpenTime: position.firstOpenTime ?? undefined,
+      lastAddTime: position.lastAddTime ?? undefined,
+      openHistoryComplete: position.openHistoryComplete,
+    });
+  } catch (error) {
+    ElMessage.warning(error instanceof Error ? `成交明细加载失败：${error.message}` : '成交明细加载失败');
+  } finally {
+    const next = { ...entryFillLoading.value };
+    delete next[key];
+    entryFillLoading.value = next;
+  }
+}
+
+function isEntryFillLoading(whaleId: string, pos: WhalePosition) {
+  return Boolean(entryFillLoading.value[entryFillKey(whaleId, pos)]);
 }
 
 function selectCoinFilter(value: 'all' | string) {
@@ -972,6 +999,7 @@ defineExpose({ focusWhale });
               class="entry-fills"
               @click.stop
             >
+              <li v-if="isEntryFillLoading(whale.id, pos)" class="entry-fill-gap">成交明细加载中…</li>
               <template v-for="(row, rowIndex) in entryFillDisplayItems(pos)" :key="`${row.type}-${rowIndex}`">
                 <li v-if="row.type === 'gap'" class="entry-fill-gap">...</li>
                 <li v-else>

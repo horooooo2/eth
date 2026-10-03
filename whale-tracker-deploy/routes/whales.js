@@ -20,6 +20,38 @@ const { loadRecentEvents, loadRecentAlerts, loadPagedAlerts, persistAlerts } = r
 
 const router = express.Router();
 
+/** 列表只传持仓摘要；成交明细由已有的单仓位详情接口按需加载。 */
+function compactWhaleList(whales = []) {
+  return (whales || []).map((whale) => ({
+    ...whale,
+    positions: (whale.positions || []).map((position) => {
+      const { entryFills, ...summary } = position;
+      return {
+        ...summary,
+        // 保留笔数提示，展开明细时前端再从 /positions/:coin 获取完整数据。
+        entryFillsOmitted: Math.max(0, Number(position.entryFillsOmitted) || 0) + (entryFills || []).length,
+      };
+    }),
+  }));
+}
+
+function compactAlertList(alerts = []) {
+  return (alerts || []).map((alert) => {
+    const items = Array.isArray(alert.items) ? alert.items : [];
+    return {
+      ...alert,
+      // 第一项用于卡片和详情展示；其余只用于服务端筛选结果的前端过滤/计数。
+      items: items.map((item, index) => index === 0 ? item : ({
+        kind: item.kind,
+        coin: item.coin,
+        side: item.side,
+        usd: item.usd,
+        time: item.time,
+      })),
+    };
+  });
+}
+
 /** GET /api/whales/events — 近 7 天开/补/减仓事件（SQLite） */
 router.get('/events', (req, res) => {
   try {
@@ -38,11 +70,11 @@ router.get('/alert-history', (req, res) => {
     // 兼容旧调用：无 page 时按 limit 拉最近 N 条
     if (req.query.page == null && req.query.paged == null) {
       const limit = Number(req.query.limit) || 500;
-      const alerts = loadRecentAlerts(limit);
+      const alerts = compactAlertList(loadRecentAlerts(limit));
       return res.json({ alerts, total: alerts.length, retentionDays: 7 });
     }
     const data = loadPagedAlerts(req.query);
-    res.json(data);
+    res.json({ ...data, alerts: compactAlertList(data.alerts) });
   } catch (err) {
     console.error('[GET /api/whales/alert-history]', err);
     res.status(500).json({ error: err.message || '读取异动历史失败', alerts: [] });
@@ -75,6 +107,7 @@ router.get('/', async (req, res) => {
       const config = readConfig();
       return res.json({
         ...rest,
+        whales: compactWhaleList(rest.whales),
         mode: rest.mode || config.mode || 'hf',
         activity: rest.activity || buildActivityFeed(trades),
       });
@@ -83,7 +116,7 @@ router.get('/', async (req, res) => {
     const { trades, ...rest } = data;
     const activity = buildActivityFeed(trades);
     const config = readConfig();
-    res.json({ ...rest, mode: rest.mode || config.mode || 'hf', activity });
+    res.json({ ...rest, whales: compactWhaleList(rest.whales), mode: rest.mode || config.mode || 'hf', activity });
   } catch (err) {
     console.error('[GET /api/whales]', err);
     const status = err.status || 502;

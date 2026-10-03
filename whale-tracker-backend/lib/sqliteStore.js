@@ -24,6 +24,9 @@ const {
   alertDocFromEvent,
 } = require('./positionEventPolicy');
 
+const PAGED_ALERT_CACHE_TTL_MS = 10_000;
+const pagedAlertCache = new Map();
+
 function safeJson(value) {
   try {
     return JSON.stringify(value ?? null);
@@ -259,6 +262,7 @@ function upsertAlertRows(database, alerts) {
     }
     written += 1;
   }
+  if (written) pagedAlertCache.clear();
   return { written, added };
 }
 
@@ -313,6 +317,13 @@ function loadPagedAlerts(query = {}) {
   ];
   const side = String(query.side || 'all').trim().toLowerCase();
   const minUsd = Math.max(0, Number(query.minUsd) || 0);
+  const cacheKey = JSON.stringify({
+    page, limit, cutoffBucket: Math.floor(cutoff / PAGED_ALERT_CACHE_TTL_MS),
+    whaleId, kind, coins, side, minUsd,
+  });
+  const cached = pagedAlertCache.get(cacheKey);
+  if (cached && Date.now() - cached.createdAt < PAGED_ALERT_CACHE_TTL_MS) return cached.data;
+  if (cached) pagedAlertCache.delete(cacheKey);
 
   // 一条仓位 diff 可以同时包含多个币种/方向；过滤必须检查整个 items 数组，
   // 而不能只看 items[0]。参数顺序与返回 SQL 片段保持一致。
@@ -443,7 +454,7 @@ function loadPagedAlerts(query = {}) {
         .get(...facetParams, minUsd, ...coins)?.c,
     ) || 0;
 
-  return {
+  const result = {
     alerts,
     total,
     page,
@@ -457,6 +468,9 @@ function loadPagedAlerts(query = {}) {
       short: shortCount,
     },
   };
+  if (pagedAlertCache.size >= 100) pagedAlertCache.clear();
+  pagedAlertCache.set(cacheKey, { createdAt: Date.now(), data: result });
+  return result;
 }
 
 function loadFillsByWhale(whaleId, options = {}) {
