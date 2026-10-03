@@ -93,14 +93,11 @@ router.post('/alert-history', (req, res) => {
   }
 });
 
-/** GET /api/whales — 优先返回 30 秒缓存；带 offset/limit 时分段加载 */
+/** GET /api/whales — 默认分页返回；兼容全量读取需显式传 full=1 */
 router.get('/', async (req, res) => {
   try {
     const force = req.query.refresh === '1';
-    const useBatch =
-      req.query.batch === '1' ||
-      req.query.offset != null ||
-      req.query.limit != null;
+    const useBatch = req.query.full !== '1';
     if (useBatch) {
       const data = await getWhalesBatch(req.query);
       const { trades, ...rest } = data;

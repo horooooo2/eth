@@ -166,7 +166,6 @@ function migrate(database) {
       source_id TEXT PRIMARY KEY,
       alert_id TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_alert_sources_alert_id ON alert_sources(alert_id);
 
     CREATE TABLE IF NOT EXISTS sync_meta (
       key TEXT PRIMARY KEY,
@@ -322,6 +321,18 @@ function migrate(database) {
     );
     CREATE INDEX IF NOT EXISTS idx_tradfi_ai_analyses_user ON tradfi_ai_analyses(user_id, symbol, created_at DESC);
   `);
+  // Upgrade the brief development schema that stored only source_id.
+  let alertSourcesUpgraded = false;
+  try {
+    database.exec("ALTER TABLE alert_sources ADD COLUMN alert_id TEXT NOT NULL DEFAULT ''");
+    alertSourcesUpgraded = true;
+  } catch {
+    // Column already exists.
+  }
+  if (alertSourcesUpgraded) {
+    database.exec("UPDATE alert_sources SET alert_id = source_id WHERE alert_id = ''");
+  }
+  database.exec('CREATE INDEX IF NOT EXISTS idx_alert_sources_alert_id ON alert_sources(alert_id)');
   // Backfill legacy alert items only once. Re-scanning the full alert history
   // on every restart would negate the query optimization on a small server.
   const marker = database.prepare('SELECT 1 FROM sync_meta WHERE key = ?').get('alert_items_backfill_v2');

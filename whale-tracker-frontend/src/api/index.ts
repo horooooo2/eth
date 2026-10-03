@@ -350,7 +350,8 @@ export function scheduleSilentRetry(key: string, run: () => void, delayMs = 4000
 
 export async function fetchWhales(refresh = false) {
   const { data } = await http.get<WhaleResponse>('/whales', {
-    params: refresh ? { refresh: 1 } : undefined,
+    // Explicit compatibility escape hatch; normal UI loading uses paged fetchWhalesBatch.
+    params: { full: 1, ...(refresh ? { refresh: 1 } : {}) },
     timeout: refresh ? 120000 : 20000,
   });
   return data;

@@ -83,26 +83,36 @@ function isProgressiveLoading() {
   return activeAt > 0 && Date.now() - activeAt < PROGRESSIVE_ACTIVE_MS;
 }
 
-function formatCachedBatchPayload(cached, mode) {
-  const pending = countPendingWhales(cached.data.whales);
-  const incomplete = pending > 0;
-  const { trades, ...rest } = cached.data;
+function formatCachedBatchPayload(cached, mode, options = {}) {
+  const allWhales = Array.isArray(cached?.data?.whales) ? cached.data.whales : [];
+  const offset = Math.max(0, Number(options.offset) || 0);
+  const limit = Math.max(1, Math.min(WHALE_BATCH_MAX, Number(options.limit) || WHALE_BATCH_DEFAULT));
+  const total = allWhales.length;
+  const whales = allWhales.slice(offset, offset + limit);
+  const nextOffset = Math.min(total, offset + whales.length);
+  const loaded = Math.max(0, nextOffset - countPendingWhales(allWhales.slice(0, nextOffset)));
+  const pending = countPendingWhales(allWhales);
+  const pageWhaleIds = new Set(whales.map((whale) => String(whale.id || '')));
+  const trades = (cached.data.trades || []).filter((trade) =>
+    (trade.whaleId && pageWhaleIds.has(String(trade.whaleId))) ||
+    (offset === 0 && !trade.whaleId && trade.source === 'onchain'),
+  );
+  const { trades: _allTrades, whales: _allWhales, ...rest } = cached.data;
   return {
     ...rest,
+    whales,
     trades,
     activity: buildActivityFeed(trades),
-    progressive: incomplete,
-    loaded: Math.max(0, cached.data.whales.length - pending),
-    total: cached.data.whales.length,
-    offset: 0,
-    nextOffset: incomplete
-      ? findFirstPendingOffset(getActiveWhales(), cached.data.whales)
-      : cached.data.whales.length,
-    limit: cached.data.whales.length,
-    done: !incomplete,
-    incomplete,
+    progressive: true,
+    loaded,
+    total,
+    offset,
+    nextOffset,
+    limit,
+    done: nextOffset >= total && pending === 0,
+    incomplete: pending > 0,
     pending,
-    stale: Boolean(cached.stale || incomplete),
+    stale: Boolean(cached.stale || pending > 0),
     updatedAt: cached.updatedAt,
     mode: rest.mode || mode,
   };
@@ -2015,12 +2025,17 @@ function formatBatchPayload({
   updatedAt,
   stale,
 }) {
+  const pageSnapshots = snapshots.slice(offset, offset + limit).filter(Boolean);
+  const pageWhaleIds = new Set(pageSnapshots.map((whale) => String(whale.id || '')));
   const whales = sortWhales(
-    snapshots.map(({ trades: _t, ...rest }) => rest),
+    pageSnapshots.map(({ trades: _t, ...rest }) => rest),
     mode,
   );
-  const trades = buildTradesFromSnapshots(snapshots, onchain, roster);
-  const warnings = snapshots
+  const trades = buildTradesFromSnapshots(pageSnapshots, onchain, roster).filter((trade) =>
+    (trade.whaleId && pageWhaleIds.has(String(trade.whaleId))) ||
+    (offset === 0 && !trade.whaleId && trade.source === 'onchain'),
+  );
+  const warnings = pageSnapshots
     .filter((item) => item.error)
     .map((item) => `${item.name}：${item.error}`);
   if (onchain?.warning) warnings.push(onchain.warning);
@@ -2093,8 +2108,8 @@ async function refreshSingleWhale(id) {
 }
 
 /**
- * 分段拉取巨鲸：默认每次 1 个。
- * 有完整磁盘缓存时直接返回全量；若仍含「等待刷新」占位，则种下会话并让前端从首个占位继续补齐。
+ * 分段拉取巨鲸：默认每次 12 个。热缓存也严格遵守 offset/limit。
+ * 若缓存含「等待刷新」占位，则继续处理当前页后再返回。
  */
 async function getWhalesBatch(query = {}) {
   const mode = 'hf';
@@ -2123,12 +2138,11 @@ async function getWhalesBatch(query = {}) {
             console.warn('[whales] 过期缓存后台分片刷新失败:', err.message);
           });
         }
-        return formatCachedBatchPayload(cached, mode);
+        return formatCachedBatchPayload(cached, mode, { offset, limit });
       }
-      // 不完整：种会话，返回 done=false，让前端从首个占位继续拉
+      // 不完整缓存：种下会话后继续处理当前页，不能把整份缓存返回给前端。
       seedProgressiveFromCache(mode, roster, cached);
       console.log(`[whales] 缓存含 ${pending} 个等待刷新，继续分段补齐`);
-      return formatCachedBatchPayload(cached, mode);
     }
   }
 
@@ -2136,7 +2150,6 @@ async function getWhalesBatch(query = {}) {
   const rosterKey = rosterIds.join('|');
   let needReset =
     !progressiveSession ||
-    offset === 0 ||
     progressiveSession.mode !== mode ||
     progressiveSession.rosterKey !== rosterKey;
 
@@ -2147,7 +2160,7 @@ async function getWhalesBatch(query = {}) {
       const pending = countPendingWhales(cached.data.whales);
       if (pending === 0) {
         console.warn(`[whales] 分段会话失效 offset=${offset}，改回完整缓存 ${cached.data.whales.length} 条`);
-        return formatCachedBatchPayload(cached, mode);
+        return formatCachedBatchPayload(cached, mode, { offset, limit });
       }
       console.warn(`[whales] 分段会话失效 offset=${offset}，从不完整缓存恢复并继续补齐`);
       seedProgressiveFromCache(mode, roster, cached);
@@ -2281,7 +2294,7 @@ async function getWhalesBatch(query = {}) {
     const cached = readWhaleModeCache(mode);
     if (cached?.data?.whales?.length && countPendingWhales(cached.data.whales) === 0) {
       console.warn('[whales] 分段批次中断，回退完整缓存');
-      return formatCachedBatchPayload(cached, mode);
+        return formatCachedBatchPayload(cached, mode, { offset, limit });
     }
     const err = new Error('分段加载会话已中断，请重试');
     err.code = 'WHALE_BATCH_RESET';
@@ -2353,27 +2366,26 @@ async function getWhalesBatch(query = {}) {
     const saved = writeWhaleModeCache(mode, payload);
     if (progressiveSession === session) progressiveSession = null;
     persistOpenTimingEnrichment(mode).catch(() => null);
-    return {
-      ...payload,
-      activity: buildActivityFeed(payload.trades),
-      progressive: true,
+    return formatBatchPayload({
+      mode,
+      roster,
+      snapshots: session.snapshots,
+      onchain: session.onchain,
       loaded,
       total,
       offset,
       nextOffset: total,
       limit,
       done: true,
-      incomplete: false,
-      pending: 0,
-      stale: false,
       updatedAt: saved.updatedAt,
-    };
+      stale: false,
+    });
   }
 
   return formatBatchPayload({
     mode,
     roster,
-    snapshots: loadedSnapshots,
+      snapshots: session.snapshots.slice(0, nextOffset),
     onchain: session.onchain,
     loaded,
     total,
@@ -2389,6 +2401,7 @@ async function getWhalesBatch(query = {}) {
 module.exports = {
   getWhales,
   getWhalesBatch,
+  formatCachedBatchPayload,
   refreshSingleWhale,
   refreshAlertHistory,
   closedPositionFromFills,

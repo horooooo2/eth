@@ -454,6 +454,7 @@ onUnmounted(() => {
             :funding-rates="fundingRates"
             :filter-whale-id="whaleStore.selectedWhaleId"
             :boot-ready="secondaryReady"
+            :realtime-connected="realtimeStatus === 'connected'"
             @locate-whale="onFocusWhaleCard"
             @focus-whale="onFocusWhale"
             @clear-whale-filter="whaleStore.clearWhaleFilter"

@@ -1,7 +1,6 @@
 import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 import {
-  fetchWhales,
   fetchWhalesBatch,
   refreshWhaleById,
   fetchPersistedAlertHistory,
@@ -638,14 +637,47 @@ export const useWhaleStore = defineStore('whale', () => {
   /** 分段卡住时：若磁盘已有完整缓存（无「等待刷新」占位），直接收尾 */
   async function tryTakeFullCache(seq: number, minTotal = 0) {
     try {
-      const cached = await fetchWhales(false);
-      if (seq !== loadSeq) return false;
-      const count = cached.whales?.length || 0;
-      if (!count) return false;
-      if (minTotal > 0 && count < minTotal) return false;
+      const profiles = new Map<string, WhaleProfile>();
+      const activityRows = new Map<string, WhaleTrade>();
+      const warnings = new Set<string>();
+      let offset = 0;
+      let total = 0;
+      let updatedAt = 0;
+      let complete = false;
+      for (let pageIndex = 0; pageIndex < 1000; pageIndex += 1) {
+        const page = await fetchWhalesBatch({ offset, limit: WHALE_BATCH_SIZE });
+        if (seq !== loadSeq) return false;
+        total = Number(page.total) || total;
+        updatedAt = Math.max(updatedAt, Number(page.updatedAt) || 0);
+        for (const profile of page.whales || []) {
+          if (profile?.id) profiles.set(profile.id, profile);
+        }
+        for (const trade of page.activity || []) {
+          const id = tradeDedupKey(trade);
+          if (id) activityRows.set(id, trade);
+        }
+        for (const warning of page.warnings || []) warnings.add(warning);
+        if (page.done) {
+          complete = true;
+          break;
+        }
+        const nextOffset = Number(page.nextOffset) || 0;
+        if (nextOffset <= offset || nextOffset >= total) return false;
+        offset = nextOffset;
+      }
+      if (!complete || !total || profiles.size < total || (minTotal > 0 && total < minTotal)) return false;
+      const cached = {
+        whales: [...profiles.values()],
+        activity: [...activityRows.values()],
+        warnings: [...warnings],
+        total,
+        loaded: profiles.size,
+        done: true,
+        updatedAt,
+      };
       if (isIncompletePayload(cached)) return false;
       applyWhalePayload(cached);
-      setProgress({ loaded: count, total: count });
+      setProgress({ loaded: profiles.size, total });
       error.value = '';
       return true;
     } catch {
@@ -718,8 +750,6 @@ export const useWhaleStore = defineStore('whale', () => {
         if (nextOffset <= offset || nextOffset >= total) break;
         offset = nextOffset;
 
-        // 分批间隙：若后台分片已写出完整缓存，不必继续硬拉 HL
-        if (await tryTakeFullCache(seq, total)) return;
       }
 
       if (seq === loadSeq) error.value = '';
@@ -757,15 +787,7 @@ export const useWhaleStore = defineStore('whale', () => {
     try {
       // 静默轮询：读缓存；若仍有占位则继续分段补齐
       if (silent && whales.value.length && !refresh) {
-        const data = await fetchWhales(false);
-        if (seq !== loadSeq) return;
-        applyWhalePayload(data);
-        error.value = '';
-        if (isIncompletePayload(data) || hasPendingPlaceholders(whales.value)) {
-          await loadProgressive(false, true, seq, { merge: true });
-        } else {
-          setProgress(null);
-        }
+        await loadProgressive(false, true, seq, { merge: true });
         return;
       }
 
@@ -775,32 +797,9 @@ export const useWhaleStore = defineStore('whale', () => {
         return;
       }
 
-      // 优先取缓存（含过期缓存），先渲染；若含「等待刷新」占位则继续补齐
-      let hasCache = false;
-      let incompleteCache = false;
-      try {
-        const cached = await fetchWhales(false);
-        if (seq !== loadSeq) return;
-        if (cached.whales?.length) {
-          applyWhalePayload(cached);
-          hasCache = true;
-          incompleteCache = isIncompletePayload(cached);
-          error.value = '';
-          loading.value = false;
-          if (incompleteCache) {
-            const total = cached.whales.length;
-            const pending = Number(cached.pending) || cached.whales.filter(isPendingPlaceholder).length;
-            setProgress({ loaded: Math.max(0, total - pending), total });
-          }
-        }
-      } catch {
-        // 无缓存或缓存失败时走分段冷启动
-      }
-
-      if (hasCache && !incompleteCache) {
-        return;
-      }
-      await loadProgressive(false, silent, seq, { merge: hasCache });
+      // 即使服务端已有完整缓存也走 limit/offset 分页，避免热缓存路径
+      // 把全量巨鲸和整段成交活动作为一个巨大响应返回。
+      await loadProgressive(false, silent, seq, { merge: whales.value.length > 0 });
     } catch (err) {
       if (seq !== loadSeq) return;
       setProgress(null);

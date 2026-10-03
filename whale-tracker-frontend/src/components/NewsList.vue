@@ -45,6 +45,8 @@ const props = defineProps<{
   filterWhaleId?: string;
   /** 巨鲸首屏就绪后再拉异动 */
   bootReady?: boolean;
+  /** WebSocket 正常时不再用固定轮询重复请求异动分页 */
+  realtimeConnected?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -74,6 +76,7 @@ const facets = ref<{ all: number; byCoin: Record<string, number>; long: number; 
   short: 0,
 });
 let alertReqSeq = 0;
+let suppressAutoAlertReload = false;
 
 /** 驱动「N分钟前」相对时间每分钟重算（computed 不会因 Date.now 自动刷新） */
 const nowTick = ref(Date.now());
@@ -104,23 +107,40 @@ onUnmounted(() => {
   if (alertPollTimer) clearInterval(alertPollTimer);
 });
 
-/** Socket 丢包时兜底：可见时每 15s 静默拉一次异动 */
+/** WebSocket 断开时才做兜底轮询；连接正常后由实时推送驱动列表。 */
 let alertPollTimer: ReturnType<typeof setInterval> | undefined;
-function startAlertPoll() {
+function syncAlertPoll() {
+  if (props.realtimeConnected || !props.bootReady) {
+    if (alertPollTimer) clearInterval(alertPollTimer);
+    alertPollTimer = undefined;
+    return;
+  }
   if (alertPollTimer) return;
   alertPollTimer = setInterval(() => {
     if (!props.bootReady) return;
+    if (props.realtimeConnected) return;
     if (typeof document !== 'undefined' && document.hidden) return;
     void loadAlertPage(true);
-  }, 15_000);
+  }, 30_000);
 }
 
 watch(
   () => props.bootReady,
   (ready) => {
-    if (!ready) return;
-    void loadAlertPage();
-    startAlertPoll();
+    if (ready) void loadAlertPage();
+    syncAlertPoll();
+  },
+);
+
+watch(
+  () => props.realtimeConnected,
+  (connected, wasConnected) => {
+    syncAlertPoll();
+    // Reconcile once after a reconnect to cover any notifications missed
+    // while the socket was down.
+    if (connected && !wasConnected && props.bootReady && !suppressAutoAlertReload) {
+      void loadAlertPage(true);
+    }
   },
 );
 
@@ -340,10 +360,11 @@ const alertRefreshing = ref(false);
 
 /** 重置筛选，并重拉仓位做 diff（不再补成交反推） */
 async function onRefreshAlerts() {
-  resetAlertFilters();
   if (alertRefreshing.value) return;
   alertRefreshing.value = true;
+  suppressAutoAlertReload = true;
   try {
+    resetAlertFilters();
     await whaleStore.refreshAlertHistory();
     alertPage.value = 1;
     await loadAlertPage();
@@ -351,6 +372,7 @@ async function onRefreshAlerts() {
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '异动刷新失败');
   } finally {
+    suppressAutoAlertReload = false;
     alertRefreshing.value = false;
   }
 }
@@ -396,7 +418,7 @@ watch(
     preferredCoins,
   ],
   () => {
-    if (!props.bootReady) return;
+    if (!props.bootReady || suppressAutoAlertReload) return;
     if (alertPage.value !== 1) {
       alertPage.value = 1;
       return;
@@ -406,7 +428,7 @@ watch(
 );
 
 watch(alertPage, () => {
-  if (!props.bootReady) return;
+  if (!props.bootReady || suppressAutoAlertReload) return;
   void loadAlertPage();
 });
 
@@ -426,6 +448,7 @@ watch(preferredCoinsState, (coins) => {
 /** 实时新异动：静默重拉分页（防抖，避免连发刷爆） */
 let realtimeReloadTimer: ReturnType<typeof setTimeout> | undefined;
 function scheduleRealtimeReload() {
+  if (suppressAutoAlertReload) return;
   if (realtimeReloadTimer) clearTimeout(realtimeReloadTimer);
   realtimeReloadTimer = setTimeout(() => {
     realtimeReloadTimer = undefined;

@@ -352,7 +352,11 @@ function loadPagedAlerts(query = {}) {
   const side = String(query.side || 'all').trim().toLowerCase();
   const minUsd = Math.max(0, Number(query.minUsd) || 0);
   const cacheKey = JSON.stringify({
-    page, limit, cutoff,
+    page, limit,
+    // The default rolling 180d cutoff changes every millisecond and otherwise
+    // makes the short cache unreachable. Writes/purges invalidate it, and the
+    // 10s TTL bounds staleness at the retention boundary. Explicit sinceMs is exact.
+    cutoff: Number(query.sinceMs) > 0 ? cutoff : 'rolling-180d',
     whaleId, kind, coins, side, minUsd,
   });
   const cached = pagedAlertCache.get(cacheKey);

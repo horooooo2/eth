@@ -134,6 +134,14 @@ test('indexed alert filters preserve multi-coin and long/short facet counts', ()
   assert.equal(ethShort.facets.short, 1);
 });
 
+test('default rolling retention query reuses the short pagination cache', () => {
+  const query = { whaleId: 'pagination-cache-fixture', limit: 10 };
+  const first = loadPagedAlerts(query);
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+  const second = loadPagedAlerts(query);
+  assert.strictEqual(second, first, 'same default query should reuse cached page inside TTL');
+});
+
 test('retrying a source alert after merge does not double-count its notional', () => {
   const at = Date.now() + 120_000;
   const make = (id, time) => ({
