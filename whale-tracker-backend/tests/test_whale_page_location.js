@@ -13,6 +13,27 @@ config.getActiveWhales = () => [...whales, noPosition];
 cache.readWhaleModeCache = () => ({ data: { mode: 'hf', whales: [...whales, noPosition] }, updatedAt: 123 });
 const { queryWhaleCache } = require('../lib/whales');
 
+test('all mode returns the complete snapshot without pagination or upstream collection', () => {
+  const result = queryWhaleCache({ all: '1', offset: 20, limit: 20 });
+  assert.equal(result.offset, 0);
+  assert.equal(result.page, 1);
+  assert.equal(result.done, true);
+  assert.equal(result.total, 45);
+  assert.deepEqual(result.whales.map(w => w.id), whales.map(w => w.id));
+  const located = queryWhaleCache({ all: '1', locateId: 'w44', sort: 'positionValue' });
+  assert.equal(located.located, true);
+  assert.equal(located.page, 1);
+  assert.equal(located.whales.length, 45);
+  assert.equal(located.whales[0].id, 'w44');
+  const followed = queryWhaleCache({ all: '1', direction: 'followed', followedIds: 'w0,w44' });
+  assert.deepEqual(followed.whales.map(w => w.id), ['w0', 'w44']);
+  assert.equal(followed.total, 2);
+  const empty = queryWhaleCache({ all: '1', coin: 'ETH' });
+  assert.deepEqual(empty.whales, []);
+  assert.equal(empty.page, 1);
+  assert.equal(empty.done, true);
+});
+
 test('location loads the natural page at every boundary without changing rank', () => {
   for (const index of [0, 19, 20, 39, 40, 44]) {
     const result = queryWhaleCache({ limit: 20, sort: 'all', locateId: 'w' + index });

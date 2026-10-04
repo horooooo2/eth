@@ -388,6 +388,7 @@ export type WhaleCacheQuery = {
 };
 
 export async function fetchWhaleCacheQuery(query: {
+  all?: boolean;
   page: number;
   limit: number;
   coin: string;
@@ -399,6 +400,7 @@ export async function fetchWhaleCacheQuery(query: {
 }) {
   const { data } = await http.get<WhaleCacheQuery>('/whales/cache-query', {
     params: {
+      all: query.all ? '1' : undefined,
       offset: (query.page - 1) * query.limit,
       limit: query.limit,
       coin: query.coin,

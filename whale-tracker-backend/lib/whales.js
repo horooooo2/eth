@@ -1934,7 +1934,10 @@ function getWhaleCacheBatch(query = {}) {
 /** Server-side filter/sort/page over the current cached snapshot; never starts collection. */
 function queryWhaleCache(query = {}) {
   const cached = readActiveWhaleSnapshot();
-  const { offset: requestedOffset, limit } = parseBatchQuery(query);
+  const all = query.all === '1';
+  const batch = parseBatchQuery(query);
+  const requestedOffset = all ? 0 : batch.offset;
+  let limit = batch.limit;
   let offset = requestedOffset;
   const mode = cached?.data?.mode || normalizeMode(readConfig().mode || 'hf');
   const configured = new Map(getActiveWhales().map((item) => [String(item.id), item]));
@@ -1988,6 +1991,7 @@ function queryWhaleCache(query = {}) {
   // Resolve and slice the natural page from the same snapshot; never reorder for navigation.
   const locateId = String(query.locateId || '');
   const locateIndex = locateId ? rows.findIndex(whale => String(whale.id) === locateId) : -1;
+  if (all) limit = Math.max(1, rows.length);
   if (locateIndex >= 0) offset = Math.floor(locateIndex / limit) * limit;
   const total = rows.length;
   const pageRows = locateId && locateIndex < 0 ? [] : rows.slice(offset, offset + limit);

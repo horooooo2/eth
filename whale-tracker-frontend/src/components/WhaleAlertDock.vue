@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
-import { ElMessage } from 'element-plus';
 import { Close } from '@element-plus/icons-vue';
 import { useWhaleStore } from '@/stores/whale';
 import { alertKindLabel, inferSide, isTrackedAlertKind, type WhaleAlert } from '@/utils/whaleAlerts';
@@ -107,20 +106,11 @@ function alertCoin(alert: WhaleAlert) {
 }
 
 function jumpToWhale(alert: WhaleAlert, closeDialog = false) {
-  const found =
-    whaleStore.whales.find((item) => item.id === alert.whaleId) ||
-    whaleStore.displayWhales.find((item) => item.id === alert.whaleId) ||
-    null;
-  if (!found) {
-    ElMessage.info(`未在监控列表中找到 ${alertWhaleTitle(alert)}`);
-    return;
-  }
-  whaleStore.ensureWhaleInDisplay(found.id);
   if (closeDialog) dialogVisible.value = false;
   const coin = alertCoin(alert);
   emit('focusWhale', {
-    id: found.id,
-    name: found.name,
+    id: alert.whaleId,
+    name: alert.whaleName,
     coin: coin || undefined,
   });
 }

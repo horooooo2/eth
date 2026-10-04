@@ -68,9 +68,7 @@ const entryFillLoading = ref<Record<string, boolean>>({});
 
 const directionFilter = ref<'all' | WhaleDirection | 'followed'>('all');
 const sortMode = ref<'all' | 'positionValue' | 'positionPnl' | 'latest'>('all');
-const page = ref(1);
 const serverPageWhales = ref<WhaleProfile[]>([]);
-const serverTotal = ref(0);
 const serverDirectionCounts = ref<Record<string, number>>({});
 const serverCoinCounts = ref<Record<string, number>>({});
 const queryLoading = ref(false);
@@ -184,10 +182,6 @@ const SORT_MODES = [
 
 const isFollowTab = computed(() => directionFilter.value === 'followed');
 
-watch([directionFilter, sortMode, coinFilter], () => {
-  if (!locating) page.value = 1;
-});
-
 let initialLoad: Promise<boolean> | null = null;
 let started = false;
 async function loadServerPage(locateId?: string): Promise<boolean> {
@@ -195,7 +189,8 @@ async function loadServerPage(locateId?: string): Promise<boolean> {
     queryLoading.value = true;
     try {
       const result = await fetchWhaleCacheQuery({
-        page: page.value,
+        all: true,
+        page: 1,
         limit: WHALE_PAGE_SIZE,
         coin: coinFilter.value,
         direction: directionFilter.value,
@@ -212,17 +207,12 @@ async function loadServerPage(locateId?: string): Promise<boolean> {
       queryError.value = '';
       serverPageWhales.value = result.whales || [];
       whaleStore.acceptCachePage(serverPageWhales.value);
-      serverTotal.value = Number(result.total) || 0;
       serverDirectionCounts.value = result.directionCounts || {};
       serverCoinCounts.value = result.coinCounts || {};
-      if (locateId) page.value = result.page;
-      const maxPage = Math.max(1, Math.ceil(serverTotal.value / WHALE_PAGE_SIZE));
-      if (page.value > maxPage) page.value = maxPage;
       return true;
     } catch {
       if (seq === querySeq) {
         serverPageWhales.value = [];
-        serverTotal.value = 0;
         queryError.value = '巨鲸列表读取失败，请稍后重试';
       }
       return false;
@@ -235,15 +225,9 @@ function initialize() {
   return initialLoad;
 }
 watch(
-  [directionFilter, sortMode, coinFilter, page, () => monitoredWhaleIds.value.join(','), () => preferredCoins.value.join(',')],
+  [directionFilter, sortMode, coinFilter, () => monitoredWhaleIds.value.join(','), () => preferredCoins.value.join(',')],
   () => { if (started && !locating) void loadServerPage(); },
 );
-
-const pageCount = computed(() => Math.max(1, Math.ceil(serverTotal.value / WHALE_PAGE_SIZE)));
-
-watch(pageCount, (count) => {
-  if (page.value > count) page.value = count;
-});
 
 function displayDirection(whale: WhaleProfile) {
   return scopedWhaleDirection(whale, coinFilter.value);
@@ -269,7 +253,7 @@ const displayedWhales = computed(() => {
 
 /** 开仓成交笔数；>1 标为多笔 */
 function displayRank(index: number) {
-  return (page.value - 1) * WHALE_PAGE_SIZE + index + 1;
+  return index + 1;
 }
 
 function positionHoldLine(pos: WhalePosition) {
@@ -490,11 +474,6 @@ function selectSortMode(value: typeof sortMode.value) {
   sortMode.value = value;
 }
 
-function selectPage(value: number) {
-  clearLocatedWhale();
-  page.value = value;
-}
-
 onUnmounted(() => {
   if (highlightTimer) clearTimeout(highlightTimer);
 });
@@ -537,7 +516,7 @@ async function focusWhale(payload: { id: string; coin?: string }) {
   clearLocatedWhale();
   const seq = ++focusSeq;
   locating = true;
-  // The server resolves the natural page and returns its rows in one snapshot.
+  // Load all matching rows from one server snapshot before locating the card.
   dialogOpen.value = false;
   directionFilter.value = 'all';
   // 异动定位不带币种：顶部币种筛选保持「全部」
@@ -549,8 +528,7 @@ async function focusWhale(payload: { id: string; coin?: string }) {
   await nextTick();
   if (seq !== focusSeq) return;
   if (!loaded && !queryError.value) {
-    // The whale may have closed its positions; restore a valid ordinary page.
-    page.value = 1;
+    // The whale may have closed its positions; restore the ordinary list.
     await nextTick();
     if (seq !== focusSeq) return;
     await loadServerPage();
@@ -868,34 +846,6 @@ defineExpose({ focusWhale, initialize });
       </div>
     </div>
 
-    <div v-if="!(loading && !whales.length) && serverTotal > WHALE_PAGE_SIZE" class="pager">
-      <button
-        type="button"
-        class="pager-btn"
-        :disabled="page <= 1"
-        @click="selectPage(1)"
-      >
-        首页
-      </button>
-      <button
-        type="button"
-        class="pager-btn"
-        :disabled="page <= 1"
-        @click="selectPage(page - 1)"
-      >
-        上一页
-      </button>
-      <span class="pager-info">第 {{ page }}/{{ pageCount }} 页 · 共 {{ serverTotal }} 条</span>
-      <button
-        type="button"
-        class="pager-btn"
-        :disabled="page >= pageCount"
-        @click="selectPage(page + 1)"
-      >
-        下一页
-      </button>
-    </div>
-
     <PositionDetailDialog
       ref="positionDialog"
       :whales="whales"
@@ -1169,6 +1119,8 @@ defineExpose({ focusWhale, initialize });
   padding-right: 4px;
 }
 .whale-item {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 180px;
   position: relative;
   padding: 12px;
   border: 1px solid var(--border);
@@ -1227,39 +1179,6 @@ defineExpose({ focusWhale, initialize });
   font-size: 12px;
   color: var(--muted);
   font-weight: 500;
-}
-.pager {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding-top: 10px;
-}
-.pager-btn {
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 700;
-  padding: 4px 12px;
-  cursor: pointer;
-}
-.pager-btn:hover:not(:disabled) {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-}
-.pager-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-.pager-info {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
 }
 .stale-open {
   color: #e6a23c;
