@@ -376,6 +376,7 @@ export async function fetchWhalesBatch(query: {
 }
 
 export type WhaleCacheQuery = {
+  located?: boolean;
   whales: WhaleProfile[];
   total: number;
   page: number;
@@ -394,7 +395,7 @@ export async function fetchWhaleCacheQuery(query: {
   sort: string;
   followedIds: string[];
   coins: string[];
-  pinId?: string;
+  locateId?: string;
 }) {
   const { data } = await http.get<WhaleCacheQuery>('/whales/cache-query', {
     params: {
@@ -405,7 +406,7 @@ export async function fetchWhaleCacheQuery(query: {
       sort: query.sort,
       followedIds: query.followedIds.join(','),
       coins: query.coins.join(','),
-      pinId: query.pinId || '',
+      locateId: query.locateId || undefined,
     },
     timeout: 20000,
   });

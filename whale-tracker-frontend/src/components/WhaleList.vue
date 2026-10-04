@@ -87,7 +87,8 @@ const preferredCoins = preferredCoinsState;
 const expandedEntryKeys = ref<Record<string, boolean>>({});
 const HIGHLIGHT_MS = 2600;
 const highlightedId = ref<string | null>(null);
-const locatePinId = ref<string | null>(null);
+let locating = false;
+let focusSeq = 0;
 let highlightTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
@@ -110,23 +111,8 @@ watch(
 const sourceWhales = computed(() => frozenWhales.value);
 
 const coinScopedWhales = computed(() => {
-  let pool = sourceWhales.value;
-  // 若有定位 pin，确保其仍在 pool 中
-  const pinned = locatePinId.value
-    ? sourceWhales.value.find((item) => item.id === locatePinId.value) || null
-    : null;
-
-  if (coinFilter.value === 'all') {
-    if (pinned && !pool.some((item) => item.id === pinned.id)) {
-      return [pinned, ...pool];
-    }
-    return pool;
-  }
-  let list = pool.filter((whale) => whaleHasPositionCoin(whale, coinFilter.value));
-  if (pinned && !list.some((item) => item.id === pinned.id)) {
-    list = [pinned, ...list];
-  }
-  return list;
+  const pool = sourceWhales.value;
+  return coinFilter.value === 'all' ? pool : pool.filter(whale => whaleHasPositionCoin(whale, coinFilter.value));
 });
 
 const marketSummary = computed(() =>
@@ -199,12 +185,12 @@ const SORT_MODES = [
 const isFollowTab = computed(() => directionFilter.value === 'followed');
 
 watch([directionFilter, sortMode, coinFilter], () => {
-  page.value = 1;
+  if (!locating) page.value = 1;
 });
 
-let initialLoad: Promise<void> | null = null;
+let initialLoad: Promise<boolean> | null = null;
 let started = false;
-async function loadServerPage() {
+async function loadServerPage(locateId?: string): Promise<boolean> {
     const seq = ++querySeq;
     queryLoading.value = true;
     try {
@@ -216,23 +202,30 @@ async function loadServerPage() {
         sort: sortMode.value,
         followedIds: monitoredWhaleIds.value,
         coins: preferredCoins.value,
-        pinId: locatePinId.value || undefined,
+        locateId,
       });
-      if (seq !== querySeq) return;
+      if (seq !== querySeq) return false;
+      if (locateId && !result.located) {
+        ElMessage.warning('该巨鲸当前没有可展示的持仓，无法定位');
+        return false;
+      }
       queryError.value = '';
       serverPageWhales.value = result.whales || [];
       whaleStore.acceptCachePage(serverPageWhales.value);
       serverTotal.value = Number(result.total) || 0;
       serverDirectionCounts.value = result.directionCounts || {};
       serverCoinCounts.value = result.coinCounts || {};
+      if (locateId) page.value = result.page;
       const maxPage = Math.max(1, Math.ceil(serverTotal.value / WHALE_PAGE_SIZE));
       if (page.value > maxPage) page.value = maxPage;
+      return true;
     } catch {
       if (seq === querySeq) {
         serverPageWhales.value = [];
         serverTotal.value = 0;
         queryError.value = '巨鲸列表读取失败，请稍后重试';
       }
+      return false;
     } finally {
       if (seq === querySeq) queryLoading.value = false;
     }
@@ -242,8 +235,8 @@ function initialize() {
   return initialLoad;
 }
 watch(
-  [directionFilter, sortMode, coinFilter, page, locatePinId, () => monitoredWhaleIds.value.join(','), () => preferredCoins.value.join(',')],
-  () => { if (started) void loadServerPage(); },
+  [directionFilter, sortMode, coinFilter, page, () => monitoredWhaleIds.value.join(','), () => preferredCoins.value.join(',')],
+  () => { if (started && !locating) void loadServerPage(); },
 );
 
 const pageCount = computed(() => Math.max(1, Math.ceil(serverTotal.value / WHALE_PAGE_SIZE)));
@@ -420,7 +413,7 @@ function flashWhaleCard(id: string) {
   highlightedId.value = id;
   highlightTimer = setTimeout(() => {
     if (highlightedId.value === id) highlightedId.value = null;
-    if (locatePinId.value === id) locatePinId.value = null;
+    // Highlight expiry must not change the server page query or remove the located whale.
     highlightTimer = null;
   }, HIGHLIGHT_MS);
 }
@@ -472,9 +465,34 @@ function isEntryFillLoading(whaleId: string, pos: WhalePosition) {
   return Boolean(entryFillLoading.value[entryFillKey(whaleId, pos)]);
 }
 
+function clearLocatedWhale() {
+  focusSeq += 1;
+  querySeq += 1;
+  locating = false;
+  queryLoading.value = false;
+  if (highlightTimer) clearTimeout(highlightTimer);
+  highlightTimer = null;
+  highlightedId.value = null;
+}
+
 function selectCoinFilter(value: 'all' | string) {
-  locatePinId.value = null;
+  clearLocatedWhale();
   coinFilter.value = value;
+}
+
+function selectDirectionFilter(value: typeof directionFilter.value) {
+  clearLocatedWhale();
+  directionFilter.value = value;
+}
+
+function selectSortMode(value: typeof sortMode.value) {
+  clearLocatedWhale();
+  sortMode.value = value;
+}
+
+function selectPage(value: number) {
+  clearLocatedWhale();
+  page.value = value;
 }
 
 onUnmounted(() => {
@@ -516,17 +534,31 @@ async function copyWhaleAddress(whale: WhaleProfile, event?: Event) {
 }
 
 async function focusWhale(payload: { id: string; coin?: string }) {
-  // 先定位滚到卡片，刷新放后台，避免 loading 期间整张卡不可点
+  clearLocatedWhale();
+  const seq = ++focusSeq;
+  locating = true;
+  // The server resolves the natural page and returns its rows in one snapshot.
   dialogOpen.value = false;
   directionFilter.value = 'all';
-  page.value = 1;
   // 异动定位不带币种：顶部币种筛选保持「全部」
   coinFilter.value = 'all';
 
-  locatePinId.value = payload.id;
   await nextTick();
-  // The filter watcher owns the request; wait for it instead of issuing a second request.
-  while (queryLoading.value) await new Promise(resolve => window.setTimeout(resolve, 20));
+  if (seq !== focusSeq) return;
+  const loaded = await loadServerPage(payload.id);
+  await nextTick();
+  if (seq !== focusSeq) return;
+  if (!loaded && !queryError.value) {
+    // The whale may have closed its positions; restore a valid ordinary page.
+    page.value = 1;
+    await nextTick();
+    if (seq !== focusSeq) return;
+    await loadServerPage();
+    await nextTick();
+    if (seq !== focusSeq) return;
+  }
+  locating = false;
+  if (!loaded) return;
   if (!serverPageWhales.value.some(item => item.id === payload.id)) {
     ElMessage.warning('当前服务端缓存中找不到该巨鲸的持仓');
     return;
@@ -535,6 +567,7 @@ async function focusWhale(payload: { id: string; coin?: string }) {
   flashWhaleCard(payload.id);
   nextTick(() => {
     nextTick(() => {
+      if (seq !== focusSeq) return;
       const el = document.getElementById(`whale-card-${payload.id}`);
       if (!el) {
         ElMessage.warning('未找到对应巨鲸卡片');
@@ -618,7 +651,7 @@ defineExpose({ focusWhale, initialize });
               type="button"
               class="direction-chip"
               :class="{ on: directionFilter === item.value }"
-              @click="directionFilter = item.value"
+              @click="selectDirectionFilter(item.value)"
             >
               {{ item.label }} {{ directionCounts[item.value] }}
             </button>
@@ -630,7 +663,7 @@ defineExpose({ focusWhale, initialize });
               type="button"
               class="sort-chip"
               :class="{ on: sortMode === item.value }"
-              @click="sortMode = item.value"
+              @click="selectSortMode(item.value)"
             >
               {{ item.label }}
             </button>
@@ -840,7 +873,7 @@ defineExpose({ focusWhale, initialize });
         type="button"
         class="pager-btn"
         :disabled="page <= 1"
-        @click="page = 1"
+        @click="selectPage(1)"
       >
         首页
       </button>
@@ -848,7 +881,7 @@ defineExpose({ focusWhale, initialize });
         type="button"
         class="pager-btn"
         :disabled="page <= 1"
-        @click="page -= 1"
+        @click="selectPage(page - 1)"
       >
         上一页
       </button>
@@ -857,7 +890,7 @@ defineExpose({ focusWhale, initialize });
         type="button"
         class="pager-btn"
         :disabled="page >= pageCount"
-        @click="page += 1"
+        @click="selectPage(page + 1)"
       >
         下一页
       </button>

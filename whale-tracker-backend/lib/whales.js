@@ -1934,7 +1934,8 @@ function getWhaleCacheBatch(query = {}) {
 /** Server-side filter/sort/page over the current cached snapshot; never starts collection. */
 function queryWhaleCache(query = {}) {
   const cached = readActiveWhaleSnapshot();
-  const { offset, limit } = parseBatchQuery(query);
+  const { offset: requestedOffset, limit } = parseBatchQuery(query);
+  let offset = requestedOffset;
   const mode = cached?.data?.mode || normalizeMode(readConfig().mode || 'hf');
   const configured = new Map(getActiveWhales().map((item) => [String(item.id), item]));
   let rows = (cached?.data?.whales || []).filter((whale) =>
@@ -1984,19 +1985,19 @@ function queryWhaleCache(query = {}) {
     if (sort === 'latest') return latestOf(b) - latestOf(a) || compareDefault(a, b);
     return compareDefault(a, b);
   });
-  const pinId = String(query.pinId || '');
-  if (pinId && offset === 0) {
-    const pinIndex = rows.findIndex((whale) => String(whale.id) === pinId);
-    if (pinIndex > 0) rows.unshift(rows.splice(pinIndex, 1)[0]);
-  }
+  // Resolve and slice the natural page from the same snapshot; never reorder for navigation.
+  const locateId = String(query.locateId || '');
+  const locateIndex = locateId ? rows.findIndex(whale => String(whale.id) === locateId) : -1;
+  if (locateIndex >= 0) offset = Math.floor(locateIndex / limit) * limit;
   const total = rows.length;
-  const pageRows = rows.slice(offset, offset + limit);
+  const pageRows = locateId && locateIndex < 0 ? [] : rows.slice(offset, offset + limit);
   return {
     mode, whales: pageRows, activity: [], warnings: [], total, loaded: pageRows.length,
     offset, nextOffset: Math.min(total, offset + pageRows.length), limit,
     done: offset + pageRows.length >= total, progressive: false,
     stale: Boolean(cached?.stale), updatedAt: Number(cached?.updatedAt) || 0,
     page: Math.floor(offset / limit) + 1, directionCounts, coinCounts,
+    located: locateId ? locateIndex >= 0 : undefined,
   };
 }
 
