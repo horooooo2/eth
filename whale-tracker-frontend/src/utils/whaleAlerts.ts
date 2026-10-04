@@ -183,12 +183,15 @@ function decorateMergedDockAlert(alert: WhaleAlert): WhaleAlert {
   const n = items.length;
   const kind = (lead?.kind || alert.kind) as WhaleAlertKind;
   const baseLabel = alertKindLabel(kind);
+  const side = inferSide(alert, lead);
+  const sideLabel = side === 'long' ? '多单' : side === 'short' ? '空单' : '';
+  const labels = [sideLabel, n > 1 ? `${n}笔` : ''].filter(Boolean);
   const title = lead?.title || alert.headline || baseLabel;
   const times = items.map((item) => Number(item.time) || 0).filter((v) => v > 0);
   return {
     ...alert,
     kind,
-    kindLabel: n > 1 ? `${baseLabel}（多单）` : baseLabel,
+    kindLabel: labels.length ? `${baseLabel}（${labels.join(' · ')}）` : baseLabel,
     headline: n > 1 ? `${title}（${n} 笔）` : title,
     items,
     at: Math.max(Number(alert.at) || 0, ...times, 0),
@@ -196,7 +199,7 @@ function decorateMergedDockAlert(alert: WhaleAlert): WhaleAlert {
 }
 
 /**
- * 右下角监控卡片：同方向、同币种、10s 内合并；多笔时 kindLabel 带「（多单）」。
+ * 右下角监控卡片：同方向、同币种、10s 内合并；方向与合并笔数分别标注。
  * 输入顺序不限；输出按事件时间新→旧。
  */
 export function mergeDockAlerts(

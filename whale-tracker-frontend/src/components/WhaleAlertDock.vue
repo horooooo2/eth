@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Close } from '@element-plus/icons-vue';
 import { useWhaleStore } from '@/stores/whale';
-import { alertKindLabel, isTrackedAlertKind, type WhaleAlert } from '@/utils/whaleAlerts';
+import { alertKindLabel, inferSide, isTrackedAlertKind, type WhaleAlert } from '@/utils/whaleAlerts';
 import { playAlertDing, unlockAlertSound } from '@/utils/alertSound';
 import { directionLabel, formatLeverage, formatPnl, formatPrice, formatTime, formatUsd, shortAddress } from '@/utils/format';
 import { displayAsset } from '@/utils/assets';
@@ -70,18 +70,15 @@ const PC_DOCK_MAX = 4;
 const pcWhaleCards = computed(() => whaleMonitorCards.value.slice(0, PC_DOCK_MAX));
 
 function leadItem(alert: WhaleAlert) {
-  return alert.items.find((item) => item.price || item.leverage) || alert.items[0];
+  // Match the item used to generate the heading/label, not a different priced item.
+  return alert.items[0];
 }
 
 function alertSideClass(alert: WhaleAlert) {
   const item = leadItem(alert);
-  const side = item?.side || null;
+  const side = inferSide(alert, item);
   if (side === 'long') return 'long';
   if (side === 'short') return 'short';
-  // 兜底：从标题推断
-  const text = `${item?.title || ''} ${alert.headline || ''}`;
-  if (/开多|加仓.*多|做多/.test(text)) return 'long';
-  if (/开空|加仓.*空|做空/.test(text)) return 'short';
   return 'move';
 }
 
