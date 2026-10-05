@@ -2,6 +2,7 @@ const { randomUUID } = require('node:crypto');
 const store = require('./whaleObservationStore');
 const epoch=randomUUID();
 let seq=0, timer, cached=[], signature='', error='', warming=true, seedCursor=null, seeded=false, pruneAt=0;
+let collectiveDirty=true, collectiveAt=0;
 function snapshot() {
   return {type:'observationSnapshot',epoch,seq,rows:cached,error,warming,asOf:Date.now(),windowHours:24};
 }
@@ -31,10 +32,13 @@ function tick() {
     // At most four pairs per tick; durable jobs survive process restarts.
     const jobs=seeded ? db.prepare('SELECT * FROM observation_jobs LIMIT 4').all() : [];
     const batchStart=Date.now();
-    for(const job of jobs) {store.processPair(db,job);if(Date.now()-batchStart>=50)break;}
+    for(const job of jobs) {if(store.processPair(db,job))collectiveDirty=true;if(Date.now()-batchStart>=50)break;}
     warming=!seeded || Boolean(db.prepare('SELECT 1 FROM observation_jobs LIMIT 1').get());
     error='';
     if(Date.now()-pruneAt>60000){store.prune(db);pruneAt=Date.now();}
+    if(seeded && ((collectiveDirty && Date.now()-collectiveAt>=10000) || Date.now()-collectiveAt>=60000)) {
+      store.processCollective(db);collectiveDirty=false;collectiveAt=Date.now();
+    }
     publish(db);
   } catch(err) {
     error='观察数据暂未更新，保留最近结果';

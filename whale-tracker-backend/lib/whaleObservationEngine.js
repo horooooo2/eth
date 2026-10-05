@@ -8,6 +8,32 @@ const sideOf = n => n > 0 ? 'long' : 'short';
 const cn = side => side === 'long' ? '多' : '空';
 const money = value => value >= 10000 ? `${(value / 10000).toFixed(1)} 万美元` : `${value.toFixed(0)} 美元`;
 
+// Reorder a timestamp bucket only if ALL executions form one unique position chain.
+// Cycles, branches, missing fields and large buckets remain ambiguous.
+function orderExecutions(rows) {
+  const sorted=[...rows].sort((a,b)=>a.time-b.time||a.id.localeCompare(b.id)), result=[];
+  for(let i=0;i<sorted.length;) {
+    let j=i+1;while(j<sorted.length&&sorted[j].time===sorted[i].time)j++;
+    const bucket=sorted.slice(i,j);i=j;
+    if(bucket.length===1){result.push(...bucket);continue;}
+    let ordered=[];
+    if(bucket.length<=256&&!bucket.some(r=>r.barrier)) {
+      const roots=bucket.filter(r=>!bucket.some(p=>p!==r&&near(p.end,r.start)));
+      if(roots.length===1) {
+        const remaining=new Set(bucket);let current=roots[0];
+        while(current) {
+          ordered.push(current);remaining.delete(current);
+          const next=[...remaining].filter(r=>near(current.end,r.start));
+          if(next.length!==1)break;
+          current=next[0];
+        }
+      }
+    }
+    result.push(...(ordered.length===bucket.length?ordered.map(r=>({...r,orderVerified:true})):bucket.map(r=>({...r,orderAmbiguous:true}))));
+  }
+  return result;
+}
+
 // Uses the same execution classifier as the original feed. No snapshots or prices
 // from a later moment enter these calculations. Unknown starting positions are excluded.
 function normalize(trade, classify) {
@@ -19,7 +45,8 @@ function normalize(trade, classify) {
   if (!legs.length) return null;
   return { id: canonicalTradeId(trade), whaleId: String(trade.whaleId), coin: legs[0].coin,
     address: [trade.address,trade.from,trade.to].find(value=>/^0x[0-9a-f]{40}$/i.test(String(value || ''))) || '', time, start, end: start + (buy ? size : -size),
-    size, price: Number(trade.price), legs: legs.map(e => ({ kind: e.kind, side: e.side, usd: e.usd })),
+    size, receivedAt:finite(trade.observationReceivedAt)?Number(trade.observationReceivedAt):null,
+    price: Number(trade.price), legs: legs.map(e => ({ kind: e.kind, side: e.side, usd: e.usd })),
     closedPnl: finite(trade.closedPnl) ? Number(trade.closedPnl) : null,
     // Liquidations must not be described as voluntary decisions.
     special: Boolean(trade.liquidation || /liquidat|adl/i.test(String(trade.dir || ''))) };
@@ -64,7 +91,7 @@ function buildObservations(trades, classify, policy = POLICY) {
     const reductions = rows.slice(lastOpening+1);
     if (!reductions.length) return;
     const first = reductions[0], last = reductions.at(-1), start = Math.abs(first.start);
-    const continuous = reductions.every((r,i) => !i || (r.time !== reductions[i-1].time && near(r.start, reductions[i-1].end)));
+    const continuous = reductions.every((r,i) => !i || ((r.time !== reductions[i-1].time || (r.orderVerified&&reductions[i-1].orderVerified)) && near(r.start, reductions[i-1].end)));
     const sameSide = start > 0 && reductions.every(r => (near(r.start,0) || sideOf(r.start) === sideOf(first.start)) && (near(r.end,0) || sideOf(r.end) === sideOf(first.start)));
     const reduction = start > 0 ? (start - Math.abs(last.end)) / start : 0;
     const closes = reductions.filter(r => r.legs.some(l => ['close','decrease'].includes(l.kind)));
@@ -75,8 +102,8 @@ function buildObservations(trades, classify, policy = POLICY) {
         { reduceUsd: usd, reduction, startSize: start, endSize: Math.abs(last.end), closedPnl: pnl });
     }
   }
-  for (const rows of pairs.values()) {
-    rows.sort((a,b) => a.time-b.time || a.id.localeCompare(b.id));
+  for (const [key,unsorted] of pairs) {
+    const rows=orderExecutions(unsorted);pairs.set(key,rows);
     let group = [], lastClose = null;
     for (const r of rows) {
       if (r.barrier) {session(group);group=[];lastClose=null;continue;}
@@ -97,6 +124,81 @@ function buildObservations(trades, classify, policy = POLICY) {
     }
     session(group);
   }
+  // Follow the original event through later executions, even across session windows.
+  // Stop at an unknown/discontinuous position, close, or reversal: no invented holdings.
+  for (const event of result) {
+    if (!['build','reverse'].includes(event.type)) continue;
+    const history = pairs.get(JSON.stringify([event.whaleId,event.coin])) || [];
+    const anchor = event.evidence.at(-1);
+    const index = history.findIndex(r=>r.id===anchor.id);
+    let previous=anchor, status='last-observed', addUsd=0, reduceUsd=0, interruption=null;
+    const follow=[];
+    for (const row of history.slice(index+1)) {
+      if(row.time-anchor.time>86400000)break;
+      if (near(previous.end,0) || sideOf(previous.end)!==event.side) break;
+      const ambiguous=row.orderAmbiguous || previous.orderAmbiguous || (row.time<=previous.time && !(row.time===previous.time&&row.orderVerified&&previous.orderVerified));
+      if (row.barrier || ambiguous || !near(row.start,previous.end)) {
+        status='gap';
+        interruption={reason:row.barrier?'missing-fields':ambiguous?'ambiguous-order':'position-mismatch',
+          at:row.time,expectedSize:previous.end,actualSize:row.barrier?null:row.start};
+        break;
+      }
+      follow.push(row);
+      for (const leg of row.legs) {
+        if(leg.side!==event.side) continue;
+        if(['open','increase'].includes(leg.kind)) addUsd+=leg.usd;
+        else reduceUsd+=leg.usd;
+      }
+      previous=row;
+      if(row.special){status='forced';break;}
+      if(near(row.end,0)){status='closed';break;}
+      if(sideOf(row.end)!==event.side){status='reversed';break;}
+    }
+    if(follow.length || status==='gap') {
+      event.tracking={status,asOf:previous.time,lastSize:previous.end,addUsd,reduceUsd,fillCount:follow.length,interruption};
+      event.evidence.push(...follow);
+      // Keep event timestamps tied to its original trigger; follow-up has its own asOf.
+    }
+  }
   return result.sort((a,b)=>b.lastAt-a.lastAt || a.id.localeCompare(b.id));
 }
-module.exports = { POLICY, buildObservations, normalize };
+function buildCollective(events) {
+  const buckets=new Map();
+  for(const event of events) {
+    if(!['build','reverse'].includes(event.type))continue;
+    for(const row of event.evidence || []) {
+      if(row.time>event.lastAt || row.special)continue;
+      for(const leg of row.legs) {
+        if(!['open','increase'].includes(leg.kind) || leg.side!==event.side)continue;
+        const hour=Math.floor(row.time/3600000)*3600000;
+        const key=JSON.stringify([event.coin,leg.side,hour]);
+        if(!buckets.has(key))buckets.set(key,{coin:event.coin,side:leg.side,hour,fills:new Map()});
+        buckets.get(key).fills.set(`${row.whaleId}|${row.id}`,row);
+      }
+    }
+  }
+  const result=[];
+  for(const bucket of buckets.values()) {
+    const members=new Map();
+    for(const row of bucket.fills.values()) {
+      const identity=row.address?.toLowerCase() || row.whaleId;
+      if(!members.has(identity))members.set(identity,{whaleId:row.whaleId,address:row.address,addUsd:0,rows:[]});
+      const member=members.get(identity);
+      member.addUsd+=row.legs.filter(l=>l.side===bucket.side&&['open','increase'].includes(l.kind)).reduce((s,l)=>s+l.usd,0);
+      member.rows.push(row);
+    }
+    const eligible=[...members.values()].filter(m=>m.addUsd>=POLICY.minUsd);
+    if(eligible.length<3)continue;
+    const evidence=eligible.flatMap(m=>m.rows).sort((a,b)=>a.time-b.time||a.id.localeCompare(b.id));
+    const addUsd=eligible.reduce((s,m)=>s+m.addUsd,0);
+    result.push({id:createHash('sha256').update(`collective-v1|${bucket.coin}|${bucket.side}|${bucket.hour}`).digest('hex').slice(0,32),
+      ruleVersion:1,whaleId:'__collective__',address:'',coin:bucket.coin,type:'collective',side:bucket.side,
+      startAt:bucket.hour,lastAt:evidence.at(-1).time,
+      title:`${bucket.coin} · ${eligible.length} 个地址共同增${cn(bucket.side)}仓`,
+      text:`该小时达到观察门槛的 ${eligible.length} 个监控地址，累计增${cn(bucket.side)}仓成交 ${money(addUsd)}。这是历史增仓成交额，未减去减仓，不代表当前持仓方向、净持仓变化或关联账户。`,
+      metrics:{addUsd,addressCount:eligible.length},quality:'observed-executions',evidence,
+      members:eligible.map(({rows,...member})=>member)});
+  }
+  return result;
+}
+module.exports = { POLICY, buildObservations, normalize, buildCollective, orderExecutions };

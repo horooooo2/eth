@@ -28,7 +28,6 @@ import {
 } from '@/stores/auth';
 import { useRealtime } from '@/composables/useRealtime';
 import type { RecoQuotes } from '@/utils/recommend';
-import { readFocusCoin } from '@/utils/recoPrefs';
 import { preferredCoinsState, coinMatchesWatch } from '@/utils/watchedCoins';
 import { coinIconCandidates } from '@/utils/coinIcons';
 import { formatUsd } from '@/utils/format';
@@ -72,7 +71,7 @@ const whaleDetailProfile = computed(() => whaleStore.whalesById[whaleDetailId.va
 const newsListRef = ref<InstanceType<typeof NewsList> | null>(null);
 const quotes = ref<RecoQuotes>({});
 const fundingRates = ref<Record<string, number>>({});
-const flowCoin = ref<string>(readFocusCoin());
+const flowCoin = ref<string>('ALL');
 const flowWindow = ref<'15m' | '1h' | '4h' | '24h'>('1h');
 const alertWindowMs = computed(() => ({ '15m': 900000, '1h': 3600000, '4h': 14400000, '24h': 86400000 })[flowWindow.value]);
 const whaleSummary = computed(() => whaleStore.summary);
@@ -262,7 +261,7 @@ watch(
   preferredCoinsState,
   () => {
     if (flowCoin.value !== 'ALL' && !preferredCoinsState.value.includes(flowCoin.value)) {
-      flowCoin.value = readFocusCoin();
+      flowCoin.value = 'ALL';
     }
     if (pageLoader) { void loadQuotes(); void loadWhaleNetFlow(); }
   },
@@ -846,6 +845,7 @@ onUnmounted(() => {
   position: relative;
 }
 .virtual-view {
+  --market-columns: minmax(280px, 25%) minmax(0, 1fr) minmax(300px, 28%);
   flex: 1;
   min-height: 0;
   display: flex;
@@ -865,10 +865,7 @@ onUnmounted(() => {
 .topbar {
   /* 与下方 .grid 三列对齐：共振信号落在巨鲸列正上方 */
   display: grid;
-  grid-template-columns:
-    minmax(120px, calc((100% - 24px) * 0.25 - 80px))
-    minmax(0, calc((100% - 24px) * 0.5))
-    minmax(200px, calc((100% - 24px) * 0.25 + 80px));
+  grid-template-columns: var(--market-columns);
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;
@@ -933,7 +930,7 @@ onUnmounted(() => {
 .grid {
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(280px, 25%) minmax(0, 1fr) minmax(300px, 28%);
+  grid-template-columns: var(--market-columns);
   grid-template-rows: minmax(0, 1fr);
   gap: 12px;
   width: 100%;
@@ -948,6 +945,7 @@ onUnmounted(() => {
   overflow: hidden;
 }
 @media (max-width: 1280px) {
+  .virtual-view { --market-columns: minmax(0, 1fr); }
   .app-shell {
     height: auto;
     min-height: 100vh;
