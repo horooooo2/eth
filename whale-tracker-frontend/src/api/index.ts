@@ -212,6 +212,15 @@ export async function fetchAlertFlowSummary(query: { window: '15m' | '1h' | '4h'
   return data;
 }
 
+export type DirectionRow = {
+  coin: string; whaleId?: string; addLong: number; addShort: number; reduceLong: number; reduceShort: number;
+  net: number; lastAt: number; legs: number; longAccounts: number; shortAccounts: number; concentration: number | null;
+};
+export type DirectionSummary = { coins: DirectionRow[]; accounts: DirectionRow[]; sinceMs: number; untilMs: number; asOf: number };
+export async function fetchDirectionSummary(window: string) {
+  return (await http.get<DirectionSummary>('/whales/direction-summary', { params: { window }, timeout: 15000 })).data;
+}
+
 export type WhaleServerSummary = {
   freshness?: { total: number; freshCount: number; staleCount: number; unknownCount: number; oldestObservedAt: number | null; newestObservedAt: number | null; maxAgeMs: number };
   alertTotal: number;

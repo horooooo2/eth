@@ -1,44 +1,27 @@
 <script setup lang="ts">
 import { computed, ref, onUnmounted } from 'vue';
 import { fetchWhalePosition } from '@/api';
-import PositionAnalysisDialog from '@/components/PositionAnalysisDialog.vue';
 import type { WhalePosition, WhalePositionDetail, WhaleProfile, WhaleTrade } from '@/types';
 import { displayAsset, hyperliquidExplorer } from '@/utils/assets';
 import {
   displayEntryFillItems,
   entryFillKind,
   entryFillLabel,
-  entryFillTotalCount,
 } from '@/utils/whaleCardUtils';
-import type { RecoOptions, RecoQuotes } from '@/utils/recommend';
-import type { UserPositionInput } from '@/utils/positionAnalysis';
 import {
   directionLabel,
   formatDuration,
   formatPnl,
   formatPrice,
-  formatPriceGap,
   formatTime,
   formatTimeShort,
   formatUsd,
   isOpenTimeStale,
 } from '@/utils/format';
 import { useWhaleStore } from '@/stores/whale';
-import { preferredCoinsState } from '@/utils/watchedCoins';
 import { whaleCardTitle } from '@/utils/whaleReference';
 
 const whaleStore = useWhaleStore();
-
-const props = withDefaults(
-  defineProps<{
-    whales?: WhaleProfile[];
-    quotes?: RecoQuotes;
-  }>(),
-  {
-    whales: () => [],
-    quotes: () => ({}),
-  },
-);
 
 const emit = defineEmits<{
   focusWhale: [payload: { id: string; name: string; coin?: string }];
@@ -85,15 +68,6 @@ const detail = computed({
   set(value: WhalePositionDetail | null) { detailResponse.value = value; },
 });
 const entryFillsExpanded = ref(false);
-const analysisVisible = ref(false);
-const analysisPreset = ref<Partial<UserPositionInput> | null>(null);
-
-const recoOptions = computed<RecoOptions>(() => ({
-  coin: preferredCoinsState.value[0] || detail.value?.coin || 'BTC',
-  window: 'all',
-  decay: false,
-}));
-
 function fromCached(pos: WhalePosition): WhalePositionDetail {
   const leverage = pos.leverage;
   return {
@@ -187,7 +161,7 @@ async function open(whale: WhaleProfile, pos: PositionSeed, trade?: WhaleTrade) 
       const local = await fetchWhalePosition(whale.id, pos.coin, wantSide, { cacheOnly: true, signal });
       if (requestSeq !== openSeq || !visible.value) return;
       applyDetail(local);
-      if (local.position.openHistoryComplete === true && !local.position.closed) return;
+      if (local.position.openHistoryComplete === true && !(local.position.entryFillsOmitted || 0) && !local.position.closed) return;
     } catch (err) {
       if (signal.aborted) return;
       // A missing local position can be resolved by the detail lookup below.
@@ -252,12 +226,6 @@ const roiText = computed(() => {
   return `（${sign}${roi.toFixed(2)}%）`;
 });
 
-const priceGapText = computed(() => {
-  const row = detail.value;
-  if (!row) return '';
-  return formatPriceGap(row.entryPx, markPx.value, row.side);
-});
-
 const tpslText = computed(() => {
   const row = detail.value;
   if (!row) return '-- / --';
@@ -266,20 +234,20 @@ const tpslText = computed(() => {
   return `${tp} / ${sl}`;
 });
 
-const entryFillCount = computed(() =>
-  entryFillTotalCount({
-    entryFills: detail.value?.entryFills || [],
-    entryFillsOmitted: detail.value?.entryFillsOmitted || 0,
-  }),
-);
-
 const displayEntryRows = computed(() =>
   displayEntryFillItems(detail.value?.entryFills || [], detail.value?.entryFillsOmitted || 0),
 );
 
 function toggleEntryFills() {
-  if (entryFillCount.value <= 1) return;
   entryFillsExpanded.value = !entryFillsExpanded.value;
+}
+
+async function retryEntryHistory() {
+  const whale = activeWhale.value;
+  if (!whale || loading.value || historyLoading.value) return;
+  const request = open(whale, { coin: activePosition.value.coin, side: activePosition.value.side === 'short' ? 'short' : 'long' });
+  entryFillsExpanded.value = true;
+  await request;
 }
 
 function locateWhaleCard() {
@@ -294,29 +262,12 @@ function locateWhaleCard() {
   });
 }
 
-function openPositionAnalysis() {
-  const row = detail.value;
-  if (!row || row.closed) return;
-  const lev = Math.max(1, Number(row.leverage) || 20);
-  const notional = Math.abs(Number(row.positionValue) || 0);
-  const margin =
-    Math.abs(Number(row.marginUsed) || 0) || (notional > 0 ? notional / lev : 500);
-  analysisPreset.value = {
-    coin: String(row.coinLabel || row.coin || '').split('/')[0] || 'BTC',
-    side: row.side === 'short' ? 'short' : 'long',
-    entryPx: Number(row.entryPx) || 0,
-    leverage: lev,
-    marginUsd: margin,
-    accountEquityUsd: margin,
-  };
-  analysisVisible.value = true;
-}
 </script>
 
 <template>
   <el-dialog
     v-model="visible"
-    width="560px"
+    width="min(580px, calc(100vw - 24px))"
     append-to-body
     class="pos-dialog"
     @close="cancelRequest"
@@ -324,7 +275,7 @@ function openPositionAnalysis() {
   >
     <template #header>
       <div class="dlg-header">
-        <span class="dlg-title">{{ title }}</span>
+        <div class="position-heading"><span class="position-eyebrow">合约仓位详情</span><span class="dlg-title">{{ detail ? displayAsset(detail.coin, detail.coinLabel) : '仓位详情' }} <small v-if="detail" :class="detail.side === 'long' ? 'pnl-up' : 'pnl-down'">{{ directionLabel(detail.side) }}</small><small v-if="detail && !isClosed">{{ detail.leverageLabel || '—' }}</small><el-tag v-if="isClosed" size="small" type="info">已平仓</el-tag></span><span class="position-owner" :title="title">{{ whaleAddress ? whaleAddress.slice(0, 10) + '…' + whaleAddress.slice(-8) : whaleName }}</span></div>
       </div>
     </template>
     <el-skeleton v-if="loading && !detail" :rows="5" animated />
@@ -336,29 +287,33 @@ function openPositionAnalysis() {
         :closable="false"
         :title="error"
       />
+      <div class="position-hero">
+        <div class="hero-label"><span>{{ isClosed ? '已实现盈亏' : '未实现盈亏' }}</span><small v-if="loading">读取仓位…</small></div>
+        <strong :class="pnlClass(isClosed ? detail.realizedPnl : detail.unrealizedPnl)">{{ formatPnl(isClosed ? detail.realizedPnl : detail.unrealizedPnl) }}</strong>
+        <span v-if="isClosed && roiText" class="hero-roi">收益率 {{ roiText }}</span>
+        <div class="hero-summary"><span>{{ isClosed ? '平仓规模' : '仓位价值' }}<b>{{ detail.positionValue == null ? '—' : formatUsd(detail.positionValue) }}</b></span><span v-if="!isClosed">已用保证金<b>{{ detail.marginUsed == null ? '—' : formatUsd(detail.marginUsed) }}</b></span><span v-else-if="detail.size">平仓数量<b>{{ closedSizeText }}</b></span></div>
+      </div>
       <div class="detail">
-        <div class="detail-row">
-          <span>方向</span>
-          <strong :class="detail.side === 'long' ? 'pnl-up' : 'pnl-down'">
-            {{ directionLabel(detail.side) }}
-            <el-tag v-if="isClosed" size="small" type="info">已平仓</el-tag>
-          </strong>
-        </div>
         <div class="detail-row entry-row">
-          <span>开仓价</span>
+          <span>开仓均价</span>
           <div class="entry-value">
             <button
               type="button"
               class="entry-toggle"
-              :class="{ multi: entryFillCount > 1, open: entryFillsExpanded }"
+              :class="{ open: entryFillsExpanded }"
+              :aria-expanded="entryFillsExpanded"
+              aria-controls="position-entry-history"
+              title="点击查看开仓及加减仓合并记录"
               @click="toggleEntryFills"
             >
               <strong>{{ detail.kind === 'spot' && !detail.entryPx ? '--' : formatPrice(detail.entryPx) }}</strong>
-              <span v-if="entryFillCount > 1" class="multi-tag">（合）</span>
+
             </button>
           </div>
         </div>
-        <ul v-if="entryFillsExpanded && entryFillCount > 1" class="entry-fills">
+        <ul v-if="entryFillsExpanded" id="position-entry-history" class="entry-fills">
+          <li class="entry-history-heading"><strong>开仓及加减仓记录</strong><span v-if="loading || historyLoading" role="status">正在补齐历史…</span><button v-else-if="error || !displayEntryRows.length || detail.entryFillsOmitted" type="button" class="history-retry" @click="retryEntryHistory">重新读取</button></li>
+          <li v-if="!displayEntryRows.length" class="dim">{{ loading || historyLoading ? '已展开，记录返回后将在这里显示。' : '当前没有可展示的历史成交记录，不代表只有一笔开仓。' }}</li>
           <template v-for="(row, rowIndex) in displayEntryRows" :key="`${row.type}-${rowIndex}`">
             <li v-if="row.type === 'gap'" class="entry-fill-gap">...</li>
             <li v-else>
@@ -378,11 +333,11 @@ function openPositionAnalysis() {
           </template>
         </ul>
         <div class="detail-row">
-          <span>{{ isClosed ? '平仓价' : '当前币价' }}</span>
+          <span>{{ isClosed ? '平仓价' : '当前参考价格' }}</span>
           <strong>{{ markPx ? formatPrice(markPx) : '--' }}</strong>
         </div>
-        <div class="detail-row">
-          <span>开仓时间</span>
+        <div class="detail-row position-time">
+          <span>建仓时间</span>
           <strong
             :class="{
               'stale-open':
@@ -420,37 +375,13 @@ function openPositionAnalysis() {
             <strong>{{ formatDuration(detail.holdMs) }}</strong>
           </div>
         </template>
-        <div v-if="!isClosed" class="detail-row">
-          <span>倍数</span>
-          <strong>{{ detail.leverageLabel || '现货' }}</strong>
-        </div>
-        <div class="detail-row">
-          <span>{{ isClosed ? '平仓规模' : '仓位价值' }}</span>
-          <strong>
-            {{ detail.positionValue ? formatUsd(detail.positionValue) : '--' }}
-            <span v-if="isClosed && detail.size" class="gap">{{ closedSizeText }}</span>
-          </strong>
-        </div>
-        <div v-if="!isClosed" class="detail-row">
-          <span>本金</span>
-          <strong>{{ detail.marginUsed ? formatUsd(detail.marginUsed) : '--' }}</strong>
-        </div>
-        <div class="detail-row">
-          <span>{{ isClosed ? '已实现盈亏' : '目前盈亏' }}</span>
-          <strong :class="pnlClass(isClosed ? detail.realizedPnl : detail.unrealizedPnl)">
-            {{ formatPnl(isClosed ? detail.realizedPnl : detail.unrealizedPnl) }}
-            <span v-if="isClosed && roiText" class="gap">{{ roiText }}</span>
-            <span v-else-if="priceGapText" class="gap">{{ priceGapText }}</span>
-            <el-tag v-if="loading" size="small" type="info" class="live-tag">读取仓位</el-tag>
-          </strong>
-        </div>
         <div v-if="isClosed && detail.fees" class="detail-row">
           <span>手续费</span>
           <strong>{{ formatUsd(detail.fees) }}</strong>
         </div>
         <template v-if="!isClosed">
           <div class="detail-row">
-            <span>爆仓价</span>
+            <span>清算价格</span>
             <strong>
               {{
                 detail.kind === 'spot' || detail.liquidationPx == null
@@ -459,7 +390,7 @@ function openPositionAnalysis() {
               }}
             </strong>
           </div>
-          <div class="detail-row">
+          <div v-if="detail.takeProfitPx != null || detail.stopLossPx != null" class="detail-row">
             <span>止盈 / 止损</span>
             <strong>{{ tpslText }}</strong>
           </div>
@@ -471,23 +402,14 @@ function openPositionAnalysis() {
         </p>
       </div>
     </template>
-    <p v-if="historyLoading" role="status">正在补齐历史成交明细，当前盈亏不受影响。</p>
+    <p v-if="historyLoading" class="history-status" role="status">正在补齐历史成交明细，当前盈亏不受影响。</p>
     <template #footer>
       <div class="actions">
-        <el-button v-if="detail && !isClosed" @click="openPositionAnalysis">仓位分析</el-button>
         <el-button type="primary" @click="locateWhaleCard">查看巨鲸卡片</el-button>
       </div>
     </template>
   </el-dialog>
 
-  <PositionAnalysisDialog
-    v-model="analysisVisible"
-    :whales="props.whales"
-    :quotes="props.quotes"
-    :reco-options="recoOptions"
-    :preset="analysisPreset"
-    @locate-whale="emit('focusWhale', $event)"
-  />
 </template>
 
 <style scoped>
@@ -507,16 +429,17 @@ function openPositionAnalysis() {
   min-width: 0;
 }
 .detail {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px 24px;
 }
 .detail-row {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  font-size: 16px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 15px;
+  min-width: 0;
 }
 .detail-row span {
   color: var(--muted);
@@ -533,13 +456,15 @@ function openPositionAnalysis() {
   background: transparent;
   color: inherit;
   font: inherit;
-  cursor: default;
+  cursor: pointer;
+  color: var(--accent);
+  text-align: left;
 }
 .entry-toggle.multi {
   cursor: pointer;
   color: var(--accent);
 }
-.entry-toggle.multi:hover {
+.entry-toggle:hover {
   text-decoration: underline;
 }
 .multi-tag {
@@ -558,10 +483,7 @@ function openPositionAnalysis() {
   flex-direction: column;
   gap: 8px;
   font-size: 13px;
-  max-height: 280px;
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  grid-column: 1 / -1;
 }
 .entry-fills li {
   display: flex;
@@ -636,11 +558,13 @@ function openPositionAnalysis() {
 .stale-open {
   color: #e6a23c;
 }
+.position-heading{display:grid;gap:8px}.position-eyebrow{font-size:10px;color:var(--muted);letter-spacing:1px}.dlg-title{display:flex;align-items:center;gap:10px;font-size:24px;flex-wrap:wrap}.dlg-title small{font-size:12px;border:1px solid var(--border);border-radius:5px;padding:3px 7px}.position-owner{font-size:12px;color:var(--muted);font-family:monospace;overflow-wrap:anywhere}.position-hero{padding:18px;background:var(--panel-2);border:1px solid var(--border);border-radius:10px;margin:0 0 22px}.hero-label{display:flex;justify-content:space-between;font-size:12px;color:var(--muted)}.position-hero>strong{display:block;font-size:32px;line-height:1.4;margin:5px 0 12px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.hero-summary{display:grid;grid-template-columns:1fr 1fr;gap:14px;border-top:1px solid var(--border);padding-top:13px}.hero-summary span{display:grid;gap:5px;font-size:11px;color:var(--muted)}.hero-summary b{font-size:17px;color:var(--text);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.hero-roi{font-size:12px}.detail-row>span{font-size:12px}.detail-row strong{overflow-wrap:anywhere}.position-time{grid-column:1/-1;order:2;border-top:1px solid var(--border);padding-top:14px}.position-time strong{font-size:12px;font-weight:500;line-height:1.8}.position-time .gap{display:block;margin-left:0;font-size:11px}.closed-note{grid-column:1/-1;order:3}.history-status{color:var(--muted);font-size:11px;margin:16px 0 0}.entry-fills{order:0}.entry-history-heading{justify-content:space-between}.entry-history-heading span{color:var(--muted);font-size:11px}.history-retry{border:0;background:none;color:var(--accent);cursor:pointer}.multi-tag{display:block;margin:5px 0 0;font-size:11px}.entry-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:4px;border-radius:3px}.actions :deep(.el-button){border-radius:7px}.position-owner,.detail-row{min-width:0}
+@media(max-width:420px){.position-hero>strong{font-size:27px}.detail{gap:15px}.hero-summary b{font-size:15px}}
 </style>
 
 <style>
 .pos-dialog.el-dialog {
-  --el-dialog-width: 560px;
+  max-height: calc(100dvh - 32px); overflow-y: auto; border: 1px solid var(--border); border-radius: 14px; background: var(--bg-2);
 }
 .pos-dialog .el-dialog__footer {
   display: flex;

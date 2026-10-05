@@ -1,6 +1,6 @@
 import type { WhaleProfile, WhaleTrade } from '@/types';
 import { formatUsd } from '@/utils/format';
-import { estimateLiquidationPx } from '@/utils/positionAnalysis';
+import { estimateLiquidationPx } from '@/utils/liquidationEstimate';
 import { alertEventTime, inferSide, tradeFillSide, type WhaleAlert, type WhaleAlertItem } from '@/utils/whaleAlerts';
 import { coinMatchesWatch, readWatchedCoins } from '@/utils/watchedCoins';
 

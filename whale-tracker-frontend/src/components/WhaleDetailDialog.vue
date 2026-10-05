@@ -57,6 +57,14 @@ const visible = computed({
   set: (value: boolean) => emit('update:modelValue', value),
 });
 
+const positionSide = ref('all');
+const positionSort = ref('value');
+const displayedPositions = computed(() => positions.value.filter(pos => positionSide.value === 'all' || pos.side === positionSide.value).slice().sort((a, b) => {
+  const av = positionSort.value === 'pnl' ? a.unrealizedPnl : Math.abs(a.positionValue);
+  const bv = positionSort.value === 'pnl' ? b.unrealizedPnl : Math.abs(b.positionValue);
+  return (bv ?? -Infinity) - (av ?? -Infinity) || a.coin.localeCompare(b.coin);
+}));
+const equityCache = new Map<string, WhaleEquityHistoryPoint[]>();
 const positions = computed(() => props.whale?.positions || []);
 const accountLongUsd = computed(() => Number(props.whale?.longUsd) || 0);
 const accountShortUsd = computed(() => Number(props.whale?.shortUsd) || 0);
@@ -198,41 +206,16 @@ function signedClass(value: unknown) {
   return amount > 0 ? 'positive' : amount < 0 ? 'negative' : '';
 }
 
+function formatPositionMoney(value: unknown) {
+  if (value == null || value === '' || !Number.isFinite(Number(value))) return '—';
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(value));
+}
+
 function positionRoe(position: { unrealizedPnl?: number | null; marginUsed?: number | null }) {
+  if (position.unrealizedPnl == null || position.marginUsed == null) return '—';
   const margin = Number(position.marginUsed);
   const pnl = Number(position.unrealizedPnl);
   return Number.isFinite(margin) && margin > 0 && Number.isFinite(pnl) ? `${(pnl / margin * 100).toFixed(2)}%` : '—';
-}
-
-function liquidationDistancePct(position: { side?: string; coin?: string; liquidationPx?: string | number | null }) {
-  const mark = Number(perpMarkPrices.value[String(position.coin || '')]);
-  const liquidation = Number(position.liquidationPx);
-  if (!Number.isFinite(mark) || mark <= 0 || !Number.isFinite(liquidation) || liquidation <= 0) return null;
-  const pct = position.side === 'short' ? (liquidation - mark) / mark * 100 : (mark - liquidation) / mark * 100;
-  return pct;
-}
-
-function liquidationDistanceLabel(position: { side?: string; coin?: string; liquidationPx?: string | number | null }) {
-  const distance = liquidationDistancePct(position);
-  if (distance == null) return '—';
-  return distance <= 0 ? '已触及' : `${distance.toFixed(2)}%`;
-}
-
-function liquidationDistanceTone(position: { side?: string; coin?: string; liquidationPx?: string | number | null }) {
-  const distance = liquidationDistancePct(position);
-  if (distance == null) return 'unknown';
-  return distance <= 10 ? 'critical' : distance <= 25 ? 'warning' : 'safe';
-}
-
-function holdDuration(position: { firstOpenTime?: number | null; openTime?: number | null; openHistoryComplete?: boolean }) {
-  if (position.openHistoryComplete === false) return '历史不完整';
-  const startedAt = Number(position.firstOpenTime || position.openTime);
-  if (!Number.isFinite(startedAt) || startedAt <= 0) return '—';
-  const minutes = Math.max(0, Math.floor((Date.now() - startedAt) / 60_000));
-  if (minutes < 60) return `${minutes}分钟`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 48) return `${hours}小时`;
-  return `${Math.floor(hours / 24)}天`;
 }
 
 async function loadTrades() {
@@ -292,12 +275,19 @@ async function loadEquityHistory() {
   const requestSeq = ++equityRequestSeq;
   const whaleId = props.whale.id;
   const range = equityRange.value;
+  const cacheKey = `${whaleId}:${range}`;
+  clearEquityHover();
+  equityPoints.value = equityCache.get(cacheKey) || [];
+  equityLoading.value = false;
+  equityError.value = '';
+  if (equityCache.has(cacheKey)) return;
   equityLoading.value = true;
   equityError.value = '';
   try {
     const result = await fetchWhaleEquityHistory(whaleId, range);
     if (requestSeq !== equityRequestSeq) return;
     equityPoints.value = result.points || [];
+    equityCache.set(cacheKey, equityPoints.value);
   } catch (error) {
     if (requestSeq !== equityRequestSeq) return;
     equityError.value = error instanceof Error ? error.message : '合约权益历史读取失败';
@@ -350,9 +340,18 @@ watch(() => [props.modelValue, props.whale?.id] as const, ([isOpen, id], previou
     transferRequestSeq += 1;
     orderRequestSeq += 1;
     priceRequestSeq += 1;
+    equityRequestSeq += 1;
+    equityPoints.value = [];
+    equityError.value = '';
+    equityLoading.value = false;
+    equityCache.clear();
+    clearEquityHover();
+    positionSide.value = 'all';
+    positionSort.value = 'value';
     activeTab.value = 'contracts';
     tradePage.value = 1;
     tradesResult.value = null;
+    tradeError.value = '';
     tradesLoading.value = false;
     transfers.value = [];
     transfersLoadedFor.value = '';
@@ -369,8 +368,13 @@ watch(() => [props.modelValue, props.whale?.id] as const, ([isOpen, id], previou
   void loadPerpMarkPrices();
 }, { immediate: true });
 
-watch(() => [props.modelValue, props.whale?.id, equityRange.value] as const, ([isOpen, id]) => {
-  if (isOpen && id) void loadEquityHistory();
+watch(() => [props.modelValue, props.whale?.id, equityRange.value, activeTab.value] as const, ([isOpen, id]) => {
+  if (!isOpen) {
+    equityRequestSeq += 1;
+    equityCache.clear();
+    return;
+  }
+  if (isOpen && id && activeTab.value === 'results') void loadEquityHistory();
 }, { immediate: true });
 
 async function copyAddress() {
@@ -399,16 +403,20 @@ async function copyAddress() {
         </div>
         <div class="updated">列表快照 {{ snapshotUpdatedAt ? formatRelativeAgo(snapshotUpdatedAt) : '时间未知' }}{{ whale.error ? ' · 部分数据异常' : '' }}</div>
       </div>
+      <div v-if="whale" class="account-summary">
+        <div><span>合约权益</span><strong>{{ formatMoney(whale.contractAccountValue) }}</strong></div>
+        <div><span>持仓总价值</span><strong>{{ formatMoney(grossPositionUsd) }}</strong></div>
+        <div><span>持仓浮盈亏</span><strong :class="signedClass(totalUnrealizedPnl)">{{ formatMoney(totalUnrealizedPnl) }}</strong></div>
+      </div>
     </template>
 
     <template v-if="whale">
-      <section class="metrics-grid">
+      <nav class="detail-tabs" aria-label="巨鲸详情分类">
+        <button v-for="tab in [{ id: 'contracts', label: `当前持仓 (${positions.length})` }, { id: 'results', label: '账户表现' }, { id: 'orders', label: `当前委托 (${ordersLoadedFor === whale.id ? openOrders.length : '—'})` }, { id: 'trades', label: '成交记录' }, { id: 'transfers', label: '资金流水' }]" :key="tab.id" :class="{ active: activeTab === tab.id }" @click="setTab(tab.id)">{{ tab.label }}</button>
+      </nav>
+
+      <section v-if="activeTab === 'results'" class="metrics-grid">
         <div class="left-metrics">
-          <article class="asset-card">
-            <div class="card-title">合约账户权益 <span class="source-tag">合约快照</span></div>
-            <div class="asset-total">{{ whale.contractAccountValue == null ? '—' : formatMoney(whale.contractAccountValue) }}</div>
-            <div class="account-switch"><span class="selected">合约仓位 {{ formatMoney(grossPositionUsd) }}</span></div>
-          </article>
           <article class="sentiment-card">
             <div class="sentiment-box">
               <div class="sentiment-text">
@@ -443,6 +451,10 @@ async function copyAddress() {
             </article>
           </div>
           <p class="data-note">盈亏和交易量来自巨鲸榜单快照；合约账户权益来自最近一次成功的合约账户快照。</p>
+          <div class="stats-row">
+            <article class="stat-card"><span class="stat-label">历史胜率</span><strong>{{ !whale.closedTrades ? '—' : formatPercent(whale.winRate, true) }}</strong><small>已完成交易 {{ whale.closedTrades || '—' }}</small></article>
+            <article class="stat-card"><span class="stat-label">历史最大回撤</span><strong>{{ !whale.closedTrades ? '—' : formatPercent(whale.maxDrawdown) }}</strong><small>上游榜单统计口径</small></article>
+          </div>
         </div>
 
         <article class="chart-card">
@@ -471,48 +483,36 @@ async function copyAddress() {
             <div v-else-if="equityError" class="chart-empty"><b>权益历史暂不可用</b><span>{{ equityError }}</span></div>
             <div v-else-if="equityPoints.length < 2" class="chart-empty"><b>{{ equityPoints.length ? '历史点不足以绘制曲线' : '官方暂无历史权益数据' }}</b><span>{{ equityPoints.length ? 'Hyperliquid 当前仅返回一个合约权益历史点' : '请确认钱包地址及 Hyperliquid 是否提供该账户的历史记录' }}</span></div>
           </div>
-          <div class="chart-foot"><span>Hyperliquid 官方 portfolio / perp 历史</span><span>当前浮动盈亏 {{ totalUnrealizedPnl == null ? '—' : formatMoney(totalUnrealizedPnl) }}</span></div>
+          <div class="chart-foot"><span>权益变化含资金进出，不等同于交易盈亏</span><span>当前浮动盈亏 {{ totalUnrealizedPnl == null ? '—' : formatMoney(totalUnrealizedPnl) }}</span></div>
         </article>
       </section>
 
-      <nav class="detail-tabs" aria-label="巨鲸详情分类">
-        <button v-for="tab in [{ id: 'contracts', label: `合约 (${positions.length})` }, { id: 'results', label: `结果 (${whale.closedTrades ?? '—'})` }, { id: 'closed', label: '已关闭交易' }, { id: 'orders', label: `未完成订单 (${ordersLoadedFor === whale.id ? openOrders.length : '—'})` }, { id: 'trades', label: '成交记录' }, { id: 'transfers', label: '资金记录' }]" :key="tab.id" :class="{ active: activeTab === tab.id }" @click="setTab(tab.id)">{{ tab.label }}</button>
-      </nav>
-
       <section v-if="activeTab === 'contracts'" class="tab-panel">
-        <div class="table-summary">
-          <span><small>多头价值</small><b class="positive">{{ formatMoney(accountLongUsd) }}</b></span>
-          <span><small>空头价值</small><b class="negative">{{ formatMoney(accountShortUsd) }}</b></span>
-          <span><small>仓位合计</small><b>{{ formatMoney(grossPositionUsd) }}</b></span>
-          <span><small>总资金费</small><b class="missing-field">接口未接入</b></span>
-          <span><small>总浮动盈亏</small><b :class="signedClass(totalUnrealizedPnl)">{{ totalUnrealizedPnl == null ? '—' : formatMoney(totalUnrealizedPnl) }}</b></span>
+        <div class="position-toolbar">
+          <div class="side-filters"><button v-for="side in [{ id: 'all', label: '全部' }, { id: 'long', label: '多单' }, { id: 'short', label: '空单' }]" :key="side.id" type="button" :class="{ selected: positionSide === side.id }" @click="positionSide = side.id">{{ side.label }}</button></div>
+          <span class="positive">多仓 {{ formatMoney(accountLongUsd) }}</span><span class="negative">空仓 {{ formatMoney(accountShortUsd) }}</span>
+          <label class="position-sort">排序 <select v-model="positionSort" aria-label="持仓排序"><option value="value">仓位价值</option><option value="pnl">浮动盈亏</option></select></label>
+          <el-tooltip content="仓位与盈亏来自服务器快照，标记价独立更新。收益率为浮动盈亏 ÷ 已用保证金。缺失数据显示 —。"><button type="button" class="data-info" aria-label="数据口径">ⓘ</button></el-tooltip>
         </div>
-        <div v-if="positions.length" class="table-scroll">
-          <table>
-            <thead><tr><th>币种</th><th>数量</th><th>价值</th><th>均价 / 标记价</th><th>盈亏 / ROE</th><th>资金费率</th><th>清算距离</th><th>杠杆</th><th>方向 / 时长</th></tr></thead>
-            <tbody>
-              <tr v-for="pos in positions" :key="`${pos.coin}-${pos.side}`">
-                <td><div class="coin-cell"><b>{{ pos.coinLabel || pos.coin }}</b><small :class="pos.side === 'long' ? 'positive' : 'negative'">{{ sideLabel(pos.side) }}</small></div></td>
-                <td>{{ formatQty(pos.size) }}</td>
-                <td>{{ formatMoney(pos.positionValue) }}</td>
-                <td>{{ formatPrice(pos.entryPx) }}<small class="sub-row">标记价 {{ pricesLoading && perpMarkPrices[pos.coin] == null ? '读取中…' : formatPrice(perpMarkPrices[pos.coin]) }}</small></td>
-                <td :class="signedClass(pos.unrealizedPnl)">{{ formatMoney(pos.unrealizedPnl) }}<small class="sub-row">ROE {{ positionRoe(pos) }}</small></td>
-                <td class="missing-field">—</td>
-                <td>
-                  <div class="liq-distance-cell">
-                    <div class="liq-distance-label"><span>距离</span><b :class="`liq-${liquidationDistanceTone(pos)}`">{{ liquidationDistanceLabel(pos) }}</b></div>
-                    <div class="liq-distance-track" :class="`liq-${liquidationDistanceTone(pos)}`" role="img" :aria-label="`清算距离 ${liquidationDistanceLabel(pos)}`"><i :style="{ width: `${Math.min(100, Math.max(0, liquidationDistancePct(pos) || 0))}%` }" /></div>
-                  </div>
-                  <small class="sub-row">清算价 {{ formatPrice(pos.liquidationPx) }}</small>
-                </td>
-                <td>{{ formatLeverage(pos.leverage) }}</td>
-                <td><span :class="pos.side === 'long' ? 'positive' : 'negative'">{{ sideLabel(pos.side) }}</span><small class="sub-row">{{ holdDuration(pos) }}</small></td>
-              </tr>
-            </tbody>
-          </table>
+        <div v-if="displayedPositions.length" class="position-card-grid">
+          <article v-for="pos in displayedPositions" :key="`${pos.coin}-${pos.side}`" class="position-card" :class="`position-${pos.side}`">
+            <header class="position-card-header">
+              <div><h3>{{ pos.coinLabel || pos.coin }}</h3></div>
+              <div class="position-badges"><span :class="pos.side === 'long' ? 'positive' : 'negative'">{{ sideLabel(pos.side) }}</span><span>{{ formatLeverage(pos.leverage) }}</span></div>
+            </header>
+            <div class="position-pnl"><span>未实现盈亏 <small>USD</small></span><strong :class="signedClass(pos.unrealizedPnl)">{{ formatPositionMoney(pos.unrealizedPnl) }}</strong><span>保证金收益率 <b :class="signedClass(pos.unrealizedPnl)">{{ positionRoe(pos) }}</b></span></div>
+            <div class="position-value"><span>仓位价值</span><strong>{{ formatPositionMoney(pos.positionValue) }}</strong></div>
+            <dl class="position-metrics">
+              <div><dt>开仓均价</dt><dd>{{ formatPrice(pos.entryPx) }}</dd></div>
+              <div><dt>标记价格</dt><dd>{{ pricesLoading && perpMarkPrices[pos.coin] == null ? '读取中…' : formatPrice(perpMarkPrices[pos.coin]) }}</dd></div>
+              <div><dt>清算价格</dt><dd>{{ formatPrice(pos.liquidationPx) }}</dd></div>
+              <div><dt>保证金</dt><dd>{{ formatPositionMoney(pos.marginUsed) }}</dd></div>
+            </dl>
+            <el-popover trigger="click" placement="bottom" :width="240"><template #reference><button type="button" class="position-more">持仓明细</button></template><div>{{ pos.coin }} · 持仓数量 {{ formatQty(Math.abs(pos.size)) }}</div></el-popover>
+          </article>
         </div>
-        <el-empty v-else description="当前快照没有可展示的合约仓位" :image-size="64" />
-        <p class="footnote">仓位来自当前缓存快照。当前可计算数量、名义价值、均价、未实现盈亏、杠杆、爆仓价与有完整建仓记录的持仓时长；标记价、资金费、清算距离依赖数据源补充，ROE 仅在有保证金数据时计算。</p>
+        <el-empty v-else :description="positions.length ? '当前筛选下没有仓位' : '当前快照没有合约仓位'" :image-size="64" />
+
       </section>
 
       <section v-else-if="activeTab === 'trades'" class="tab-panel">
@@ -553,16 +553,6 @@ async function copyAddress() {
         <p class="footnote">资金记录由 Hyperliquid 账本接口按需查询；不包含资金费记录。</p>
       </section>
 
-      <section v-else-if="activeTab === 'results'" class="tab-panel">
-        <div class="results-grid">
-          <article><small>已完成交易数</small><b>{{ whale.closedTrades == null || whale.closedTrades === 0 ? '—' : whale.closedTrades }}</b></article>
-          <article><small>历史胜率</small><b>{{ !whale.closedTrades ? '—' : formatPercent(whale.winRate, true) }}</b></article>
-          <article><small>近月盈亏</small><b :class="signedClass(whale.monthPnl)">{{ whale.monthPnl == null ? '—' : formatMoney(whale.monthPnl) }}</b></article>
-          <article><small>历史最大回撤</small><b>{{ !whale.closedTrades ? '—' : formatPercent(whale.maxDrawdown) }}</b></article>
-        </div>
-        <p class="footnote">这些是巨鲸榜单统计值，统计周期与口径由上游决定；不是本地重算的完整交易绩效。</p>
-      </section>
-
       <section v-else-if="activeTab === 'orders'" class="tab-panel">
         <div class="panel-heading"><strong>未完成订单（含条件单）</strong><span>Hyperliquid 实时查询 · 上游短缓存</span></div>
         <div v-if="ordersLoading" class="loading-state">正在读取未完成订单…</div>
@@ -577,10 +567,6 @@ async function copyAddress() {
         <p class="footnote">订单来自 frontendOpenOrders 接口，包含可能存在的止损/止盈条件单；此页面不会执行任何订单操作。</p>
       </section>
 
-      <section v-else class="tab-panel unavailable-panel">
-        <strong>已关闭交易明细</strong>
-        <p>当前成交历史尚未按仓位周期完整归并。榜单提供已完成交易数、胜率和回撤汇总，但无法保证逐笔平仓明细完整，因此这里不把减仓成交冒充完整交易。</p>
-      </section>
     </template>
   </el-dialog>
 </template>
@@ -588,7 +574,7 @@ async function copyAddress() {
 <style>
 .whale-detail-dialog.el-dialog { --detail-bg: #0b0e14; --detail-card: #151a24; --detail-border: #232937; --detail-muted: #848e9c; width: 100vw !important; height: 100vh; max-height: 100vh; margin: 0 !important; background: var(--detail-bg); color: #e2e8f0; border: 0; border-radius: 0; display: flex; flex-direction: column; }
 .whale-detail-dialog .el-dialog__header { flex: none; margin: 0; padding: 20px 24px 14px; border-bottom: 1px solid var(--detail-border); }
-.whale-detail-dialog .el-dialog__body { flex: 1; min-height: 0; padding: 20px 24px 26px; overflow: auto; color: inherit; }
+.whale-detail-dialog .el-dialog__body { flex: 1; min-height: 0; padding: 0 24px 26px; overflow: auto; color: inherit; }
 .whale-detail-dialog .el-dialog__headerbtn .el-dialog__close { color: #c5cfdb; }
 .whale-detail-dialog .dialog-header, .whale-detail-dialog .name-line { display: flex; align-items: center; }
 .whale-detail-dialog .dialog-header { justify-content: space-between; gap: 20px; }
@@ -597,30 +583,13 @@ async function copyAddress() {
 .whale-detail-dialog .address-button { width: fit-content; border: 0; padding: 0; color: var(--detail-muted); background: transparent; font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; cursor: pointer; }
 .whale-detail-dialog .address-button span { margin-left: 8px; color: #58a6ff; }
 .whale-detail-dialog .updated, .whale-detail-dialog .subtle, .whale-detail-dialog .footnote { color: var(--detail-muted); font-size: 12px; }
-.whale-detail-dialog .overview-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-.whale-detail-dialog .metric-card { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 17px; border: 1px solid var(--detail-border); border-radius: 12px; background: var(--detail-card); }
-.whale-detail-dialog .metric-label, .whale-detail-dialog .metric-card small { color: var(--detail-muted); font-size: 12px; }
-.whale-detail-dialog .metric-card strong { overflow: hidden; text-overflow: ellipsis; font: 700 21px ui-monospace, SFMono-Regular, Consolas, monospace; }
-.whale-detail-dialog .metric-card small { line-height: 1.4; }
 .whale-detail-dialog .positive { color: #0ecb81 !important; }
 .whale-detail-dialog .negative { color: #f6465d !important; }
-.whale-detail-dialog .direction-strip { display: flex; align-items: center; gap: 14px; margin: 14px 0; padding: 14px 16px; border: 1px solid var(--detail-border); border-radius: 10px; background: var(--detail-card); font-size: 13px; }
-.whale-detail-dialog .direction-title { color: #dce5ef; font-weight: 600; }
-.whale-detail-dialog .direction-bar { flex: 1; height: 8px; overflow: hidden; border-radius: 99px; background: #f6465d; }
-.whale-detail-dialog .direction-bar i { display: block; height: 100%; border-radius: inherit; background: #0ecb81; }
-.whale-detail-dialog .direction-note { margin-left: auto; }
-.whale-detail-dialog .chart-placeholder { min-height: 155px; padding: 18px; border: 1px solid var(--detail-border); border-radius: 12px; background: linear-gradient(180deg, #142238 0%, var(--detail-card) 100%); }
-.whale-detail-dialog .chart-placeholder > div { display: flex; justify-content: space-between; color: var(--detail-muted); font-size: 12px; }
-.whale-detail-dialog .chart-placeholder strong { color: #e6edf5; font-size: 14px; }
-.whale-detail-dialog .chart-placeholder p { display: grid; place-items: center; min-height: 90px; margin: 0; color: var(--detail-muted); font-size: 13px; text-align: center; }
-.whale-detail-dialog .detail-tabs { display: flex; gap: 6px; margin-top: 20px; border-bottom: 1px solid var(--detail-border); overflow-x: auto; }
+.whale-detail-dialog .detail-tabs { display: flex; position: sticky; top: 0; z-index: 5; background: var(--detail-bg); gap: 6px; margin-top: 0; border-bottom: 1px solid var(--detail-border); overflow-x: auto; }
 .whale-detail-dialog .detail-tabs button { flex: none; padding: 11px 15px; border: 0; border-radius: 8px 8px 0 0; color: var(--detail-muted); background: transparent; cursor: pointer; }
 .whale-detail-dialog .detail-tabs button.active { color: #e6edf5; background: var(--detail-card); font-weight: 600; }
 .whale-detail-dialog .tab-panel { min-height: 240px; padding-top: 16px; }
-.whale-detail-dialog .table-summary { display: flex; flex-wrap: wrap; gap: 28px; padding: 14px 16px; border: 1px solid var(--detail-border); border-bottom: 0; border-radius: 10px 10px 0 0; background: var(--detail-card); }
-.whale-detail-dialog .table-summary span { display: grid; gap: 5px; }
 .whale-detail-dialog .table-summary small, .whale-detail-dialog .panel-heading span { color: var(--detail-muted); font-size: 11px; }
-.whale-detail-dialog .table-summary b { font: 600 13px ui-monospace, SFMono-Regular, Consolas, monospace; }
 .whale-detail-dialog .table-scroll { overflow: auto; border: 1px solid var(--detail-border); border-radius: 0 0 10px 10px; }
 .whale-detail-dialog .table-scroll table { width: 100%; border-collapse: collapse; white-space: nowrap; }
 .whale-detail-dialog .table-scroll th, .whale-detail-dialog .table-scroll td { padding: 12px 14px; border-bottom: 1px solid #222b38; text-align: right; font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
@@ -628,35 +597,14 @@ async function copyAddress() {
 .whale-detail-dialog .table-scroll th:first-child, .whale-detail-dialog .table-scroll td:first-child { text-align: left; }
 .whale-detail-dialog .table-scroll tr:last-child td { border-bottom: 0; }
 .whale-detail-dialog .table-scroll tbody tr:hover { background: #1b2533; }
-.whale-detail-dialog .liq-distance-cell { display: grid; min-width: 90px; gap: 6px; }
-.whale-detail-dialog .liq-distance-label { display: flex; justify-content: space-between; gap: 8px; color: var(--detail-muted); font: 10px system-ui, sans-serif; }
-.whale-detail-dialog .liq-distance-label b { font: 600 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
-.whale-detail-dialog .liq-distance-track { height: 5px; overflow: hidden; border-radius: 99px; background: #293240; }
-.whale-detail-dialog .liq-distance-track i { display: block; height: 100%; border-radius: inherit; background: #0ecb81; transition: width .2s ease; }
-.whale-detail-dialog .liq-distance-track.liq-warning i { background: #f0b90b; }
-.whale-detail-dialog .liq-distance-track.liq-critical i { background: #f6465d; }
-.whale-detail-dialog .liq-distance-track.liq-unknown i { background: #626d7b; }
-.whale-detail-dialog .liq-warning { color: #f0b90b !important; }
-.whale-detail-dialog .liq-critical { color: #f6465d !important; }
-.whale-detail-dialog .liq-unknown { color: var(--detail-muted) !important; }
 .whale-detail-dialog .footnote { margin: 12px 0 0; line-height: 1.6; }
 .whale-detail-dialog .panel-heading { display: flex; justify-content: space-between; margin: 0 0 12px; }
 .whale-detail-dialog .loading-state { display: grid; min-height: 160px; place-items: center; color: var(--detail-muted); }
 .whale-detail-dialog .pager { display: flex; justify-content: flex-end; padding-top: 14px; }
-.whale-detail-dialog .unavailable-panel { display: grid; align-content: center; justify-items: center; gap: 10px; color: var(--detail-muted); text-align: center; }
-.whale-detail-dialog .unavailable-panel strong { color: #e6edf5; }
-.whale-detail-dialog .unavailable-panel p { max-width: 540px; font-size: 13px; line-height: 1.7; }
-.whale-detail-dialog .metrics-grid { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 20px; }
+.whale-detail-dialog .metrics-grid { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 20px; padding-top: 20px; }
 .whale-detail-dialog .left-metrics { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 .whale-detail-dialog .asset-card, .whale-detail-dialog .sentiment-card, .whale-detail-dialog .chart-card { border: 1px solid var(--detail-border); border-radius: 14px; background: var(--detail-card); }
-.whale-detail-dialog .asset-card { display: flex; flex-direction: column; gap: 14px; padding: 19px; }
-.whale-detail-dialog .card-title { display: flex; justify-content: space-between; align-items: center; color: var(--detail-muted); font-size: 13px; }
-.whale-detail-dialog .source-tag { padding: 3px 7px; border-radius: 5px; background: #202a38; font-size: 10px; }
-.whale-detail-dialog .asset-total { overflow: hidden; color: #e2e8f0; font: 700 26px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; }
-.whale-detail-dialog .account-switch { display: flex; gap: 5px; padding: 4px; border-radius: 8px; background: #0b0e14; }
-.whale-detail-dialog .account-switch span { flex: 1; padding: 8px 5px; border-radius: 5px; color: var(--detail-muted); font-size: 11px; text-align: center; }
 .whale-detail-dialog .account-switch .selected { color: #e2e8f0; background: #252e3c; }
-.whale-detail-dialog .account-switch .unavailable { color: #7e8998; }
 .whale-detail-dialog .sentiment-card { padding: 12px; }
 .whale-detail-dialog .sentiment-box { display: flex; justify-content: space-between; align-items: center; padding: 14px; border: 1px solid var(--detail-border); border-radius: 9px; background: #10151e; }
 .whale-detail-dialog .sentiment-text { display: flex; flex-direction: column; gap: 5px; }
@@ -700,14 +648,6 @@ async function copyAddress() {
 .whale-detail-dialog .chart-empty b { color: #c9d4e2; font-size: 13px; }
 .whale-detail-dialog .chart-empty span { color: var(--detail-muted); font-size: 11px; }
 .whale-detail-dialog .chart-foot { display: flex; justify-content: space-between; gap: 10px; color: var(--detail-muted); font-size: 11px; }
-.whale-detail-dialog .coin-cell { display: flex; flex-direction: column; gap: 5px; text-align: left; }
-.whale-detail-dialog .coin-cell b { color: #e2e8f0; font: 600 13px system-ui, sans-serif; }
-.whale-detail-dialog .coin-cell small, .whale-detail-dialog .sub-row { display: block; margin-top: 5px; color: #717d8d; font-size: 10px; }
-.whale-detail-dialog .missing-field { color: #778392 !important; }
-.whale-detail-dialog .results-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-.whale-detail-dialog .results-grid article { display: flex; flex-direction: column; gap: 10px; padding: 18px; border: 1px solid var(--detail-border); border-radius: 11px; background: var(--detail-card); }
-.whale-detail-dialog .results-grid small { color: var(--detail-muted); font-size: 12px; }
-.whale-detail-dialog .results-grid b { color: #e2e8f0; font: 700 18px ui-monospace, SFMono-Regular, Consolas, monospace; }
 @media (max-width: 760px) {
   .whale-detail-dialog.el-dialog { width: 100vw !important; height: 100vh; max-height: 100vh; top: 0; }
   .whale-detail-dialog .el-dialog__header { padding: 16px 16px 12px; }
@@ -716,13 +656,41 @@ async function copyAddress() {
   .whale-detail-dialog .chart-card { min-height: 270px; }
   .whale-detail-dialog .chart-header { flex-direction: column; }
   .whale-detail-dialog .time-filters { align-self: stretch; justify-content: space-between; }
-  .whale-detail-dialog .overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .whale-detail-dialog .results-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .whale-detail-dialog .metric-card { padding: 13px; }
-  .whale-detail-dialog .metric-card strong { font-size: 16px; }
-  .whale-detail-dialog .direction-strip { flex-wrap: wrap; gap: 9px; }
-  .whale-detail-dialog .direction-bar { order: 5; flex-basis: 100%; }
-  .whale-detail-dialog .direction-note { width: 100%; margin: 0; }
   .whale-detail-dialog .updated { display: none; }
+}
+.whale-detail-dialog .position-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,285px),1fr));gap:10px;padding:10px 0}
+.whale-detail-dialog .position-card{min-width:0;min-height:285px;aspect-ratio:1 / 1;box-sizing:border-box;display:flex;flex-direction:column;border:1px solid var(--detail-border,#293343);border-top:3px solid #42cba0;border-radius:9px;background:#111923;padding:14px;color:var(--detail-text,#e4ebf5)}
+.whale-detail-dialog .position-card-header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.whale-detail-dialog .position-card-header h3{margin:0 0 3px;font-size:17px;overflow-wrap:anywhere}
+.whale-detail-dialog .position-badges{display:flex;gap:7px;flex-shrink:0}
+.whale-detail-dialog .position-badges span{padding:3px 6px;border:1px solid #304050;border-radius:6px;font-size:11px;font-weight:700}
+.whale-detail-dialog .position-pnl{display:grid;gap:4px;margin:10px 0;padding:10px;background:#0c131d;border-radius:8px;font-size:12px;color:var(--detail-muted)}
+.whale-detail-dialog .position-pnl strong{font-size:21px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.whale-detail-dialog .position-pnl b{margin-left:6px;font-size:12px}
+.whale-detail-dialog .position-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:12px 0 0}
+.whale-detail-dialog .position-metrics dt{color:var(--detail-muted);font-size:11px;margin-bottom:3px}
+.whale-detail-dialog .position-metrics dd{margin:0;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+
+.whale-detail-dialog .account-summary{display:flex;gap:48px;margin-top:18px;flex-wrap:wrap}
+.whale-detail-dialog .account-summary>div{display:grid;gap:5px}
+.whale-detail-dialog .account-summary span{color:var(--detail-muted);font-size:12px}
+.whale-detail-dialog .account-summary strong{font-size:22px;font-variant-numeric:tabular-nums}
+.whale-detail-dialog .dialog-header{padding-right:32px}
+.whale-detail-dialog .position-toolbar{display:flex;align-items:center;gap:20px;flex-wrap:wrap;font-size:13px}
+.whale-detail-dialog .side-filters{display:flex;gap:4px}
+.whale-detail-dialog .side-filters button,.whale-detail-dialog .position-sort select{border:1px solid var(--detail-border);background:var(--detail-card);color:#aeb9c8;padding:7px 12px;border-radius:6px;cursor:pointer}
+.whale-detail-dialog .side-filters .selected{color:#e9f1ff;border-color:#4b83ff;background:#182840}
+.whale-detail-dialog .position-sort{margin-left:auto;color:var(--detail-muted)}
+.whale-detail-dialog .position-value{display:flex;gap:8px;justify-content:space-between;font-size:13px;flex-wrap:wrap}
+.whale-detail-dialog .position-value span{color:var(--detail-muted)}
+.whale-detail-dialog .position-more,.whale-detail-dialog .data-info{border:0;background:none;color:#899bb4;cursor:pointer}
+.whale-detail-dialog .position-more{margin-top:auto;align-self:flex-end;padding:10px 0 0;font-size:11px}
+@media(max-width:760px){
+ .whale-detail-dialog .account-summary{gap:16px;margin-top:12px}
+ .whale-detail-dialog .account-summary strong{font-size:17px}
+ .whale-detail-dialog .position-card{aspect-ratio:auto;min-height:0}
+ .whale-detail-dialog .position-toolbar{gap:12px}
+ .whale-detail-dialog .position-sort{margin-left:0}
+ .whale-detail-dialog .el-dialog__body{padding-top:0}
 }
 </style>

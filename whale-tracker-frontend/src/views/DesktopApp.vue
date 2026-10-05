@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { fetchQuotes, fetchAlertFlowSummary } from '@/api';
+import { fetchQuotes, fetchDirectionSummary, type DirectionSummary } from '@/api';
 import CoinPreferences from '@/components/CoinPreferences.vue';
 import ApiSettings from '@/components/ApiSettings.vue';
 import NewsList from '@/components/NewsList.vue';
@@ -26,7 +26,7 @@ import {
 import { useRealtime } from '@/composables/useRealtime';
 import type { RecoQuotes } from '@/utils/recommend';
 import { readFocusCoin } from '@/utils/recoPrefs';
-import { preferredCoinsState } from '@/utils/watchedCoins';
+import { preferredCoinsState, coinMatchesWatch } from '@/utils/watchedCoins';
 import { coinIconCandidates } from '@/utils/coinIcons';
 import { formatUsd } from '@/utils/format';
 import { unlockAlertSound } from '@/utils/alertSound';
@@ -71,20 +71,34 @@ const quotes = ref<RecoQuotes>({});
 const fundingRates = ref<Record<string, number>>({});
 const flowCoin = ref<string>(readFocusCoin());
 const flowWindow = ref<'15m' | '1h' | '4h' | '24h'>('1h');
+const alertWindowMs = computed(() => ({ '15m': 900000, '1h': 3600000, '4h': 14400000, '24h': 86400000 })[flowWindow.value]);
 const whaleSummary = computed(() => whaleStore.summary);
 const whaleSnapshotVersion = computed(() => whaleStore.revision);
-const whaleNetFlow = ref({ longUsd: 0, shortUsd: 0, netUsd: 0, events: 0, whales: 0 });
-let flowRequestSeq = 0;
-async function loadWhaleNetFlow() {
-  const seq = ++flowRequestSeq;
-  const data = await fetchAlertFlowSummary({
-    window: flowWindow.value,
-    coin: flowCoin.value === 'ALL' ? undefined : flowCoin.value,
-  }).catch(() => null);
-  if (seq !== flowRequestSeq || !data) return;
-  whaleNetFlow.value = data;
+
+const sideInfoTab = ref<'alerts' | 'macro'>('alerts');
+const unreadAlerts = ref(0);
+const directionData = ref<DirectionSummary | null>(null);
+const directionError = ref('');
+let directionRequest = 0;
+const flowWindowLabel = computed(() => ({ '15m': '近15分钟', '1h': '近1小时', '4h': '近4小时', '24h': '近24小时' })[flowWindow.value]);
+async function loadDirections() {
+  const seq = ++directionRequest;
+  try {
+    const result = await fetchDirectionSummary(flowWindow.value);
+    if (seq === directionRequest) { directionData.value = result; directionError.value = ''; }
+  } catch { if (seq === directionRequest) directionError.value = '方向统计读取失败，暂不展示旧窗口数据'; }
 }
-watch([flowWindow, flowCoin], () => { if (pageLoader) void loadWhaleNetFlow(); });
+function showLatestAlerts() {
+  sideInfoTab.value = 'alerts'; unreadAlerts.value = 0;
+  nextTick(() => newsListRef.value?.showLatest());
+}
+const whaleNetFlow = computed(() => {
+  const rows = (directionData.value?.coins || []).filter(row => coinMatchesWatch(row.coin, flowCoin.value === 'ALL' ? preferredCoinsState.value : [flowCoin.value]));
+  return rows.reduce((sum, row) => ({ longUsd: sum.longUsd + row.addLong, shortUsd: sum.shortUsd + row.addShort, netUsd: sum.netUsd + row.net, events: sum.events + row.legs }), { longUsd: 0, shortUsd: 0, netUsd: 0, events: 0 });
+});
+async function loadWhaleNetFlow() { await loadDirections(); }
+watch(flowWindow, () => { directionData.value = null; if (pageLoader) void loadWhaleNetFlow(); });
+watch(flowCoin, (coin) => { whaleListRef.value?.setCoinFilter(coin); newsListRef.value?.setCoinFilter(coin); if (pageLoader) void loadWhaleNetFlow(); });
 
 const loginUser = ref('');
 const loginPass = ref('');
@@ -173,6 +187,7 @@ const { status: transportStatus, start: startRealtime, stop: stopRealtime } = us
     if (outcome === 'resync') void recoverState();
     else if (outcome === 'applied') {
       newsListRef.value?.animateLiveAlerts(animated);
+      if (sideInfoTab.value === 'macro') unreadAlerts.value += animated.filter(row => row.isNew).length;
       if (msg.alerts?.length || msg.removedAlertIds?.length) scheduleFlowRefresh();
       resonanceRef.value?.refresh();
     }
@@ -247,6 +262,7 @@ watch(sideTab, (tab) => { if (tab !== 'strategy' && sessionStarted && pageLoader
 
 function stopAppSession() {
   sessionStarted = false;
+  directionRequest++; directionData.value = null; directionError.value = ''; unreadAlerts.value = 0;
   sessionGeneration += 1;
   recoveringState = false;
   stateCatchupPending = false;
@@ -403,7 +419,7 @@ onUnmounted(() => {
     <div class="layout" :class="{ 'is-tradfi': sideTab !== 'virtual' }">
       <div v-show="sideTab === 'virtual'" class="virtual-view">
       <header class="topbar">
-        <div class="net-position-banner" :title="`所选时段内服务器已采集的原生永续开仓/加仓名义金额：多头 +${formatUsd(whaleNetFlow.longUsd)}，空头 −${formatUsd(whaleNetFlow.shortUsd)}；不含减仓和平仓，不代表完整市场资金流入`">
+        <div class="net-position-banner" :title="`本地已采集成交，净额=增多−增空−减多+减空；主动增仓：多头 +${formatUsd(whaleNetFlow.longUsd)}，空头 −${formatUsd(whaleNetFlow.shortUsd)}；不是资金净流入，不代表完整市场`">
           <div class="net-flow-filters">
             <select v-model="flowWindow" aria-label="净流入统计时段">
               <option value="15m">15分钟</option>
@@ -416,11 +432,12 @@ onUnmounted(() => {
               <option v-for="coin in preferredCoinsState" :key="coin" :value="coin">{{ coin }}</option>
             </select>
           </div>
-          <div class="net-flow-value" :class="whaleNetFlow.netUsd >= 0 ? 'net-long' : 'net-short'">
+          <div v-if="directionData && !directionError" class="net-flow-value" :class="whaleNetFlow.netUsd >= 0 ? 'net-long' : 'net-short'">
             <strong>{{ whaleNetFlow.netUsd < 0 ? '−' : '+' }}{{ formatUsd(Math.abs(whaleNetFlow.netUsd)) }}</strong>
-            <span>{{ whaleNetFlow.netUsd >= 0 ? '净流入' : '净流出' }}</span>
-            <small>{{ whaleNetFlow.whales }} 巨鲸 · {{ whaleNetFlow.events }} 笔</small>
+            <span>方向变化</span>
+            <small>{{ whaleNetFlow.events }} 段成交 · 含减平仓</small>
           </div>
+          <small v-else class="flow-empty">{{ directionError ? '方向统计暂不可用' : '正在读取方向统计…' }}</small>
         </div>
         <WhaleResonanceBanner
           ref="resonanceRef"
@@ -446,19 +463,8 @@ onUnmounted(() => {
 
       <div class="whales-shell">
         <div class="grid">
-          <DataModule
-            ref="macroRef"
-            :whales="whaleStore.displayWhales"
-            :loading="whaleStore.loading"
-            :selected-id="whaleStore.selectedWhaleId"
-            :selected-name="whaleStore.selectedWhaleName"
-            :updated-at="whaleStore.updatedAt"
-            :quotes="quotes"
-            :boot-ready="true"
-            @focus-whale="onFocusWhaleCard"
-          />
-
           <WhaleList
+            class="whale-area"
             ref="whaleListRef"
             :whales="whaleStore.displayWhales"
             :loading="whaleStore.loading"
@@ -471,8 +477,35 @@ onUnmounted(() => {
             @focus-whale="onFocusWhaleCard"
           />
 
+          <section class="side-info">
+            <nav class="side-info-tabs" aria-label="侧栏信息">
+              <button :class="{ active: sideInfoTab === 'alerts' }" @click="sideInfoTab = 'alerts'">异动记录 <small v-if="unreadAlerts">新增 {{ unreadAlerts }} 条</small></button>
+              <button :class="{ active: sideInfoTab === 'macro' }" @click="sideInfoTab = 'macro'">宏观数据</button>
+            </nav>
+            <button v-if="unreadAlerts && sideInfoTab === 'alerts'" class="new-alerts-link" @click="showLatestAlerts">查看新异动</button>
+            <div v-show="sideInfoTab === 'macro'" class="side-info-pane">
+          <DataModule
+            ref="macroRef"
+            :whales="whaleStore.displayWhales"
+            :loading="whaleStore.loading"
+            :selected-id="whaleStore.selectedWhaleId"
+            :selected-name="whaleStore.selectedWhaleName"
+            :updated-at="whaleStore.updatedAt"
+            :quotes="quotes"
+            :boot-ready="true"
+            @focus-whale="onFocusWhaleCard"
+          />
+
+            </div>
+            <div v-show="sideInfoTab === 'alerts'" class="side-info-pane">
           <NewsList
+            :direction-data="directionData"
+            :direction-error="directionError"
+            :direction-label="flowWindowLabel"
+            @retry-direction="loadDirections"
             ref="newsListRef"
+            :linked-coin="flowCoin"
+            :window-ms="alertWindowMs"
             :alerts="whaleStore.alertHistory"
             :whales="whaleStore.enabledWhales"
             :funding-rates="fundingRates"
@@ -482,6 +515,8 @@ onUnmounted(() => {
             @locate-whale="onFocusWhaleCard"
             @focus-whale="onFocusWhale"
           />
+            </div>
+          </section>
         </div>
       </div>
       </div>
@@ -856,11 +891,8 @@ onUnmounted(() => {
 .grid {
   flex: 1;
   display: grid;
-  /* 左栏 -80px，右栏 +80px（相对原先等宽左右） */
-  grid-template-columns:
-    minmax(120px, calc((100% - 24px) * 0.25 - 80px))
-    minmax(0, calc((100% - 24px) * 0.5))
-    minmax(200px, calc((100% - 24px) * 0.25 + 80px));
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 28%);
+  grid-template-rows: minmax(0, 1fr);
   gap: 12px;
   width: 100%;
   min-width: 0;
@@ -894,4 +926,6 @@ onUnmounted(() => {
     overflow: visible;
   }
 }
+.whale-area{grid-column:1;grid-row:1}.side-info{grid-column:2;grid-row:1;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:10px;background:var(--card)}.side-info-tabs{display:flex;flex:none;border-bottom:1px solid var(--border)}.side-info-tabs button{flex:1;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--muted);cursor:pointer;padding:13px 8px;font:inherit;font-size:14px}.side-info-tabs button.active{color:var(--accent);border-bottom-color:var(--accent)}.side-info-tabs small{font-size:10px;color:var(--accent)}.side-info-pane{flex:1;min-height:0;display:flex;flex-direction:column}.side-info-pane>*{height:100%;min-height:0}.new-alerts-link{border:0;background:var(--panel-2);color:var(--accent);padding:8px;cursor:pointer}
+@media(max-width:1280px){.grid{grid-template-columns:minmax(0,1fr);grid-template-rows:auto}.whale-area,.side-info{grid-column:1;grid-row:auto}.side-info-pane{min-height:400px;max-height:750px;overflow:auto}}
 </style>

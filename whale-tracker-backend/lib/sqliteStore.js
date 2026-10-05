@@ -405,12 +405,11 @@ function updateFillProjection(trades) {
     const key = canonicalTradeId(trade);
     if (!key) continue;
     const events = trade.source === 'onchain' || Number(trade.time) < cutoff ? [] : eventsFromTrade(trade)
-      .filter(event => OPEN_KINDS.has(event.kind))
       .map(event => ({ ...event, payload: { price: trade.price, whaleName: trade.whaleName, from: trade.from || trade.address } }));
     if (events.length) fillProjection.set(key, events); else fillProjection.delete(key);
   }
 }
-function fillFacts(since, until) {
+function fillFacts(since, until, includeExits = false) {
   const database = getDb();
   if (!fillProjection || database !== fillProjectionDb) {
     fillProjection = new Map(); fillProjectionDb = database;
@@ -424,7 +423,7 @@ function fillFacts(since, until) {
   }
   const result = [];
   for (const events of fillProjection.values()) for (const event of events) {
-    if (event.time >= Math.max(since, cutoff) && event.time <= until) result.push(event);
+    if ((includeExits || OPEN_KINDS.has(event.kind)) && event.time >= Math.max(since, cutoff) && event.time <= until) result.push(event);
   }
   return result;
 }
@@ -1257,6 +1256,7 @@ module.exports = {
   loadRecentEvents,
   loadRecentAlerts,
   loadAlertFlowSummary,
+  loadDirectionSummary: (since, until) => require('./directionSummary').aggregateDirectionFacts(fillFacts(since, until, true)),
   loadPagedAlerts,
   loadDbBrowse,
   loadFillsByWhale,

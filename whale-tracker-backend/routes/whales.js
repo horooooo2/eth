@@ -56,6 +56,22 @@ router.get('/resonance', (req, res) => {
   catch (err) { console.error('[GET /api/whales/resonance]', err); res.status(500).json({ error: '读取共振信号失败' }); }
 });
 
+// Small response cache; all readers share the canonical in-memory execution projection.
+const directionCache = new Map();
+router.get('/direction-summary', (req, res) => {
+  const durations = { '15m': 900000, '1h': 3600000, '4h': 14400000, '24h': 86400000 };
+  const windowKey = String(req.query.window || '1h');
+  if (!durations[windowKey]) return res.status(400).json({ error: '不支持的时间范围' });
+  try {
+    const now = Date.now(), cached = directionCache.get(windowKey);
+    if (cached && now - cached.asOf < 3000) return res.json(cached);
+    const sinceMs = now - durations[windowKey];
+    const result = { ...require('../lib/sqliteStore').loadDirectionSummary(sinceMs, now), sinceMs, untilMs: now, asOf: now,
+      basis: 'stored-executions', coverage: 'locally-observed', executionCoverage: require('../lib/fillBackfill').getCoverageStatus() };
+    directionCache.set(windowKey, result); res.json(result);
+  } catch (err) { console.error('[direction-summary]', err); res.status(500).json({ error: '方向统计暂不可用' }); }
+});
+
 /** 净流入资金只查服务器异动库，时间窗口和币种由参数明确限定。 */
 router.get('/alert-history/summary', (req, res) => {
   try {

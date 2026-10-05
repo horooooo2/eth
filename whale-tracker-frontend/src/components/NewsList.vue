@@ -2,6 +2,8 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Refresh } from '@element-plus/icons-vue';
+import WhaleDirectionBoard from '@/components/WhaleDirectionBoard.vue';
+import type { DirectionSummary } from '@/api';
 import type { WhaleProfile } from '@/types';
 import {
   normalizeStoredAlert,
@@ -44,6 +46,11 @@ const props = defineProps<{
   whales?: WhaleProfile[];
   fundingRates?: Record<string, number>;
   bottomPanel?: boolean;
+  linkedCoin?: string;
+  windowMs?: number;
+  directionData?: DirectionSummary | null;
+  directionError?: string;
+  directionLabel?: string;
   filterWhaleId?: string;
   /** 巨鲸首屏就绪后再拉异动 */
   bootReady?: boolean;
@@ -52,6 +59,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
+  retryDirection: [];
   focusWhale: [whale: { id: string; name: string }];
   locateWhale: [payload: { id: string; name: string; coin?: string }];
 }>();
@@ -61,6 +69,7 @@ const preferredCoins = preferredCoinsState;
 const alertSideFilter = ref<'all' | 'long' | 'short'>('all');
 const openOnly = ref(false);
 const alertCoinFilter = ref<'all' | string>('all');
+watch(() => props.linkedCoin, coin => { if (coin) alertCoinFilter.value = coin === 'ALL' ? 'all' : coin; }, { immediate: true });
 const alertMinUsd = ref(readAlertMinUsd());
 const ALERT_DISPLAY_LIMIT = 100;
 const activeAlertId = ref('');
@@ -101,12 +110,9 @@ let nowTickTimer: ReturnType<typeof setInterval> | undefined;
 
 onMounted(async () => {
   const s = getAuthUiSettings();
-  if (s.alertSideFilter === 'long' || s.alertSideFilter === 'short') {
-    alertSideFilter.value = s.alertSideFilter;
-  }
-  if (typeof s.openOnly === 'boolean') {
-    openOnly.value = s.openOnly;
-  }
+  // Removed controls must not leave invisible persisted filters active.
+  alertSideFilter.value = 'all';
+  openOnly.value = false;
   if (typeof s.alertCoinFilter === 'string' && s.alertCoinFilter) {
     alertCoinFilter.value = s.alertCoinFilter;
   }
@@ -160,6 +166,7 @@ async function loadAlertPage(silent = false) {
       side: alertSideFilter.value,
       coins: selectedCoin ? [...new Set([selectedCoin, `K${normalizedCoin}`, `U${normalizedCoin}`])] : undefined,
       excludeExotic: true,
+      sinceMs: props.windowMs ? Date.now() - props.windowMs : undefined,
     });
     if (seq !== alertReqSeq) return;
     const list = (data.alerts || [])
@@ -267,16 +274,6 @@ const alertCoinCounts = computed(() => {
   return counts;
 });
 
-const alertSideCounts = computed(() => ({
-  long: facets.value.long,
-  short: facets.value.short,
-}));
-
-function toggleSideFilter(side: 'long' | 'short') {
-  alertSideFilter.value = alertSideFilter.value === side ? 'all' : side;
-}
-
-
 const alertRefreshing = ref(false);
 
 /** 只重新请求异动列表当前页；不触发巨鲸仓位刷新或批次加载。 */
@@ -336,6 +333,7 @@ watch(
     alertCoinFilter,
     alertMinUsd,
     () => props.filterWhaleId,
+    () => props.windowMs,
     preferredCoins,
   ],
   () => {
@@ -366,6 +364,7 @@ function alertMatchesListFilters(alert: WhaleAlert) {
 
 function eligibleItems(alert: WhaleAlert) {
   return (alert.items || []).filter((item) => {
+    if (props.windowMs && (Number(item.time) || Number(alert.at)) < nowTick.value - props.windowMs) return false;
     if (isExoticAsset(String(item.coin || ''))) return false;
     if (alertCoinFilter.value !== 'all' && !coinMatchesWatch(item.coin, [alertCoinFilter.value])) return false;
     if (openOnly.value && item.kind !== 'open') return false;
@@ -379,6 +378,8 @@ function hasListEligibleItem(alert: WhaleAlert) {
 }
 
 defineExpose({
+  setCoinFilter: (coin: string) => { alertCoinFilter.value = coin === 'ALL' ? 'all' : coin; },
+  showLatest: () => { document.querySelector('.news-scroll')?.scrollTo({ top: 0, behavior: 'smooth' }); },
   initialize,
   animateLiveAlerts,
   reloadAlerts: (silent = true) => loadAlertPage(silent),
@@ -495,35 +496,7 @@ function alertFundingWarn(row: {
 
     <div class="tab-panel">
       <div class="alert-toolbar">
-        <div class="side-filter">
-          <button
-            type="button"
-            class="side-chip long"
-            :class="{ on: alertSideFilter === 'long' }"
-            @click="toggleSideFilter('long')"
-          >
-            <span class="chip-text">多</span>
-            <span class="chip-count">{{ alertSideCounts.long }}</span>
-          </button>
-          <button
-            type="button"
-            class="open-text-toggle"
-            :class="{ on: openOnly }"
-            title="只看开仓"
-            @click="openOnly = !openOnly"
-          >
-            开
-          </button>
-          <button
-            type="button"
-            class="side-chip short"
-            :class="{ on: alertSideFilter === 'short' }"
-            @click="toggleSideFilter('short')"
-          >
-            <span class="chip-text">空</span>
-            <span class="chip-count">{{ alertSideCounts.short }}</span>
-          </button>
-        </div>
+        <WhaleDirectionBoard :data="directionData || null" :error="directionError || ''" :coin="alertCoinFilter" :window-label="props.directionLabel || ''" @retry="emit('retryDirection')" />
         <div v-if="filterWhaleName" class="whale-link-chip" :title="filterWhaleName">
           <span class="chip-label">联动</span>
           <span class="chip-name">{{ filterWhaleName }}</span>
@@ -1338,6 +1311,7 @@ function alertFundingWarn(row: {
   font-size: 16px;
   line-height: 1.7;
 }
+.alert-toolbar{flex-direction:column;align-items:stretch}.alert-toolbar :deep(.direction-board){width:100%}
 </style>
 
 <style scoped>
@@ -1358,4 +1332,5 @@ function alertFundingWarn(row: {
 @media (prefers-reduced-motion: reduce) {
   .alert-item.live-new, .alert-item.live-update { animation: none; outline: 1px solid rgba(96, 165, 250, .55); outline-offset: -1px; }
 }
+.alert-toolbar{flex-direction:column;align-items:stretch}.alert-toolbar :deep(.direction-board){width:100%}
 </style>
