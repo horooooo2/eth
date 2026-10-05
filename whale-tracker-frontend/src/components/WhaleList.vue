@@ -75,7 +75,7 @@ const positionDialog = ref<{
 } | null>(null);
 const preferredCoins = preferredCoinsState;
 const expandedEntryKeys = ref<Record<string, boolean>>({});
-const HIGHLIGHT_MS = 2600;
+const HIGHLIGHT_MS = 5000;
 const highlightedId = ref<string | null>(null);
 let focusSeq = 0;
 let highlightTimer: ReturnType<typeof setTimeout> | null = null;
@@ -460,12 +460,15 @@ async function focusWhale(payload: { id: string; coin?: string }) {
   directionFilter.value = 'all';
   coinFilter.value = 'all';
   expandedIds.value = { ...expandedIds.value, [payload.id]: true };
-  flashWhaleCard(payload.id);
+  // Freeze ordering and materialize card heights before measuring the target.
+  // content-visibility's estimated heights otherwise shift during a long scroll.
+  highlightedId.value = payload.id;
   await nextTick();
   if (seq !== focusSeq) return;
   const el = document.getElementById('whale-card-' + payload.id);
-  if (!el) { ElMessage.warning('未找到对应巨鲸卡片'); return; }
-  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (!el) { clearLocatedWhale(); ElMessage.warning('未找到对应巨鲸卡片'); return; }
+  el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'nearest' });
+  flashWhaleCard(payload.id);
 }
 
 defineExpose({ focusWhale, initialize });
@@ -565,6 +568,7 @@ defineExpose({ focusWhale, initialize });
     <div
       v-else
       class="list"
+      :class="{ locating: highlightedId !== null }"
       @mouseenter="listHovered = true"
       @mouseleave="listHovered = false"
     >
@@ -1041,7 +1045,18 @@ defineExpose({ focusWhale, initialize });
 .whale-item.locate-flash {
   content-visibility: visible;
   border-color: var(--accent);
-  animation: whale-locate-flash 2.6s ease-out;
+  animation: whale-locate-flash 5s ease-out;
+}
+.list.locating .whale-item {
+  content-visibility: visible;
+}
+@media (max-width: 1280px) {
+  /* In the stacked layout these cards precede the alerts in the same page.
+     Estimated heights would move alert links while the user scrolls/clicks. */
+  .whale-item {
+    content-visibility: visible;
+    contain-intrinsic-size: none;
+  }
 }
 @keyframes whale-locate-flash {
   0%,
