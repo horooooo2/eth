@@ -1,7 +1,11 @@
 import { onUnmounted, ref } from 'vue';
 import type { StateCursor, WhaleStateCommit } from '@/utils/whaleState';
 
+import type { ObservationSnapshot, ObservationCommit } from '@/types/whaleObservation';
+
 export type RealtimeMessage =
+  | ObservationSnapshot
+  | ObservationCommit
   | { type: 'hello'; epoch: string; seq: number }
   | { type: 'pong'; at?: number }
   | { type: 'caughtUp'; epoch: string; seq: number }

@@ -33,6 +33,19 @@ router.use((req, res, next) => {
   next();
 });
 
+router.get('/observations', (_req, res) => {
+  res.set('Cache-Control', 'no-store').json(require('../lib/whaleObservationWorker').snapshot());
+});
+router.get('/observations/:id/evidence', (req, res) => {
+  const offset = Number(req.query.offset || 0);
+  if (!/^[a-f0-9]{32}$/.test(req.params.id) || !Number.isSafeInteger(offset) || offset < 0 || offset > 100000) return res.status(400).json({error:'无效查询'});
+  try {
+    const result = require('../lib/whaleObservationStore').evidence(require('../lib/db').getDb(), req.params.id, offset);
+    if (!result) return res.status(404).json({error:'记录已合并、撤回或过期，请刷新列表'});
+    res.set('Cache-Control','no-store').json(result);
+  } catch { res.status(503).json({error:'成交依据暂不可用'}); }
+});
+
 router.get('/bootstrap', (_req, res) => {
   try { res.set('Cache-Control', 'no-store').json(whaleSync.bootstrap()); }
   catch (err) { console.error('[whales/bootstrap]', err); res.status(503).json({ error: '巨鲸快照暂不可用，请稍后重试' }); }

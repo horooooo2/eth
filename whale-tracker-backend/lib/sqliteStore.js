@@ -951,6 +951,7 @@ function persistTradesIncremental(trades = []) {
         payload_json: safeJson(trade),
       });
       fills += 1;
+      require('./whaleObservationStore').recordInput(database, trade);
       for (const event of eventsFromTrade(trade)) {
         if (!existsEvent.get(event.id)) added += 1;
         upsertEvent.run({
@@ -1129,6 +1130,7 @@ function persistModePayload(data = {}, updatedAt = Date.now(), options = {}) {
         source: trade.source ? String(trade.source) : 'hyperliquid',
         payload_json: safeJson(trade),
       });
+      require('./whaleObservationStore').recordInput(database, trade);
       for (const event of eventsFromTrade(trade)) {
         if (!existsEvent.get(event.id)) added += 1;
         upsertEvent.run({

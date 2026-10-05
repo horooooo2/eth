@@ -45,6 +45,7 @@ function attachRealtimeHub(httpServer) {
     socket.on('pong', () => { socket.alive = true; });
     publicClients.add(socket);
     try {
+      safeSend(socket, require('./whaleObservationWorker').snapshot());
       safeSend(socket, { type: 'hello', ...sync.stream.cursor(), at: Date.now(), clients: publicClients.size });
     } catch {
       // ignore

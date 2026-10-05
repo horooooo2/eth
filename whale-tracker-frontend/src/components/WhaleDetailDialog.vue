@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import AiAnalyzeButton from '@/components/AiAnalyzeButton.vue';
+import { buildWhaleAiPayload } from '@/utils/whaleAiPayload';
 import { ElMessage } from 'element-plus';
 import {
   fetchWhaleOpenOrders,
@@ -19,6 +21,7 @@ const props = defineProps<{ modelValue: boolean; whale: WhaleProfile | null; sna
 const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>();
 
 const activeTab = ref('contracts');
+const whaleAiPayload = computed(() => props.whale ? buildWhaleAiPayload(props.whale) : null);
 const tradePage = ref(1);
 const tradeLimit = 30;
 const tradesResult = ref<PagedTradesResponse | null>(null);
@@ -401,7 +404,7 @@ async function copyAddress() {
           </div>
           <button class="address-button" type="button" @click="copyAddress">{{ addressShort }} <span>复制</span></button>
         </div>
-        <div class="updated">列表快照 {{ snapshotUpdatedAt ? formatRelativeAgo(snapshotUpdatedAt) : '时间未知' }}{{ whale.error ? ' · 部分数据异常' : '' }}</div>
+        <div class="header-tools"><AiAnalyzeButton v-if="whaleAiPayload" :key="whale.id" source="whale" label="AI 分析巨鲸" :title="whaleAiPayload.title" :content="whaleAiPayload.content" :meta="whaleAiPayload.meta" /><div class="updated">列表快照 {{ snapshotUpdatedAt ? formatRelativeAgo(snapshotUpdatedAt) : '时间未知' }}{{ whale.error ? ' · 部分数据异常' : '' }}</div></div>
       </div>
       <div v-if="whale" class="account-summary">
         <div><span>合约权益</span><strong>{{ formatMoney(whale.contractAccountValue) }}</strong></div>
@@ -693,4 +696,5 @@ async function copyAddress() {
  .whale-detail-dialog .position-sort{margin-left:0}
  .whale-detail-dialog .el-dialog__body{padding-top:0}
 }
+.whale-detail-dialog .header-tools{display:flex;align-items:center;gap:14px;flex-wrap:wrap;justify-content:flex-end}.whale-detail-dialog .header-tools .ai-chip{height:32px;padding:0 14px;font-size:12px}
 </style>

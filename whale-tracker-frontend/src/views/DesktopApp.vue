@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { fetchQuotes, fetchDirectionSummary, type DirectionSummary } from '@/api';
+import { http, fetchQuotes, fetchDirectionSummary, type DirectionSummary } from '@/api';
 import CoinPreferences from '@/components/CoinPreferences.vue';
 import ApiSettings from '@/components/ApiSettings.vue';
 import NewsList from '@/components/NewsList.vue';
@@ -10,6 +10,9 @@ import WhaleResonanceBanner from '@/components/WhaleResonanceBanner.vue';
 import WhaleAlertDock from '@/components/WhaleAlertDock.vue';
 import WhaleList from '@/components/WhaleList.vue';
 import DataModule from '@/components/DataModule.vue';
+import WhaleObservationPanel from '@/components/WhaleObservationPanel.vue';
+import { applyObservationCommit } from '@/utils/whaleObservationState';
+import type { ObservationSnapshot } from '@/types/whaleObservation';
 import TradFiBoard from '@/components/TradFiBoard.vue';
 import WhaleDetailDialog from '@/components/WhaleDetailDialog.vue';
 import { createPageLoadScheduler } from '@/utils/pageLoadScheduler';
@@ -75,8 +78,32 @@ const alertWindowMs = computed(() => ({ '15m': 900000, '1h': 3600000, '4h': 1440
 const whaleSummary = computed(() => whaleStore.summary);
 const whaleSnapshotVersion = computed(() => whaleStore.revision);
 
-const sideInfoTab = ref<'alerts' | 'macro'>('alerts');
-const unreadAlerts = ref(0);
+const observationSnapshot = ref<ObservationSnapshot | null>(null);
+let observationRecovery: Promise<void> | null = null;
+let observationGeneration = 0;
+let observationRequiredSeq = 0;
+let observationRetry: ReturnType<typeof setTimeout> | undefined;
+function recoverObservations() {
+  if (observationRecovery) return;
+  const generation = observationGeneration;
+  observationRecovery = http.get<ObservationSnapshot>('/whales/observations').then(({ data }) => {
+    if (generation !== observationGeneration) return;
+    const current = observationSnapshot.value;
+    if (!current || current.epoch !== data.epoch || data.seq > current.seq) observationSnapshot.value = data;
+  }).catch(() => undefined).finally(() => {
+    observationRecovery = null;
+    if (generation === observationGeneration && sessionStarted && (observationSnapshot.value?.seq ?? -1) < observationRequiredSeq) {
+      clearTimeout(observationRetry);
+      observationRetry = setTimeout(recoverObservations, 2000);
+    }
+  });
+}
+const sideInfoTab = ref<'observations' | 'macro'>('observations');
+function openObservationWhale(id: string) {
+  const whale = whaleStore.whalesById[id];
+  if (whale) onSelectWhale(whale);
+  else ElMessage.info('该地址已不在当前监控列表中，成交依据仍可查看');
+}
 const directionData = ref<DirectionSummary | null>(null);
 const directionError = ref('');
 let directionRequest = 0;
@@ -87,10 +114,6 @@ async function loadDirections() {
     const result = await fetchDirectionSummary(flowWindow.value);
     if (seq === directionRequest) { directionData.value = result; directionError.value = ''; }
   } catch { if (seq === directionRequest) directionError.value = '方向统计读取失败，暂不展示旧窗口数据'; }
-}
-function showLatestAlerts() {
-  sideInfoTab.value = 'alerts'; unreadAlerts.value = 0;
-  nextTick(() => newsListRef.value?.showLatest());
 }
 const whaleNetFlow = computed(() => {
   const rows = (directionData.value?.coins || []).filter(row => coinMatchesWatch(row.coin, flowCoin.value === 'ALL' ? preferredCoinsState.value : [flowCoin.value]));
@@ -175,6 +198,19 @@ function scheduleFlowRefresh() {
   flowRefreshTimer = setTimeout(() => { flowRefreshTimer = undefined; if (sessionStarted) void loadWhaleNetFlow(); }, 1000);
 }
 const { status: transportStatus, start: startRealtime, stop: stopRealtime } = useRealtime((msg) => {
+  if (msg.type === 'observationSnapshot') {
+    observationGeneration++; observationRequiredSeq=msg.seq;
+    clearTimeout(observationRetry);
+    observationSnapshot.value = msg;
+    return;
+  }
+  if (msg.type === 'observationCommit') {
+    observationRequiredSeq=Math.max(observationRequiredSeq,msg.seq);
+    const next = applyObservationCommit(observationSnapshot.value, msg);
+    if (next) observationSnapshot.value = next;
+    else recoverObservations();
+    return;
+  }
   if (msg.type === 'stateCommit') {
     if (stateCatchupPending) return;
     // Animate only server-marked live executions, never bootstrap/history replay.
@@ -187,7 +223,6 @@ const { status: transportStatus, start: startRealtime, stop: stopRealtime } = us
     if (outcome === 'resync') void recoverState();
     else if (outcome === 'applied') {
       newsListRef.value?.animateLiveAlerts(animated);
-      if (sideInfoTab.value === 'macro') unreadAlerts.value += animated.filter(row => row.isNew).length;
       if (msg.alerts?.length || msg.removedAlertIds?.length) scheduleFlowRefresh();
       resonanceRef.value?.refresh();
     }
@@ -262,7 +297,8 @@ watch(sideTab, (tab) => { if (tab !== 'strategy' && sessionStarted && pageLoader
 
 function stopAppSession() {
   sessionStarted = false;
-  directionRequest++; directionData.value = null; directionError.value = ''; unreadAlerts.value = 0;
+  observationGeneration++; observationSnapshot.value = null; observationRequiredSeq=0; clearTimeout(observationRetry);
+  directionRequest++; directionData.value = null; directionError.value = '';
   sessionGeneration += 1;
   recoveringState = false;
   stateCatchupPending = false;
@@ -463,26 +499,14 @@ onUnmounted(() => {
 
       <div class="whales-shell">
         <div class="grid">
-          <WhaleList
-            class="whale-area"
-            ref="whaleListRef"
-            :whales="whaleStore.displayWhales"
-            :loading="whaleStore.loading"
-            :selected-id="whaleStore.selectedWhaleId"
-            :quotes="quotes"
-            :server-summary="whaleSummary"
-            :snapshot-version="whaleSnapshotVersion"
-            @detail="onSelectWhale"
-            @select-transfers="onSelectTransfers"
-            @focus-whale="onFocusWhaleCard"
-          />
-
           <section class="side-info">
-            <nav class="side-info-tabs" aria-label="侧栏信息">
-              <button :class="{ active: sideInfoTab === 'alerts' }" @click="sideInfoTab = 'alerts'">异动记录 <small v-if="unreadAlerts">新增 {{ unreadAlerts }} 条</small></button>
+            <nav class="side-info-tabs" aria-label="市场观察">
+              <button :class="{ active: sideInfoTab === 'observations' }" @click="sideInfoTab = 'observations'">巨鲸观察</button>
               <button :class="{ active: sideInfoTab === 'macro' }" @click="sideInfoTab = 'macro'">宏观数据</button>
             </nav>
-            <button v-if="unreadAlerts && sideInfoTab === 'alerts'" class="new-alerts-link" @click="showLatestAlerts">查看新异动</button>
+            <div v-show="sideInfoTab === 'observations'" class="side-info-pane">
+              <WhaleObservationPanel :snapshot="observationSnapshot" :active="sideInfoTab === 'observations' && sideTab === 'virtual'" :connected="realtimeStatus === 'connected'" :linked-coin="flowCoin" @locate="onFocusWhaleCard" @detail="openObservationWhale" />
+            </div>
             <div v-show="sideInfoTab === 'macro'" class="side-info-pane">
           <DataModule
             ref="macroRef"
@@ -497,7 +521,25 @@ onUnmounted(() => {
           />
 
             </div>
-            <div v-show="sideInfoTab === 'alerts'" class="side-info-pane">
+          </section>
+
+          <WhaleList
+            class="whale-area"
+            ref="whaleListRef"
+            :whales="whaleStore.displayWhales"
+            :loading="whaleStore.loading"
+            :selected-id="whaleStore.selectedWhaleId"
+            :quotes="quotes"
+            :server-summary="whaleSummary"
+            :snapshot-version="whaleSnapshotVersion"
+            @detail="onSelectWhale"
+            @select-transfers="onSelectTransfers"
+            @focus-whale="onFocusWhaleCard"
+          />
+
+          <section class="alerts-area" aria-label="异动记录">
+            <header class="alerts-heading">异动记录</header>
+            <div class="side-info-pane">
           <NewsList
             :direction-data="directionData"
             :direction-error="directionError"
@@ -891,7 +933,7 @@ onUnmounted(() => {
 .grid {
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 28%);
+  grid-template-columns: minmax(280px, 25%) minmax(0, 1fr) minmax(300px, 28%);
   grid-template-rows: minmax(0, 1fr);
   gap: 12px;
   width: 100%;
@@ -926,6 +968,17 @@ onUnmounted(() => {
     overflow: visible;
   }
 }
-.whale-area{grid-column:1;grid-row:1}.side-info{grid-column:2;grid-row:1;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:10px;background:var(--card)}.side-info-tabs{display:flex;flex:none;border-bottom:1px solid var(--border)}.side-info-tabs button{flex:1;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--muted);cursor:pointer;padding:13px 8px;font:inherit;font-size:14px}.side-info-tabs button.active{color:var(--accent);border-bottom-color:var(--accent)}.side-info-tabs small{font-size:10px;color:var(--accent)}.side-info-pane{flex:1;min-height:0;display:flex;flex-direction:column}.side-info-pane>*{height:100%;min-height:0}.new-alerts-link{border:0;background:var(--panel-2);color:var(--accent);padding:8px;cursor:pointer}
-@media(max-width:1280px){.grid{grid-template-columns:minmax(0,1fr);grid-template-rows:auto}.whale-area,.side-info{grid-column:1;grid-row:auto}.side-info-pane{min-height:400px;max-height:750px;overflow:auto}}
+.whale-area{grid-column:2;grid-row:1}
+.side-info,.alerts-area{display:flex;flex-direction:column;border:1px solid var(--border);border-radius:10px;background:var(--card)}
+.side-info{grid-column:1;grid-row:1}.alerts-area{grid-column:3;grid-row:1}
+.side-info-tabs{display:flex;flex:none;border-bottom:1px solid var(--border)}
+.side-info-tabs button{flex:1;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--muted);cursor:pointer;padding:13px 8px;font:inherit;font-size:14px}
+.side-info-tabs button.active{color:var(--accent);border-bottom-color:var(--accent)}
+.alerts-heading{flex:none;padding:13px 14px;border-bottom:1px solid var(--border);font-size:14px;font-weight:600}
+.side-info-pane{flex:1;min-height:0;display:flex;flex-direction:column}.side-info-pane>*{height:100%;min-height:0}
+@media(max-width:1280px){
+  .grid{grid-template-columns:minmax(0,1fr);grid-template-rows:auto}
+  .side-info{grid-column:1;grid-row:1}.whale-area{grid-column:1;grid-row:2}.alerts-area{grid-column:1;grid-row:3}
+  .side-info-pane{min-height:400px;max-height:750px;overflow:auto}
+}
 </style>

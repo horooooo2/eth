@@ -75,6 +75,24 @@ function migrate(database) {
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
 
+    CREATE TABLE IF NOT EXISTS observation_inputs (
+      id TEXT PRIMARY KEY, whale_id TEXT NOT NULL, coin TEXT NOT NULL,
+      time INTEGER NOT NULL, received_at INTEGER NOT NULL, payload_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS observation_inputs_pair ON observation_inputs(whale_id, coin, time);
+    CREATE INDEX IF NOT EXISTS observation_inputs_time ON observation_inputs(time);
+    CREATE TABLE IF NOT EXISTS observation_jobs (
+      whale_id TEXT NOT NULL, coin TEXT NOT NULL, PRIMARY KEY(whale_id, coin)
+    );
+    CREATE TABLE IF NOT EXISTS whale_observations (
+      id TEXT PRIMARY KEY, whale_id TEXT NOT NULL, coin TEXT NOT NULL,
+      last_at INTEGER NOT NULL, payload_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS observation_evidence (
+      event_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS observations_pair ON whale_observations(whale_id, coin);
+    CREATE INDEX IF NOT EXISTS observations_time ON whale_observations(last_at DESC, id);
     CREATE TABLE IF NOT EXISTS whales (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL DEFAULT '',
@@ -121,6 +139,7 @@ function migrate(database) {
       payload_json TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_fills_time ON fills(time);
+    CREATE INDEX IF NOT EXISTS idx_fills_observation_scan ON fills(time,id);
     CREATE INDEX IF NOT EXISTS idx_fills_whale_time ON fills(whale_id, time);
 
     CREATE TABLE IF NOT EXISTS events (
