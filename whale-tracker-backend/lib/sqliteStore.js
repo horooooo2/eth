@@ -30,6 +30,14 @@ const {
 const PAGED_ALERT_CACHE_TTL_MS = 10_000;
 const pagedAlertCache = new Map();
 let alertCommitObserver = null;
+const flowCache = new Map();
+const ALERT_VISIBLE_SQL = 'alerts.is_visible = 1';
+function presentAlert(alert) {
+  if (!alert) return alert;
+  const legacy = (alert.items?.length > 1 && alert.totalUsd == null) || String(alert.id).startsWith('pos-');
+  return { ...alert, dataQuality: legacy ? 'legacy-unverified' : alert.dataQuality, qualityNote: legacy ? '历史记录尚未完成原始成交核验，金额与时间仅供参考。' : alert.qualityNote, kindLabel: String(alert.kindLabel || '').replace('（多单）', '（多笔）') };
+}
+
 
 function setAlertCommitObserver(observer) {
   alertCommitObserver = typeof observer === 'function' ? observer : null;
@@ -75,6 +83,21 @@ function removeReplayedLegacyFill(database, trade, id) {
 
 /** 由成交派生开/补/减/平事件（结合 startPosition，避免买=多卖=空误判） */
 function eventsFromTrade(trade) {
+  const asset = String(trade?.asset || trade?.assetLabel || '');
+  if (/^@/.test(asset) || asset.includes(':') || asset.includes('/') || trade?.exotic || trade?.instrumentType === 'spot') return [];
+  if (!['buy', 'sell', 'B', 'A', 'in', 'out'].includes(trade?.side)) return [];
+  const start = trade.startPosition == null || trade.startPosition === '' ? NaN : Number(trade.startPosition);
+  const size = Math.abs(Number(trade.amount));
+  const buy = ['buy', 'B', 'in'].includes(trade.side);
+  if (Number.isFinite(start) && size > Math.abs(start) && start !== 0 && (start > 0) !== buy) {
+    const oldSize = Math.abs(start);
+    return [['close', oldSize, start], ['open', size - oldSize, 0]].flatMap(([leg, amount, position]) =>
+      classifyTrade({ ...trade, amount, startPosition: position, amountUsd: Math.abs(Number(trade.amountUsd)) * amount / size })
+        .map(event => ({ ...event, id: event.id + ':' + leg, sourceId: event.sourceId + ':' + leg })));
+  }
+  return classifyTrade(trade);
+}
+function classifyTrade(trade) {
   if (!isRawTrade(trade) || trade.source === 'onchain') return [];
   const coin = coinOfTrade(trade);
   if (!coin) return [];
@@ -127,7 +150,7 @@ function eventsFromTrade(trade) {
     openKind = 'increase';
   }
 
-  if (!passesMinUsd(usd, openKind)) return [];
+  if (!(usd > 0) || !(ts > 0)) return [];
 
   const title =
     openKind === 'close'
@@ -166,13 +189,14 @@ function eventsFromTrade(trade) {
 function upsertAlertRows(database, alerts) {
   if (!alerts?.length) return { written: 0, added: 0, committedAlerts: [], removedAlertIds: [] };
   const stmt = database.prepare(`
-    INSERT INTO alerts (id, whale_id, time, kind, payload_json)
-    VALUES (@id, @whale_id, @time, @kind, @payload_json)
+    INSERT INTO alerts (id, whale_id, time, kind, payload_json, is_visible)
+    VALUES (@id, @whale_id, @time, @kind, @payload_json, @is_visible)
     ON CONFLICT(id) DO UPDATE SET
       whale_id = excluded.whale_id,
       time = excluded.time,
       kind = excluded.kind,
-      payload_json = excluded.payload_json
+      payload_json = excluded.payload_json,
+      is_visible = excluded.is_visible
   `);
   const exists = database.prepare('SELECT 1 AS x FROM alerts WHERE id = ?');
   const sourceSeen = database.prepare('SELECT 1 AS x FROM alert_sources WHERE source_id = ?');
@@ -199,12 +223,18 @@ function upsertAlertRows(database, alerts) {
   const retiredAlertIds = [];
   const removedAlertIds = [];
   const committed = new Map();
-  alertLoop: for (const alert of alerts) {
+  alertLoop: for (let alert of alerts) {
     if (!alert?.id) continue;
+    // Snapshot differences are observations, never exact execution facts.
+    const eligibleItems = (alert.items || []).filter(item => item.evidenceSource !== 'snapshot' && !/^@/.test(item.coin || '') && !String(item.coin || '').includes(':'));
+    if (!eligibleItems.length) continue;
+    if (eligibleItems.length !== alert.items.length) alert = { ...alert, items: eligibleItems };
     const sourceId = String(alert.sourceId || alert.items?.[0]?.sourceId || alert.id);
     // HTTP retries and server-generated copies of the same event must never
     // add their notional a second time after a nearby event was merged.
     if (sourceSeen.get(sourceId)) continue;
+    // A corrected source may leave siblings in the row that originally used its id.
+    while (exists.get(String(alert.id))) alert = { ...alert, id: `${alert.id}:revised` };
     // Recognize a replay of a pre-canonical server fill without rewriting the
     // historical alert or its amounts. Identity aliases are installed lazily.
     const fillPrefix = `fill:${String(alert.whaleId || '').toLowerCase()}:`;
@@ -226,7 +256,7 @@ function upsertAlertRows(database, alerts) {
     const time = Number(alert.at || alert.time) || 0;
     if (!time) continue;
     const usd = (alert.items || []).reduce((sum, item) => sum + Math.abs(Number(item.usd) || 0), 0);
-    if (!passesMinUsd(usd, kind)) continue;
+    if (!(usd > 0)) continue;
 
     const whaleId = alert.whaleId ? String(alert.whaleId) : null;
     const coin = String(alert.items?.[0]?.coin || '').toUpperCase();
@@ -289,7 +319,7 @@ function upsertAlertRows(database, alerts) {
           kind: nextKind,
           kindLabel:
             mergedCount > 1
-              ? `${preferKind(row.kind, kind) === 'open' ? '开单' : preferKind(row.kind, kind) === 'close' ? '平仓' : preferKind(row.kind, kind) === 'increase' ? '加仓' : '减仓'}（多单）`
+              ? `${preferKind(row.kind, kind) === 'open' ? '开单' : preferKind(row.kind, kind) === 'close' ? '平仓' : preferKind(row.kind, kind) === 'increase' ? '加仓' : '减仓'}（多笔）`
               : alert.kindLabel,
           headline:
             mergedCount > 1
@@ -315,6 +345,7 @@ function upsertAlertRows(database, alerts) {
       time: Number(target.at || target.time) || time,
       kind: String(target.kind || kind),
       payload_json: safeJson(target),
+      is_visible: passesMinUsd(target.totalUsd, target.kind) ? 1 : 0,
     });
     for (const retiredId of retiredAlertIds.splice(0)) moveSources.run(id, retiredId);
     delItemsById.run(id);
@@ -342,7 +373,7 @@ function upsertAlertRows(database, alerts) {
     written += 1;
   }
   if (written) pagedAlertCache.clear();
-  return { written, added, committedAlerts: [...committed.values()], removedAlertIds };
+  return { written, added, committedAlerts: [...committed.values()].filter(a => passesMinUsd(a.totalUsd, a.kind)), removedAlertIds };
 }
 
 /** 前端同步异动历史 */
@@ -362,25 +393,49 @@ function persistAlerts(alerts = []) {
     committedAlerts: result.committedAlerts, removedAlertIds: result.removedAlertIds };
 }
 
-/** Full event window for resonance: pagination and display limits must not bias signals. */
-function loadResonanceInputs(sinceMs, untilMs, minUsd) {
+// Compact derived facts are rebuilt from SQLite once, then replaced by canonical
+// fill identity only after a successful transaction. No payload parsing per reader.
+let fillProjection = null;
+let fillProjectionDb = null;
+let projectionPrunedAt = 0;
+function updateFillProjection(trades) {
+  if (!fillProjection) return;
+  const cutoff = Date.now() - FILL_RETENTION_MS;
+  for (const trade of trades) {
+    const key = canonicalTradeId(trade);
+    if (!key) continue;
+    const events = trade.source === 'onchain' || Number(trade.time) < cutoff ? [] : eventsFromTrade(trade)
+      .filter(event => OPEN_KINDS.has(event.kind))
+      .map(event => ({ ...event, payload: { price: trade.price, whaleName: trade.whaleName, from: trade.from || trade.address } }));
+    if (events.length) fillProjection.set(key, events); else fillProjection.delete(key);
+  }
+}
+function fillFacts(since, until) {
   const database = getDb();
-  const alerts = database.prepare(`SELECT payload_json FROM alerts
-    WHERE EXISTS (SELECT 1 FROM alert_items i WHERE i.alert_id = alerts.id
-      AND i.kind IN ('open', 'increase') AND ABS(i.usd) >= ?
-      AND COALESCE(NULLIF(i.time, 0), alerts.time) BETWEEN ? AND ?)
-    ORDER BY time DESC`).all(minUsd, sinceMs, untilMs)
-    .map(row => parseJson(row.payload_json, null)).filter(Boolean);
-  const activity = database.prepare(`SELECT payload_json FROM fills
-    WHERE time BETWEEN ? AND ? AND COALESCE(source, '') != 'onchain'
-    AND ABS(COALESCE(amount_usd, 0)) >= ?
-    ORDER BY time DESC`).all(sinceMs, untilMs, minUsd)
-    .map(row => parseJson(row.payload_json, null)).filter(Boolean);
-  return { alerts, activity };
+  if (!fillProjection || database !== fillProjectionDb) {
+    fillProjection = new Map(); fillProjectionDb = database;
+    const rows = database.prepare("SELECT payload_json FROM fills WHERE time >= ? AND COALESCE(source, '') != 'onchain'").all(Date.now() - FILL_RETENTION_MS);
+    updateFillProjection(rows.map(row => parseJson(row.payload_json)).filter(Boolean));
+  }
+  const cutoff = Date.now() - FILL_RETENTION_MS;
+  if (Date.now() - projectionPrunedAt > 60000) {
+    for (const [id, events] of fillProjection) if (events.every(event => event.time < cutoff)) fillProjection.delete(id);
+    projectionPrunedAt = Date.now();
+  }
+  const result = [];
+  for (const events of fillProjection.values()) for (const event of events) {
+    if (event.time >= Math.max(since, cutoff) && event.time <= until) result.push(event);
+  }
+  return result;
+}
+function invalidateFillProjection() { fillProjection = null; fillProjectionDb = null; flowCache.clear(); }
+/** Thresholds belong after event aggregation, never before it. */
+function loadResonanceInputs(sinceMs, untilMs, _legacyMinUsd, eligibleWhales) {
+  return { alerts: fillFacts(sinceMs, untilMs).filter(event => !eligibleWhales || eligibleWhales.has(String(event.whaleId))).map(alertDocFromEvent), activity: [] };
 }
 
 function countStoredAlerts() {
-  return Number(getDb().prepare('SELECT COUNT(*) AS total FROM alerts').get()?.total) || 0;
+  return Number(getDb().prepare(`SELECT COUNT(*) AS total FROM alerts WHERE ${ALERT_VISIBLE_SQL}`).get()?.total) || 0;
 }
 
 function loadRecentAlerts(limit = 500) {
@@ -390,12 +445,12 @@ function loadRecentAlerts(limit = 500) {
   const rows = database
     .prepare(
       `SELECT payload_json FROM alerts
-       WHERE time >= ? AND kind IN ('open', 'increase')
+       WHERE time >= ? AND kind IN ('open', 'increase') AND ${ALERT_VISIBLE_SQL}
        ORDER BY time DESC LIMIT ?`,
     )
     .all(cutoff, Math.max(1, Math.min(2000, Number(limit) || 500)));
   return rows
-    .map((row) => parseJson(row.payload_json, null))
+    .map((row) => presentAlert(parseJson(row.payload_json, null)))
     .filter((item) => item && item.id);
 }
 
@@ -403,40 +458,22 @@ function loadRecentAlerts(limit = 500) {
 function loadAlertFlowSummary({ sinceMs = 0, untilMs = Date.now(), coin = '' } = {}) {
   const from = Math.max(Number(sinceMs) || 0, Date.now() - CLOSED_POSITION_RETENTION_MS);
   const to = Math.max(from, Number(untilMs) || Date.now());
-  const normalizedCoin = String(coin || '').trim().toUpperCase();
-  const where = [
-    `alerts.kind IN ('open', 'increase')`,
-    `COALESCE(NULLIF(alert_item.time, 0), alerts.time) >= ?`,
-    `COALESCE(NULLIF(alert_item.time, 0), alerts.time) <= ?`,
-    `ABS(COALESCE(alert_item.usd, 0)) > 0`,
-    `alert_item.side IN ('long', 'short')`,
-  ];
-  const params = [from, to];
-  if (normalizedCoin && normalizedCoin !== 'ALL') {
-    // Hyperliquid 的 K 前缀代表千倍币种；与前端 watched coin 归一逻辑保持一致。
-    where.push(`UPPER(alert_item.coin) IN (?, ?, ?)`);
-    params.push(normalizedCoin, `K${normalizedCoin}`, `U${normalizedCoin}`);
+  const wanted = String(coin || '').toUpperCase();
+  const cacheKey = JSON.stringify([Math.floor(from / 1000), Math.floor(to / 1000), wanted]);
+  const cached = flowCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < 1000) return cached.value;
+  let longUsd = 0, shortUsd = 0, events = 0;
+  const whales = new Set();
+  for (const event of fillFacts(from, to)) {
+    if (wanted && wanted !== 'ALL' && ![wanted, `K${wanted}`, `U${wanted}`].includes(event.coin.toUpperCase())) continue;
+    if (event.side === 'long') longUsd += event.usd; else shortUsd += event.usd;
+    events++; whales.add(event.whaleId);
   }
-  const db = getDb();
-  const rows = db.prepare(
-    `SELECT alert_item.side AS side,
-            SUM(ABS(COALESCE(alert_item.usd, 0))) AS usd,
-            COUNT(*) AS events
-       FROM alerts
-       JOIN alert_items AS alert_item ON alert_item.alert_id = alerts.id
-      WHERE ${where.join(' AND ')}
-      GROUP BY alert_item.side`,
-  ).all(...params);
-  const longUsd = Number(rows.find((row) => row.side === 'long')?.usd) || 0;
-  const shortUsd = Number(rows.find((row) => row.side === 'short')?.usd) || 0;
-  const events = rows.reduce((sum, row) => sum + (Number(row.events) || 0), 0);
-  const whales = Number(db.prepare(
-    `SELECT COUNT(DISTINCT alerts.whale_id) AS c
-       FROM alerts
-       JOIN alert_items AS alert_item ON alert_item.alert_id = alerts.id
-      WHERE ${where.join(' AND ')}`,
-  ).get(...params)?.c) || 0;
-  return { longUsd, shortUsd, netUsd: longUsd - shortUsd, events, whales, sinceMs: from, untilMs: to };
+
+  const value = { longUsd, shortUsd, netUsd: longUsd - shortUsd, events, whales: whales.size,
+    sinceMs: from, untilMs: to, asOf: Date.now(), scope: 'native-perp',
+    basis: 'stored-executions', coverage: 'locally-observed', includesDisplayFilteredFills: true };
+  flowCache.clear(); flowCache.set(cacheKey, { at: Date.now(), value }); return value;
 }
 
 /**
@@ -505,6 +542,7 @@ function loadPagedAlerts(query = {}) {
   }
 
   const where = [
+    ALERT_VISIBLE_SQL,
     `time >= ?`,
     `kind IN ('open', 'increase')`,
   ];
@@ -540,10 +578,10 @@ function loadPagedAlerts(query = {}) {
     .all(...params, limit, offset);
 
   const alerts = rows
-    .map((row) => parseJson(row.payload_json, null))
+    .map((row) => presentAlert(parseJson(row.payload_json, null)))
     .filter((item) => item && item.id);
 
-  const facetWhere = [
+  const facetWhere = [ALERT_VISIBLE_SQL,
     `alerts.time >= ?`,
     `alerts.kind IN ('open', 'increase')`,
   ];
@@ -648,7 +686,7 @@ function loadFillsByWhale(whaleId, options = {}) {
        ORDER BY time DESC LIMIT ?`,
     )
     .all(id, since, limit);
-  return rows.map((row) => parseJson(row.payload_json, null)).filter(Boolean);
+  return rows.map((row) => presentAlert(parseJson(row.payload_json, null))).filter(Boolean);
 }
 
 /** 最近成交（全地址），供资金动态总览 */
@@ -662,7 +700,7 @@ function loadRecentFills(options = {}) {
        ORDER BY time DESC LIMIT ?`,
     )
     .all(since, limit);
-  return rows.map((row) => parseJson(row.payload_json, null)).filter(Boolean);
+  return rows.map((row) => presentAlert(parseJson(row.payload_json, null))).filter(Boolean);
 }
 
 function countFillsByWhale(whaleId) {
@@ -796,6 +834,52 @@ function loadDbBrowse(options = {}) {
   };
 }
 
+/** Retract old derived facts before replacing a corrected execution, inside the same transaction. */
+function retractCorrectedTrade(database, trade, changedIds) {
+  const previous = parseJson(database.prepare('SELECT payload_json FROM fills WHERE id = ?').get(trade.id)?.payload_json);
+  if (!previous) return;
+  const oldEvents = eventsFromTrade(previous), nextEvents = eventsFromTrade(trade);
+  const signature = events => safeJson(events.map(({ payload, ...event }) => ({ ...event, price: Number(payload?.price) || 0 })));
+  if (signature(oldEvents) === signature(nextEvents)) return;
+  for (const event of oldEvents) {
+    database.prepare('DELETE FROM events WHERE id = ?').run(event.id);
+    const source = database.prepare('SELECT alert_id FROM alert_sources WHERE source_id = ?').get(event.sourceId);
+    if (!source) continue;
+    const alert = parseJson(database.prepare('SELECT payload_json FROM alerts WHERE id = ?').get(source.alert_id)?.payload_json);
+    // Legacy aggregates cannot be safely decomposed without per-fill identities.
+    if (!alert?.items?.some(item => item.sourceId === event.sourceId)) continue;
+    const items = alert.items.filter(item => item.sourceId !== event.sourceId);
+    changedIds.add(source.alert_id);
+    database.prepare('DELETE FROM alert_sources WHERE source_id = ?').run(event.sourceId);
+    database.prepare('DELETE FROM alert_items WHERE alert_id = ?').run(source.alert_id);
+    if (!items.length) {
+      database.prepare('DELETE FROM alerts WHERE id = ?').run(source.alert_id);
+      continue;
+    }
+    items.sort((a,b) => b.time - a.time);
+    const kind = items.reduce((k,item) => preferKind(k,item.kind), items[0].kind);
+    const totalUsd = items.reduce((sum,item) => sum + Math.abs(Number(item.usd) || 0),0);
+    const updated = { ...alert, items, kind, at: items[0].time, sourceId: items[0].sourceId,
+      totalUsd, mergedCount: items.length, headline: `${items[0].title}（${items.length} 笔）`,
+      kindLabel: `${kind === 'open' ? '开单' : '加仓'}${items.length > 1 ? '（多笔）' : ''}` };
+    database.prepare('UPDATE alerts SET time=?,kind=?,payload_json=?,is_visible=? WHERE id=?')
+      .run(updated.at,kind,safeJson(updated),passesMinUsd(totalUsd,kind)?1:0,source.alert_id);
+    const insert = database.prepare('INSERT INTO alert_items(alert_id,item_index,kind,coin,side,usd,time) VALUES(?,?,?,?,?,?,?)');
+    items.forEach((item,i) => insert.run(source.alert_id,i,item.kind,item.coin,item.side,item.usd,item.time));
+  }
+}
+function includeCorrectedAlerts(database, result, changedIds) {
+  const committed = new Map(result.committedAlerts.map(alert => [alert.id,alert]));
+  const removed = new Set(result.removedAlertIds);
+  for (const id of changedIds) {
+    const row = database.prepare('SELECT payload_json,is_visible FROM alerts WHERE id=?').get(id);
+    if (row?.is_visible) { committed.set(id,parseJson(row.payload_json)); removed.delete(id); }
+    else { committed.delete(id); removed.add(id); }
+  }
+  if (changedIds.size) pagedAlertCache.clear();
+  return { ...result, committedAlerts:[...committed.values()], removedAlertIds:[...removed] };
+}
+
 /** 增量写入成交（实时 WS），并派生 events/alerts */
 function persistTradesIncremental(trades = []) {
   const list = (Array.isArray(trades) ? trades : []).filter(isRawTrade);
@@ -842,6 +926,7 @@ function persistTradesIncremental(trades = []) {
   let added = 0;
   const derivedAlerts = [];
   let alertResult;
+  const correctedAlertIds = new Set();
   const existsFill = database.prepare('SELECT 1 AS x FROM fills WHERE id = ?');
   const existsEvent = database.prepare('SELECT 1 AS x FROM events WHERE id = ?');
   const tx = database.transaction(() => {
@@ -849,6 +934,7 @@ function persistTradesIncremental(trades = []) {
       const id = canonicalTradeId(input);
       if (!id) continue;
       const trade = { ...input, id };
+      retractCorrectedTrade(database, trade, correctedAlertIds);
       removeReplayedLegacyFill(database, input, id);
       if (!existsFill.get(id)) added += 1;
       upsertFill.run({
@@ -889,6 +975,9 @@ function persistTradesIncremental(trades = []) {
     if (added) bumpDailyAdded(added);
   });
   tx();
+  alertResult = includeCorrectedAlerts(database, alertResult, correctedAlertIds);
+  updateFillProjection(list);
+  flowCache.clear();
   notifyAlertCommit(alertResult);
   return { fills, events, alerts: alertResult.written, added,
     committedAlerts: alertResult.committedAlerts, removedAlertIds: alertResult.removedAlertIds };
@@ -975,6 +1064,7 @@ function persistModePayload(data = {}, updatedAt = Date.now(), options = {}) {
   const existsEvent = database.prepare('SELECT 1 AS x FROM events WHERE id = ?');
   let added = 0;
   let alertResult;
+  const correctedAlertIds = new Set();
 
   const tx = database.transaction(() => {
     for (const id of (Array.isArray(data.removedWhaleIds) ? data.removedWhaleIds : [])) {
@@ -1023,6 +1113,7 @@ function persistModePayload(data = {}, updatedAt = Date.now(), options = {}) {
       const id = canonicalTradeId(input);
       if (!id) continue;
       const trade = { ...input, id };
+      retractCorrectedTrade(database, trade, correctedAlertIds);
       removeReplayedLegacyFill(database, input, id);
       if (!existsFill.get(id)) added += 1;
       upsertFill.run({
@@ -1071,6 +1162,9 @@ function persistModePayload(data = {}, updatedAt = Date.now(), options = {}) {
   });
 
   tx();
+  alertResult = includeCorrectedAlerts(database, alertResult, correctedAlertIds);
+  updateFillProjection(trades);
+  flowCache.clear();
   const purged = options.patch ? null : purgeOlderThan(RETENTION_MS);
   notifyAlertCommit(alertResult);
   return { whales: whales.length, trades: trades.length, added, purged,
@@ -1102,14 +1196,14 @@ function loadModePayload() {
     .prepare('SELECT payload_json FROM whales WHERE enabled = 1 ORDER BY priority DESC, closed_trades DESC')
     .all();
   const whales = whaleRows
-    .map((row) => parseJson(row.payload_json, null))
+    .map((row) => presentAlert(parseJson(row.payload_json, null)))
     .filter(Boolean);
 
   const fillRows = database
     .prepare('SELECT payload_json FROM fills WHERE time >= ? ORDER BY time DESC LIMIT 5000')
     .all(cutoff);
   const trades = fillRows
-    .map((row) => parseJson(row.payload_json, null))
+    .map((row) => presentAlert(parseJson(row.payload_json, null)))
     .filter(Boolean);
 
   const warnings = parseJson(getMeta('warnings')?.value, []) || [];
@@ -1151,6 +1245,7 @@ function loadRecentEvents(limit = 200) {
 }
 
 module.exports = {
+  invalidateFillProjection,
   invalidateAlertQueries: () => pagedAlertCache.clear(),
   setAlertCommitObserver,
   persistStatePatch,

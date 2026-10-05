@@ -1,4 +1,4 @@
-const { getDb, FILL_RETENTION_MS, CLOSED_POSITION_RETENTION_MS, FILL_MAX_PER_WHALE } = require('./db');
+const { getDb, FILL_RETENTION_MS, CLOSED_POSITION_RETENTION_MS } = require('./db');
 let timer;
 
 // Bounded maintenance replaces the old full-table purge on every price tick.
@@ -11,9 +11,6 @@ function runRetentionBatch(now = Date.now(), limit = 500) {
   db.transaction(() => {
     removedFills += db.prepare('DELETE FROM fills WHERE id IN (SELECT id FROM fills WHERE time < ? ORDER BY time LIMIT ?)')
       .run(now - FILL_RETENTION_MS, take).changes;
-    const over = db.prepare("SELECT whale_id, COUNT(*) AS n FROM fills WHERE whale_id IS NOT NULL AND COALESCE(source, '') != 'onchain' GROUP BY whale_id HAVING n > ? LIMIT 1").get(FILL_MAX_PER_WHALE);
-    if (over) removedFills += db.prepare("DELETE FROM fills WHERE id IN (SELECT id FROM fills WHERE whale_id = ? AND COALESCE(source, '') != 'onchain' ORDER BY time DESC, id DESC LIMIT ? OFFSET ?)")
-      .run(over.whale_id, take, FILL_MAX_PER_WHALE).changes;
     const closedCutoff = now - CLOSED_POSITION_RETENTION_MS;
     removedEvents = db.prepare(`DELETE FROM events WHERE id IN (
       SELECT e.id FROM events e WHERE e.time < ? AND NOT EXISTS (

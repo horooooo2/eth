@@ -4,7 +4,10 @@ export function createPageLoadScheduler<T extends string>(loaders: Record<T, () 
   function load(page: T) {
     let promise = pending.get(page);
     if (!promise) {
-      promise = Promise.resolve().then(loaders[page]);
+      promise = Promise.resolve().then(loaders[page]).catch(error => {
+        pending.delete(page);
+        throw error;
+      });
       pending.set(page, promise);
     }
     return promise;

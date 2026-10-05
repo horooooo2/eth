@@ -28,20 +28,16 @@ test('observed snapshots are not mistaken for timed opens; time and followed coi
   events[2] = alert('eth', 'c', now - 1000, { coin: 'ETH' });
   assert.equal(scan(events).hit, false);
 });
-test('SQL signal window has no display limit and uses item execution time', () => {
+test('canonical signal window has no display limit and uses actual execution time', () => {
   const db = getDb();
-  const insert = db.prepare('INSERT INTO alerts(id, whale_id, time, kind, payload_json) VALUES (?, ?, ?, ?, ?)');
-  const insertItem = db.prepare('INSERT INTO alert_items(alert_id, item_index, kind, coin, side, usd, time) VALUES (?, 0, ?, ?, ?, ?, ?)');
+  const insert = db.prepare('INSERT INTO fills(id, whale_id, time, payload_json) VALUES (?, ?, ?, ?)');
   db.transaction(() => {
     for (let i = 0; i < 2101; i++) {
-      const row = alert('db-' + i, 'a');
-      // Stored record time is deliberately old; execution time controls the window.
-      insert.run(row.id, row.whaleId, now - 30 * 3600000, row.kind, JSON.stringify(row));
-      insertItem.run(row.id, 'open', 'BTC', 'long', 100000, row.items[0].time);
+      const row = { id: 'db-' + i, whaleId: 'a', time: now - 1000, asset: 'BTC', side: 'buy', amount: 1, amountUsd: 100000, startPosition: 0 };
+      insert.run(row.id, row.whaleId, row.time, JSON.stringify(row));
     }
   })();
   assert.equal(loadResonanceInputs(now - 3600000, now, 50000).alerts.length, 2101);
-  assert.equal(countStoredAlerts(), 2101);
   assert.equal(loadResonanceInputs(now - 3600000, now - 2000, 50000).alerts.length, 0);
-  assert.equal(loadResonanceInputs(now - 3600000, now, 200000).alerts.length, 0);
+  assert.equal(loadResonanceInputs(now - 3600000, now, 200000).alerts.length, 2101);
 });

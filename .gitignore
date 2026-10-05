@@ -31,3 +31,7 @@ whale-tracker-backend/tmp_*/
 *.db-shm
 *.jsonl
 market-data/
+
+# Strategy imports, simulation accounts and replay results (never deploy user data)
+whale-tracker-backend/data/strategy/
+whale-tracker-deploy/data/strategy/

@@ -10,6 +10,7 @@ const analysisStore = require('../lib/tradfiAnalysisStore');
 const { getRadarNews } = require('../lib/tradfiIntel');
 
 const router = express.Router();
+router.use('/strategy-shadow', require('./strategyShadow'));
 const inFlightAnalyses = new Map();
 
 router.post('/analyze', async (req, res) => {

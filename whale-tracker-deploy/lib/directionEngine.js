@@ -25,7 +25,8 @@ function qualityFor(ctx, key, expectedMs, completeness) {
   const status = meta.status || ctx.status?.[key];
   if (status !== 'ok' && status !== 'empty') return 0;
   const fetchedAt = number(meta.fetchedAt);
-  const age = fetchedAt == null ? expectedMs : Math.max(0, Date.now() - fetchedAt);
+  if (fetchedAt == null || fetchedAt <= 0 || fetchedAt > Date.now() + 5000) return 0;
+  const age = Math.max(0, Date.now() - fetchedAt);
   const freshness = age <= expectedMs ? 1 : Math.exp(-(age - expectedMs) / expectedMs);
   const availability = status === 'ok' ? 1 : 0.25;
   return Number((availability * freshness * completeness).toFixed(3));

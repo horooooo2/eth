@@ -175,22 +175,25 @@ function writeResonanceWindowHours(windowHours) {
     localStorage.setItem(STORAGE_KEY, String(normalizeWindowHours(windowHours)));
 }
 function mergeOpens(rows, mergeMs) {
-    const sorted = [...rows].sort((a, b) => a.time - b.time);
     const merged = [];
-    for (const row of sorted) {
-        const prev = merged[merged.length - 1];
-        if (prev &&
-            prev.whaleId === row.whaleId &&
-            prev.coin === row.coin &&
-            prev.side === row.side &&
-            row.time - prev.time <= mergeMs) {
+    const latest = new Map();
+    for (const row of [...rows].sort((a, b) => a.time - b.time)) {
+        const key = `${row.whaleId}|${row.coin}|${row.side}`;
+        const prev = latest.get(key);
+        // Fixed span from the first execution, not an indefinitely sliding chain.
+        if (prev && row.time - (prev.firstTime ?? prev.time) <= mergeMs) {
             const total = prev.notionalUsd + row.notionalUsd;
             prev.price = total > 0 ? (prev.price * prev.notionalUsd + row.price * row.notionalUsd) / total : prev.price;
             prev.notionalUsd = total;
+            if (row.action === "open")
+                prev.action = "open";
             prev.time = row.time;
-            continue;
         }
-        merged.push({ ...row });
+        else {
+            const next = { ...row, firstTime: row.time };
+            merged.push(next);
+            latest.set(key, next);
+        }
     }
     return merged;
 }
@@ -244,7 +247,7 @@ function classifyFillAction(trade) {
     const addsToShort = startPosition < 0 && (side === 'sell' || side === 'a' || side === 'out');
     return addsToLong || addsToShort ? 'increase' : null;
 }
-function rowsFromAlerts(alerts, whaleMap, since, config) {
+function rowsFromAlerts(alerts, whaleMap, since) {
     const rows = [];
     for (const alert of alerts) {
         const whale = whaleMap.get(alert.whaleId);
@@ -258,7 +261,7 @@ function rowsFromAlerts(alerts, whaleMap, since, config) {
             if (!time || time < since)
                 continue;
             const notionalUsd = Number(item.usd) || 0;
-            if (notionalUsd < config.minNotionalUsd)
+            if (!(notionalUsd > 0))
                 continue;
             const coin = coinKey(item.coin || '');
             if (!coin)
@@ -267,6 +270,7 @@ function rowsFromAlerts(alerts, whaleMap, since, config) {
             if (!side)
                 continue;
             rows.push(buildOpenRow(whale, {
+                sourceId: item.sourceId || `${alert.id}:${item.coin}:${item.side}:${item.kind}:${time}`,
                 whaleId: alert.whaleId,
                 whaleName: alert.whaleName || whale.name,
                 address: alert.address || whale.address,
@@ -285,9 +289,9 @@ function rowsFromAlerts(alerts, whaleMap, since, config) {
 function dedupeRows(rows) {
     const map = new Map();
     for (const row of rows) {
-        const key = `${row.whaleId}|${row.coin}|${row.side}|${row.action}|${Math.floor(row.time / 60000)}`;
+        const key = row.sourceId || `${row.whaleId}|${row.coin}|${row.side}|${row.action}|${row.time}|${row.notionalUsd}`;
         const prev = map.get(key);
-        if (!prev || row.notionalUsd > prev.notionalUsd)
+        if (!prev)
             map.set(key, row);
     }
     return [...map.values()];
@@ -313,7 +317,7 @@ function buildOpenRow(whale, base) {
     const metrics = resolveOpenMetrics(whale, base.coin, base.side, base.price);
     return { ...base, ...metrics };
 }
-/** 明细表：同一巨鲸、同币种同方向的多笔开仓合并为一行，并优先对齐当前持仓 */
+/** 明细表：同一巨鲸、同币种同方向的多笔开仓合并为一行，金额与价格仅使用信号期间的成交 */
 function mergeRowsByWhale(rows, whaleMap) {
     const groups = new Map();
     for (const row of rows) {
@@ -332,11 +336,8 @@ function mergeRowsByWhale(rows, whaleMap) {
             ? group.reduce((sum, item) => sum + item.price * item.notionalUsd, 0) / signalNotional
             : latest.price;
         const whale = whaleMap?.get(latest.whaleId);
-        const pos = whale ? matchWhalePosition(whale, latest.coin, latest.side) : null;
-        const livePrice = Number(pos?.entryPx) || 0;
-        const liveNotional = Math.abs(Number(pos?.positionValue) || 0);
-        const price = livePrice > 0 ? livePrice : signalPrice;
-        const notionalUsd = liveNotional > 0 ? liveNotional : signalNotional;
+        const price = signalPrice;
+        const notionalUsd = signalNotional;
         const metrics = whale
             ? resolveOpenMetrics(whale, latest.coin, latest.side, price)
             : { leverage: latest.leverage, liquidationPx: latest.liquidationPx };
@@ -365,9 +366,10 @@ function collectOpenRows(input) {
         if (!whale)
             continue;
         const notionalUsd = Number(trade.amountUsd) || 0;
-        if (notionalUsd < input.config.minNotionalUsd)
+        if (!(notionalUsd > 0))
             continue;
         rawRows.push(buildOpenRow(whale, {
+            sourceId: `fill:${String(trade.id).startsWith(`${trade.whaleId}:`) ? trade.id : `${trade.whaleId}:${trade.id}`}`,
             whaleId: trade.whaleId,
             whaleName: trade.whaleName || whale.name,
             address: whale.address,
@@ -380,7 +382,7 @@ function collectOpenRows(input) {
             winRate: Number(whale.winRate) || 0,
         }));
     }
-    rawRows.push(...rowsFromAlerts(input.alerts || [], whaleMap, input.since, input.config));
+    rawRows.push(...rowsFromAlerts(input.alerts || [], whaleMap, input.since));
     const watched = input.watchedCoins?.length ? input.watchedCoins : readWatchedCoins();
     return dedupeRows(rawRows.filter((row) => coinMatchesWatch(row.coin, watched) && row.winRate >= input.config.minWinRate));
 }
@@ -502,8 +504,9 @@ function scanResonanceSignals(input) {
         config,
         watchedCoins: watched,
     });
-    const clusterRows = mergeOpens(dedupedRows.filter((row) => row.action === 'open' && row.time >= since), mergeMs);
-    const accumulationRows = dedupedRows;
+    const clusterRows = mergeOpens(dedupedRows.filter((row) => row.time >= since), mergeMs).filter(row => row.action === "open" && row.notionalUsd >= config.minNotionalUsd);
+    const accumulationRows = mergeOpens(dedupedRows.filter(row => row.time >= now - config.accumulationWindowHours * 3600000), mergeMs)
+        .filter(row => row.notionalUsd >= config.minNotionalUsd);
     const signals = [
         ...scanAccumulationSignals(accumulationRows, config, now),
         ...scanClusterSignals(clusterRows, config),

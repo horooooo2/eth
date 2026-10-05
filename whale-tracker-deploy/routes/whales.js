@@ -63,7 +63,7 @@ router.get('/alert-history/summary', (req, res) => {
     const windowKey = String(req.query.window || '1h');
     const duration = windows[windowKey];
     if (!duration) return res.status(400).json({ error: '不支持的异动统计时间范围' });
-    res.json(loadAlertFlowSummary({ sinceMs: Date.now() - duration, coin: req.query.coin }));
+    res.json({ ...loadAlertFlowSummary({ sinceMs: Date.now() - duration, coin: req.query.coin }), executionCoverage: require("../lib/fillBackfill").getCoverageStatus() });
   } catch (err) {
     console.error('[GET /api/whales/alert-history/summary]', err);
     res.status(500).json({ error: err.message || '读取异动汇总失败' });
@@ -259,6 +259,7 @@ router.get('/:id/positions/:coin', async (req, res) => {
   try {
     const data = await getWhalePosition(req.params.id, req.params.coin, {
       side: req.query.side,
+      cacheOnly: req.query.view === 'cached',
     });
     res.json(data);
   } catch (err) {

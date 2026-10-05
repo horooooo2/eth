@@ -970,18 +970,19 @@ async function buildMarketBriefContext(coinInput, opts = {}) {
     if (!must) {
       const hit = readModule(coin, module, ttl);
       if (hit) {
-        statusMeta[module] = { fetchedAt: hit.fetchedAt, status: hit.status, cached: true };
+        statusMeta[module] = { fetchedAt: hit.data?._observedAt === undefined ? hit.fetchedAt : hit.data._observedAt, status: hit.status, cached: true };
         const data = hit.data && typeof hit.data === 'object' ? { ...hit.data } : { value: hit.data };
-        return { ...data, _status: hit.status, _fetchedAt: hit.fetchedAt };
+        return { ...data, _status: hit.status, _fetchedAt: statusMeta[module].fetchedAt };
       }
     }
     const raw = await fetcher();
+    const observedAt = raw?._observedAt === undefined ? Date.now() : raw._observedAt;
     const st = raw?._status || 'ok';
     const data = { ...raw };
     delete data._status;
     writeModule(coin, module, data, st);
-    statusMeta[module] = { fetchedAt: Date.now(), status: st, cached: false };
-    return { ...data, _status: st, _fetchedAt: Date.now() };
+    statusMeta[module] = { fetchedAt: observedAt, status: st, cached: false };
+    return { ...data, _status: st, _fetchedAt: observedAt };
   }
 
   const priceMod = await loadOrFetch(
@@ -1055,7 +1056,7 @@ async function buildMarketBriefContext(coinInput, opts = {}) {
       async () => {
         const [whalesPayload, alerts] = await Promise.all([
           withTimeout(getWhales(false).catch(() => ({ whales: [] })), 10000, { whales: [] }),
-          withTimeout(Promise.resolve().then(() => loadRecentAlerts(200)).catch(() => []), 5000, []),
+          withTimeout(Promise.resolve().then(() => require('./sqliteStore').loadPagedAlerts({ page: 1, limit: 100, coins: coin, excludeExotic: '1', sinceMs: Date.now() - 86400000 }).alerts).catch(() => []), 5000, []),
         ]);
         const whales = Array.isArray(whalesPayload?.whales) ? whalesPayload.whales : [];
         let longCount = 0;
@@ -1068,7 +1069,7 @@ async function buildMarketBriefContext(coinInput, opts = {}) {
             const pCoin = normalizeCoin(p.coin || p.coinLabel || '');
             if (pCoin !== coin && !needles.includes(pCoin)) continue;
             const side = String(p.side || '').toLowerCase() === 'short' ? 'short' : 'long';
-            const usd = Math.abs(Number(p.positionValueUsd ?? p.usd ?? p.sizeUsd) || 0);
+            const usd = Math.abs(Number(p.positionValue ?? p.positionValueUsd ?? p.usd ?? p.sizeUsd) || 0);
             if (side === 'short') {
               shortCount += 1;
               shortUsd += usd;
@@ -1089,8 +1090,8 @@ async function buildMarketBriefContext(coinInput, opts = {}) {
         topPositions.sort((a, b) => b.usd - a.usd);
         const coinAlerts = (Array.isArray(alerts) ? alerts : [])
           .filter((a) => {
-            const itemCoin = normalizeCoin(a.items?.[0]?.coin || a.coin || '');
-            return itemCoin === coin || textHit(`${a.headline || ''} ${a.kindLabel || ''}`, needles);
+            const matchesItem = (a.items || []).some(item => normalizeCoin(item.coin) === coin);
+            return matchesItem || normalizeCoin(a.coin || '') === coin || textHit(`${a.headline || ''} ${a.kindLabel || ''}`, needles);
           })
           .slice(0, 8)
           .map((a) => ({
@@ -1098,12 +1099,13 @@ async function buildMarketBriefContext(coinInput, opts = {}) {
             kind: a.kind || '',
             at: a.at || a.time || null,
             whale: clip(a.whaleName || a.whaleId || '', 24),
-            usd: Math.round(Math.abs(Number(a.items?.[0]?.usd) || 0)),
+            usd: Math.round((a.items || []).filter(item => normalizeCoin(item.coin) === coin || needles.includes(normalizeCoin(item.coin))).reduce((sum, item) => sum + Math.abs(Number(item.usd) || 0), 0)),
           }));
         const crowd = techMod?.externalCrowd || {};
         const hasExternal =
           Boolean(crowd.binanceTopAccount || crowd.bybitAccount) ||
           (crowd.onchainWhales || []).length > 0;
+        const executionCoverage = require("./fillBackfill").getCoverageStatus();
         const empty = longCount === 0 && shortCount === 0 && !hasExternal;
         return {
           longCount,
@@ -1112,7 +1114,10 @@ async function buildMarketBriefContext(coinInput, opts = {}) {
           shortUsd: Math.round(shortUsd),
           topPositions: topPositions.slice(0, 8),
           alerts: coinAlerts,
-          _status: empty ? 'empty' : 'ok',
+          executionCoverage,
+          executionCaveat: executionCoverage.complete ? null : "成交窗口未完整覆盖，未发现异动不等于没有交易。当前仓位与成交记录的新鲜度需分别判断。",
+          _observedAt: whales.length && whales.every(w => Number(w.positionObservedAt) > 0) ? Math.min(...whales.map(w => Number(w.positionObservedAt))) : null,
+          _status: empty ? 'empty' : !executionCoverage.complete ? 'stale' : whales.some(w => !w.positionObservedAt || Date.now() - w.positionObservedAt > 180000) ? 'stale' : 'ok',
         };
       },
       true,
@@ -1287,7 +1292,7 @@ async function buildMarketBriefContext(coinInput, opts = {}) {
         : 'unavailable',
     liquidations: liquidations?.totalUsd > 0 ? 'ok' : liquidations ? 'empty' : 'unavailable',
     web_news: statusMeta.news?.status || 'unavailable',
-    site_whales: longCount + shortCount > 0 ? 'ok' : 'empty',
+    site_whales: statusMeta.whales?.status || (longCount + shortCount > 0 ? 'ok' : 'empty'),
     benchmarks: benchmarks?.status || 'unavailable',
     market_sensitivity: marketSensitivity?.status || 'unavailable',
   };
@@ -1326,6 +1331,8 @@ async function buildMarketBriefContext(coinInput, opts = {}) {
       longUsd,
       shortUsd,
       topPositions: whalesMod.topPositions || [],
+      executionCoverage: whalesMod.executionCoverage,
+      executionCaveat: whalesMod.executionCaveat,
     },
     sentiment,
     eventReaction,
@@ -1501,6 +1508,7 @@ function contextToPrompt(ctx) {
   const whales = budgetClip(
     [
       '【大户】',
+      ctx.whales?.executionCaveat || '',
       `站内：多 ${s.whaleLongCount}/$${s.whaleLongUsd}｜空 ${s.whaleShortCount}/$${s.whaleShortUsd}`,
       ...(ctx.whales?.topPositions || []).slice(0, 5).map((p) => `- ${p.whale} ${p.side} $${p.usd}`),
       '站外：',

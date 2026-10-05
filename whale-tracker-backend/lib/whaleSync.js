@@ -34,7 +34,7 @@ function bootstrap() {
   initialize();
   // These synchronous reads cannot interleave with another collector callback.
   const cursor = stream.cursor();
-  const snapshot = require('./cache').readStateSnapshot('hf');
+  const snapshot = require('./cache').readStateSnapshot('hf', { includeTrades: false });
   const active = require('./config').getActiveWhales();
   const byId = new Map((snapshot?.data?.whales || []).map(w => [String(w.id), w]));
   const whales = active.map(w => ({ ...w, ...(byId.get(String(w.id)) || { positions: [], error: '等待采集' }),

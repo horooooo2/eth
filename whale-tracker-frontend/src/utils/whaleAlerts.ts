@@ -49,6 +49,8 @@ export interface AlertPosView {
 }
 
 export interface WhaleAlert {
+  dataQuality?: string;
+  qualityNote?: string;
   id: string;
   at: number;
   totalUsd?: number;

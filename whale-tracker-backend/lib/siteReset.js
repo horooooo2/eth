@@ -19,6 +19,7 @@ function clearMarketTables() {
     // 不删 users / sessions / user_settings
   });
   tx();
+  require("./sqliteStore").invalidateFillProjection();
 }
 
 /**

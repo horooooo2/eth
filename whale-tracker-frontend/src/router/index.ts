@@ -1,8 +1,12 @@
 import { createRouter, createWebHashHistory } from 'vue-router';
+import { STRATEGY_WORKSPACE_ENABLED } from '@/utils/featureFlags';
 
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
+    ...(STRATEGY_WORKSPACE_ENABLED
+      ? [{ path: '/tradfi-replay', name: 'tradfi-replay', component: () => import('@/views/TradFiReplay.vue') }]
+      : [{ path: '/tradfi-replay', redirect: '/' }]),
     {
       path: '/',
       name: 'desktop',

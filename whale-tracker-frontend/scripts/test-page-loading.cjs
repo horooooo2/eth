@@ -31,6 +31,11 @@ async function verify(primary, secondary) {
   const failed = createPageLoadScheduler({ virtual: async () => { throw Error('unavailable'); }, tradfi: async () => { background++; } });
   await failed.start('virtual', 'tradfi');
   assert.equal(background, 1);
+  let retries=0;
+  const retrying=createPageLoadScheduler({ virtual:async()=>{if(++retries===1)throw Error('temporary');} });
+  await assert.rejects(retrying.load('virtual'));
+  await retrying.load('virtual');
+  assert.equal(retries,2);
   const stopped = createPageLoadScheduler({ virtual: async () => {}, tradfi: async () => { background++; } });
   await stopped.start('virtual', 'tradfi', () => false);
   assert.equal(background, 1);

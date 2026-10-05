@@ -96,9 +96,9 @@ function clip(text, max = 4000) {
 }
 
 function buildAnalyzeMessages({ source, title, content, meta } = {}) {
-  const src = source === 'macro' ? 'macro' : source === 'whale' ? 'whale' : 'x';
+  const src = source === 'macro' ? 'macro' : 'whale';
   const label =
-    src === 'macro' ? '宏观数据事件' : src === 'whale' ? '巨鲸持仓与行为数据' : 'X（Twitter）动态';
+    src === 'macro' ? '宏观数据事件' : '巨鲸持仓与行为数据';
   const metaObj = meta && typeof meta === 'object' ? meta : null;
   const metaForJson = metaObj
     ? Object.fromEntries(Object.entries(metaObj).filter(([k]) => k !== 'marketContext'))

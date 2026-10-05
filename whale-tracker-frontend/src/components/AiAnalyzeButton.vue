@@ -5,7 +5,7 @@ import { aiKeyReady } from '@/stores/aiKey';
 import AiAnalyzeDialog from '@/components/AiAnalyzeDialog.vue';
 
 const props = defineProps<{
-  source: 'x' | 'macro' | 'whale';
+  source: 'macro' | 'whale';
   title: string;
   content: string;
   meta?: Record<string, unknown>;

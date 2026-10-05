@@ -107,6 +107,7 @@ async function tick() {
     }
     lastError = '';
   } catch (err) {
+    if (err.code === "HL_HISTORY_DEFERRED") return;
     lastError = err.message || String(err);
     if (isRateLimited(err)) enterRateLimitPause(err);
     else console.warn('[position-backfill]', lastError);

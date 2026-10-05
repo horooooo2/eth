@@ -1,0 +1,50 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const { createRequire } = require('node:module');
+const filename = require.resolve('../lib/tradfiMarkets');
+test('rolling changes use a minute baseline one full hour earlier and identify failed refreshes', async () => {
+  let clock = Date.UTC(2026, 9, 5, 10, 1, 32), failed = false;
+  const requests = [];
+  const realRequire = createRequire(filename);
+  const context = { module: { exports: {} }, process: { env: {} }, Date: { now: () => clock },
+    require: id => id === 'axios' ? { create: () => ({ get: async (url, options) => {
+      requests.push(options.params);
+      if (failed) throw Error('offline');
+      return { data: [[options.params.startTime, '100']] };
+    } }) } : realRequire(id) };
+  vm.runInNewContext(fs.readFileSync(filename, 'utf8') + '\nmodule.exports.testChange = fetchShortChange;', context);
+  const read = context.module.exports.testChange;
+  const first = await read('BTCUSDT', '1h', 110, clock);
+  assert.equal(requests[0].interval, '1m');
+  assert.equal(requests[0].startTime, Date.UTC(2026, 9, 5, 9, 1));
+  assert.ok(Math.abs(first.change - 10) < 1e-9);
+  clock += 60000; failed = true;
+  const old = await read('BTCUSDT', '1h', 120, clock);
+  assert.equal(old.stale, true); assert.equal(old.asOf, first.asOf);
+  assert.equal(old.change, first.change);
+});
+
+test('market short intervals preserve 24h values, share baseline requests and limit concurrency', async () => {
+  const realRequire = createRequire(filename);
+  let active = 0, peak = 0, calls = 0;
+  const context = { module: { exports: {} }, process: { env: {} }, Date, setTimeout,
+    require: id => id === 'axios' ? { create: () => ({ get: async (url, options) => {
+      assert.equal(url, '/fapi/v1/klines');
+      calls++; active++; peak = Math.max(peak, active);
+      await new Promise(resolve => setTimeout(resolve, 2)); active--;
+      return { data: [[options.params.startTime, '100']] };
+    } }) } : realRequire(id) };
+  const seed = `radarMarketCache = { expiresAt: Date.now()+60000, updatedAt: 'seed', quotes: Array.from({length:9}, (_,i)=>({symbol:'TEST'+i+'USDT',lastPrice:'110',priceChangePercent:'27',closeTime:Date.now(),stale:false})) };`;
+  vm.runInNewContext(fs.readFileSync(filename, 'utf8') + '\n' + seed, context);
+  const read = context.module.exports.getRadarMarketQuotes;
+  const [a,b] = await Promise.all([read('1h'),read('1h')]);
+  assert.equal(calls,9); assert.ok(peak<=4);
+  assert.ok(Math.abs(a.quotes[0].changes['1h']-10)<1e-8);
+  assert.equal(a.quotes[0].changes['5m'],undefined);
+  assert.equal(a.quotes[0].priceChangePercent,'27');
+  assert.equal(b.quotes.length,9);
+  assert.equal((await read()).quotes[0].changes,undefined);
+  await read('1h'); assert.equal(calls,9);
+});

@@ -3,7 +3,10 @@ const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const root = path.resolve(__dirname, '..');
 const files = [
-  'test_event_atomicity.js', 'test_state_commits.js', 'test_state_stream.js',
+  'test_strategy_shadow.js',
+  'test_position_detail_fast.js',
+  "test_audit_repairs.js",
+  'test_radar_freshness.js', 'test_request_budget.js', 'test_data_quality.js', 'test_ws_health.js', 'test_event_atomicity.js', 'test_state_commits.js', 'test_state_stream.js',
   'test_whale_sync_integration.js', 'test_realtime_commit_failure.js', 'test_whale_retention.js',
   'test_whale_open_classification.js', 'test_resonance_server.js',
   'test_whale_page_location.js', 'test_whale_batch_pagination.js', 'test_backend_guards.js',

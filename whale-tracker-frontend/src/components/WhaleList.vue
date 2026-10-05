@@ -519,6 +519,7 @@ defineExpose({ focusWhale, initialize });
             <span class="dim">/</span>
             <span class="down">空 {{ formatUsd(marketSummary.shortUsd) }}</span>
           </div>
+          <span v-if="serverSummary?.stale" class="dim" :title="`仓位采集时间未达新鲜标准或尚未确认；金额仍来自最近一次成功快照。更新时间不代表全部账户同步刷新。`">含旧快照</span>
           <span v-if="marketSummary.hint" class="summary-hint">{{ marketSummary.hint }}</span>
         </div>
         <div v-if="whales.length" class="insight-strip risk-banner" :class="riskSummary.tone">

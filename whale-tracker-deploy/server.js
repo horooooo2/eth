@@ -38,7 +38,10 @@ loadEnvFile(path.join(__dirname, '.env'));
 // Local backend may run behind a desktop HTTP proxy. Use this app-specific
 // setting to override inherited proxy variables (which can be stale in shells).
 const outboundProxyUrl = String(process.env.OUTBOUND_PROXY_URL || '').trim();
-if (outboundProxyUrl) {
+if (outboundProxyUrl === 'direct') {
+  for (const name of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) delete process.env[name];
+  console.info('[proxy] explicit direct connection');
+} else if (outboundProxyUrl) {
   for (const name of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) {
     process.env[name] = outboundProxyUrl;
   }
@@ -63,13 +66,10 @@ const {
   startPositionBackfill,
   getPositionBackfillStatus,
 } = require('./lib/positionBackfill');
-const { startXFeedPolling, getStatus: getXFeedStatus } = require('./lib/xFeedPoller');
-const { start: startOnchainFlow, getStatus: getOnchainFlowStatus } = require('./lib/onchainFlow');
-const { start: startCexFlow } = require('./lib/cexMarketFlow');
-const { start: startCoinankFlow } = require('./lib/coinankFlow');
 const { start: startDefillamaMacro } = require('./lib/defillamaMacro');
 const { start: startTradfiRangeStrategy } = require('./lib/tradfiRangeStrategy');
 
+require('./lib/outboundHealth').start();
 const app = createApp({ prefixes: ['/api'] });
 const PORT = Number(process.env.PORT) || 80;
 /**
@@ -162,6 +162,7 @@ server.listen(PORT, '0.0.0.0', () => {
   }
   try {
     startFillBackfill();
+    require('./lib/positionPoller').start();
     console.log('[fill-backfill]', JSON.stringify(getBackfillStatus()));
   } catch (err) {
     console.warn('[fill-backfill] 启动失败:', err.message);
@@ -173,31 +174,9 @@ server.listen(PORT, '0.0.0.0', () => {
     console.warn('[position-backfill] 启动失败:', err.message);
   }
   try {
-    startXFeedPolling();
-    console.log('[x-poll]', JSON.stringify(getXFeedStatus()));
-  } catch (err) {
-    console.warn('[x-poll] 启动失败:', err.message);
-  }
-  try {
-    startCexFlow();
-  } catch (err) {
-    console.warn('[cex-flow] 启动失败:', err.message);
-  }
-  try {
-    startCoinankFlow();
-  } catch (err) {
-    console.warn('[coinank] 启动失败:', err.message);
-  }
-  try {
     startDefillamaMacro();
   } catch (err) {
     console.warn('[defillama] 启动失败:', err.message);
-  }
-  try {
-    startOnchainFlow();
-    console.log('[onchain-flow]', JSON.stringify(getOnchainFlowStatus()));
-  } catch (err) {
-    console.warn('[onchain-flow] 启动失败:', err.message);
   }
   refreshAll('启动预热');
   setInterval(() => refreshAll('定时刷新'), REFRESH_MS);

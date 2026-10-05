@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
-import { fetchWhalePosition, isTimeoutError, scheduleSilentRetry } from '@/api';
+import { computed, ref, onUnmounted } from 'vue';
+import { fetchWhalePosition } from '@/api';
 import PositionAnalysisDialog from '@/components/PositionAnalysisDialog.vue';
 import type { WhalePosition, WhalePositionDetail, WhaleProfile, WhaleTrade } from '@/types';
 import { displayAsset, hyperliquidExplorer } from '@/utils/assets';
@@ -47,6 +47,15 @@ const emit = defineEmits<{
 
 const visible = ref(false);
 const loading = ref(false);
+const historyLoading = ref(false);
+let requestController: AbortController | null = null;
+function cancelRequest() {
+  openSeq++;
+  requestController?.abort();
+  loading.value = false;
+  historyLoading.value = false;
+}
+onUnmounted(cancelRequest);
 const error = ref('');
 const whaleName = ref('');
 const whaleAddress = ref('');
@@ -61,8 +70,17 @@ const detail = computed({
     const whale = activeWhale.value;
     if (!response || !whale) return response;
     const position = whale.positions.find(pos => pos.coin === activePosition.value.coin && (!activePosition.value.side || pos.side === activePosition.value.side));
-    if (!position) return { ...response, closed: true, size: 0, positionValue: 0, unrealizedPnl: 0 };
-    return { ...response, ...fromCached(position), explorerUrl: response.explorerUrl || hyperliquidExplorer(whale.address) };
+    if (!position) return response.closed ? response : { ...response, closed: true, size: 0, positionValue: 0, unrealizedPnl: 0 };
+    if (response.closed) return { ...fromCached(position), closed: false, explorerUrl: hyperliquidExplorer(whale.address) };
+    const live = fromCached(position);
+    // Live PnL must not erase the complete history returned by the detail endpoint.
+    return { ...response, ...live, markPx: response.markPx,
+      entryFills: (position.entryFills?.length || 0) >= (response.entryFills?.length || 0) ? live.entryFills : response.entryFills,
+      entryFillsOmitted: response.entryFillsOmitted,
+      openTime: response.openTime, firstOpenTime: response.firstOpenTime,
+      lastAddTime: response.lastAddTime, openHistoryComplete: response.openHistoryComplete,
+      explorerUrl: response.explorerUrl || hyperliquidExplorer(whale.address) };
+
   },
   set(value: WhalePositionDetail | null) { detailResponse.value = value; },
 });
@@ -128,6 +146,9 @@ function fromTrade(trade: WhaleTrade): WhalePositionDetail {
 type PositionSeed = WhalePosition | { coin: string; side?: 'long' | 'short' };
 
 async function open(whale: WhaleProfile, pos: PositionSeed, trade?: WhaleTrade) {
+  cancelRequest();
+  requestController = new AbortController();
+  const signal = requestController.signal;
   const requestSeq = ++openSeq;
   const requested = whaleStore.whalesById[whale.id];
   visible.value = true;
@@ -147,15 +168,10 @@ async function open(whale: WhaleProfile, pos: PositionSeed, trade?: WhaleTrade) 
       : null;
   detail.value = cached;
   loading.value = true;
-  try {
-    const data = await fetchWhalePosition(whale.id, pos.coin, wantSide);
+  const applyDetail = (data: Awaited<ReturnType<typeof fetchWhalePosition>>) => {
     if (requestSeq !== openSeq || !visible.value) return;
-    detail.value = {
-      ...data.position,
-      explorerUrl: data.position.explorerUrl || hyperliquidExplorer(whale.address),
-    };
-    // 写回列表仓位，供（合）明细与卡片复用
-    if (!data.position?.closed) {
+    detail.value = { ...data.position, explorerUrl: data.position.explorerUrl || hyperliquidExplorer(whale.address) };
+    if (!data.position.closed) {
       whaleStore.patchWhalePosition(whale.id, data.position.coin || pos.coin, wantSide || data.position.side || '', {
         entryFills: data.position.entryFills || [],
         entryFillsOmitted: data.position.entryFillsOmitted || 0,
@@ -165,25 +181,29 @@ async function open(whale: WhaleProfile, pos: PositionSeed, trade?: WhaleTrade) 
         openHistoryComplete: data.position.openHistoryComplete,
       } as Partial<WhalePosition>, requested);
     }
-  } catch (err) {
-    if (requestSeq !== openSeq || !visible.value) return;
-    if (isTimeoutError(err)) {
-      scheduleSilentRetry(`position-${whale.id}-${pos.coin}`, async () => {
-        try {
-          const data = await fetchWhalePosition(whale.id, pos.coin, wantSide);
-          if (requestSeq === openSeq && visible.value) detail.value = data.position;
-        } catch {
-          // 已有缓存持仓
-        }
-      });
-    } else if (!cached) {
-      error.value = err instanceof Error ? err.message : '最新持仓刷新失败';
-      if (/频繁|429/.test(error.value)) error.value = '查询过于频繁，已显示列表中的缓存数据';
-    } else {
-      error.value = err instanceof Error ? err.message : '未找到当前持仓，已显示成交数据';
+  };
+  try {
+    try {
+      const local = await fetchWhalePosition(whale.id, pos.coin, wantSide, { cacheOnly: true, signal });
+      if (requestSeq !== openSeq || !visible.value) return;
+      applyDetail(local);
+      if (local.position.openHistoryComplete === true && !local.position.closed) return;
+    } catch (err) {
+      if (signal.aborted) return;
+      // A missing local position can be resolved by the detail lookup below.
+      if ((err as { response?: { status?: number } }).response?.status !== 404) throw err;
     }
+    loading.value = false;
+    historyLoading.value = true;
+    const enriched = await fetchWhalePosition(whale.id, pos.coin, wantSide, { signal });
+    applyDetail(enriched);
+  } catch (err) {
+    if (requestSeq !== openSeq || !visible.value || signal.aborted) return;
+    error.value = detailResponse.value
+      ? '历史明细暂未补齐，当前仓位仍随服务器推送更新。'
+      : err instanceof Error ? err.message : '持仓详情读取失败';
   } finally {
-    if (requestSeq === openSeq) loading.value = false;
+    if (requestSeq === openSeq) { loading.value = false; historyLoading.value = false; }
   }
 }
 
@@ -299,6 +319,7 @@ function openPositionAnalysis() {
     width="560px"
     append-to-body
     class="pos-dialog"
+    @close="cancelRequest"
     @closed="emit('closed')"
   >
     <template #header>
@@ -420,7 +441,7 @@ function openPositionAnalysis() {
             {{ formatPnl(isClosed ? detail.realizedPnl : detail.unrealizedPnl) }}
             <span v-if="isClosed && roiText" class="gap">{{ roiText }}</span>
             <span v-else-if="priceGapText" class="gap">{{ priceGapText }}</span>
-            <el-tag v-if="loading" size="small" type="info" class="live-tag">刷新中</el-tag>
+            <el-tag v-if="loading" size="small" type="info" class="live-tag">读取仓位</el-tag>
           </strong>
         </div>
         <div v-if="isClosed && detail.fees" class="detail-row">
@@ -450,6 +471,7 @@ function openPositionAnalysis() {
         </p>
       </div>
     </template>
+    <p v-if="historyLoading" role="status">正在补齐历史成交明细，当前盈亏不受影响。</p>
     <template #footer>
       <div class="actions">
         <el-button v-if="detail && !isClosed" @click="openPositionAnalysis">仓位分析</el-button>

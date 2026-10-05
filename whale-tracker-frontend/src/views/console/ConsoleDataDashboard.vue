@@ -1,25 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
-import {
-  addManualWhale,
-  addXWatchAccount,
-  createAuthUser,
-  deleteAuthUser,
-  deleteXWatchAccount,
-  fetchApiHealth,
-  fetchDataBrowse,
-  fetchDataMonitor,
-  fetchXAccounts,
-  fetchXStatus,
-  listAuthUsers,
-  refreshXWatchNow,
-  renameWhale,
-  resetSiteData,
-  toggleXWatchAccount,
-  updateAuthUserPassword,
-  updateXWatchAccount,
-  type ConsoleXAccount,
-} from '@/api';
+import { addManualWhale, createAuthUser, deleteAuthUser, fetchApiHealth, fetchDataBrowse, fetchDataMonitor, listAuthUsers, renameWhale, resetSiteData, updateAuthUserPassword } from '@/api';
 
 type AuthUser = { id: string; username: string; createdAt: number };
 type WhaleRow = {
@@ -52,8 +33,6 @@ const monitor = ref<{
   errors?: MonitorItem[];
   limits?: Record<string, number>;
 }>({ socket: [], requests: [], errors: [] });
-const xAccounts = ref<ConsoleXAccount[]>([]);
-const xMeta = ref<Record<string, unknown> | null>(null);
 const startedAtMs = ref(0);
 const nowMs = ref(Date.now());
 
@@ -63,16 +42,10 @@ const userMsg = ref('');
 const userMsgOk = ref(false);
 const whaleMsg = ref('');
 const whaleMsgOk = ref(false);
-const xUsername = ref('');
-const xLabel = ref('');
-const xMsg = ref('');
-const xMsgOk = ref(false);
 const addWhaleOpen = ref(false);
 const manualAddr = ref('');
 const manualName = ref('');
 const resetBusy = ref(false);
-const xAddBusy = ref(false);
-const xPollBusy = ref(false);
 const rtText = ref('实时 —');
 const rtOn = ref(false);
 const pullStatus = ref('待命');
@@ -83,9 +56,6 @@ let uptimeTimer: number | undefined;
 let monitorTimer: number | undefined;
 let browseTimer: number | undefined;
 
-function esc(s: unknown) {
-  return String(s ?? '');
-}
 
 function fmtTime(ts: unknown) {
   const n = Number(ts) || 0;
@@ -198,23 +168,6 @@ const monitorHint = computed(() => {
   return `报错 ${list.length}`;
 });
 
-const xOnCount = computed(() => xAccounts.value.filter((a) => a.enabled !== false).length);
-
-const xBannerMeta = computed(() => {
-  const poll = ((xMeta.value && xMeta.value.poll) || {}) as Record<string, unknown>;
-  const windowOpen = Boolean(poll.windowOpen);
-  const parts = [
-    `当前监控 ${xAccounts.value.length} 人（开启 ${xOnCount.value}）`,
-    `拉取间隔 ${Math.round((Number(poll.pollMs) || 0) / 60000)} 分钟`,
-    `窗口 ${windowOpen ? '开启' : '暂停（凌晨 3–9 点）'}`,
-  ];
-  if (xMeta.value && xMeta.value.updatedAt) {
-    parts.push(`配置更新 ${fmtTime(xMeta.value.updatedAt)}`);
-  }
-  if (poll.lastPollAt) parts.push(`上次拉取 ${fmtTime(poll.lastPollAt)}`);
-  return parts.join(' · ');
-});
-
 function showErr(msg: string) {
   pageErr.value = msg || '';
 }
@@ -235,12 +188,6 @@ async function loadUsers() {
 
 async function loadMonitor() {
   monitor.value = await fetchDataMonitor();
-}
-
-async function loadXWatch() {
-  const data = await fetchXAccounts();
-  xAccounts.value = data.accounts || [];
-  xMeta.value = data;
 }
 
 function updateProgressHint(
@@ -302,7 +249,7 @@ async function loadHealthBits() {
 async function refreshAll() {
   try {
     showErr('');
-    await Promise.all([loadBrowse(), loadUsers(), loadMonitor(), loadHealthBits(), loadXWatch()]);
+    await Promise.all([loadBrowse(), loadUsers(), loadMonitor(), loadHealthBits()]);
   } catch (e) {
     showErr(`加载失败：${e instanceof Error ? e.message : String(e)}`);
   }
@@ -418,123 +365,6 @@ async function resetSite() {
     pullStatus.value = `失败：${e instanceof Error ? e.message : String(e)}`;
   } finally {
     resetBusy.value = false;
-  }
-}
-
-async function addXAccount() {
-  const username = xUsername.value.trim().replace(/^@+/, '');
-  const label = xLabel.value.trim();
-  if (!username) {
-    xMsgOk.value = false;
-    xMsg.value = '请填写用户名';
-    return;
-  }
-  xAddBusy.value = true;
-  try {
-    const data = await addXWatchAccount(username, label || username);
-    xAccounts.value = data.accounts || [];
-    xMeta.value = data;
-    xUsername.value = '';
-    xLabel.value = '';
-    try {
-      const st = await fetchXStatus();
-      xMeta.value = { ...data, poll: st };
-    } catch {
-      /* ignore */
-    }
-    xMsgOk.value = true;
-    xMsg.value = `已添加 @${username}`;
-  } catch (e) {
-    xMsgOk.value = false;
-    xMsg.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    xAddBusy.value = false;
-  }
-}
-
-async function toggleX(username: string, enabled: boolean) {
-  try {
-    const data = await toggleXWatchAccount(username, enabled);
-    xAccounts.value = data.accounts || [];
-    try {
-      const st = await fetchXStatus();
-      xMeta.value = { ...data, poll: st };
-    } catch {
-      xMeta.value = data;
-    }
-    xMsgOk.value = true;
-    xMsg.value = `${enabled ? '已开启 @' : '已关闭 @'}${username}${enabled ? '' : '（不再拉取）'}`;
-  } catch (e) {
-    xMsgOk.value = false;
-    xMsg.value = e instanceof Error ? e.message : String(e);
-  }
-}
-
-async function deleteX(username: string) {
-  if (!window.confirm(`确定删除 @${username}？`)) return;
-  try {
-    const data = await deleteXWatchAccount(username);
-    xAccounts.value = data.accounts || [];
-    try {
-      const st = await fetchXStatus();
-      xMeta.value = { ...data, poll: st };
-    } catch {
-      xMeta.value = data;
-    }
-    xMsgOk.value = true;
-    xMsg.value = `已删除 @${username}`;
-  } catch (e) {
-    xMsgOk.value = false;
-    xMsg.value = e instanceof Error ? e.message : String(e);
-  }
-}
-
-async function editX(username: string) {
-  const cur = xAccounts.value.find((a) => a.username === username);
-  const label = window.prompt('显示名（筛选标签）', (cur && cur.label) || username);
-  if (label == null) return;
-  try {
-    const data = await updateXWatchAccount(username, String(label).trim() || username);
-    xAccounts.value = data.accounts || [];
-    try {
-      const st = await fetchXStatus();
-      xMeta.value = { ...data, poll: st };
-    } catch {
-      xMeta.value = data;
-    }
-    xMsgOk.value = true;
-    xMsg.value = `已更新 @${username}`;
-  } catch (e) {
-    xMsgOk.value = false;
-    xMsg.value = e instanceof Error ? e.message : String(e);
-  }
-}
-
-async function reloadX() {
-  try {
-    await loadXWatch();
-    xMsgOk.value = true;
-    xMsg.value = '列表已刷新';
-  } catch (e) {
-    xMsgOk.value = false;
-    xMsg.value = e instanceof Error ? e.message : String(e);
-  }
-}
-
-async function pollX() {
-  xPollBusy.value = true;
-  xMsg.value = '正在拉取…';
-  xMsgOk.value = false;
-  try {
-    await refreshXWatchNow();
-    await loadXWatch();
-    xMsgOk.value = true;
-    xMsg.value = '拉取完成';
-  } catch (e) {
-    xMsgOk.value = false;
-    xMsg.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    xPollBusy.value = false;
   }
 }
 
@@ -729,70 +559,7 @@ onUnmounted(() => {
         </span>
       </section>
 
-      <section class="card auto">
-        <div class="card-head">
-          <h2>监控账号</h2>
-          <div class="card-tools">
-            <button type="button" class="sm ghost" @click="reloadX">刷新列表</button>
-            <button type="button" class="sm" :disabled="xPollBusy" @click="pollX">立即拉取</button>
-          </div>
-        </div>
-        <div class="form-row" style="flex-direction: column; align-items: stretch; gap: 10px">
-          <div class="status-text" style="line-height: 1.6">{{ xBannerMeta }}</div>
-          <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: end">
-            <label style="flex: 1; min-width: 140px">
-              X 用户名（不含 @）
-              <input v-model="xUsername" placeholder="例如 cz_binance" maxlength="15" autocomplete="off" />
-            </label>
-            <label style="flex: 1; min-width: 120px">
-              显示名（筛选标签）
-              <input v-model="xLabel" placeholder="例如 CZ" maxlength="32" autocomplete="off" />
-            </label>
-            <button type="button" class="sm" :disabled="xAddBusy" @click="addXAccount">添加</button>
-          </div>
-          <span class="msg" :class="xMsg ? (xMsgOk ? 'ok' : 'err') : ''">{{ xMsg }}</span>
-        </div>
-        <div class="card-body" style="max-height: 320px">
-          <table>
-            <thead>
-              <tr>
-                <th class="nosort">显示名</th>
-                <th class="nosort">用户名</th>
-                <th class="nosort">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="a in xAccounts" :key="a.username" :style="a.enabled === false ? 'opacity:.55' : ''">
-                <td>
-                  <b>{{ a.label || a.name || a.username }}</b>
-                  <span v-if="a.enabled === false" class="dim"> 已关闭</span>
-                </td>
-                <td class="mono">
-                  <a class="dim" :href="`https://x.com/${esc(a.username)}`" target="_blank" rel="noopener">
-                    @{{ a.username }}
-                  </a>
-                </td>
-                <td>
-                  <button
-                    type="button"
-                    class="sm"
-                    :class="a.enabled !== false ? 'ghost' : ''"
-                    @click="toggleX(a.username, a.enabled === false)"
-                  >
-                    {{ a.enabled !== false ? '关闭' : '开启' }}
-                  </button>
-                  <button type="button" class="sm ghost" @click="editX(a.username)">改标签</button>
-                  <button type="button" class="sm danger" @click="deleteX(a.username)">删除</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-          <div v-if="!xAccounts.length" class="empty">暂无账号</div>
-        </div>
-        <p class="msg" style="padding: 8px 14px 12px; margin: 0; line-height: 1.55">
-          改动立即写入服务器；关闭后不拉取该账号。定时拉取（默认 30 分钟，北京时间 9:00–次日 3:00）只抓开启中的账号。主站 X 筛选仅显示开启账号。至少保留 1 个账号（可全部关闭拉取）。
-        </p>
-      </section>
+
 
       <section class="card">
         <div class="card-head">

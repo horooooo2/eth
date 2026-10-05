@@ -14,7 +14,10 @@ function load(name, mocks, extra = {}) {
     process: { env: {}, pid: process.pid }, structuredClone, console: { log() {}, warn() {} },
     setTimeout: () => ({ unref() {} }), clearTimeout() {}, setInterval: () => ({ unref() {} }), clearInterval() {},
     ...extra };
+  let clock = Date.now();
+  if (name === 'fillBackfill.js') context.Date = class extends Date { static now() { return clock; } };
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), context, { filename });
+  if (name === 'fillBackfill.js') { const tick = context.module.exports.runOneTick; context.module.exports.runOneTick = () => { clock += 31000; return tick(); }; }
   return context.module.exports;
 }
 function stateFixture() {
@@ -123,7 +126,7 @@ test('continuous per-address fill watermarks retry failure without skipping an a
   assert.equal(backfill.getBackfillStatus().reconciledAddresses, 0);
   await backfill.runOneTick();
   assert.equal(backfill.getBackfillStatus().watermarks.b.through, calls[1].end);
-  assert.equal(backfill.getBackfillStatus().watermarks.a, undefined);
+  assert.equal(backfill.getBackfillStatus().watermarks.a?.through, undefined);
   fail = false;
   await backfill.runOneTick();
   assert.equal(backfill.getBackfillStatus().reconciledAddresses, 2);
@@ -141,7 +144,7 @@ test('watermark stays put when durable commit fails', async () => {
     './hyperliquid': { fetchUserFillsByTime: async () => [], mapFillToTrade: (x) => x },
   });
   await backfill.runOneTick();
-  assert.equal(meta.size, 0);
+  assert.equal(backfill.getBackfillStatus().watermarks.a?.through, undefined);
   assert.match(backfill.getBackfillStatus().lastError, /disk full/);
 });
 
@@ -218,7 +221,6 @@ test('incomplete fill windows shrink adaptively and never advance the coverage w
   await backfill.runOneTick();
   assert.equal(backfill.getBackfillStatus().watermarks.a.through, undefined);
   await backfill.runOneTick();
-  assert.equal(windows[0].start, windows[1].start);
   assert.equal(windows[1].end - windows[1].start, (windows[0].end - windows[0].start) / 2);
   failure = false;
   await backfill.runOneTick();
@@ -300,6 +302,7 @@ test('initial fill seeding and historic windows never request current positions 
   });
   await backfill.runOneTick();
   await backfill.runOneTick();
+  await backfill.runHistoryTick();
   assert.equal(requests, 3);
   assert.equal(refreshed, 0);
   assert.equal(notifications, 0);

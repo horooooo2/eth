@@ -124,8 +124,9 @@ router.post('/analyze', async (req, res) => {
       throw err;
     }
     const body = req.body || {};
+    if (!['macro', 'whale'].includes(body.source)) return res.status(400).json({ error: '不支持的分析来源' });
     const source =
-      body.source === 'macro' ? 'macro' : body.source === 'whale' ? 'whale' : 'x';
+      body.source === 'macro' ? 'macro' : 'whale';
     const title = String(body.title || '').trim();
     const content = String(body.content || '').trim();
     if (!title && !content) {
@@ -156,8 +157,9 @@ router.post('/analyze-stream', async (req, res) => {
   }
 
   const body = req.body || {};
+  if (!['macro', 'whale'].includes(body.source)) return res.status(400).json({ error: '不支持的分析来源' });
   const source =
-    body.source === 'macro' ? 'macro' : body.source === 'whale' ? 'whale' : 'x';
+    body.source === 'macro' ? 'macro' : 'whale';
   const title = String(body.title || '').trim();
   const content = String(body.content || '').trim();
   if (!title && !content) {

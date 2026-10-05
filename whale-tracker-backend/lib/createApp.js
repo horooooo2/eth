@@ -4,7 +4,6 @@ const whalesRouter = require('../routes/whales');
 const newsRouter = require('../routes/news');
 const marketsRouter = require('../routes/markets');
 const authRouter = require('../routes/auth');
-const xRouter = require('../routes/x');
 const { fetchFedOdds } = require('./markets');
 const { getHlInfoConfig } = require('./hlInfoClient');
 const { getStartedAt, getUptimeMs } = require('./runtime');
@@ -38,6 +37,7 @@ function mountRoutes(app, prefix) {
       startedAt: getStartedAt(),
       uptimeMs: getUptimeMs(),
       hlInfo: getHlInfoConfig(),
+      outbound: require('./outboundHealth').getStatus(),
       sqlite,
       realtime: (() => {
         try {
@@ -69,7 +69,6 @@ function mountRoutes(app, prefix) {
   app.use(`${base}/markets`, marketsRouter);
   app.use(`${base}/tradfi`, require('../routes/tradfi'));
   app.use(`${base}/flow`, require('../routes/flow'));
-  app.use(`${base}/x`, xRouter);
   // 通用 AI 数据分析（DeepSeek key + analyze），非策略
   app.use(`${base}/whale-ai`, require('../routes/whaleAi'));
   app.get(`${base}/data/browse`, (req, res) => {

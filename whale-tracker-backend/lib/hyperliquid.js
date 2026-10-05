@@ -12,6 +12,14 @@ const cache = new Map();
  */
 async function withCache(key, ttlMs, loader, options = {}) {
   const now = Date.now();
+  // Bound variable time-window keys even when upstream is failing.
+  for (const [oldKey, value] of cache) {
+    if (!value.inflight && now - value.at > 30 * 60 * 1000) cache.delete(oldKey);
+  }
+  if (cache.size >= 2000 && !cache.has(key)) {
+    const evict = [...cache].find(([, value]) => !value.inflight);
+    if (evict) cache.delete(evict[0]);
+  }
   const staleMs = Math.max(
     Number(options.staleMs) || 0,
     ttlMs * 20,
@@ -53,7 +61,7 @@ async function fetchClearinghouseState(address) {
     if (!state || !Array.isArray(state.assetPositions)) {
       throw new Error('Invalid clearinghouse state: assetPositions must be an array');
     }
-    return state;
+    return { ...state, observedAt: Date.now() };
   },
     { allowStale: false },
   );
@@ -147,7 +155,7 @@ async function fetchBatchClearinghouseStates(addresses = []) {
  * @deprecated 优先用 fetchUserFillsByTime；保留给兼容调用
  */
 async function fetchUserFills(address) {
-  return fetchUserFillsByTime(address, Date.now() - FILL_LOOKBACK_MS);
+  return fetchUserFillsByTime(address, Date.now() - FILL_LOOKBACK_MS, Date.now(), { priority: "history" });
 }
 
 /** 近 1 天成交回看窗口（资金动态）；可用 FILL_RETENTION_DAYS 对齐 */
@@ -164,7 +172,7 @@ const FILL_MAX_PAGES = 6;
  * 无法证明覆盖完整时抛错，调用方不能推进 backfill watermark。
  * 仅最近约 10000 条可查。
  */
-async function fetchUserFillsByTime(address, startTime, endTime = Date.now()) {
+async function fetchUserFillsByTime(address, startTime, endTime = Date.now(), scheduling = {}) {
   const user = String(address || '').toLowerCase();
   const start = Math.max(0, Number(startTime) || 0);
   const end = Math.max(start, Number(endTime) || Date.now());
@@ -182,7 +190,7 @@ async function fetchUserFillsByTime(address, startTime, endTime = Date.now()) {
         user: address,
         startTime: cursorStart,
         endTime: end,
-      });
+      }, 2, scheduling);
       if (!Array.isArray(data)) throw new Error('Invalid userFillsByTime response');
       const page = data;
       pages += 1;
@@ -252,7 +260,7 @@ async function fetchUserFillsByCoin(
   const symbol = String(coin || '').toUpperCase();
   if (!symbol) return [];
   const user = address.toLowerCase();
-  const cacheKey = `fills-rev:${user}:${symbol}:${lookbackMs}:${maxPages}`;
+  const cacheKey = `fills-rev:${user}:${symbol}:${lookbackMs}:${maxPages}:${currentSize ?? ""}:${side || ""}`;
 
   return withCache(cacheKey, 20000, async () => {
     const now = Date.now();
@@ -264,7 +272,6 @@ async function fetchUserFillsByCoin(
     let pages = 0;
     let emptyStreak = 0;
     let shrinks = 0;
-    let catchingNewest = true;
 
     while (pages < maxPages && endTime > hardStart && shrinks < 24) {
       const startTime = Math.max(hardStart, endTime - windowMs);
@@ -275,15 +282,20 @@ async function fetchUserFillsByCoin(
         user: address,
         startTime,
         endTime,
-      });
-      const pageFills = Array.isArray(data) ? data : [];
+      }, 0, { priority: "history" });
+      if (!Array.isArray(data)) throw new Error("Invalid userFillsByTime response");
+      const pageFills = data;
 
-      if (catchingNewest && pageFills.length >= 2000 && windowMs > 60 * 1000) {
-        windowMs = Math.max(60 * 1000, Math.floor(windowMs / 2));
+      if (pageFills.length >= 2000) {
+        // Never cross a truncated interval. Shrink every window down to 1 ms.
+        if (endTime - startTime <= 1) {
+          const error = new Error('Saturated fill timestamp; history is incomplete');
+          error.code = 'HL_FILLS_INCOMPLETE'; throw error;
+        }
+        windowMs = Math.max(1, Math.floor((endTime - startTime) / 2));
         shrinks += 1;
         continue;
       }
-      catchingNewest = false;
 
       pages += 1;
       if (!pageFills.length) {
@@ -302,11 +314,7 @@ async function fetchUserFillsByCoin(
         all.push(fill);
       }
 
-      const oldest = pageFills.reduce((min, fill) => {
-        const t = Number(fill.time) || endTime;
-        return t < min ? t : min;
-      }, endTime);
-      endTime = oldest - 1;
+      endTime = startTime - 1;
       if (pageFills.length < 400) {
         windowMs = Math.min(windowMs * 2, 6 * 60 * 60 * 1000);
       }
@@ -320,8 +328,12 @@ async function fetchUserFillsByCoin(
       }
     }
 
-    return fillsForCoin(all, symbol);
-  });
+    const result = fillsForCoin(all, symbol);
+    result.complete = endTime < hardStart;
+    result.coverageStart = endTime + 1;
+    result.coverageEnd = now;
+    return result;
+  }, { allowStale: false });
 }
 
 /** 现有 fills 能否反推出当前持仓的开仓链 */

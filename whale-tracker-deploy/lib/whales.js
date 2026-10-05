@@ -457,7 +457,7 @@ async function enrichWhaleFillsAndTiming(whales, names = {}, options = {}) {
     try {
       fills = await fetchUserFills(address);
     } catch (err) {
-      console.warn(`[whales] ${whale.name} 成交补齐失败:`, err.message);
+      if (err.code !== "HL_HISTORY_DEFERRED") console.warn(`[whales] ${whale.name} 成交补齐失败:`, err.message);
       return;
     }
     const positions = await Promise.all(
@@ -643,6 +643,9 @@ async function finalizeSnapshotFromState(whale, address, state, names, { light, 
   return {
     ...base,
     ...derived,
+    positionObservedAt: Number(state.observedAt) || Date.now(),
+    positionSource: 'rest',
+    positionScope: 'native-perp',
     contractAccountValue: Number.isFinite(contractAccountValue) ? contractAccountValue : null,
     ...sideRates,
     topCoins,
@@ -1647,6 +1650,7 @@ function patchCachedPositionFields(whaleId, coin, side, fields, expectedWhaleRev
 }
 
 async function getWhalePosition(id, coin, options = {}) {
+  const cacheOnly = options.cacheOnly === true;
   const wantSide = options.side === 'long' || options.side === 'short' ? options.side : '';
   const whale = findConfiguredWhale(id);
   if (!whale) {
@@ -1658,7 +1662,7 @@ async function getWhalePosition(id, coin, options = {}) {
   const decoded = decodeURIComponent(String(coin || ''));
   let names = {};
   try {
-    names = await fetchCoinNameMap();
+    if (!cacheOnly) names = await fetchCoinNameMap();
   } catch {
     names = {};
   }
@@ -1677,7 +1681,7 @@ async function getWhalePosition(id, coin, options = {}) {
   });
 
   // 列表缓存缺仓时（常见：WS 尚未写入 / 轻量快照滞后），点开详情再拉一次实时仓位
-  if (!pos && address) {
+  if (!cacheOnly && !pos && address) {
     try {
       const state = await fetchClearinghouseState(address);
       const live = findPerpPosition(state, decoded, names, []);
@@ -1694,7 +1698,7 @@ async function getWhalePosition(id, coin, options = {}) {
     Boolean(address) &&
     (!pos || entryFillsThin(pos) || pos.openHistoryComplete === false || !fillsExplainEnough(fills, pos));
 
-  if (needCoinFetch && address) {
+  if (!cacheOnly && needCoinFetch && address) {
     try {
       const remote = await fetchUserFillsByCoin(address, pos?.coin || decoded, {
         lookbackMs: 21 * 24 * 60 * 60 * 1000,
@@ -1745,7 +1749,7 @@ async function getWhalePosition(id, coin, options = {}) {
 
     let markPx = pos.markPx ?? null;
     try {
-      const mids = await fetchAllMids();
+      const mids = cacheOnly ? null : await fetchAllMids();
       const midMap = mids?.mids && typeof mids.mids === 'object' ? mids.mids : mids;
       const candidates = [
         pos.coin,
@@ -1772,9 +1776,9 @@ async function getWhalePosition(id, coin, options = {}) {
         name: whale.name || snap.name,
         address: address || snap.address || '',
       },
-      updatedAt: Date.now(),
+      updatedAt: Number(snap.positionObservedAt) || cached?.updatedAt || null,
       source: entryFills.length > 1 ? 'enriched' : 'local',
-      stale: Boolean(cached?.stale),
+      stale: Boolean(cached?.stale) || !snap.positionObservedAt || Date.now() - Number(snap.positionObservedAt) > 180000,
       position: {
         coin: pos.coin,
         coinLabel: pos.coinLabel || coinLabel(pos.coin, names) || pos.coin,
@@ -1928,12 +1932,12 @@ function getWhaleResonance({ windowHours = 6, watchedCoins = [] } = {}) {
   const cached = readActiveWhaleSnapshot();
   const ids = new Set(getActiveWhales().map(item => String(item.id)));
   const whales = (cached?.data?.whales || []).filter(item => ids.has(String(item.id)) && !isPendingPlaceholder(item));
-  const inputs = loadResonanceInputs(since, now, config.minNotionalUsd);
-  return { ...scanResonanceSignals({ ...inputs, whales, config, now, watchedCoins }), updatedAt: cached?.updatedAt || 0 };
+  const inputs = loadResonanceInputs(since, now, config.minNotionalUsd, new Set(whales.filter(w => Number(w.winRate) >= config.minWinRate).map(w => String(w.id))));
+  return { ...scanResonanceSignals({ ...inputs, whales, config, now, watchedCoins }), updatedAt: now, basis: 'stored-executions', coverage: 'locally-observed', executionCoverage: require('./fillBackfill').getCoverageStatus() };
 }
 
 function getWhaleSummary({ coin = 'all' } = {}) {
-  const cached = readActiveWhaleSnapshot();
+  const cached = require('./cache').readStateSnapshot('hf', { includeTrades: false });
   const roster = getActiveWhales();
   const byId = new Map((cached?.data?.whales || []).map((item) => [String(item.id), item]));
   const normalizedCoin = String(coin || 'all').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/^K(?=[A-Z])/, '');
@@ -2016,7 +2020,7 @@ function getWhaleSummary({ coin = 'all' } = {}) {
     shortWhales,
     positionCount,
     updatedAt: Number(cached?.updatedAt) || 0,
-    stale: Boolean(cached?.stale),
+    ...require('./dataFreshness').summarizeFreshness(roster.map(row => byId.get(String(row.id)))),
   };
 }
 

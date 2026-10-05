@@ -1,20 +1,13 @@
 import axios, { type AxiosError } from 'axios';
 import type { WhaleBootstrap } from '@/utils/whaleState';
 import type {
-  AppConfig,
   CalendarResponse,
-  NewsDetailResponse,
-  NewsResponse,
   PagedTradesQuery,
   PagedTradesResponse,
   WhalePositionResponse,
-  WhaleProfile,
-  WhaleResponse,
-  WhaleTrade,
-  MarketsResponse,
 } from '@/types';
 
-const http = axios.create({
+export const http = axios.create({
   baseURL: '/api',
   timeout: 20000,
 });
@@ -44,21 +37,9 @@ export type TradFiQuote = {
   closeTime: number | null;
   source: string;
   stale: boolean;
-  changes?: { '5m': number | null; '15m': number | null; '1h': number | null };
+  changes?: Partial<Record<'5m' | '15m' | '1h', number | null>>;
   error?: string;
 };
-
-export async function fetchTradFiCatalog() {
-  const { data } = await http.get<{ symbols: TradFiMarketSymbol[]; updatedAt: string; stale: boolean; source: string }>('/tradfi/catalog');
-  return data;
-}
-
-export async function fetchTradFiQuotes(symbols: string[]) {
-  const { data } = await http.get<{ quotes: TradFiQuote[]; invalidSymbols: string[]; updatedAt: string; source: string }>('/tradfi/quotes', {
-    params: { symbols: symbols.join(',') },
-  });
-  return data;
-}
 
 export async function fetchRadarCatalog(includeSymbols: string[] = []) {
   const { data } = await http.get<{ symbols: TradFiMarketSymbol[]; updatedAt: string; stale: boolean; source: string }>('/tradfi/radar/catalog', {
@@ -79,8 +60,8 @@ export async function fetchRadarQuotes(symbols: string[]) {
   return data;
 }
 
-export async function fetchRadarMarket() {
-  const { data } = await http.get<{ quotes: TradFiQuote[]; updatedAt: string; stale: boolean; source: string }>('/tradfi/radar/market');
+export async function fetchRadarMarket(interval: '24h' | '1h' | '15m' | '5m' = '24h') {
+  const { data } = await http.get<{ quotes: TradFiQuote[]; updatedAt: string; stale: boolean; source: string }>('/tradfi/radar/market', { params: { interval } });
   return data;
 }
 
@@ -98,164 +79,6 @@ export async function fetchRadarNews(symbol: string) {
 export type RadarKline = { openTime: number; open: number; high: number; low: number; close: number; volume: number; closeTime: number };
 export async function fetchRadarKlines(symbol: string, interval: '5m' | '15m' | '1h') {
   const { data } = await http.get<{ symbol: string; interval: string; available: boolean; stale: boolean; bars: RadarKline[]; error?: string }>('/tradfi/radar/klines', { params: { symbol, interval } });
-  return data;
-}
-
-export type TradFiIntelResponse = {
-  symbol: string;
-  news: {
-    items: Array<{ title: string; category: string; publishedAt: string | null; source: string; url: string; summary: string }>;
-    source: string | null;
-    updatedAt: string | null;
-    stale: boolean;
-    error?: string;
-  };
-  fundamentals: {
-    rows: Array<{ label: string; value: string; asOf: string | null; sourceUrl: string | null }>;
-    source: string | null;
-    sourceUrl: string | null;
-    asOf: string | null;
-    note: string;
-    status: string;
-    updatedAt: string | null;
-    stale: boolean;
-    error?: string;
-  };
-  events: {
-    items: Array<{ title: string; date: string; time: string | null; forecast: string | null; previous: string | null; actual: string | null; source: string }>;
-    source: string | null;
-    updatedAt: string | null;
-    stale: boolean;
-    error?: string;
-  };
-  marketContext?: {
-    quote: TradFiQuote | null;
-    klines: Record<string, { available: boolean; stale: boolean; fetchedAt: number | null; latestBarTime: number | null; ageMs: number | null; bars: Array<{ openTime: number; open: number; high: number; low: number; close: number; volume: number; closeTime: number }>; error?: string }>;
-  };
-  directionResult?: TradFiDirectionResult;
-  contextHash?: string;
-  meta?: { symbol: string; generatedAt: string; directionEngineVersion: string };
-};
-
-export type TradFiDirectionFrame = {
-  status: 'FULL' | 'PARTIAL' | 'PRICE_ONLY' | 'INSUFFICIENT';
-  directionAllowed: boolean;
-  direction: 'STRONG_BULLISH' | 'BULLISH' | 'NEUTRAL' | 'BEARISH' | 'STRONG_BEARISH' | null;
-  score: number | null;
-  confidenceScore: number | null;
-  confidenceLevel: 'HIGH' | 'MEDIUM' | 'LOW' | null;
-  coreCoverage: number;
-  auxCoverage: number;
-  technical: Record<string, number | null> | null;
-  bullEvidenceCandidates: string[];
-  bearEvidenceCandidates: string[];
-  neutralFacts: string[];
-  missingCoreData: string[];
-  missingAuxData: string[];
-  invalidationCandidates: string[];
-  mainInterval: string;
-};
-
-export type TradFiDirectionResult = {
-  version: string;
-  overall: { direction: TradFiDirectionFrame['direction']; score: number | null; confidenceScore: number | null; confidenceLevel: TradFiDirectionFrame['confidenceLevel']; sourceTimeframe: string | null };
-  eventRisk: 'LOW' | 'MEDIUM' | 'HIGH';
-  timeframes: { ultraShort: TradFiDirectionFrame; shortTerm: TradFiDirectionFrame; mediumLong: TradFiDirectionFrame };
-};
-
-export async function fetchTradFiIntel(symbol: string) {
-  const { data } = await http.get<TradFiIntelResponse>('/tradfi/intel', { params: { symbol } });
-  return data;
-}
-
-export type TradFiAiAnalysis = {
-  summary: string;
-  bullEvidence: string[];
-  bearEvidence: string[];
-  neutralFacts: string[];
-  dataLimitations: string[];
-  attention: string[];
-};
-
-export type TradFiAiAnalysisResult = {
-  analysisId: string;
-  symbol: string;
-  contextHash: string;
-  engineVersion: string;
-  promptVersion: string;
-  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
-  directionResult: TradFiDirectionResult;
-  explanation: TradFiAiAnalysis;
-  model: string | null;
-  reused?: boolean;
-  createdAt: number;
-  updatedAt: number;
-};
-
-export async function analyzeTradFiMarket(symbol: string) {
-  const { data } = await http.post<TradFiAiAnalysisResult>('/tradfi/analyze', { symbol }, { timeout: 110_000 });
-  let result = data;
-  for (let attempt = 0; ['PENDING', 'RUNNING'].includes(result.status) && attempt < 90; attempt += 1) {
-    await new Promise((resolve) => window.setTimeout(resolve, 1000));
-    result = await fetchTradFiAnalysis(result.analysisId);
-  }
-  if (result.status === 'FAILED') throw new Error('error' in result ? String(result.error || 'TradFi AI 分析失败') : 'TradFi AI 分析失败');
-  if (result.status !== 'COMPLETED') throw new Error('分析仍在进行，请稍后点击查看结果');
-  return result;
-}
-
-export async function fetchTradFiAnalysis(analysisId: string) {
-  const { data } = await http.get<TradFiAiAnalysisResult>(`/tradfi/analysis/${encodeURIComponent(analysisId)}`, { timeout: 20_000 });
-  return data;
-}
-
-export type TradFiWhaleRow = {
-  id: string;
-  type: '成交' | '持仓' | '挂单';
-  address: string;
-  name: string;
-  dex: string;
-  coin: string;
-  time: number | null;
-  direction: string;
-  price: number | null;
-  size: number | null;
-  notionalUsd: number | null;
-  unrealizedPnlUsd: number | null;
-  leverage: number | null;
-  source: string;
-};
-
-export type TradFiWhaleResponse = {
-  symbol: string;
-  selectedMarket: { dex: string; coin: string; dayNotionalVolume: number; markPrice: number | null } | null;
-  markets: Array<{ dex: string; coin: string; dayNotionalVolume: number; markPrice: number | null }>;
-  rows: TradFiWhaleRow[];
-  fillCount: number;
-  scannedAddresses: number;
-  configuredAddresses: number;
-  failedRequests: number;
-  successfulRequests?: number;
-  coverageNote: string;
-  updatedAt: string;
-  stale: boolean;
-  binance: { accountRatio: number | null; positionRatio: number | null; asOf: number | null; period: string; source: string; unavailable: boolean };
-};
-
-export async function fetchTradFiWhales(symbol: string, dex = '', addresses: string[] = []) {
-  const { data } = await http.get<TradFiWhaleResponse>('/tradfi/whales', {
-    params: { symbol, dex: dex || undefined, addresses: addresses.length ? addresses.join(',') : undefined },
-    timeout: 45_000,
-  });
-  return data;
-}
-
-export type TradFiAllWhaleResponse = Pick<TradFiWhaleResponse,
-  'rows' | 'fillCount' | 'scannedAddresses' | 'configuredAddresses' | 'failedRequests' | 'successfulRequests' | 'coverageNote' | 'updatedAt' | 'stale'
-> & { markets: number };
-
-export async function fetchAllTradFiWhales() {
-  const { data } = await http.get<TradFiAllWhaleResponse>('/tradfi/whales/all', { timeout: 45_000 });
   return data;
 }
 
@@ -311,32 +134,6 @@ export function isTimeoutError(err: unknown) {
   return msg === 'TIMEOUT' || /timeout|timed out|ECONNABORTED|ETIMEDOUT/i.test(msg);
 }
 
-export function isRetryableLoadError(err: unknown) {
-  const msg = err instanceof Error ? err.message : String(err || '');
-  return (
-    isTimeoutError(err) ||
-    msg.startsWith('GATEWAY_') ||
-    /status code 50[234]|504|502|503|Gateway Timeout/i.test(msg)
-  );
-}
-
-export function retryableErrorText(err: unknown, fallback: string) {
-  const msg = err instanceof Error ? err.message : String(err || fallback);
-  if (msg.startsWith('GATEWAY_')) {
-    const code = msg.replace('GATEWAY_', '');
-    return `网关超时（${code}）`;
-  }
-  if (msg === 'TIMEOUT') return '请求超时';
-  if (/status code 504/i.test(msg)) return '网关超时（504）';
-  if (/status code 502/i.test(msg)) return '网关错误（502）';
-  if (/status code 503/i.test(msg)) return '服务暂不可用（503）';
-  return msg || fallback;
-}
-
-export function withRetrySuffix(message: string) {
-  return message.includes('正在重新请求') ? message : `${message}（正在重新请求数据）`;
-}
-
 const silentRetryTimers = new Map<string, number>();
 
 export function scheduleSilentRetry(key: string, run: () => void, delayMs = 4000) {
@@ -349,116 +146,8 @@ export function scheduleSilentRetry(key: string, run: () => void, delayMs = 4000
   silentRetryTimers.set(key, timer);
 }
 
-/** 增量成交：只拉 since 之后的新记录 */
-export async function fetchActivitySince(since: number) {
-  const { data } = await http.get<{
-    activity: WhaleTrade[];
-    since: number;
-    updatedAt: number;
-  }>('/whales/activity', {
-    params: { since },
-    timeout: 60000,
-  });
-  return data;
-}
-
 export async function fetchWhaleBootstrap() {
   const { data } = await http.get<WhaleBootstrap>('/whales/bootstrap', { timeout: 20000 });
-  return data;
-}
-
-export async function fetchWhalesBatch(query: {
-  offset?: number;
-  limit?: number;
-  refresh?: boolean;
-} = {}) {
-  const { data } = await http.get<WhaleResponse>('/whales/cache-page', {
-    // Business snapshots are collected by the backend scheduler. Browser reads
-    // only the currently available cache and never starts upstream collection.
-    params: { offset: query.offset ?? 0, limit: query.limit ?? 12 },
-    timeout: 20000,
-  });
-  return data;
-}
-
-export type WhaleCacheQuery = {
-  located?: boolean;
-  whales: WhaleProfile[];
-  total: number;
-  page: number;
-  limit: number;
-  directionCounts: Record<string, number>;
-  coinCounts: Record<string, number>;
-  stale: boolean;
-  updatedAt: number;
-};
-
-export async function fetchWhaleCacheQuery(query: {
-  all?: boolean;
-  page: number;
-  limit: number;
-  coin: string;
-  direction: string;
-  sort: string;
-  followedIds: string[];
-  coins: string[];
-  locateId?: string;
-}) {
-  const { data } = await http.get<WhaleCacheQuery>('/whales/cache-query', {
-    params: {
-      all: query.all ? '1' : undefined,
-      offset: (query.page - 1) * query.limit,
-      limit: query.limit,
-      coin: query.coin,
-      direction: query.direction,
-      sort: query.sort,
-      followedIds: query.followedIds.join(','),
-      coins: query.coins.join(','),
-      locateId: query.locateId || undefined,
-    },
-    timeout: 20000,
-  });
-  return data;
-}
-
-export async function refreshWhaleById(id: string) {
-  const { data } = await http.post<{
-    whale: WhaleProfile;
-    trades?: WhaleTrade[];
-    updatedAt?: number;
-  }>(`/whales/${encodeURIComponent(id)}/refresh`, null, { timeout: 60000 });
-  return data;
-}
-
-/** 补齐异动历史：高名义巨鲸近 7 天成交 + 开仓时间（异动完整性优先） */
-export async function refreshAlertHistory(query: { maxWhales?: number } = {}) {
-  const { data } = await http.post<{
-    whales: WhaleProfile[];
-    trades?: WhaleTrade[];
-    activity?: WhaleTrade[];
-    enriched?: number;
-    tradeCount?: number;
-    warning?: string | null;
-    updatedAt?: number;
-  }>('/whales/alert-history/refresh', null, {
-    params: { maxWhales: query.maxWhales ?? 40 },
-    timeout: 180000,
-  });
-  return data;
-}
-
-/** 从服务端 SQLite 恢复开/补仓异动（兼容旧：只传 limit） */
-export async function fetchPersistedAlertHistory(limit = 500) {
-  const { data } = await http.get<{
-    alerts: unknown[];
-    epoch: string;
-    seq: number;
-    total: number;
-    retentionDays?: number;
-  }>('/whales/alert-history', {
-    params: { limit },
-    timeout: 15000,
-  });
   return data;
 }
 
@@ -524,6 +213,7 @@ export async function fetchAlertFlowSummary(query: { window: '15m' | '1h' | '4h'
 }
 
 export type WhaleServerSummary = {
+  freshness?: { total: number; freshCount: number; staleCount: number; unknownCount: number; oldestObservedAt: number | null; newestObservedAt: number | null; maxAgeMs: number };
   alertTotal: number;
   total: number; knownCount: number; longUsd: number; shortUsd: number;
   longPnlUsd: number; shortPnlUsd: number; longPnlPct: number | null; shortPnlPct: number | null;
@@ -531,14 +221,6 @@ export type WhaleServerSummary = {
   longCount: number; shortCount: number; neutralCount: number; deviationPct: number;
   hint: string; scopeLabel: string; positionCount: number; updatedAt: number; stale: boolean;
 };
-
-export async function fetchWhaleSummary(coin?: string) {
-  const { data } = await http.get<WhaleServerSummary>('/whales/summary', {
-    params: coin && coin !== 'all' ? { coin } : undefined,
-    timeout: 15000,
-  });
-  return data;
-}
 
 export async function fetchWhaleResonance(windowHours: number, coins: string[]) {
   const { data } = await http.get<import('@/utils/whaleResonanceSignal').ResonanceScanResult>('/whales/resonance', {
@@ -556,13 +238,6 @@ function tradeQueryParams(query: PagedTradesQuery = {}) {
     sinceMs: query.sinceMs || undefined,
     refresh: query.refresh ? 1 : undefined,
   };
-}
-
-export async function fetchPagedTrades(query: PagedTradesQuery = {}) {
-  const { data } = await http.get<PagedTradesResponse>('/whales/trades', {
-    params: tradeQueryParams(query),
-  });
-  return data;
 }
 
 export async function fetchWhaleTrades(id: string, query: PagedTradesQuery = {}) {
@@ -657,166 +332,18 @@ export async function fetchWhalePosition(
   id: string,
   coin: string,
   side?: 'long' | 'short' | '',
+  options: { cacheOnly?: boolean; signal?: AbortSignal } = {},
 ) {
   const { data } = await http.get<WhalePositionResponse>(
     `/whales/${encodeURIComponent(id)}/positions/${encodeURIComponent(coin)}`,
-    { params: side ? { side } : undefined },
+    { params: { side: side || undefined, view: options.cacheOnly ? 'cached' : undefined }, signal: options.signal },
   );
-  return data;
-}
-
-export async function fetchNews(refresh = false) {
-  const { data } = await http.get<NewsResponse>('/news', {
-    params: refresh ? { refresh: 1 } : undefined,
-  });
-  return data;
-}
-
-export async function fetchNewsDetail(id: string, url = '') {
-  const { data } = await http.get<NewsDetailResponse>('/news/detail', {
-    params: { id, url: url || undefined },
-  });
   return data;
 }
 
 export async function fetchCalendar(refresh = false) {
   const { data } = await http.get<CalendarResponse>('/news/calendar', {
     params: refresh ? { refresh: 1 } : undefined,
-  });
-  return data;
-}
-
-export async function fetchWhaleAlertsFeed(query: { minUsd?: number; limit?: number } = {}) {
-  const { data } = await http.get<{
-    alerts: Array<{
-      id: string;
-      time: number;
-      from: string;
-      to: string;
-      fromLabel?: string;
-      toLabel?: string;
-      flowDirection?: 'inflow' | 'outflow' | 'exchange' | 'transfer';
-      exchangeName?: string;
-      amountUsd: number;
-      amount?: number;
-      asset: string;
-      blockchain: string;
-      hash?: string;
-    }>;
-    source?: string | null;
-    warning?: string | null;
-    minUsd?: number;
-    updatedAt?: number;
-  }>('/markets/whale-alerts', {
-    params: {
-      minUsd: query.minUsd ?? 1_000_000,
-      limit: query.limit ?? 80,
-    },
-    timeout: 15000,
-  });
-  return data;
-}
-
-export async function fetchMarkets(refresh = false, coins: string[] = []) {
-  const { data } = await http.get<MarketsResponse>('/markets', {
-    params: {
-      refresh: refresh ? 1 : undefined,
-      coins: coins.length ? coins.join(',') : undefined,
-    },
-    timeout: 90000,
-  });
-  return data;
-}
-
-/** DexPaprika 池子交易汇总的币种资金流 */
-export type DexFlowCoinRow = {
-  coin: string;
-  buy: number;
-  sell: number;
-  net: number;
-  changePct: number | null;
-  price?: number | null;
-  count?: number;
-  network?: string;
-  pool?: string;
-  dex?: string;
-  pair?: string;
-  unsupported?: boolean;
-  error?: string;
-  period?: string;
-  source?: string;
-};
-
-export type DexFlowCoinsResponse = {
-  period: string;
-  coins: DexFlowCoinRow[];
-  updatedAt: number | null;
-  accumulating?: boolean;
-  errors?: Array<{ coin: string; error: string }>;
-};
-
-export async function fetchDexFlowCoins(period = '1h', coins: string[] = [], marketType: 'spot' | 'swap' = 'spot') {
-  const { data } = await http.get<DexFlowCoinsResponse>('/flow/coins', {
-    params: {
-      period,
-      coins: coins.length ? coins.join(',') : undefined,
-      marketType,
-    },
-    timeout: 15000,
-  });
-  return data;
-}
-
-export type DefillamaOverview = {
-  totalTvl: number;
-  tvlChange1dPct: number | null;
-  tvlAsOf: number | null;
-  dexVolume24h: number;
-  dexChange1dPct: number | null;
-  stableMcap: number;
-  preferredTvl?: number;
-  preferredDexVolume24h?: number;
-  preferredStableMcap?: number;
-};
-
-export type DefillamaProtocolRow = {
-  name: string;
-  slug: string;
-  category: string;
-  tvl: number;
-  change1dPct: number | null;
-  symbol: string | null;
-};
-
-export type DefillamaCoinRow = {
-  coin: string;
-  chain: string | null;
-  unsupported?: boolean;
-  chainTvl: number;
-  tvlChange1dPct: number | null;
-  dexVolume24h: number;
-  dexChange1dPct: number | null;
-  stableMcap: number;
-  protocols: DefillamaProtocolRow[];
-};
-
-export type DefillamaMacroResponse = {
-  ok: boolean;
-  accumulating?: boolean;
-  stale?: boolean;
-  error?: string | null;
-  overview: DefillamaOverview | null;
-  coins: DefillamaCoinRow[];
-  updatedAt: number | null;
-  source?: string;
-};
-
-export async function fetchDefillamaMacro(coins: string[] = []) {
-  const { data } = await http.get<DefillamaMacroResponse>('/flow/defillama', {
-    params: {
-      coins: coins.length ? coins.join(',') : undefined,
-    },
-    timeout: 25000,
   });
   return data;
 }
@@ -832,46 +359,6 @@ export async function fetchQuotes(coins: string[] = []) {
       coins: coins.length ? coins.join(',') : undefined,
     },
     timeout: 12000,
-  });
-  return data;
-}
-
-export type LiquidationBucket = {
-  hourAgo: number;
-  from: number;
-  to: number;
-  longUsd: number;
-  shortUsd: number;
-  totalUsd: number;
-  count: number;
-};
-
-export type LiquidationPeriod = {
-  hours: number;
-  label: string;
-  longUsd: number;
-  shortUsd: number;
-  totalUsd: number;
-  count: number;
-};
-
-export type LiquidationsResponse = {
-  coin: string;
-  hours: number;
-  longUsd: number;
-  shortUsd: number;
-  totalUsd: number;
-  count: number;
-  source: string;
-  buckets?: LiquidationBucket[];
-  periods?: LiquidationPeriod[];
-  updatedAt: number;
-};
-
-export async function fetchLiquidations(coin = 'BTC') {
-  const { data } = await http.get<LiquidationsResponse>('/markets/liquidations', {
-    params: { coin },
-    timeout: 45000,
   });
   return data;
 }
@@ -893,16 +380,6 @@ export async function searchMarketCoins(query: string) {
     timeout: 15000,
   });
   return data.items;
-}
-
-export async function fetchConfig() {
-  const { data } = await http.get<AppConfig>('/whales/config');
-  return data;
-}
-
-export async function saveConfig(payload: AppConfig) {
-  const { data } = await http.post<AppConfig>('/whales/config', payload);
-  return data;
 }
 
 /* —— 登录 / 用户设置 —— */
@@ -957,104 +434,6 @@ export async function listAuthUsers() {
   return data;
 }
 
-export type XTweetUser = {
-  id?: string;
-  username: string;
-  name: string;
-  label?: string;
-  description?: string;
-  followers?: number;
-  following?: number;
-  tweets?: number;
-  avatar?: string;
-  verified?: boolean;
-  url?: string | null;
-};
-
-export type XTweet = {
-  id: string;
-  text: string;
-  textZh?: string;
-  createdAt?: string | null;
-  likes?: number;
-  retweets?: number;
-  replies?: number;
-  views?: number;
-  quotes?: number;
-  isReply?: boolean;
-  isQuote?: boolean;
-  isRetweet?: boolean;
-  lang?: string;
-  url?: string | null;
-  username?: string;
-  label?: string;
-  user?: XTweetUser;
-  refKind?: 'quote' | 'retweet' | '';
-  refTweet?: XTweet | null;
-};
-
-export type XFeedTweet = XTweet;
-
-export type XTweetsResponse = {
-  username: string;
-  profile: XTweetUser | null;
-  tweets: XTweet[];
-  updatedAt?: number;
-  refreshedAt?: number;
-  stale?: boolean;
-  source?: string;
-  error?: string;
-};
-
-export type XFeedAccount = {
-  username: string;
-  label: string;
-  name?: string;
-  avatar?: string;
-  url?: string;
-};
-
-export type XFeedResponse = {
-  accounts: XFeedAccount[];
-  tweets: XFeedTweet[];
-  updatedAt?: number;
-  refreshedAt?: number;
-  stale?: boolean;
-  source?: string;
-  poll?: Record<string, unknown>;
-  error?: string;
-};
-
-export async function fetchXTweets(opts?: {
-  user?: string;
-  limit?: number;
-  refresh?: boolean;
-}) {
-  const { data } = await http.get<XTweetsResponse>('/x/tweets', {
-    params: {
-      user: opts?.user || 'cz_binance',
-      limit: opts?.limit ?? 10,
-      refresh: opts?.refresh ? 1 : undefined,
-    },
-    timeout: 90_000,
-  });
-  return data;
-}
-
-export async function fetchXFeed(opts?: {
-  user?: string;
-  limit?: number;
-}) {
-  const { data } = await http.get<XFeedResponse>('/x/feed', {
-    params: {
-      user: opts?.user || undefined,
-      limit: opts?.limit ?? 40,
-    },
-    timeout: 30_000,
-  });
-  return data;
-}
-
 export type WhaleAiKeyStatus = {
   provider: string;
   configured: boolean;
@@ -1080,22 +459,6 @@ export async function deleteWhaleAiKey() {
   return data;
 }
 
-export async function analyzeWithWhaleAi(body: {
-  source: 'x' | 'macro' | 'whale';
-  title?: string;
-  content?: string;
-  meta?: Record<string, unknown> | string;
-}) {
-  const { data } = await http.post<{
-    ok: boolean;
-    source: string;
-    analysis: string;
-    model?: string;
-    usage?: unknown;
-  }>('/whale-ai/analyze', body, { timeout: 100_000 });
-  return data;
-}
-
 export type AnalyzeStreamHandlers = {
   onStatus?: (payload: { stage?: string; message?: string }) => void;
   onDelta?: (text: string) => void;
@@ -1112,7 +475,7 @@ export type AnalyzeStreamHandlers = {
 /** POST SSE 流式分析（新闻 / 宏观 / 巨鲸） */
 export async function streamAnalyzeWithWhaleAi(
   body: {
-    source: 'x' | 'macro' | 'whale';
+    source: 'macro' | 'whale';
     title?: string;
     content?: string;
     meta?: Record<string, unknown> | string;
@@ -1340,15 +703,6 @@ export async function fetchMarketBriefAnalysis(analysisId: string) {
   return data;
 }
 
-export async function fetchMarketBrief(coin: string) {
-  const { data } = await http.post<MarketBriefResponse>(
-    '/whale-ai/market-brief',
-    { coin },
-    { timeout: 130_000 },
-  );
-  return data;
-}
-
 function authToken() {
   try {
     return localStorage.getItem('whale-tracker-auth-token') || '';
@@ -1490,23 +844,6 @@ export async function streamMarketBrief(
 }
 
 export type MarketChatMessage = { role: 'user' | 'assistant'; content: string };
-
-export async function chatMarketBrief(body: {
-  coin: string;
-  message: string;
-  analysis?: string;
-  contextText?: string;
-  messages?: MarketChatMessage[];
-}) {
-  const { data } = await http.post<{
-    ok: boolean;
-    coin: string;
-    reply: string;
-    model?: string;
-    usage?: unknown;
-  }>('/whale-ai/market-chat', body, { timeout: 100_000 });
-  return data;
-}
 
 export type MarketChatStreamHandlers = {
   onStatus?: (payload: { stage?: string; message?: string }) => void;
@@ -1667,98 +1004,7 @@ export async function renameWhale(id: string, name: string) {
   return data;
 }
 
-export type ConsoleXAccount = {
-  username: string;
-  label?: string;
-  name?: string;
-  enabled?: boolean;
-};
-
-export async function fetchXAccounts() {
-  const { data } = await http.get<{
-    accounts?: ConsoleXAccount[];
-    poll?: Record<string, unknown>;
-    updatedAt?: number;
-  }>('/x/accounts');
-  return data;
-}
-
-export async function fetchXStatus() {
-  const { data } = await http.get<Record<string, unknown>>('/x/status');
-  return data;
-}
-
-export async function addXWatchAccount(username: string, label: string) {
-  const { data } = await http.post<{
-    accounts?: ConsoleXAccount[];
-    poll?: Record<string, unknown>;
-    updatedAt?: number;
-    error?: string;
-  }>('/x/accounts', { username, label });
-  return data;
-}
-
-export async function toggleXWatchAccount(username: string, enabled: boolean) {
-  const { data } = await http.post<{
-    accounts?: ConsoleXAccount[];
-    poll?: Record<string, unknown>;
-    error?: string;
-  }>(`/x/accounts/${encodeURIComponent(username)}/toggle`, { enabled });
-  return data;
-}
-
-export async function updateXWatchAccount(username: string, label: string) {
-  const { data } = await http.put<{
-    accounts?: ConsoleXAccount[];
-    poll?: Record<string, unknown>;
-    error?: string;
-  }>(`/x/accounts/${encodeURIComponent(username)}`, { label });
-  return data;
-}
-
-export async function deleteXWatchAccount(username: string) {
-  const { data } = await http.delete<{
-    accounts?: ConsoleXAccount[];
-    poll?: Record<string, unknown>;
-    error?: string;
-  }>(`/x/accounts/${encodeURIComponent(username)}`);
-  return data;
-}
-
-export async function refreshXWatchNow() {
-  const { data } = await http.post<Record<string, unknown>>(
-    '/x/refresh',
-    {},
-    { params: { force: 1 }, timeout: 90_000 },
-  );
-  return data;
-}
-
 export async function fetchApiHealth() {
   const { data } = await http.get<Record<string, unknown>>('/health');
-  return data;
-}
-
-/* ===== 仓位建议单档刷新 ===== */
-export async function refreshMarketBriefStance(body: {
-  coin: string;
-  horizon: 'ultra_short' | 'short' | 'mid_long';
-  analysisId?: string;
-  analysis?: string;
-  contextText?: string;
-  equityLike?: boolean;
-}) {
-  const { data } = await http.post<{
-    ok: boolean;
-    coin: string;
-    horizon: string;
-    leg: MarketBriefStructured['personal_stance'] extends infer P
-      ? P extends { ultra_short?: infer L }
-        ? L
-        : never
-      : never;
-    analysisResult?: MarketBriefStructured | null;
-    model?: string;
-  }>('/whale-ai/market-brief-stance', body, { timeout: 90_000 });
   return data;
 }

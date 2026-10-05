@@ -9,7 +9,7 @@ const { alertDocFromEvent } = require('../lib/positionEventPolicy');
 const now = Date.now();
 
 function reset() {
-  getDb().exec('DELETE FROM alert_sources; DELETE FROM alert_items; DELETE FROM alerts; DELETE FROM fills; DELETE FROM events; DELETE FROM positions; DELETE FROM whales;');
+  store.invalidateFillProjection(); getDb().exec('DELETE FROM alert_sources; DELETE FROM alert_items; DELETE FROM alerts; DELETE FROM fills; DELETE FROM events; DELETE FROM positions; DELETE FROM whales;');
   store.setAlertCommitObserver(null);
 }
 function trade(id, usd = 60000, time = now - 5000) {
@@ -83,7 +83,7 @@ test('fill is authoritative when snapshot arrives before or after it', () => {
     const copy = snapshot('snapshot', 90000);
     if (snapshotFirst) store.persistAlerts([copy]);
     const result = store.persistTradesIncremental([trade('fill')]);
-    if (snapshotFirst) assert.deepEqual(result.removedAlertIds, ['snapshot']);
+    if (snapshotFirst) assert.deepEqual(result.removedAlertIds, []); // unconfirmed snapshots are never stored
     else store.persistAlerts([copy]);
     store.persistAlerts([copy]);
     assert.equal(flow().longUsd, 60000);
@@ -140,7 +140,7 @@ test('expired clearinghouse data is never returned as a fresh successful snapsho
   Date.now = () => clock;
   try {
     const { fetchClearinghouseState } = require('../lib/hyperliquid');
-    assert.deepEqual(await fetchClearinghouseState('0xtest'), { assetPositions: [] });
+    assert.deepEqual(await fetchClearinghouseState('0xtest'), { assetPositions: [], observedAt: clock });
     clock += 21000;
     failed = true;
     await assert.rejects(fetchClearinghouseState('0xtest'), /upstream unavailable/);

@@ -146,9 +146,9 @@ function stateFor(mode = 'hf') {
   return states.get(key);
 }
 
-function readStateSnapshot(mode = 'hf') {
+function readStateSnapshot(mode = 'hf', { includeTrades = true } = {}) {
   const state = stateFor(mode);
-  return { data: copy(state.data), updatedAt: state.updatedAt, revision: state.revision,
+  return { data: copy(includeTrades ? state.data : { ...state.data, trades: [] }), updatedAt: state.updatedAt, revision: state.revision,
     epoch: state.epoch, stale: Date.now() - state.updatedAt > TTL_MS };
 }
 
@@ -241,7 +241,7 @@ function commitWhaleState(mode = 'hf', patch = {}) {
     changedWhales: copy(changedWhales), removedWhaleIds, rejectedWhaleIds, committedAlerts: result?.committedAlerts || [],
     removedAlertIds: result?.removedAlertIds || [] };
   for (const listener of commitListeners) {
-    try { listener(copy(committed)); } catch (error) { console.warn('[state] subscriber:', error.message); }
+    try { listener({ ...copy({ ...committed, data: undefined }), data: { mode } }); } catch (error) { console.warn('[state] subscriber:', error.message); }
   }
   return committed;
 }

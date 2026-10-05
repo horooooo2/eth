@@ -41,6 +41,8 @@ export const DEFAULT_RESONANCE_CONFIG: ResonanceConfig = {
 export type ResonanceSignalKind = 'cluster' | 'accumulation';
 
 export interface ResonanceOpenRow {
+  sourceId?: string;
+  firstTime?: number;
   whaleId: string;
   whaleName: string;
   address: string;
@@ -131,27 +133,23 @@ export function writeResonanceWindowHours(windowHours: number) {
 }
 
 function mergeOpens(rows: ResonanceOpenRow[], mergeMs: number) {
-  const sorted = [...rows].sort((a, b) => a.time - b.time);
   const merged: ResonanceOpenRow[] = [];
-
-  for (const row of sorted) {
-    const prev = merged[merged.length - 1];
-    if (
-      prev &&
-      prev.whaleId === row.whaleId &&
-      prev.coin === row.coin &&
-      prev.side === row.side &&
-      row.time - prev.time <= mergeMs
-    ) {
+  const latest = new Map<string, ResonanceOpenRow>();
+  for (const row of [...rows].sort((a, b) => a.time - b.time)) {
+    const key = `${row.whaleId}|${row.coin}|${row.side}`;
+    const prev = latest.get(key);
+    // Fixed span from the first execution, not an indefinitely sliding chain.
+    if (prev && row.time - (prev.firstTime ?? prev.time) <= mergeMs) {
       const total = prev.notionalUsd + row.notionalUsd;
       prev.price = total > 0 ? (prev.price * prev.notionalUsd + row.price * row.notionalUsd) / total : prev.price;
       prev.notionalUsd = total;
+      if (row.action === "open") prev.action = "open";
       prev.time = row.time;
-      continue;
+    } else {
+      const next = { ...row, firstTime: row.time };
+      merged.push(next); latest.set(key, next);
     }
-    merged.push({ ...row });
   }
-
   return merged;
 }
 
@@ -206,7 +204,7 @@ function classifyFillAction(trade: WhaleTrade): 'open' | 'increase' | null {
   return addsToLong || addsToShort ? 'increase' : null;
 }
 
-function rowsFromAlerts(alerts: WhaleAlert[], whaleMap: Map<string, WhaleProfile>, since: number, config: ResonanceConfig) {
+function rowsFromAlerts(alerts: WhaleAlert[], whaleMap: Map<string, WhaleProfile>, since: number) {
   const rows: ResonanceOpenRow[] = [];
   for (const alert of alerts) {
     const whale = whaleMap.get(alert.whaleId);
@@ -217,13 +215,14 @@ function rowsFromAlerts(alerts: WhaleAlert[], whaleMap: Map<string, WhaleProfile
       const time = Number(item.time) || alertEventTime(alert);
       if (!time || time < since) continue;
       const notionalUsd = Number(item.usd) || 0;
-      if (notionalUsd < config.minNotionalUsd) continue;
+      if (!(notionalUsd > 0)) continue;
       const coin = coinKey(item.coin || '');
       if (!coin) continue;
       const side = item.side || inferSide(alert, item);
       if (!side) continue;
       rows.push(
         buildOpenRow(whale, {
+          sourceId: item.sourceId || `${alert.id}:${item.coin}:${item.side}:${item.kind}:${time}`,
           whaleId: alert.whaleId,
           whaleName: alert.whaleName || whale.name,
           address: alert.address || whale.address,
@@ -244,9 +243,9 @@ function rowsFromAlerts(alerts: WhaleAlert[], whaleMap: Map<string, WhaleProfile
 function dedupeRows(rows: ResonanceOpenRow[]) {
   const map = new Map<string, ResonanceOpenRow>();
   for (const row of rows) {
-    const key = `${row.whaleId}|${row.coin}|${row.side}|${row.action}|${Math.floor(row.time / 60_000)}`;
+    const key = row.sourceId || `${row.whaleId}|${row.coin}|${row.side}|${row.action}|${row.time}|${row.notionalUsd}`;
     const prev = map.get(key);
-    if (!prev || row.notionalUsd > prev.notionalUsd) map.set(key, row);
+    if (!prev) map.set(key, row);
   }
   return [...map.values()];
 }
@@ -280,7 +279,7 @@ function buildOpenRow(
   return { ...base, ...metrics };
 }
 
-/** 明细表：同一巨鲸、同币种同方向的多笔开仓合并为一行，并优先对齐当前持仓 */
+/** 明细表：同一巨鲸、同币种同方向的多笔开仓合并为一行，金额与价格仅使用信号期间的成交 */
 export function mergeRowsByWhale(
   rows: ResonanceOpenRow[],
   whaleMap?: Map<string, WhaleProfile>,
@@ -305,11 +304,8 @@ export function mergeRowsByWhale(
           : latest.price;
 
       const whale = whaleMap?.get(latest.whaleId);
-      const pos = whale ? matchWhalePosition(whale, latest.coin, latest.side) : null;
-      const livePrice = Number(pos?.entryPx) || 0;
-      const liveNotional = Math.abs(Number(pos?.positionValue) || 0);
-      const price = livePrice > 0 ? livePrice : signalPrice;
-      const notionalUsd = liveNotional > 0 ? liveNotional : signalNotional;
+      const price = signalPrice;
+      const notionalUsd = signalNotional;
       const metrics = whale
         ? resolveOpenMetrics(whale, latest.coin, latest.side, price)
         : { leverage: latest.leverage, liquidationPx: latest.liquidationPx };
@@ -345,10 +341,11 @@ function collectOpenRows(input: {
     const whale = whaleMap.get(trade.whaleId);
     if (!whale) continue;
     const notionalUsd = Number(trade.amountUsd) || 0;
-    if (notionalUsd < input.config.minNotionalUsd) continue;
+    if (!(notionalUsd > 0)) continue;
 
     rawRows.push(
       buildOpenRow(whale, {
+        sourceId: `fill:${String(trade.id).startsWith(`${trade.whaleId}:`) ? trade.id : `${trade.whaleId}:${trade.id}`}`,
         whaleId: trade.whaleId,
         whaleName: trade.whaleName || whale.name,
         address: whale.address,
@@ -363,7 +360,7 @@ function collectOpenRows(input: {
     );
   }
 
-  rawRows.push(...rowsFromAlerts(input.alerts || [], whaleMap, input.since, input.config));
+  rawRows.push(...rowsFromAlerts(input.alerts || [], whaleMap, input.since));
   const watched = input.watchedCoins?.length ? input.watchedCoins : readWatchedCoins();
   return dedupeRows(rawRows.filter((row) =>
     coinMatchesWatch(row.coin, watched) && row.winRate >= input.config.minWinRate,
@@ -503,10 +500,11 @@ export function scanResonanceSignals(input: {
   });
 
   const clusterRows = mergeOpens(
-    dedupedRows.filter((row) => row.action === 'open' && row.time >= since),
+    dedupedRows.filter((row) => row.time >= since),
     mergeMs,
-  );
-  const accumulationRows = dedupedRows;
+  ).filter(row => row.action === "open" && row.notionalUsd >= config.minNotionalUsd);
+  const accumulationRows = mergeOpens(dedupedRows.filter(row => row.time >= now - config.accumulationWindowHours * 3_600_000), mergeMs)
+    .filter(row => row.notionalUsd >= config.minNotionalUsd);
 
   const signals = [
     ...scanAccumulationSignals(accumulationRows, config, now),

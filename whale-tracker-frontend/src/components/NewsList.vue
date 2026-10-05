@@ -71,6 +71,20 @@ const pageAlerts = computed(() => [...new Set([...pageAlertIds.value, ...whaleSt
   .map(id => whaleStore.alertsById[id]).filter((alert): alert is WhaleAlert => Boolean(alert && alertMatchesListFilters(alert)))
   .sort((a, b) => alertEventTime(b) - alertEventTime(a)).slice(0, ALERT_DISPLAY_LIMIT));
 const alertLoading = ref(false);
+const liveAnimations = ref<Record<string, 'new' | 'update'>>({});
+const animationTimers = new Map<string, ReturnType<typeof setTimeout>>();
+function animateLiveAlerts(rows: Array<{ id: string; isNew: boolean }>) {
+  if (document.hidden || alertLoading.value || !started) return;
+  const visibleIds = new Set(pagedAlerts.value.map(row => row.alert.id));
+  for (const row of rows) {
+    if (!visibleIds.has(row.id) || animationTimers.has(row.id)) continue;
+    liveAnimations.value[row.id] = row.isNew ? 'new' : 'update';
+    animationTimers.set(row.id, setTimeout(() => {
+      delete liveAnimations.value[row.id];
+      animationTimers.delete(row.id);
+    }, 1600));
+  }
+}
 const alertFiltersReady = ref(false);
 const facets = ref<{ all: number; byCoin: Record<string, number>; long: number; short: number }>({
   all: 0,
@@ -110,6 +124,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (nowTickTimer) clearInterval(nowTickTimer);
+  for (const timer of animationTimers.values()) clearTimeout(timer);
+  animationTimers.clear();
   alertReqSeq += 1; pendingPage = null;
 
 });
@@ -364,6 +380,7 @@ function hasListEligibleItem(alert: WhaleAlert) {
 
 defineExpose({
   initialize,
+  animateLiveAlerts,
   reloadAlerts: (silent = true) => loadAlertPage(silent),
 });
 
@@ -520,7 +537,7 @@ function alertFundingWarn(row: {
           :key="row.alert.id"
           type="button"
           class="news-item alert-item"
-          :class="[row.view.amountClass, `layer-${row.view.layer}`]"
+          :class="[row.view.amountClass, `layer-${row.view.layer}`, liveAnimations[row.alert.id] && `live-${liveAnimations[row.alert.id]}`]"
           @click="openAlert(row.alert)"
         >
           <div class="alert-head">
@@ -613,6 +630,7 @@ function alertFundingWarn(row: {
       </template>
       <template v-if="activeAlert && activeView">
         <div class="detail">
+          <p v-if="activeAlert.qualityNote" class="dim">{{ activeAlert.qualityNote }}</p>
           <div class="detail-row">
             <span>类型</span>
             <strong>
@@ -1319,5 +1337,25 @@ function alertFundingWarn(row: {
   white-space: pre-wrap;
   font-size: 16px;
   line-height: 1.7;
+}
+</style>
+
+<style scoped>
+.alert-item.live-new {
+  animation: alert-slide-in 280ms ease-out, alert-live-highlight 1.5s ease-out;
+}
+.alert-item.live-update {
+  animation: alert-live-highlight 1.5s ease-out;
+}
+@keyframes alert-slide-in {
+  from { opacity: .35; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes alert-live-highlight {
+  0%, 25% { box-shadow: inset 0 0 0 1px rgba(96, 165, 250, .6), inset 0 0 28px rgba(96, 165, 250, .16); }
+  100% { box-shadow: inset 0 0 0 1px transparent, inset 0 0 28px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .alert-item.live-new, .alert-item.live-update { animation: none; outline: 1px solid rgba(96, 165, 250, .55); outline-offset: -1px; }
 }
 </style>

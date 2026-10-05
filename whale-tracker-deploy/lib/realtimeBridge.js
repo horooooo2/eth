@@ -552,6 +552,9 @@ function handleWebData({ user, data }) {
   const shortUsd = Number(derived?.shortUsd) || positions.filter((p) => p.side === 'short').reduce((s, p) => s + positionNotionalUsd(p), 0);
   const direction = derived?.direction || (longUsd >= shortUsd ? 'long' : shortUsd > longUsd ? 'short' : 'neutral');
   const patch = {
+    positionObservedAt: Date.now(),
+    positionSource: 'websocket',
+    positionScope: 'native-perp',
     positions,
     longUsd,
     shortUsd,

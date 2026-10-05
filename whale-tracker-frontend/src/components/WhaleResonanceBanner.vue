@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { ref, watch, onUnmounted } from 'vue';
 import { ArrowRight } from '@element-plus/icons-vue';
 import type { WhaleProfile, WhaleTrade } from '@/types';
 import type { WhaleAlert } from '@/utils/whaleAlerts';
@@ -52,10 +52,20 @@ async function loadSignals() {
     if (seq === requestSeq) scan.value = { hit: false, primary: null, signals: [], emptyText: '共振信号读取失败，请切换时间范围重试' };
   }
 }
-function initialize() { return initialLoad ||= loadSignals(); }
+let expiryTimer: ReturnType<typeof setInterval> | undefined;
+let updateTimer: ReturnType<typeof setTimeout> | undefined;
+function refresh() {
+  if (!initialLoad || updateTimer) return;
+  updateTimer = setTimeout(() => { updateTimer = undefined; void loadSignals(); }, 10000);
+}
+function initialize() {
+  if (!expiryTimer) expiryTimer = setInterval(() => { if (!document.hidden) refresh(); }, 30000);
+  return initialLoad ||= loadSignals();
+}
+onUnmounted(() => { clearInterval(expiryTimer); clearTimeout(updateTimer); requestSeq++; });
 watch(windowHours, (value) => { writeResonanceWindowHours(value); if (initialLoad) void loadSignals(); });
 watch(preferredCoinsState, () => { if (initialLoad) void loadSignals(); }, { deep: true });
-defineExpose({ initialize });
+defineExpose({ initialize, refresh });
 
 function signalKindLabel(kind: ResonanceSignal['kind']) {
   return kind === 'accumulation' ? '持续加仓' : '共振信号';
@@ -205,9 +215,9 @@ function rowWhaleTitle(row: ResonanceOpenRow) {
               <th>巨鲸</th>
               <th>币种</th>
               <th>方向</th>
-              <th>开仓价</th>
-              <th>名义本金</th>
-              <th>开仓时间</th>
+              <th>信号成交均价</th>
+              <th>信号成交额</th>
+              <th>最近成交时间</th>
               <th>倍数</th>
               <th>爆仓价</th>
               <th>胜率</th>

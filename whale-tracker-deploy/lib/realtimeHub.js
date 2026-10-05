@@ -1,6 +1,6 @@
 /**
  * 浏览器端实时推送
- * - /realtime          公开频道（巨鲸/推文）
+ * - /realtime          公开频道（巨鲸状态）
  * - /realtime/private  鉴权私有频道（鲸鱼AI 引擎事件）
  */
 const { WebSocketServer } = require('ws');

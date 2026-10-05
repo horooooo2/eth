@@ -5,7 +5,7 @@ import { formatAnalyzeBodyHtml, parseAnalyzeSections } from '@/utils/briefHighli
 
 const props = defineProps<{
   visible: boolean;
-  source: 'x' | 'macro' | 'whale';
+  source: 'macro' | 'whale';
   title: string;
   content: string;
   meta?: Record<string, unknown>;
@@ -24,7 +24,7 @@ let reqSeq = 0;
 let abortCtrl: AbortController | null = null;
 
 const isLarge = computed(
-  () => props.source === 'whale' || props.source === 'x' || props.source === 'macro',
+  () => props.source === 'whale' || props.source === 'macro',
 );
 
 const dialogTitle = computed(() =>
@@ -73,7 +73,7 @@ const infoRows = computed<InfoRow[]>(() => {
     { label: '标题', value: props.title || '（无标题）' },
     {
       label: '来源',
-      value: props.source === 'macro' ? '宏观日历' : 'X 动态',
+      value: props.source === 'macro' ? '宏观日历' : '巨鲸分析',
     },
     ...(preview
       ? [{ label: '摘要', value: preview + (props.content.length > 220 ? '…' : '') }]

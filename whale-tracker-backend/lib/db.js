@@ -14,10 +14,10 @@ const {
 
 /** @deprecated 兼容旧调用；仓位事件改为「持仓中保留 / 平仓后 1 天」 */
 const RETENTION_MS = CLOSED_POSITION_RETENTION_MS;
-/** 资金动态（fills）保留天数，默认 1 */
+/** 原始成交保留至少 24 小时，默认 2 天；展示条数不得裁剪统计事实 */
 const FILL_RETENTION_MS = Math.max(
-  60 * 60 * 1000,
-  (Number(process.env.FILL_RETENTION_DAYS) || 1) * 24 * 60 * 60 * 1000,
+  24 * 60 * 60 * 1000,
+  (Number(process.env.FILL_RETENTION_DAYS) || 2) * 24 * 60 * 60 * 1000,
 );
 /** 已平仓事件窗口（与 CLOSED_POSITION_RETENTION_MS 对齐） */
 const ALERT_RETENTION_MS = CLOSED_POSITION_RETENTION_MS;
@@ -321,6 +321,14 @@ function migrate(database) {
     );
     CREATE INDEX IF NOT EXISTS idx_tradfi_ai_analyses_user ON tradfi_ai_analyses(user_id, symbol, created_at DESC);
   `);
+  // Add a derived display index without altering any historical amounts/payloads.
+  if (!database.prepare('PRAGMA table_info(alerts)').all().some(column => column.name === 'is_visible')) {
+    database.transaction(() => {
+      database.exec('ALTER TABLE alerts ADD COLUMN is_visible INTEGER NOT NULL DEFAULT 1');
+      database.exec("UPDATE alerts SET is_visible = 0 WHERE json_extract(payload_json, '$.items[0].evidenceSource') = 'snapshot'");
+    })();
+  }
+  database.exec('CREATE INDEX IF NOT EXISTS idx_alerts_visible_time ON alerts(is_visible, time DESC)');
   // Upgrade the brief development schema that stored only source_id.
   let alertSourcesUpgraded = false;
   try {
@@ -461,7 +469,7 @@ function countDistinctShanghaiDays(times = []) {
 
 /**
  * 清理策略：
- * - fills：超过 FILL_RETENTION 的删掉；每鲸最多 FILL_MAX_PER_WHALE 条（留最新）
+ * - fills：超过 FILL_RETENTION 的删掉；不受前端展示条数限制
  * - events/alerts：当前持仓（positions 表）相关的一直保留；其余超过「平仓后窗口」删除
  */
 function purgeOlderThan(retentionMs = RETENTION_MS) {
@@ -483,31 +491,8 @@ function purgeOlderThan(retentionMs = RETENTION_MS) {
 
   const fills = database.prepare('DELETE FROM fills WHERE time < ?').run(fillCutoff);
 
-  // 每鲸 fills 上限：删掉最旧的多余行
-  let fillCapDeleted = 0;
-  const whaleIds = database
-    .prepare(
-      `SELECT whale_id AS id, COUNT(*) AS c FROM fills
-       WHERE whale_id IS NOT NULL AND COALESCE(source, '') != 'onchain'
-       GROUP BY whale_id HAVING c > ?`,
-    )
-    .all(FILL_MAX_PER_WHALE);
-  const delExtra = database.prepare(`
-    DELETE FROM fills WHERE id IN (
-      SELECT id FROM fills
-      WHERE whale_id = ? AND COALESCE(source, '') != 'onchain'
-      ORDER BY time ASC
-      LIMIT ?
-    )
-  `);
-  const capTx = database.transaction(() => {
-    for (const row of whaleIds) {
-      const extra = Number(row.c) - FILL_MAX_PER_WHALE;
-      if (extra <= 0) continue;
-      fillCapDeleted += delExtra.run(row.id, extra).changes || 0;
-    }
-  });
-  capTx();
+  // Raw executions underpin rolling statistics: retain by time, never by display cap.
+  const fillCapDeleted = 0;
 
   // 非当前持仓的 events / alerts：用 NOT EXISTS 批量删（避免逐行扫几十万）
   const events = database

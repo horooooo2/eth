@@ -6,8 +6,7 @@ export type RealtimeMessage =
   | { type: 'pong'; at?: number }
   | { type: 'caughtUp'; epoch: string; seq: number }
   | { type: 'resyncRequired' }
-  | WhaleStateCommit
-  | { type: 'xTweet'; tweets?: Array<Record<string, unknown>> };
+  | WhaleStateCommit;
 export type RealtimeStatus = 'connected' | 'connecting' | 'disconnected';
 
 export function useRealtime(onMessage: (msg: RealtimeMessage) => void, getCursor: () => StateCursor) {

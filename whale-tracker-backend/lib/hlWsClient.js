@@ -31,6 +31,9 @@ function createHlWsClient(handlers = {}) {
   let reconnectTimer = null;
   let stopped = false;
   let connected = false;
+  let generation = 0;
+  let lastMessageAt = 0;
+  let connectedAt = 0;
 
   /** @type {Set<string>} */
   const fillUsers = new Set();
@@ -40,6 +43,9 @@ function createHlWsClient(handlers = {}) {
   const activeSubs = new Set();
   const acknowledgedSubs = new Set();
   const subscriptionErrors = new Map();
+  const sentAt = new Map();
+  const lastDataAt = new Map();
+  const attempts = new Map();
 
   function subKey(type, user) {
     return `${type}:${String(user || '').toLowerCase()}`;
@@ -48,6 +54,10 @@ function createHlWsClient(handlers = {}) {
   function getStatus() {
     return {
       connected,
+      healthy: connected && subscriptionErrors.size === 0 && activeSubs.size === acknowledgedSubs.size &&
+        [...webDataUsers].every(user => Date.now() - (lastDataAt.get(subKey('clearinghouseState', user)) || 0) < 120000),
+      positionChannel: 'clearinghouseState',
+      lastDataAt: Object.fromEntries(lastDataAt),
       url: resolveWsUrl().replace(/key=[^&]+/i, 'key=***'),
       usingGoldRush: /goldrushdata\.com/i.test(resolveWsUrl()),
       fillSubs: fillUsers.size,
@@ -76,10 +86,12 @@ function createHlWsClient(handlers = {}) {
     if (
       send({
         method: 'subscribe',
-        subscription: { type, user: addr },
+        subscription: { type, user: addr, ...(type === 'clearinghouseState' ? { dex: '' } : {}) },
       })
     ) {
       activeSubs.add(key);
+      sentAt.set(key, Date.now());
+      attempts.set(key, (attempts.get(key) || 0) + 1);
     }
   }
 
@@ -89,16 +101,19 @@ function createHlWsClient(handlers = {}) {
     const key = subKey(type, addr);
     send({
       method: 'unsubscribe',
-      subscription: { type, user: addr },
+      subscription: { type, user: addr, ...(type === 'clearinghouseState' ? { dex: '' } : {}) },
     });
     activeSubs.delete(key);
+    sentAt.delete(key);
+    attempts.delete(key);
+    lastDataAt.delete(key);
     acknowledgedSubs.delete(key);
     subscriptionErrors.delete(key);
   }
 
   function flushSubscriptions() {
     for (const user of fillUsers) subscribeOne('userFills', user);
-    for (const user of webDataUsers) subscribeOne('webData2', user);
+    for (const user of webDataUsers) subscribeOne('clearinghouseState', user);
   }
 
   /**
@@ -127,7 +142,7 @@ function createHlWsClient(handlers = {}) {
     for (const user of [...webDataUsers]) {
       if (!nextWeb.has(user)) {
         webDataUsers.delete(user);
-        unsubscribeOne('webData2', user);
+        unsubscribeOne('clearinghouseState', user);
       }
     }
     for (const user of nextWeb) webDataUsers.add(user);
@@ -168,8 +183,9 @@ function createHlWsClient(handlers = {}) {
 
     if (msg.channel === 'subscriptionResponse') {
       const sub = msg.data?.subscription || msg.data;
-      if (sub?.type && sub?.user) {
+      if (sub?.type && sub?.user && msg.data?.method !== 'unsubscribe') {
         const key = subKey(sub.type, sub.user);
+        if (!activeSubs.has(key)) return;
         acknowledgedSubs.add(key);
         subscriptionErrors.delete(key);
         onStatus(getStatus());
@@ -177,18 +193,22 @@ function createHlWsClient(handlers = {}) {
       return;
     }
     if (msg.channel === 'error' || msg.channel === 'subscriptionError') {
-      const sub = msg.data?.subscription || msg.data?.subscriptionRequest || null;
+      let sub = msg.data?.subscription || msg.data?.subscriptionRequest || null;
+      if (!sub && typeof msg.data === 'string') {
+        try { sub = JSON.parse(msg.data.slice(msg.data.indexOf('{'))).subscription; } catch {}
+      }
       if (sub?.type && sub?.user) {
         const key = subKey(sub.type, sub.user);
+        acknowledgedSubs.delete(key);
         subscriptionErrors.set(key, {
           type: sub.type,
           user: String(sub.user).toLowerCase(),
-          message: String(msg.data?.message || msg.data?.error || msg.error || '订阅被拒绝'),
+          message: String((typeof msg.data === 'string' ? msg.data : '') || msg.data?.message || msg.data?.error || msg.error || '订阅被拒绝'),
           at: Date.now(),
         });
       } else {
         subscriptionErrors.set(`unknown:${Date.now()}`, {
-          type: 'unknown', message: String(msg.data?.message || msg.data?.error || msg.error || 'WebSocket 返回错误'), at: Date.now(),
+          type: 'unknown', message: String((typeof msg.data === 'string' ? msg.data : '') || msg.data?.message || msg.data?.error || msg.error || 'WebSocket 返回错误'), at: Date.now(),
         });
       }
       while (subscriptionErrors.size > 100) subscriptionErrors.delete(subscriptionErrors.keys().next().value);
@@ -200,8 +220,10 @@ function createHlWsClient(handlers = {}) {
       const user = String(msg.data.user || '').toLowerCase();
       const fills = Array.isArray(msg.data.fills) ? msg.data.fills : [];
       const isSnapshot = Boolean(msg.data.isSnapshot);
+      if (!activeSubs.has(subKey('userFills', user))) return;
       if (user) {
         const key = subKey('userFills', user);
+        lastDataAt.set(key, Date.now());
         acknowledgedSubs.add(key);
         subscriptionErrors.delete(key);
       }
@@ -216,10 +238,12 @@ function createHlWsClient(handlers = {}) {
       return;
     }
 
-    if (msg.channel === 'webData2' && msg.data) {
+    if (msg.channel === 'clearinghouseState' && msg.data) {
       const user = String(msg.data.user || msg.data?.clearinghouseState?.user || '').toLowerCase();
+      if (!activeSubs.has(subKey('clearinghouseState', user)) || (msg.data.dex && msg.data.dex !== '')) return;
       if (user) {
-        const key = subKey('webData2', user);
+        const key = subKey('clearinghouseState', user);
+        lastDataAt.set(key, Date.now());
         acknowledgedSubs.add(key);
         subscriptionErrors.delete(key);
       }
@@ -229,7 +253,7 @@ function createHlWsClient(handlers = {}) {
         : null;
       pushSocket({
         kind: 'webData',
-        message: `webData2 ${short}${posN != null ? ` · ${posN}仓` : ''}`,
+        message: `clearinghouseState ${short}${posN != null ? ` · ${posN}仓` : ''}`,
         detail: { user, positions: posN },
       });
       onWebData({ user, data: msg.data });
@@ -240,7 +264,11 @@ function createHlWsClient(handlers = {}) {
   function connect() {
     if (stopped) return;
     clearTimers();
+    const connectionGeneration = ++generation;
     activeSubs.clear();
+    sentAt.clear();
+    attempts.clear();
+    lastDataAt.clear();
     acknowledgedSubs.clear();
     subscriptionErrors.clear();
     connected = false;
@@ -249,7 +277,7 @@ function createHlWsClient(handlers = {}) {
     console.log(`[hl-ws] connecting ${url.replace(/key=[^&]+/i, 'key=***')}`);
 
     try {
-      socket = new WebSocket(url);
+      socket = new (handlers.WebSocket || WebSocket)(url);
     } catch (err) {
       console.warn('[hl-ws] create failed:', err.message);
       pushError({ source: 'hl-ws', message: `创建连接失败: ${err.message}` });
@@ -257,25 +285,49 @@ function createHlWsClient(handlers = {}) {
       return;
     }
 
+    const currentSocket = socket;
     socket.on('open', () => {
-      connected = true;
-      console.log(`[hl-ws] connected fills=${fillUsers.size} webData2=${webDataUsers.size}`);
+      if (connectionGeneration !== generation || stopped) return;
+      connected = true; lastMessageAt = connectedAt = Date.now();
+      console.log(`[hl-ws] connected fills=${fillUsers.size} clearinghouseState=${webDataUsers.size}`);
       pushSocket({
         kind: 'status',
-        message: `WS 已连接 · fills=${fillUsers.size} webData2=${webDataUsers.size}`,
+        message: `WS 已连接 · fills=${fillUsers.size} clearinghouseState=${webDataUsers.size}`,
       });
       flushSubscriptions();
       pingTimer = setInterval(() => {
+        if (connectionGeneration !== generation || stopped) return;
+        const now = Date.now();
+        const positionSilent = [...webDataUsers].some(user => now - (lastDataAt.get(subKey('clearinghouseState', user)) || sentAt.get(subKey('clearinghouseState', user)) || connectedAt) > 120000);
+        if (now - lastMessageAt > 60000 || positionSilent) { currentSocket.terminate(); return; }
         send({ method: 'ping' });
+        for (const [key, at] of sentAt) {
+          if (!acknowledgedSubs.has(key) && Date.now() - at > 15000) {
+            subscriptionErrors.set(key, { type: key.split(':')[0], message: '订阅确认超时', at });
+            if (Date.now() - at > 30000 && (attempts.get(key) || 0) < 3) {
+              const [type, user] = key.split(':');
+              activeSubs.delete(key); subscribeOne(type, user);
+            }
+          }
+        }
+        onStatus(getStatus());
       }, PING_MS);
       onStatus(getStatus());
     });
 
-    socket.on('message', (data) => handleMessage(data));
+    socket.on('message', (data) => {
+      if (connectionGeneration !== generation || stopped) return;
+      lastMessageAt = Date.now(); handleMessage(data);
+    });
+    socket.on('pong', () => { if (connectionGeneration === generation) lastMessageAt = Date.now(); });
 
     socket.on('close', () => {
+      if (connectionGeneration !== generation || stopped) return;
       connected = false;
       activeSubs.clear();
+      sentAt.clear();
+      attempts.clear();
+      lastDataAt.clear();
       acknowledgedSubs.clear();
       clearTimers();
       console.warn('[hl-ws] disconnected, reconnecting…');
@@ -285,18 +337,20 @@ function createHlWsClient(handlers = {}) {
     });
 
     socket.on('error', (err) => {
+      if (connectionGeneration !== generation || stopped) return;
       console.warn('[hl-ws] error:', err.message || err);
       pushError({ source: 'hl-ws', message: String(err.message || err) });
     });
   }
 
   function start() {
+    if (socket && !stopped) return;
     stopped = false;
     connect();
   }
 
   function stop() {
-    stopped = true;
+    stopped = true; generation++;
     clearTimers();
     try {
       socket?.close();
@@ -306,6 +360,9 @@ function createHlWsClient(handlers = {}) {
     socket = null;
     connected = false;
     activeSubs.clear();
+    sentAt.clear();
+    attempts.clear();
+    lastDataAt.clear();
     acknowledgedSubs.clear();
     onStatus(getStatus());
   }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { fetchQuotes, fetchAlertFlowSummary } from '@/api';
 import CoinPreferences from '@/components/CoinPreferences.vue';
@@ -13,6 +13,7 @@ import DataModule from '@/components/DataModule.vue';
 import TradFiBoard from '@/components/TradFiBoard.vue';
 import WhaleDetailDialog from '@/components/WhaleDetailDialog.vue';
 import { createPageLoadScheduler } from '@/utils/pageLoadScheduler';
+import { STRATEGY_WORKSPACE_ENABLED } from '@/utils/featureFlags';
 import { useWhaleStore } from '@/stores/whale';
 import {
   authLoading,
@@ -29,10 +30,10 @@ import { preferredCoinsState } from '@/utils/watchedCoins';
 import { coinIconCandidates } from '@/utils/coinIcons';
 import { formatUsd } from '@/utils/format';
 import { unlockAlertSound } from '@/utils/alertSound';
-import { noteXTweets } from '@/stores/xFeed';
-import type { XFeedTweet } from '@/api';
 import type { WhaleProfile } from '@/types';
 
+const StrategyWorkspace = defineAsyncComponent(() => import('@/components/strategy/StrategyWorkspace.vue'));
+const strategyVisited = ref(false);
 const whaleStore = useWhaleStore();
 
 const brandIcons = coinIconCandidates('BTC');
@@ -44,15 +45,19 @@ function onBrandIconError() {
 }
 
 const SIDE_TAB_STORAGE_KEY = 'whale-tracker:side-tab';
-function readSideTab(): 'virtual' | 'tradfi' {
+function readSideTab(): 'virtual' | 'tradfi' | 'strategy' {
   try {
-    return window.localStorage.getItem(SIDE_TAB_STORAGE_KEY) === 'tradfi' ? 'tradfi' : 'virtual';
+    const saved = window.localStorage.getItem(SIDE_TAB_STORAGE_KEY);
+    if (saved === 'strategy') return STRATEGY_WORKSPACE_ENABLED ? 'strategy' : 'tradfi';
+    return saved === 'tradfi' ? saved : 'virtual';
   } catch { return 'virtual'; }
 }
-const sideTab = ref<'virtual' | 'tradfi'>(readSideTab());
+const sideTab = ref<'virtual' | 'tradfi' | 'strategy'>(readSideTab());
 watch(sideTab, (tab) => {
+  if (tab === 'strategy') strategyVisited.value = true;
   try { window.localStorage.setItem(SIDE_TAB_STORAGE_KEY, tab); } catch { /* storage unavailable */ }
 });
+if (sideTab.value === 'strategy') strategyVisited.value = true;
 const radarRef = ref<InstanceType<typeof TradFiBoard> | null>(null);
 const macroRef = ref<InstanceType<typeof DataModule> | null>(null);
 const resonanceRef = ref<InstanceType<typeof WhaleResonanceBanner> | null>(null);
@@ -147,6 +152,7 @@ async function loadQuotes() {
 }
 
 let stateRetryTimer: ReturnType<typeof setTimeout> | undefined;
+const derivedExpiryTimer = setInterval(() => { if (sessionStarted && !document.hidden) scheduleFlowRefresh(); }, 30000);
 let flowRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 let recoveringState = false;
 let stateCatchupPending = false;
@@ -157,9 +163,19 @@ function scheduleFlowRefresh() {
 const { status: transportStatus, start: startRealtime, stop: stopRealtime } = useRealtime((msg) => {
   if (msg.type === 'stateCommit') {
     if (stateCatchupPending) return;
+    // Animate only server-marked live executions, never bootstrap/history replay.
+    const allowed = new Set(msg.notifyAlertIds || []);
+    const animated = whaleStore.synced ? (msg.alerts || []).filter(alert => {
+      const at = Math.max(Number(alert.at) || 0, ...(alert.items || []).map(item => Number(item.time) || 0));
+      return allowed.has(alert.id) && at >= Date.now() - 120000 && at <= Date.now() + 60000;
+    }).map(alert => ({ id: alert.id, isNew: !whaleStore.alertsById[alert.id] })) : [];
     const outcome = whaleStore.applyCommit(msg);
     if (outcome === 'resync') void recoverState();
-    else if (outcome === 'applied' && (msg.alerts?.length || msg.removedAlertIds?.length)) scheduleFlowRefresh();
+    else if (outcome === 'applied') {
+      newsListRef.value?.animateLiveAlerts(animated);
+      if (msg.alerts?.length || msg.removedAlertIds?.length) scheduleFlowRefresh();
+      resonanceRef.value?.refresh();
+    }
   } else if (msg.type === 'resyncRequired') {
     void recoverState();
   } else if (msg.type === 'hello') {
@@ -167,8 +183,7 @@ const { status: transportStatus, start: startRealtime, stop: stopRealtime } = us
   } else if (msg.type === 'caughtUp') {
     if (!stateCatchupPending && msg.epoch === whaleStore.epoch && msg.seq === whaleStore.revision) whaleStore.synced = true;
     else if (!stateCatchupPending) void recoverState();
-  } else if (msg.type === 'xTweet' && Array.isArray(msg.tweets)) {
-    noteXTweets(msg.tweets as unknown as XFeedTweet[]);
+
   }
 }, () => whaleStore.cursor());
 const realtimeStatus = computed(() => transportStatus.value === 'connected' && !whaleStore.synced ? 'connecting' : transportStatus.value);
@@ -223,12 +238,12 @@ async function startAppSession() {
     },
     tradfi: async () => { await radarRef.value?.initialize(); },
   });
-  const primary = sideTab.value;
+  const primary = sideTab.value === 'strategy' ? 'virtual' : sideTab.value;
   await pageLoader.start(primary, primary === 'virtual' ? 'tradfi' : 'virtual',
     () => sessionStarted && generation === sessionGeneration);
   if (!sessionStarted || generation !== sessionGeneration) return;
 }
-watch(sideTab, (tab) => { if (sessionStarted && pageLoader) void pageLoader.load(tab); });
+watch(sideTab, (tab) => { if (tab !== 'strategy' && sessionStarted && pageLoader) void pageLoader.load(tab); });
 
 function stopAppSession() {
   sessionStarted = false;
@@ -260,6 +275,7 @@ watch(isLoggedIn, (ok) => {
 });
 
 onUnmounted(() => {
+  clearInterval(derivedExpiryTimer);
   stopAppSession();
 });
 </script>
@@ -353,19 +369,23 @@ onUnmounted(() => {
         title="雷达"
         @click="sideTab = 'tradfi'"
       >
-        <span class="nav-mark fi" aria-hidden="true">
-          <svg class="fi-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 10 12 4l9 6" />
-            <path d="M5 10.5V18M9.5 10.5V18M14.5 10.5V18M19 10.5V18" />
-            <path d="M3 18.5h18" />
-            <path d="M2 21h20" />
+        <span class="nav-mark radar" aria-hidden="true">
+          <svg class="radar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9" />
+            <circle cx="12" cy="12" r="5" />
+            <path d="M12 12 18.4 5.6" />
+            <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
+            <circle cx="7" cy="16" r="1.5" fill="currentColor" stroke="none" />
           </svg>
         </span>
         <span>雷达</span>
       </button>
 
+      <button v-if="STRATEGY_WORKSPACE_ENABLED" type="button" class="nav-item" :class="{ active: sideTab === 'strategy' }" title="策略交易" @click="sideTab = 'strategy'">
+        <span class="nav-mark radar" aria-hidden="true"><svg class="radar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 19V5m0 14h16M7 15l4-5 4 3 5-8"/><path d="M16 5h4v4"/></svg></span><span>策略交易</span>
+      </button>
       <div class="bottom-nav">
-        <CoinPreferences variant="sidebar" :active-market="sideTab" />
+        <CoinPreferences variant="sidebar" :active-market="sideTab === 'tradfi' ? 'tradfi' : 'virtual'" />
         <ApiSettings variant="sidebar" />
         <button
           type="button"
@@ -377,12 +397,13 @@ onUnmounted(() => {
           <span class="account-name">{{ authUser?.username || '账户' }}</span>
         </button>
       </div>
+
     </aside>
 
-    <div class="layout" :class="{ 'is-tradfi': sideTab === 'tradfi' }">
+    <div class="layout" :class="{ 'is-tradfi': sideTab !== 'virtual' }">
       <div v-show="sideTab === 'virtual'" class="virtual-view">
       <header class="topbar">
-        <div class="net-position-banner" :title="`所选时段内巨鲸开仓/加仓名义金额：多头 +${formatUsd(whaleNetFlow.longUsd)}，空头 −${formatUsd(whaleNetFlow.shortUsd)}；不含减仓和平仓`">
+        <div class="net-position-banner" :title="`所选时段内服务器已采集的原生永续开仓/加仓名义金额：多头 +${formatUsd(whaleNetFlow.longUsd)}，空头 −${formatUsd(whaleNetFlow.shortUsd)}；不含减仓和平仓，不代表完整市场资金流入`">
           <div class="net-flow-filters">
             <select v-model="flowWindow" aria-label="净流入统计时段">
               <option value="15m">15分钟</option>
@@ -464,7 +485,8 @@ onUnmounted(() => {
         </div>
       </div>
       </div>
-      <TradFiBoard ref="radarRef" v-show="sideTab === 'tradfi'" class="tradfi-host" />
+      <StrategyWorkspace v-if="STRATEGY_WORKSPACE_ENABLED && strategyVisited" v-show="sideTab === 'strategy'" :active="sideTab === 'strategy'" class="tradfi-host" />
+      <TradFiBoard :active="sideTab === 'tradfi'" ref="radarRef" v-show="sideTab === 'tradfi'" class="tradfi-host" />
     </div>
     <WhaleDetailDialog v-model="whaleDetailOpen" :whale="whaleDetailProfile" :snapshot-updated-at="whaleStore.updatedAt" />
     </template>
@@ -685,11 +707,11 @@ onUnmounted(() => {
   border-radius: 50%;
   object-fit: cover;
 }
-.sidebar .nav-item .nav-mark.fi {
+.sidebar .nav-item .nav-mark.radar {
   background: transparent;
   color: inherit;
 }
-.sidebar .nav-item .fi-icon {
+.sidebar .nav-item .radar-icon {
   width: 22px;
   height: 22px;
   display: block;

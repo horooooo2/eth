@@ -74,7 +74,7 @@ function isRawTrade(trade) {
 /** 事件 → 前端 WhaleAlert */
 function alertDocFromEvent(event) {
   if (!event || !ALL_KINDS.has(event.kind)) return null;
-  if (!passesMinUsd(event.usd, event.kind)) return null;
+  if (!(event.usd > 0)) return null;
   const kl = kindLabel(event.kind);
   const sideLabel = event.side === 'short' ? '空' : '多';
   const mergedN = Math.max(1, Number(event.mergedCount) || 1);
@@ -87,7 +87,7 @@ function alertDocFromEvent(event) {
     whaleName: event.payload?.whaleName || '',
     address: event.payload?.from || event.payload?.address || '',
     kind: event.kind,
-    kindLabel: mergedN > 1 ? `${kl}（多单）` : kl,
+    kindLabel: mergedN > 1 ? `${kl}（多笔）` : kl,
     headline:
       mergedN > 1
         ? `${event.title || kl}（${mergedN} 笔）`

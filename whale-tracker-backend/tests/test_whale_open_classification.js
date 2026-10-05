@@ -163,14 +163,10 @@ test('retrying a source alert after merge does not double-count its notional', (
 
 test('server alert flow summary scopes by event time and coin, and nets shorts', () => {
   const at = Date.now() + 180_000;
-  persistAlerts([
-    { id: `flow-long-${at}`, at, whaleId: 'flow-a', kind: 'open', items: [
-      { kind: 'open', coin: 'BTC', side: 'long', usd: 1000, time: at },
-      { kind: 'increase', coin: 'ETH', side: 'long', usd: 400, time: at },
-    ] },
-    { id: `flow-short-${at}`, at, whaleId: 'flow-b', kind: 'increase', items: [
-      { kind: 'increase', coin: 'KBTC', side: 'short', usd: 1500, time: at },
-    ] },
+  require('../lib/sqliteStore').persistTradesIncremental([
+    { id: 'flow-long', whaleId: 'flow-a', time: at, asset: 'BTC', side: 'buy', startPosition: 0, amount: 1, amountUsd: 1000 },
+    { id: 'flow-eth', whaleId: 'flow-a', time: at, asset: 'ETH', side: 'buy', startPosition: 1, amount: 1, amountUsd: 400 },
+    { id: 'flow-short', whaleId: 'flow-b', time: at, asset: 'KBTC', side: 'sell', startPosition: -1, amount: 1, amountUsd: 1500 },
   ]);
   const btc = loadAlertFlowSummary({ sinceMs: at - 1, untilMs: at + 1, coin: 'BTC' });
   assert.equal(btc.longUsd, 1000);

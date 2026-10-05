@@ -12,8 +12,8 @@ const KLINE_CONFIG = {
   '4h': { ttlMs: 180_000, limit: 200 },
   '1d': { ttlMs: 300_000, limit: 200 },
 };
-const client = axios.create({ baseURL: BASE_URL, timeout: 10000, proxy: false });
-const coinGecko = axios.create({ baseURL: 'https://api.coingecko.com/api/v3', timeout: 8000, proxy: false });
+const client = axios.create({ baseURL: BASE_URL, timeout: 10000, ...(process.env.OUTBOUND_PROXY_URL ? {} : { proxy: false }) });
+const coinGecko = axios.create({ baseURL: 'https://api.coingecko.com/api/v3', timeout: 8000, ...(process.env.OUTBOUND_PROXY_URL ? {} : { proxy: false }) });
 const COIN_IDS = {
   BTC: 'bitcoin', ETH: 'ethereum', BNB: 'binancecoin', SOL: 'solana', XRP: 'ripple', ADA: 'cardano',
   LINK: 'chainlink', LTC: 'litecoin', BCH: 'bitcoin-cash', TRX: 'tron', DOT: 'polkadot', UNI: 'uniswap',
@@ -179,8 +179,22 @@ async function getRadarAvailableContracts() {
 }
 
 // A single bulk ticker request keeps the all-contract radar list inexpensive;
-// detailed short-interval klines remain limited to the user's watchlist.
-async function getRadarMarketQuotes() {
+// Only the selected short interval is enriched, using shared caches and bounded concurrency.
+async function getRadarMarketQuotes(interval = '24h') {
+  if (SHORT_INTERVALS.includes(interval)) {
+    const snapshot = await getRadarMarketQuotes();
+    const quotes = new Array(snapshot.quotes.length);
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(4, quotes.length) }, async () => {
+      while (next < quotes.length) {
+        const index = next++;
+        const quote = snapshot.quotes[index];
+        const change = await fetchShortChange(quote.symbol, interval, quote.lastPrice, Number(quote.closeTime) || Date.now());
+        quotes[index] = { ...quote, changes: { [interval]: change.change }, changeMeta: { [interval]: change }, stale: quote.stale || change.stale };
+      }
+    }));
+    return { ...snapshot, quotes, interval, stale: Boolean(snapshot.stale) || quotes.some(quote => quote.stale) };
+  }
   if (radarMarketCache.expiresAt > Date.now()) return radarMarketCache;
   if (!radarMarketPromise) {
     radarMarketPromise = (async () => {
@@ -297,22 +311,29 @@ async function getQuotes(input) {
   return { quotes, invalidSymbols, updatedAt: new Date().toISOString(), source: 'Binance USDⓈ-M Futures' };
 }
 
-async function fetchShortChange(symbol, interval, currentPrice) {
+const shortChangeInflight = new Map();
+async function fetchShortChange(symbol, interval, currentPrice, observedAt = Date.now()) {
   const key = `${symbol}:${interval}`;
   const cached = shortChangeCache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
-  try {
-    const { data } = await client.get('/fapi/v1/klines', { params: { symbol, interval, limit: 1 } });
-    const row = Array.isArray(data) ? data[0] : null;
-    const open = Number(row?.[1]);
-    const price = Number(currentPrice);
-    if (!Number.isFinite(open) || open <= 0 || !Number.isFinite(price) || price <= 0) throw new Error('短周期行情格式异常');
-    const value = (price / open - 1) * 100;
-    shortChangeCache.set(key, { value, expiresAt: Date.now() + SHORT_CHANGE_TTL_MS });
-    return value;
-  } catch {
-    return cached ? cached.value : null;
-  }
+  if (shortChangeInflight.has(key)) return shortChangeInflight.get(key);
+  const task = (async () => {
+    try {
+      const minutes = { '5m': 5, '15m': 15, '1h': 60 }[interval];
+      const referenceAt = Math.floor((observedAt - minutes * 60000) / 60000) * 60000;
+      const { data } = await client.get('/fapi/v1/klines', { params: { symbol, interval: '1m', startTime: referenceAt, endTime: referenceAt + 59999, limit: 1 } });
+      const row = Array.isArray(data) ? data[0] : null;
+      const open = Number(row?.[1]), price = Number(currentPrice);
+      if (Number(row?.[0]) !== referenceAt || !(open > 0) || !(price > 0)) throw new Error('滚动周期基准数据缺失');
+      const value = { change: (price / open - 1) * 100, asOf: observedAt, referenceAt, stale: false, windowMode: 'rolling-minute' };
+      shortChangeCache.set(key, { value, expiresAt: Date.now() + SHORT_CHANGE_TTL_MS });
+      if (shortChangeCache.size > 1000) shortChangeCache.delete(shortChangeCache.keys().next().value);
+      return value;
+    } catch {
+      return cached ? { ...cached.value, stale: true } : { change: null, asOf: null, referenceAt: null, stale: true };
+    }
+  })().finally(() => shortChangeInflight.delete(key));
+  shortChangeInflight.set(key, task); return task;
 }
 
 async function getRadarQuotes(input) {
@@ -330,10 +351,12 @@ async function getRadarQuotes(input) {
       const index = nextIndex++;
       const symbol = valid[index];
       const quote = await fetchQuote(symbol);
-      const shortChanges = await Promise.all(SHORT_INTERVALS.map((interval) => fetchShortChange(symbol, interval, quote.lastPrice)));
+      const shortChanges = await Promise.all(SHORT_INTERVALS.map((interval) => fetchShortChange(symbol, interval, quote.lastPrice, Number(quote.closeTime) || Date.now())));
       quotes[index] = {
         ...quote,
-        changes: { '5m': shortChanges[0], '15m': shortChanges[1], '1h': shortChanges[2] },
+        changes: { '5m': shortChanges[0].change, '15m': shortChanges[1].change, '1h': shortChanges[2].change },
+        changeMeta: Object.fromEntries(SHORT_INTERVALS.map((interval, i) => [interval, shortChanges[i]])),
+        stale: quote.stale || shortChanges.some(value => value.stale),
       };
     }
   }));
