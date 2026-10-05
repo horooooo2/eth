@@ -9,6 +9,7 @@ import { displayAsset } from '@/utils/assets';
 import { coinMatchesWatch, watchedCoins } from '@/utils/watchedCoins';
 import { isWhaleMonitored } from '@/utils/monitoredWhales';
 import { resolveWhaleTitle } from '@/utils/whaleReference';
+import { sumAlertItemNotional } from '@/utils/alertAmounts';
 
 function isWhaleAlertMonitored(alert: WhaleAlert) {
   return isWhaleMonitored(alert.whaleId);
@@ -24,7 +25,10 @@ function isWatchedCoinAlert(alert: WhaleAlert) {
 
 function scopeAlertToWatchedCoins(alert: WhaleAlert): WhaleAlert {
   const items = watchedCoinItems(alert);
-  return items.length === alert.items.length ? alert : { ...alert, items };
+  return items.length === alert.items.length ? alert : {
+    ...alert, items, totalUsd: sumAlertItemNotional(items) ?? undefined,
+    headline: items.length > 1 ? `${items[0]?.title || alert.kindLabel}（${items.length} 笔）` : items[0]?.title || alert.kindLabel,
+  };
 }
 
 const props = withDefaults(
@@ -41,7 +45,11 @@ const emit = defineEmits<{
 }>();
 
 const whaleStore = useWhaleStore();
-const active = ref<WhaleAlert | null>(null);
+const activeId = ref('');
+const active = computed(() => {
+  const alert = whaleStore.alertsById[activeId.value];
+  return alert ? scopeAlertToWatchedCoins(alert) : null;
+});
 const dialogVisible = ref(false);
 
 /** 与巨鲸卡片同口径 */
@@ -96,7 +104,7 @@ function dismissAll() {
 }
 
 function openAlert(alert: WhaleAlert) {
-  active.value = scopeAlertToWatchedCoins(alert);
+  activeId.value = alert.id;
   dialogVisible.value = true;
 }
 
@@ -151,7 +159,6 @@ watch(
   () => [...watchedCoins.value],
   () => {
     if (active.value && !isWatchedCoinAlert(active.value)) dialogVisible.value = false;
-    else if (active.value) active.value = scopeAlertToWatchedCoins(active.value);
   },
 );
 

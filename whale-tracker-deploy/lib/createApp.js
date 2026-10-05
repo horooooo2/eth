@@ -9,6 +9,7 @@ const { fetchFedOdds } = require('./markets');
 const { getHlInfoConfig } = require('./hlInfoClient');
 const { getStartedAt, getUptimeMs } = require('./runtime');
 const { pushRequest, pushError, getMonitorSnapshot } = require('./opsMonitor');
+const { requireAdmin } = require('./maintenanceAuth');
 
 /** 仅 POST /api/whales/alert-history 使用的 body 上限（有界，不是无限放大） */
 const ALERT_HISTORY_BODY_LIMIT = process.env.ALERT_HISTORY_BODY_LIMIT || '4mb';
@@ -95,7 +96,7 @@ function mountRoutes(app, prefix) {
       res.status(500).json({ error: err.message || '读取监控失败' });
     }
   });
-  app.post(`${base}/data/refresh-whales`, async (_req, res) => {
+  app.post(`${base}/data/refresh-whales`, requireAdmin, async (_req, res) => {
     if (whaleRefreshBusy) {
       return res.status(409).json({
         error: '正在拉取中，请稍候',
@@ -157,7 +158,7 @@ function mountRoutes(app, prefix) {
   });
 
   /** POST /api/data/reset — 清空市场数据，保留用户与手动巨鲸，并重启补齐 */
-  app.post(`${base}/data/reset`, async (_req, res) => {
+  app.post(`${base}/data/reset`, requireAdmin, async (_req, res) => {
     if (whaleRefreshBusy) {
       return res.status(409).json({
         error: '正在重置/拉取中，请稍候',

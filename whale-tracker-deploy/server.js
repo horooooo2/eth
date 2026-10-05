@@ -146,6 +146,7 @@ const server = http.createServer(app);
 attachRealtimeHub(server);
 
 server.listen(PORT, '0.0.0.0', () => {
+  require('./lib/whaleRetention').startRetention();
   startTradfiRangeStrategy();
   const hl = getHlInfoConfig();
   console.log(`WhaleTracker 已启动 http://0.0.0.0:${PORT}`);

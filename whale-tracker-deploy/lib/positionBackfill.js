@@ -3,7 +3,7 @@
  * POSITION_BACKFILL=1 时启用（默认开）
  */
 const { getDb } = require('./db');
-const { persistTradesIncremental } = require('./sqliteStore');
+const { commitWhaleState } = require('./cache');
 const {
   fetchUserFillsByCoin,
   mapFillToTrade,
@@ -103,7 +103,7 @@ async function tick() {
       const trades = fills.map((fill) =>
         mapFillToTrade(fill, { ...whale, address: whale.address }, names),
       );
-      persistTradesIncremental(trades);
+      commitWhaleState('hf', { trades });
     }
     lastError = '';
   } catch (err) {

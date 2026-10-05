@@ -5,16 +5,13 @@ const { createHlWsClient } = require('./hlWsClient');
 const { broadcast, clientCount } = require('./realtimeHub');
 const { pushError } = require('./opsMonitor');
 const { mapFillToTrade, deriveDirection, isExoticAsset } = require('./hyperliquid');
-const { readWhaleModeCache, writeWhaleModeCache } = require('./cache');
-const { persistAlerts, persistTradesIncremental } = require('./sqliteStore');
+const { readWhaleModeCache, commitWhaleState } = require('./cache');
 const { normalizeAddress } = require('./config');
-const { OPEN_KINDS } = require('./positionEventPolicy');
+const { OPEN_KINDS, fillSourceId } = require('./positionEventPolicy');
 
 const MODE = 'hf';
 /** Hyperliquid 对 user-specific WS 订阅最多允许 10 个不同用户；两路订阅共用地址集合。 */
 const USER_WS_ADDRESS_LIMIT = Math.max(1, Math.min(10, Number(process.env.HL_WS_USER_LIMIT) || 10));
-const MAX_CACHE_TRADES = 4000;
-const CACHE_FLUSH_MS = 2_000;
 const ACTIVITY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const ACTIVITY_HALF_LIFE_MS = 6 * 60 * 60 * 1000;
 const MIN_SUBSCRIPTION_DWELL_MS = 5 * 60 * 1000;
@@ -33,9 +30,6 @@ let lastStatus = { connected: false, fillSubs: 0, webDataSubs: 0 };
 let liveAddressSelection = [];
 let liveAddressSelectionChangedAt = 0;
 
-/** @type {object[]} */
-let pendingCacheTrades = [];
-let cacheFlushTimer = null;
 
 function positionNotionalUsd(pos) {
   const v = Number(pos?.positionValue);
@@ -161,51 +155,18 @@ function syncFromCache() {
 
 function appendTradesToCache(trades) {
   if (!trades?.length) return;
-  pendingCacheTrades.push(...trades);
-  try {
-    persistTradesIncremental(trades);
-  } catch (err) {
-    console.warn('[realtime] persist trades failed:', err.message);
-  }
-  if (cacheFlushTimer) return;
-  cacheFlushTimer = setTimeout(() => {
-    cacheFlushTimer = null;
-    const batch = pendingCacheTrades;
-    pendingCacheTrades = [];
-    if (!batch.length) return;
-    try {
-      const cached = readWhaleModeCache(MODE);
-      if (!cached?.data) return;
-      const prev = Array.isArray(cached.data.trades) ? cached.data.trades : [];
-      const tradeCutoff = Date.now() - Math.max(
-        24 * 60 * 60 * 1000,
-        (Number(process.env.FILL_RETENTION_DAYS) || 3) * 24 * 60 * 60 * 1000,
-      );
-      const seen = new Set(prev.map((t) => String(t?.id || '')));
-      const merged = [...batch.filter((t) => t?.id && !seen.has(String(t.id))), ...prev]
-        .filter((t) => (Number(t?.time) || 0) >= tradeCutoff)
-        .sort((a, b) => Number(b.time || 0) - Number(a.time || 0))
-        .slice(0, MAX_CACHE_TRADES);
-      // 只写 JSON，避免每次都全量 sqlite whales
-      const { writeCache, whaleCacheName } = require('./cache');
-      writeCache(whaleCacheName(MODE), { ...cached.data, trades: merged });
-    } catch (err) {
-      console.warn('[realtime] cache trades flush failed:', err.message);
-    }
-  }, CACHE_FLUSH_MS);
+  return commitWhaleState(MODE, { trades });
 }
 
-function patchWhaleInCache(whaleId, patch) {
+function patchWhaleInCache(whaleId, patch, snapshotAlerts = []) {
   const cached = readWhaleModeCache(MODE);
-  if (!cached?.data?.whales) return null;
-  const whales = cached.data.whales.map((w) => {
-    if (w.id !== whaleId) return w;
-    const next = { ...w, ...patch };
-    whalesByAddress.set(normalizeAddress(next.address).toLowerCase(), next);
-    return next;
-  });
-  writeWhaleModeCache(MODE, { ...cached.data, whales });
-  return whales.find((w) => w.id === whaleId) || null;
+  const current = cached?.data?.whales?.find(w => w.id === whaleId);
+  if (!current) return null;
+  const result = commitWhaleState(MODE, { whales: [{ ...current, ...patch }], snapshotAlerts });
+  require('./whaleSync').markLiveAlerts(result.committedAlerts || []);
+  const next = result.data.whales.find(w => w.id === whaleId);
+  if (next) whalesByAddress.set(normalizeAddress(next.address).toLowerCase(), next);
+  return next;
 }
 
 /**
@@ -299,6 +260,7 @@ function alertFromLiveFill(whale, fill, trade) {
   const ts = Number(trade.time) || Date.now();
   return {
     id: `ws-${kind}-${whale.id}-${coin}-${trade.id || ts}`,
+    sourceId: fillSourceId(trade),
     at: ts,
     whaleId: whale.id,
     whaleName: whale.name,
@@ -536,45 +498,27 @@ function alertsFromPositionDiff(whale, prevPositions, nextPositions) {
   return alerts;
 }
 
-function emitAlerts(alerts) {
-  if (!alerts?.length) return;
-  // 监控卡片 / 异动列表只推开仓、加仓；减仓/平仓仍交给跟单引擎
-  const monitorAlerts = alerts.filter((a) => a && OPEN_KINDS.has(a.kind));
-  if (monitorAlerts.length) {
-    try {
-      persistAlerts(monitorAlerts);
-    } catch (err) {
-      console.warn('[realtime] persistAlerts failed:', err.message);
-    }
-    for (const alert of monitorAlerts) {
-      broadcast({ type: 'alert', alert, at: Date.now() });
-    }
-  }
-}
-
 function handleFills({ user, fills, isSnapshot }) {
   if (!user || !fills?.length) return;
   const whale = whalesByAddress.get(String(user).toLowerCase());
   if (!whale) return;
 
   const trades = [];
-  const alerts = [];
   for (const fill of fills) {
     const trade = mapFillToTrade(fill, whale, {});
     if (!trade?.id) continue;
     trades.push(trade);
     rememberPositionFill(whale, trade);
-    // WS 初始/重连快照用于补成交历史与事件时间，不重复弹出旧异动。
-    const alert = isSnapshot ? null : alertFromLiveFill(whale, fill, trade);
-    if (alert) alerts.push(alert);
   }
   if (!trades.length) return;
 
   try {
-    appendTradesToCache(trades);
+    const result = appendTradesToCache(trades);
+    if (!isSnapshot) require('./whaleSync').markLiveAlerts(result?.committedAlerts || []);
   } catch (err) {
     console.warn('[realtime] cache trades failed:', err.message);
     pushError({ source: 'realtime', message: `成交缓存失败: ${err.message}` });
+    return;
   }
 
   if (!isSnapshot) {
@@ -582,10 +526,12 @@ function handleFills({ user, fills, isSnapshot }) {
       broadcast({ type: 'fill', trade, at: Date.now() });
     }
   }
-  emitAlerts(alerts);
 }
 
 function handleWebData({ user, data }) {
+  const state = data?.clearinghouseState || data;
+  // A partial heartbeat/account message is not evidence that positions closed.
+  if (!state || !Array.isArray(state.assetPositions)) return;
   const addr = String(user || '').toLowerCase();
   let whale = addr ? whalesByAddress.get(addr) : null;
   // webData2 有时不带 user，用订阅集合反查困难；尝试从 clearinghouse
@@ -598,12 +544,10 @@ function handleWebData({ user, data }) {
   const hadRealtimeBaseline = positionSnapByWhale.has(whale.id);
   const prev = positionSnapByWhale.get(whale.id) || whale.positions || [];
   const positions = mergePositionMeta(
-    mapAssetPositions(data.clearinghouseState || data),
+    mapAssetPositions(state),
     prev,
   );
-  positionSnapByWhale.set(whale.id, positions);
-
-  const derived = deriveDirection(data.clearinghouseState || { assetPositions: [] });
+  const derived = deriveDirection(state);
   const longUsd = Number(derived?.longUsd) || positions.filter((p) => p.side === 'long').reduce((s, p) => s + positionNotionalUsd(p), 0);
   const shortUsd = Number(derived?.shortUsd) || positions.filter((p) => p.side === 'short').reduce((s, p) => s + positionNotionalUsd(p), 0);
   const direction = derived?.direction || (longUsd >= shortUsd ? 'long' : shortUsd > longUsd ? 'short' : 'neutral');
@@ -616,17 +560,19 @@ function handleWebData({ user, data }) {
     error: null,
   };
 
-  const updated = patchWhaleInCache(whale.id, patch);
-  broadcast({
-    type: 'whalePatch',
-    whaleId: whale.id,
-    patch: updated || { id: whale.id, ...patch },
-    at: Date.now(),
-  });
-
-  // 首帧只建立基线：重启期间的净变化无法被准确赋予成交时间。
-  const alerts = hadRealtimeBaseline ? alertsFromPositionDiff(whale, prev, positions) : [];
-  emitAlerts(alerts);
+  const fillUsage = (recentPositionFills.get(String(whale.id)) || []).map(row => [row, row.used]);
+  let committed = false;
+  try {
+    const snapshotAlerts = hadRealtimeBaseline ? alertsFromPositionDiff(whale, prev, positions) : [];
+    if (!patchWhaleInCache(whale.id, patch, snapshotAlerts.filter(a => OPEN_KINDS.has(a.kind)))) return;
+    committed = true;
+    positionSnapByWhale.set(whale.id, positions);
+  } catch (err) {
+    pushError({ source: 'realtime', message: '仓位提交失败: ' + err.message });
+  } finally {
+    // Matching execution evidence is consumed only with the durable position diff.
+    if (!committed) for (const [row, used] of fillUsage) row.used = used;
+  }
 }
 
 function startRealtimeBridge() {

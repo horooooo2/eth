@@ -1,4 +1,5 @@
 import type { WhaleDirection, WhaleProfile, WhaleTrade } from '@/types';
+import { sumAlertItemNotional, sumAlertItemMargin } from '@/utils/alertAmounts';
 import { compareSelectableAssets, displayAsset, isExoticAsset, isSelectableAsset } from '@/utils/assets';
 import { directionLabel, formatPnl, formatPrice, formatUsd } from '@/utils/format';
 import { coinMatchesWatch } from '@/utils/watchedCoins';
@@ -33,6 +34,7 @@ export interface WhaleAlertItem {
   evidenceSource?: 'fill' | 'snapshot';
   /** 成交时间来自实际 fill/已知历史；observed 表示只能确认发现时间。 */
   timeSource?: 'execution' | 'observed';
+  sourceId?: string;
 }
 
 export interface AlertPosView {
@@ -49,6 +51,7 @@ export interface AlertPosView {
 export interface WhaleAlert {
   id: string;
   at: number;
+  totalUsd?: number;
   whaleId: string;
   whaleName: string;
   address: string;
@@ -396,7 +399,7 @@ export function resolveAlertPos(alert: WhaleAlert, whale?: WhaleProfile | null):
       (pos) => sameCoin(pos) && (!inferred || pos.side === inferred),
     ) || whale?.positions?.find((pos) => sameCoin(pos));
   const closed = alert.kind === 'close' || alert.kind === 'decrease' || item?.kind === 'close' || item?.kind === 'decrease';
-  const usd = item?.usd ?? null;
+  const usd = sumAlertItemNotional(alert.items || []);
   const lev = item?.leverage ?? (!closed ? live?.leverage ?? null : null);
   const price = item?.price || (!closed ? live?.entryPx || null : null);
   const pnl = item?.pnl ?? (!closed ? Number(live?.unrealizedPnl) || null : item?.pnl ?? null);
@@ -409,7 +412,7 @@ export function resolveAlertPos(alert: WhaleAlert, whale?: WhaleProfile | null):
     leverage,
     pnl,
     openTime: item?.time || live?.openTime || alert.at || null,
-    marginUsed: leverage && usd ? usd / leverage : null,
+    marginUsed: sumAlertItemMargin(alert.items || []) ?? (alert.items.length === 1 && leverage && usd ? usd / leverage : null),
   };
 }
 

@@ -12,6 +12,13 @@ const publicClients = new Set();
 /** @type {Map<string, Set<import('ws')>>} userId -> sockets */
 const privateByUser = new Map();
 const privateClients = new Set();
+const MAX_BUFFER = 4 * 1024 * 1024;
+function safeSend(socket, message) {
+  if (socket.readyState !== 1) return false;
+  if (socket.bufferedAmount > MAX_BUFFER) { socket.close(1013, 'Client must resume from cursor'); return false; }
+  try { socket.send(typeof message === 'string' ? message : JSON.stringify(message)); return true; }
+  catch { socket.terminate(); return false; }
+}
 
 function extractToken(req) {
   try {
@@ -29,11 +36,16 @@ function extractToken(req) {
 function attachRealtimeHub(httpServer) {
   if (publicWss) return { publicWss, privateWss };
 
-  publicWss = new WebSocketServer({ server: httpServer, path: '/realtime' });
+  const sync = require('./whaleSync');
+  sync.initialize();
+  publicWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 });
   publicWss.on('connection', (socket) => {
+    socket.syncReady = false;
+    socket.alive = true;
+    socket.on('pong', () => { socket.alive = true; });
     publicClients.add(socket);
     try {
-      socket.send(JSON.stringify({ type: 'hello', at: Date.now(), clients: publicClients.size }));
+      safeSend(socket, { type: 'hello', ...sync.stream.cursor(), at: Date.now(), clients: publicClients.size });
     } catch {
       // ignore
     }
@@ -43,15 +55,24 @@ function attachRealtimeHub(httpServer) {
       try {
         const msg = JSON.parse(String(raw));
         if (msg?.type === 'ping') {
-          socket.send(JSON.stringify({ type: 'pong', at: Date.now() }));
+          safeSend(socket, { type: 'pong', at: Date.now() });
+        } else if (msg?.type === 'resume') {
+          // Flush/replay/subscribe is synchronous, so publication cannot enter
+          // between replay's high-water mark and live subscription.
+          socket.syncReady = false;
+          const replay = sync.stream.resume(msg);
+          if (replay.type === 'resyncRequired') { safeSend(socket, replay); return; }
+          for (const event of replay.events) if (!safeSend(socket, event)) return;
+          socket.syncReady = true;
+          safeSend(socket, { type: 'caughtUp', epoch: replay.epoch, seq: replay.seq });
         }
       } catch {
-        // ignore
+        safeSend(socket, { type: 'resyncRequired' });
       }
     });
   });
 
-  privateWss = new WebSocketServer({ noServer: true });
+  privateWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 });
   httpServer.on('upgrade', (req, socket, head) => {
     let pathname = '';
     try {
@@ -59,7 +80,12 @@ function attachRealtimeHub(httpServer) {
     } catch {
       return;
     }
-    if (pathname !== '/realtime/private') return;
+    if (pathname === '/realtime') {
+      if (publicClients.size >= 200) { socket.destroy(); return; }
+      publicWss.handleUpgrade(req, socket, head, ws => publicWss.emit('connection', ws, req));
+      return;
+    }
+    if (pathname !== '/realtime/private') { socket.destroy(); return; }
     const token = extractToken(req);
     const session = getSessionUser(token);
     if (!session?.user?.id) {
@@ -73,6 +99,8 @@ function attachRealtimeHub(httpServer) {
   });
 
   privateWss.on('connection', (ws, _req, session) => {
+    ws.alive = true;
+    ws.on('pong', () => { ws.alive = true; });
     const userId = session.user.id;
     ws.userId = userId;
     ws.username = session.user.username;
@@ -114,6 +142,21 @@ function attachRealtimeHub(httpServer) {
     });
   });
 
+  const heartbeat = setInterval(() => {
+    for (const socket of [...publicClients, ...privateClients]) {
+      if (socket.alive === false) { socket.terminate(); continue; }
+      socket.alive = false;
+      if (socket.readyState === 1) socket.ping();
+    }
+  }, 30_000);
+  heartbeat.unref?.();
+  httpServer.on('close', () => {
+    clearInterval(heartbeat);
+    for (const socket of [...publicClients, ...privateClients]) socket.terminate();
+    publicClients.clear(); privateClients.clear(); privateByUser.clear();
+    publicWss.close(); privateWss.close(); publicWss = null; privateWss = null;
+  });
+
   console.log('[realtime] hub attached path=/realtime + /realtime/private');
   return { publicWss, privateWss };
 }
@@ -125,13 +168,17 @@ function broadcast(message) {
   for (const socket of publicClients) {
     if (socket.readyState !== 1) continue;
     try {
-      socket.send(payload);
-      n += 1;
+      if (safeSend(socket, payload)) n += 1;
     } catch {
       publicClients.delete(socket);
     }
   }
   return n;
+}
+
+function broadcastState(event) {
+  const payload = JSON.stringify(event);
+  for (const socket of publicClients) if (socket.syncReady) safeSend(socket, payload);
 }
 
 function sendToUser(userId, message) {
@@ -180,6 +227,7 @@ function privateClientCount() {
 module.exports = {
   attachRealtimeHub,
   broadcast,
+  broadcastState,
   sendToUser,
   broadcastPrivate,
   clientCount,

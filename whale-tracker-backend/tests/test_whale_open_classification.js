@@ -156,7 +156,8 @@ test('retrying a source alert after merge does not double-count its notional', (
 
   const result = loadPagedAlerts({ sinceMs: at - 1, limit: 10 });
   assert.equal(result.total, 1);
-  assert.equal(result.alerts[0].items[0].usd, 3000);
+  assert.equal(result.alerts[0].totalUsd, 3000);
+  assert.deepEqual(result.alerts[0].items.map(item => item.usd), [1500, 1500]);
   assert.equal(result.alerts[0].mergedCount, 2);
 });
 

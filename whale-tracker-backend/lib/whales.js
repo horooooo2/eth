@@ -1,5 +1,5 @@
 const { readConfig, normalizeAddress, sortWhales, normalizeMode, getActiveWhales } = require('./config');
-const { readWhaleModeCache, writeWhaleModeCache, clearWhaleModeCache } = require('./cache');
+const { readWhaleModeCache, writeWhaleModeCache, clearWhaleModeCache, commitWhaleState, captureWhaleRevisions } = require('./cache');
 const { fetchWhaleAlerts, attachWatchedWhale, MIN_USD } = require('./onchain');
 const {
   fetchClearinghouseState,
@@ -15,7 +15,6 @@ const {
   fetchCoinNameMap,
   deriveDirection,
   mapFillToTrade,
-  mapAndFilterFills,
   normalizeToHlFill,
   computeSideWinRates,
   computeTopCoins,
@@ -273,6 +272,7 @@ function seedProgressiveFromCache(mode, roster, cached) {
   progressiveSession = {
     mode,
     rosterKey,
+    baseline: captureWhaleRevisions(mode, roster.map((whale) => whale.id)),
     names: null,
     onchain: null,
     snapshots,
@@ -494,7 +494,7 @@ async function enrichWhaleFillsAndTiming(whales, names = {}, options = {}) {
       }),
     );
     whale.positions = positions;
-    const trades = mapAndFilterFills(fills, { ...whale, address }, names, MIN_USD);
+    const trades = fills.map((fill) => mapFillToTrade(fill, { ...whale, address }, names));
     whale.trades = trades;
     collectedTrades.push(...trades);
     updated += 1;
@@ -509,20 +509,12 @@ async function enrichMissingOpenTiming(whales, names = {}, options = {}) {
 }
 
 async function persistOpenTimingEnrichment(mode = 'hf') {
-  try {
-    const { isRealtimeConnected } = require('./realtimeBridge');
-    if (isRealtimeConnected() && process.env.HL_WS_FORCE_ENRICH !== '1') {
-      // 实时 WS 已接管成交流，跳过 REST 补齐以免再打满配额
-      return null;
-    }
-  } catch {
-    // bridge 未加载时照常补齐
-  }
   if (openTimingEnrichInflight) return openTimingEnrichInflight;
   openTimingEnrichInflight = (async () => {
     const cached = readWhaleModeCache(mode);
     const whales = Array.isArray(cached?.data?.whales) ? cached.data.whales : [];
     if (!whales.length) return;
+    const baseline = captureWhaleRevisions(mode);
     const names = await fetchCoinNameMap().catch(() => ({}));
     const prevTrades = Array.isArray(cached?.data?.trades) ? cached.data.trades : [];
     const tradesByWhale = new Map();
@@ -540,30 +532,8 @@ async function persistOpenTimingEnrichment(mode = 'hf') {
     });
     if (!updated && !newTrades.length) return;
 
-    const refreshedIds = new Set(
-      whales.filter((w) => Array.isArray(w.trades) && w.trades.length).map((w) => w.id),
-    );
-    const keptHl = prevTrades.filter(
-      (trade) => trade?.source !== 'onchain' && !(trade?.whaleId && refreshedIds.has(trade.whaleId)),
-    );
-    const onchain = prevTrades.filter((trade) => trade?.source === 'onchain');
-    const seen = new Set();
-    const mergedTrades = [...newTrades, ...keptHl, ...onchain]
-      .filter((trade) => {
-        const id = String(trade?.id || '');
-        if (!id || seen.has(id)) return false;
-        seen.add(id);
-        return true;
-      })
-      .sort((a, b) => Number(b.time || 0) - Number(a.time || 0))
-      .slice(0, ACTIVITY_MAX + 500);
-
-    const cleanedWhales = whales.map(({ trades: _t, ...rest }) => rest);
-    writeWhaleModeCache(mode, {
-      ...cached.data,
-      whales: sortWhales(cleanedWhales, mode),
-      trades: mergedTrades,
-    });
+    commitWhaleState(mode, { whales, trades: newTrades,
+      expectedWhaleRevisions: baseline, positionMetadataOnly: true });
     console.log(`[whales] 已补齐 ${updated} 个巨鲸开仓时间/成交明细（+${newTrades.length} 笔）`);
   })()
     .catch((err) => {
@@ -602,6 +572,7 @@ async function refreshAlertHistory(query = {}) {
     };
   }
 
+  const baseline = captureWhaleRevisions(mode);
   const names = await fetchCoinNameMap().catch(() => ({}));
   const prevTrades = Array.isArray(cached?.data?.trades) ? cached.data.trades : [];
   const { updated, trades: newTrades } = await enrichWhaleFillsAndTiming(whales, names, {
@@ -610,45 +581,12 @@ async function refreshAlertHistory(query = {}) {
     force: true,
   });
 
-  const refreshedIds = new Set(
-    whales.filter((w) => Array.isArray(w.trades) && w.trades.length).map((w) => w.id),
-  );
-  const keptHl = prevTrades.filter(
-    (trade) => trade?.source !== 'onchain' && !(trade?.whaleId && refreshedIds.has(trade.whaleId)),
-  );
-  const onchain = prevTrades.filter((trade) => trade?.source === 'onchain');
-  const seen = new Set();
-  const mergedTrades = [...newTrades, ...keptHl, ...onchain]
-    .filter((trade) => {
-      const id = String(trade?.id || '');
-      if (!id || seen.has(id)) return false;
-      seen.add(id);
-      return true;
-    })
-    .sort((a, b) => Number(b.time || 0) - Number(a.time || 0))
-    .slice(0, ACTIVITY_MAX + 500);
+  const saved = commitWhaleState(mode, { whales, trades: newTrades,
+    expectedWhaleRevisions: baseline, positionMetadataOnly: true });
+  return { whales: saved.data.whales, trades: saved.data.trades,
+    activity: buildActivityFeed(saved.data.trades), enriched: updated,
+    tradeCount: newTrades.length, warning: null, updatedAt: saved.updatedAt };
 
-  const cleanedWhales = sortWhales(
-    whales.map(({ trades: _t, ...rest }) => rest),
-    mode,
-  );
-  const payload = {
-    ...(cached?.data || {}),
-    mode,
-    whales: cleanedWhales,
-    trades: mergedTrades,
-    minUsd: MIN_USD,
-  };
-  const saved = writeWhaleModeCache(mode, payload);
-  return {
-    whales: cleanedWhales,
-    trades: mergedTrades,
-    activity: buildActivityFeed(mergedTrades),
-    enriched: updated,
-    tradeCount: newTrades.length,
-    warning: null,
-    updatedAt: saved.updatedAt,
-  };
 }
 
 async function finalizeSnapshotFromState(whale, address, state, names, { light, base, prevPositions = [] }) {
@@ -699,7 +637,7 @@ async function finalizeSnapshotFromState(whale, address, state, names, { light, 
     );
   }
 
-  const trades = light ? [] : mapAndFilterFills(fills, { ...whale, address }, names, MIN_USD);
+  const trades = light ? [] : fills.map((fill) => mapFillToTrade(fill, { ...whale, address }, names));
   const sideRates = light ? {} : computeSideWinRates(fills);
   const topCoins = light ? whale.topCoins || [] : computeTopCoins(fills, names);
   return {
@@ -843,6 +781,7 @@ async function refreshWhalesForMode(mode, force = false) {
   const generation = ++whalesGenerationByMode[key];
   whalesInflightByMode[key] = (async () => {
     const enabledWhales = getActiveWhales();
+    const baseline = captureWhaleRevisions(key, enabledWhales.map((whale) => whale.id));
     const payload = await buildWhalePayload(key, enabledWhales);
 
     if (generation !== whalesGenerationByMode[key]) {
@@ -851,8 +790,8 @@ async function refreshWhalesForMode(mode, force = false) {
       throw err;
     }
 
-    const saved = writeWhaleModeCache(key, payload);
-    return { ...payload, stale: false, updatedAt: saved.updatedAt };
+    const saved = writeWhaleModeCache(key, payload, { expectedWhaleRevisions: baseline, rosterIds: getActiveWhales().map((whale) => whale.id) });
+    return { ...saved.data, stale: false, updatedAt: saved.updatedAt };
   })().finally(() => {
     if (generation === whalesGenerationByMode[key]) whalesInflightByMode[key] = null;
   });
@@ -887,6 +826,7 @@ async function refreshWhalesShard(options = {}) {
     if (!total) return null;
     lastShardRefreshAt = Date.now();
 
+    const baseline = captureWhaleRevisions(mode, roster.map((whale) => whale.id));
     const cachedBefore = readWhaleModeCache(mode);
     const prevCachedWhales = Array.isArray(cachedBefore?.data?.whales) ? cachedBefore.data.whales : [];
     const prevWhales = prevCachedWhales;
@@ -907,15 +847,16 @@ async function refreshWhalesShard(options = {}) {
     ]);
     if (needOnchain) shardOnchainAt = Date.now();
 
+    const currentRevisions = captureWhaleRevisions(mode, roster.map((whale) => whale.id));
+    const acceptedSnapshots = snapshots.filter((snap) => baseline[snap.id] === currentRevisions[snap.id]);
     const refreshedAt = Date.now();
     // 只用上游成功返回的快照产生持仓事件。首次成功仅建立基线；沿用旧缓存
     // 或查询失败都不生成事件，避免冷启动假开仓和故障期间重复/虚假异动。
     const snapshotAlerts = [];
     const freshSnapshotIds = new Set();
     const { alertsFromPositionDiff } = require('./realtimeBridge');
-    for (const snap of snapshots) {
+    for (const snap of acceptedSnapshots) {
       const isFresh = snap?.__snapshotFresh === true;
-      delete snap.__snapshotFresh;
       if (!snap?.id || !isFresh || snap.error) continue;
       freshSnapshotIds.add(snap.id);
       const previous = prevWhales.find((item) => item.id === snap.id);
@@ -923,21 +864,13 @@ async function refreshWhalesShard(options = {}) {
       snapshotAlerts.push(...alertsFromPositionDiff(snap, previous.positions, snap.positions || []));
     }
     const monitorAlerts = snapshotAlerts.filter((item) => item && (item.kind === 'open' || item.kind === 'increase'));
-    if (monitorAlerts.length) {
-      // 先持久化异动再推进仓位基线；若写入失败则中止本轮，下一次采集可重试 diff。
-      const { persistAlerts } = require('./sqliteStore');
-      persistAlerts(monitorAlerts);
-      const { broadcast } = require('./realtimeHub');
-      for (const alert of monitorAlerts) broadcast({ type: 'alert', alert, at: Date.now() });
-    }
-
-    const cached = cachedBefore || readWhaleModeCache(mode);
+    const cached = readWhaleModeCache(mode);
     const previousWhales = Array.isArray(cached?.data?.whales) ? cached.data.whales : [];
     const prevTrades = Array.isArray(cached?.data?.trades) ? cached.data.trades : [];
     const prevWarnings = Array.isArray(cached?.data?.warnings) ? cached.data.warnings : [];
 
     const byId = new Map(previousWhales.map((item) => [item.id, item]));
-    for (const snap of snapshots) {
+    for (const snap of acceptedSnapshots) {
       const { trades: _t, ...rest } = snap;
       const prev = byId.get(snap.id);
       if (prev?.positions?.length) {
@@ -962,11 +895,7 @@ async function refreshWhalesShard(options = {}) {
       };
     });
 
-    const refreshedIds = new Set(snapshots.map((item) => item.id));
-    const keptTrades = prevTrades.filter((trade) => {
-      if (!trade?.whaleId) return true;
-      return !refreshedIds.has(trade.whaleId);
-    });
+    const keptTrades = prevTrades;
     const newHlTrades = snapshots.flatMap((item) => item.trades || []);
     let trades = [...keptTrades.filter((t) => t.source !== 'onchain' || !onchain), ...newHlTrades];
     if (onchain) {
@@ -995,15 +924,21 @@ async function refreshWhalesShard(options = {}) {
       warnings,
       minUsd: MIN_USD,
     };
-    const saved = writeWhaleModeCache(mode, payload);
-    for (const snap of snapshots) {
+    const saved = commitWhaleState(mode, {
+      whales: whales.filter((whale) => !previousWhales.some((prev) => prev.id === whale.id) || acceptedSnapshots.some((snap) => snap.id === whale.id)),
+      trades: newHlTrades.concat(onchain ? trades.filter((trade) => trade.source === 'onchain') : []),
+      metadata: { warnings, minUsd: MIN_USD },
+      expectedWhaleRevisions: baseline, snapshotAlerts: monitorAlerts,
+      rosterIds: getActiveWhales().map((whale) => whale.id),
+    });
+    for (const snap of acceptedSnapshots) {
       if (snap?.id && freshSnapshotIds.has(snap.id)) lastShardAtById.set(snap.id, refreshedAt);
     }
     if (slice.length) {
       const { broadcast } = require('./realtimeHub');
       broadcast({ type: 'whaleSnapshotUpdated', mode, updatedAt: saved.updatedAt, total: whales.filter((item) => !isPendingPlaceholder(item)).length });
     }
-    const pendingLeft = countPendingWhales(whales);
+    const pendingLeft = countPendingWhales(saved.data.whales);
     console.log(
       `[cache] 分片刷新 ${slice.length}/${total}（优先热门≈${hotCount}，待补 ${pendingLeft}），写入完成`,
     );
@@ -1017,7 +952,7 @@ async function refreshWhalesShard(options = {}) {
         });
       }, 1200);
     }
-    return { ...payload, stale: pendingLeft > 0, updatedAt: saved.updatedAt, pending: pendingLeft, incomplete: pendingLeft > 0 };
+    return { ...saved.data, stale: pendingLeft > 0, updatedAt: saved.updatedAt, pending: pendingLeft, incomplete: pendingLeft > 0 };
   })()
     .catch((err) => {
       console.warn('[cache] 分片刷新失败:', err.message);
@@ -1686,7 +1621,7 @@ function entryFillsThin(pos) {
 }
 
 /** 把补齐后的开仓明细写回磁盘缓存，供列表（合）复用 */
-function patchCachedPositionFields(whaleId, coin, side, fields) {
+function patchCachedPositionFields(whaleId, coin, side, fields, expectedWhaleRevisions) {
   try {
     const mode = 'hf';
     const cached = readWhaleModeCache(mode);
@@ -1705,7 +1640,7 @@ function patchCachedPositionFields(whaleId, coin, side, fields) {
       });
       return { ...whale, positions };
     });
-    writeWhaleModeCache(mode, { ...cached.data, whales });
+    commitWhaleState(mode, { whales: whales.filter((item) => item.id === whaleId), positionMetadataOnly: true, expectedWhaleRevisions });
   } catch (err) {
     console.warn('[whales] 回写 entryFills 失败:', err.message);
   }
@@ -1729,6 +1664,7 @@ async function getWhalePosition(id, coin, options = {}) {
   }
 
   const cached = readActiveWhaleCache();
+  const baseline = captureWhaleRevisions('hf', [whale.id]);
   const snap = (cached?.data?.whales || []).find((item) => item.id === whale.id) || whale;
   const wanted = String(decoded || '').toUpperCase();
   let pos = (snap.positions || []).find((item) => {
@@ -1770,30 +1706,7 @@ async function getWhalePosition(id, coin, options = {}) {
       // 同步写入本地成交，资金动态才能看到减仓/平仓
       if (remote.length) {
         const trades = remote.map((fill) => mapFillToTrade(fill, { ...whale, address }, names));
-        try {
-          const { persistTradesIncremental } = require('./sqliteStore');
-          persistTradesIncremental(trades);
-        } catch {
-          // optional
-        }
-        try {
-          const mode = 'hf';
-          const cachedTrades = readWhaleModeCache(mode);
-          if (cachedTrades?.data) {
-            const map = new Map();
-            for (const trade of [...(cachedTrades.data.trades || []), ...trades]) {
-              const key = String(trade?.id || trade?.hash || '');
-              if (!key || map.has(key)) continue;
-              map.set(key, trade);
-            }
-            const merged = [...map.values()]
-              .sort((a, b) => Number(b.time || 0) - Number(a.time || 0))
-              .slice(0, 4000);
-            writeWhaleModeCache(mode, { ...cachedTrades.data, trades: merged });
-          }
-        } catch {
-          // optional
-        }
+        commitWhaleState('hf', { trades });
       }
     } catch (err) {
       console.warn(`[whales] ${whale.name} ${decoded} 成交补齐失败:`, err.message);
@@ -1827,7 +1740,7 @@ async function getWhalePosition(id, coin, options = {}) {
     };
 
     if (entryFills.length > (pos.entryFills || []).length || entryFillsThin(pos)) {
-      patchCachedPositionFields(whale.id, coinKey, side, enriched);
+      patchCachedPositionFields(whale.id, coinKey, side, enriched, baseline);
     }
 
     let markPx = pos.markPx ?? null;
@@ -2308,6 +2221,33 @@ function formatBatchPayload({
   };
 }
 
+const recentPositionRefreshes = new Map();
+const positionRefreshInflight = new Map();
+/** A recent reconciled fill requests one bounded, coalesced authoritative snapshot. */
+function refreshWhalePositionFromSource(id) {
+  const key = String(id);
+  if (positionRefreshInflight.has(key)) return positionRefreshInflight.get(key);
+  if (positionRefreshInflight.size >= 2 || Date.now() - (recentPositionRefreshes.get(key) || 0) < 30000) {
+    return Promise.resolve(null);
+  }
+  const whale = findConfiguredWhale(key);
+  if (!whale || !getActiveWhales().some((item) => item.id === whale.id)) return Promise.resolve(null);
+  const baseline = captureWhaleRevisions('hf', [whale.id]);
+  const current = readWhaleModeCache('hf')?.data?.whales?.find((item) => item.id === whale.id);
+  recentPositionRefreshes.set(key, Date.now());
+  const task = (async () => {
+    const fresh = await loadWhaleSnapshot(whale, {}, current, { light: true });
+    if (!fresh.__snapshotFresh || fresh.error) return null;
+    const snapshotAlerts = current && !current.error
+      ? require('./realtimeBridge').alertsFromPositionDiff(fresh, current.positions || [], fresh.positions || [])
+        .filter((alert) => alert.kind === 'open' || alert.kind === 'increase') : [];
+    return commitWhaleState('hf', { whales: [fresh], snapshotAlerts,
+      expectedWhaleRevisions: baseline, rosterIds: getActiveWhales().map((item) => item.id) });
+  })().finally(() => positionRefreshInflight.delete(key));
+  positionRefreshInflight.set(key, task);
+  return task;
+}
+
 /**
  * 单个巨鲸「刷新」：只回读本地缓存 / 库，不打上游。
  * 最新仓位与成交由服务器 WS 持续维护。
@@ -2436,6 +2376,7 @@ async function getWhalesBatch(query = {}) {
     progressiveSession = {
       mode,
       rosterKey,
+      baseline: captureWhaleRevisions(mode, roster.map((whale) => whale.id)),
       names: null,
       onchain: null,
       snapshots: new Array(total).fill(null),
@@ -2613,23 +2554,10 @@ async function getWhalesBatch(query = {}) {
     if (session.onchain?.warning) {
       payload.warnings.push(session.onchain.warning);
     }
-    const saved = writeWhaleModeCache(mode, payload);
+    const saved = writeWhaleModeCache(mode, payload, { expectedWhaleRevisions: session.baseline, rosterIds: getActiveWhales().map((whale) => whale.id) });
     if (progressiveSession === session) progressiveSession = null;
     persistOpenTimingEnrichment(mode).catch(() => null);
-    return formatBatchPayload({
-      mode,
-      roster,
-      snapshots: session.snapshots,
-      onchain: session.onchain,
-      loaded,
-      total,
-      offset,
-      nextOffset: total,
-      limit,
-      done: true,
-      updatedAt: saved.updatedAt,
-      stale: false,
-    });
+    return formatCachedBatchPayload(saved, mode, { offset, limit });
   }
 
   return formatBatchPayload({
@@ -2657,6 +2585,7 @@ module.exports = {
   getWhaleSummary,
   formatCachedBatchPayload,
   formatKnownCachedBatchPayload,
+  refreshWhalePositionFromSource,
   refreshSingleWhale,
   refreshAlertHistory,
   closedPositionFromFills,

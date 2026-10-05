@@ -23,6 +23,20 @@ const { readConfig, writeConfig, setWhaleMode, normalizeAddress, normalizeMode, 
 const { loadRecentEvents, loadRecentAlerts, loadPagedAlerts, loadAlertFlowSummary, countStoredAlerts, persistAlerts } = require('../lib/sqliteStore');
 
 const router = express.Router();
+const whaleSync = require('../lib/whaleSync');
+const { requireAuthenticated, requireAdmin } = require('../lib/maintenanceAuth');
+
+router.use((req, res, next) => {
+  if (req.method === 'POST' && req.path === '/alert-history') return next(); // retired below
+  if (['/config', '/mode'].includes(req.path) && req.method !== 'GET') return requireAdmin(req, res, next);
+  if (req.method !== 'GET' || /\/(?:alert-history|history)\/refresh$/.test(req.path)) return requireAuthenticated(req, res, next);
+  next();
+});
+
+router.get('/bootstrap', (_req, res) => {
+  try { res.set('Cache-Control', 'no-store').json(whaleSync.bootstrap()); }
+  catch (err) { console.error('[whales/bootstrap]', err); res.status(503).json({ error: '巨鲸快照暂不可用，请稍后重试' }); }
+});
 
 /** 总览读取服务端快照，不触发上游采集，也不要求前端遍历分页。 */
 router.get('/summary', (req, res) => {
@@ -106,6 +120,9 @@ function compactAlertList(alerts = []) {
         side: item.side,
         usd: item.usd,
         time: item.time,
+        evidenceSource: item.evidenceSource,
+        timeSource: item.timeSource,
+        sourceId: item.sourceId,
       })),
     };
   });
@@ -126,14 +143,16 @@ router.get('/events', (req, res) => {
 /** GET /api/whales/alert-history — 异动分页（SQLite） */
 router.get('/alert-history', (req, res) => {
   try {
+    whaleSync.initialize();
+    const cursor = whaleSync.stream.cursor();
     // 兼容旧调用：无 page 时按 limit 拉最近 N 条
     if (req.query.page == null && req.query.paged == null) {
       const limit = Number(req.query.limit) || 500;
       const alerts = compactAlertList(loadRecentAlerts(limit));
-      return res.json({ alerts, total: alerts.length, retentionDays: 7 });
+      return res.json({ ...cursor, alerts, total: alerts.length, retentionDays: 7 });
     }
     const data = loadPagedAlerts(req.query);
-    res.json({ ...data, alerts: compactAlertList(data.alerts) });
+    res.json({ ...data, ...cursor, alerts: compactAlertList(data.alerts) });
   } catch (err) {
     console.error('[GET /api/whales/alert-history]', err);
     res.status(500).json({ error: err.message || '读取异动历史失败', alerts: [] });
@@ -142,14 +161,7 @@ router.get('/alert-history', (req, res) => {
 
 /** POST /api/whales/alert-history — 前端同步异动到 SQLite */
 router.post('/alert-history', (req, res) => {
-  try {
-    const alerts = Array.isArray(req.body?.alerts) ? req.body.alerts : [];
-    const result = persistAlerts(alerts);
-    res.json({ ok: true, saved: result.saved, retentionDays: 7 });
-  } catch (err) {
-    console.error('[POST /api/whales/alert-history]', err);
-    res.status(500).json({ error: err.message || '写入异动历史失败' });
-  }
+  res.status(410).json({ error: '异动由服务器采集，浏览器上传入口已停用' });
 });
 
 /** GET /api/whales — 默认分页返回；兼容全量读取需显式传 full=1 */
@@ -358,26 +370,9 @@ router.patch('/:id/name', (req, res) => {
   try {
     const { whale } = renameWhale(req.params.id, req.body?.name);
     invalidateWhaleCache();
-    try {
-      const { getDb } = require('../lib/db');
-      const database = getDb();
-      const row = database.prepare('SELECT payload_json FROM whales WHERE id = ?').get(whale.id);
-      if (row) {
-        let payload = {};
-        try {
-          payload = JSON.parse(row.payload_json || '{}') || {};
-        } catch {
-          payload = {};
-        }
-        payload.name = whale.name;
-        payload.customName = true;
-        database
-          .prepare('UPDATE whales SET name = ?, payload_json = ? WHERE id = ?')
-          .run(whale.name, JSON.stringify(payload), whale.id);
-      }
-    } catch (err) {
-      console.warn('[PATCH name] sqlite sync:', err.message);
-    }
+    const { readWhaleModeCache, commitWhaleState } = require('../lib/cache');
+    const current = readWhaleModeCache('hf')?.data?.whales?.find(row => row.id === whale.id);
+    commitWhaleState('hf', { whales: [{ ...(current || { positions: [] }), ...whale, customName: true }] });
     try {
       require('../lib/realtimeBridge').syncFromCache();
     } catch {
@@ -436,6 +431,10 @@ router.post('/config', (req, res) => {
       keywords: Array.isArray(body.keywords) ? body.keywords : current.keywords,
     });
     invalidateWhaleCache(saved.mode);
+    const { getActiveWhales } = require('../lib/config');
+    const { commitWhaleState } = require('../lib/cache');
+    const active = getActiveWhales();
+    commitWhaleState('hf', { whales: active, rosterIds: active.map(row => row.id) });
     res.json(saved);
   } catch (err) {
     res.status(400).json({ error: err.message || '配置保存失败' });

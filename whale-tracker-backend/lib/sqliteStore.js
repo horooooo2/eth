@@ -22,10 +22,27 @@ const {
   passesMinUsd,
   preferKind,
   alertDocFromEvent,
+  fillSourceId,
+  isRawTrade,
+  canonicalTradeId,
 } = require('./positionEventPolicy');
 
 const PAGED_ALERT_CACHE_TTL_MS = 10_000;
 const pagedAlertCache = new Map();
+let alertCommitObserver = null;
+
+function setAlertCommitObserver(observer) {
+  alertCommitObserver = typeof observer === 'function' ? observer : null;
+}
+
+function notifyAlertCommit(result) {
+  if (!result?.committedAlerts?.length && !result?.removedAlertIds?.length) return;
+  try {
+    alertCommitObserver?.({ alerts: result.committedAlerts, removedAlertIds: result.removedAlertIds });
+  } catch (err) {
+    console.warn('[sqlite] alert commit observer failed:', err.message);
+  }
+}
 
 function safeJson(value) {
   try {
@@ -47,9 +64,18 @@ function coinOfTrade(trade) {
   return String(trade?.assetLabel || trade?.asset || '').trim();
 }
 
+/** Rekey only a fill being ingested now; never scan or rewrite historical data. */
+function removeReplayedLegacyFill(database, trade, id) {
+  const prefix = `${String(trade.whaleId || '').toLowerCase()}:`;
+  const rawId = trade.tid ?? (id.startsWith(prefix) ? id.slice(prefix.length) : trade.id);
+  if (rawId == null || String(rawId) === id) return;
+  database.prepare('DELETE FROM fills WHERE id = ? AND whale_id = ?')
+    .run(String(rawId), trade.whaleId ? String(trade.whaleId) : null);
+}
+
 /** 由成交派生开/补/减/平事件（结合 startPosition，避免买=多卖=空误判） */
 function eventsFromTrade(trade) {
-  if (!trade || trade.source === 'onchain') return [];
+  if (!isRawTrade(trade) || trade.source === 'onchain') return [];
   const coin = coinOfTrade(trade);
   if (!coin) return [];
   const usd = Math.abs(Number(trade.amountUsd) || 0);
@@ -122,7 +148,8 @@ function eventsFromTrade(trade) {
 
   return [
     {
-      id: `evt-${openKind}-${trade.id || `${trade.whaleId}-${ts}-${coin}`}`,
+      id: `evt-${openKind}-${canonicalTradeId(trade) || `${trade.whaleId}-${ts}-${coin}`}`,
+      sourceId: fillSourceId(trade),
       whaleId: trade.whaleId || null,
       time: ts,
       kind: openKind,
@@ -137,7 +164,7 @@ function eventsFromTrade(trade) {
 }
 
 function upsertAlertRows(database, alerts) {
-  if (!alerts?.length) return { written: 0, added: 0 };
+  if (!alerts?.length) return { written: 0, added: 0, committedAlerts: [], removedAlertIds: [] };
   const stmt = database.prepare(`
     INSERT INTO alerts (id, whale_id, time, kind, payload_json)
     VALUES (@id, @whale_id, @time, @kind, @payload_json)
@@ -149,6 +176,8 @@ function upsertAlertRows(database, alerts) {
   `);
   const exists = database.prepare('SELECT 1 AS x FROM alerts WHERE id = ?');
   const sourceSeen = database.prepare('SELECT 1 AS x FROM alert_sources WHERE source_id = ?');
+  const legacySource = database.prepare(`SELECT s.alert_id FROM alert_sources s
+    JOIN alerts a ON a.id = s.alert_id WHERE s.source_id = ? AND a.whale_id = ?`);
   const rememberSource = database.prepare('INSERT OR IGNORE INTO alert_sources(source_id, alert_id) VALUES (?, ?)');
   const moveSources = database.prepare('UPDATE alert_sources SET alert_id = ? WHERE alert_id = ?');
   const findMerge = database.prepare(`
@@ -168,17 +197,35 @@ function upsertAlertRows(database, alerts) {
   let written = 0;
   let added = 0;
   const retiredAlertIds = [];
+  const removedAlertIds = [];
+  const committed = new Map();
   alertLoop: for (const alert of alerts) {
     if (!alert?.id) continue;
-    const sourceId = String(alert.id);
+    const sourceId = String(alert.sourceId || alert.items?.[0]?.sourceId || alert.id);
     // HTTP retries and server-generated copies of the same event must never
     // add their notional a second time after a nearby event was merged.
     if (sourceSeen.get(sourceId)) continue;
+    // Recognize a replay of a pre-canonical server fill without rewriting the
+    // historical alert or its amounts. Identity aliases are installed lazily.
+    const fillPrefix = `fill:${String(alert.whaleId || '').toLowerCase()}:`;
+    if (sourceId.startsWith(fillPrefix)) {
+      const rawId = sourceId.slice(fillPrefix.length);
+      for (const legacyKind of ['open', 'increase']) {
+        const aliases = [`evt-${legacyKind}-${rawId}`,
+          `ws-${legacyKind}-${alert.whaleId}-${alert.items?.[0]?.coin}-${rawId}`];
+        for (const alias of aliases) {
+          const seen = legacySource.get(alias, String(alert.whaleId || ''));
+          if (!seen) continue;
+          rememberSource.run(sourceId, seen.alert_id);
+          continue alertLoop;
+        }
+      }
+    }
     const kind = String(alert.kind || '');
     if (!OPEN_KINDS.has(kind)) continue;
     const time = Number(alert.at || alert.time) || 0;
     if (!time) continue;
-    const usd = Math.abs(Number(alert.items?.[0]?.usd) || 0);
+    const usd = (alert.items || []).reduce((sum, item) => sum + Math.abs(Number(item.usd) || 0), 0);
     if (!passesMinUsd(usd, kind)) continue;
 
     const whaleId = alert.whaleId ? String(alert.whaleId) : null;
@@ -186,7 +233,7 @@ function upsertAlertRows(database, alerts) {
     const side = String(alert.items?.[0]?.side || '').toLowerCase();
     const group = kindGroup(kind);
 
-    let target = alert;
+    let target = { ...alert, sourceId, totalUsd: usd };
     let mergedIntoExisting = false;
 
     if (whaleId && coin && side && group) {
@@ -219,11 +266,12 @@ function upsertAlertRows(database, alerts) {
             delById.run(String(row.id));
             delItemsById.run(String(row.id));
             retiredAlertIds.push(String(row.id));
+            removedAlertIds.push(String(row.id));
+            committed.delete(String(row.id));
             continue;
           }
         }
 
-        const prevUsd = Math.abs(Number(payload?.items?.[0]?.usd) || 0);
         const nextKind = preferKind(row.kind, kind);
         const mergedCount =
           Math.max(1, Number(payload?.mergedCount) || 1) +
@@ -247,11 +295,8 @@ function upsertAlertRows(database, alerts) {
             mergedCount > 1
               ? `${lead?.title || alert.headline || ''}（${mergedCount} 笔）`
               : alert.headline,
-          items: items.map((it, idx) =>
-            idx === 0
-              ? { ...it, kind: nextKind, usd: prevUsd + usd }
-              : it,
-          ),
+          items,
+          totalUsd: items.reduce((sum, item) => sum + Math.abs(Number(item.usd) || 0), 0),
           mergedCount,
         };
         if (String(alert.id) !== String(row.id)) {
@@ -293,22 +338,28 @@ function upsertAlertRows(database, alerts) {
       }
     }
     rememberSource.run(sourceId, id);
+    committed.set(id, target);
     written += 1;
   }
   if (written) pagedAlertCache.clear();
-  return { written, added };
+  return { written, added, committedAlerts: [...committed.values()], removedAlertIds };
 }
 
 /** 前端同步异动历史 */
 function persistAlerts(alerts = []) {
   const list = Array.isArray(alerts) ? alerts : [];
   const database = getDb();
-  const tx = database.transaction(() => upsertAlertRows(database, list));
+  const tx = database.transaction(() => {
+    const result = upsertAlertRows(database, list);
+    if (result.added) bumpDailyAdded(result.added);
+    return result;
+  });
   const result = tx();
-  if (result.added) bumpDailyAdded(result.added);
   const purged = purgeOlderThan(CLOSED_POSITION_RETENTION_MS);
   if (purged.alertsDeleted) pagedAlertCache.clear();
-  return { saved: result.written, added: result.added, purged };
+  notifyAlertCommit(result);
+  return { saved: result.written, added: result.added, purged,
+    committedAlerts: result.committedAlerts, removedAlertIds: result.removedAlertIds };
 }
 
 /** Full event window for resonance: pagination and display limits must not bias signals. */
@@ -747,8 +798,8 @@ function loadDbBrowse(options = {}) {
 
 /** 增量写入成交（实时 WS），并派生 events/alerts */
 function persistTradesIncremental(trades = []) {
-  const list = Array.isArray(trades) ? trades : [];
-  if (!list.length) return { fills: 0, events: 0, alerts: 0 };
+  const list = (Array.isArray(trades) ? trades : []).filter(isRawTrade);
+  if (!list.length) return { fills: 0, events: 0, alerts: 0, committedAlerts: [], removedAlertIds: [] };
   const database = getDb();
   const upsertFill = database.prepare(`
     INSERT INTO fills (
@@ -790,12 +841,15 @@ function persistTradesIncremental(trades = []) {
   let events = 0;
   let added = 0;
   const derivedAlerts = [];
+  let alertResult;
   const existsFill = database.prepare('SELECT 1 AS x FROM fills WHERE id = ?');
   const existsEvent = database.prepare('SELECT 1 AS x FROM events WHERE id = ?');
   const tx = database.transaction(() => {
-    for (const trade of list) {
-      const id = String(trade?.id || trade?.hash || '');
+    for (const input of list) {
+      const id = canonicalTradeId(input);
       if (!id) continue;
+      const trade = { ...input, id };
+      removeReplayedLegacyFill(database, input, id);
       if (!existsFill.get(id)) added += 1;
       upsertFill.run({
         id,
@@ -830,17 +884,19 @@ function persistTradesIncremental(trades = []) {
         if (alertDoc) derivedAlerts.push(alertDoc);
       }
     }
-    const alertResult = upsertAlertRows(database, derivedAlerts);
+    alertResult = upsertAlertRows(database, derivedAlerts);
     added += alertResult.added || 0;
+    if (added) bumpDailyAdded(added);
   });
   tx();
-  if (added) bumpDailyAdded(added);
-  return { fills, events, alerts: derivedAlerts.length, added };
+  notifyAlertCommit(alertResult);
+  return { fills, events, alerts: alertResult.written, added,
+    committedAlerts: alertResult.committedAlerts, removedAlertIds: alertResult.removedAlertIds };
 }
 
-function persistModePayload(data = {}, updatedAt = Date.now()) {
+function persistModePayload(data = {}, updatedAt = Date.now(), options = {}) {
   const whales = Array.isArray(data.whales) ? data.whales : [];
-  const trades = Array.isArray(data.trades) ? data.trades : [];
+  const trades = (Array.isArray(data.trades) ? data.trades : []).filter(isRawTrade);
   const database = getDb();
   const now = Number(updatedAt) || Date.now();
 
@@ -918,8 +974,13 @@ function persistModePayload(data = {}, updatedAt = Date.now()) {
   const existsFill = database.prepare('SELECT 1 AS x FROM fills WHERE id = ?');
   const existsEvent = database.prepare('SELECT 1 AS x FROM events WHERE id = ?');
   let added = 0;
+  let alertResult;
 
   const tx = database.transaction(() => {
+    for (const id of (Array.isArray(data.removedWhaleIds) ? data.removedWhaleIds : [])) {
+      deletePositions.run(String(id));
+      database.prepare('DELETE FROM whales WHERE id = ?').run(String(id));
+    }
     for (const whale of whales) {
       if (!whale?.id) continue;
       upsertWhale.run({
@@ -958,9 +1019,11 @@ function persistModePayload(data = {}, updatedAt = Date.now()) {
     }
 
     const derivedAlerts = [];
-    for (const trade of trades) {
-      const id = String(trade?.id || trade?.hash || '');
+    for (const input of trades) {
+      const id = canonicalTradeId(input);
       if (!id) continue;
+      const trade = { ...input, id };
+      removeReplayedLegacyFill(database, input, id);
       if (!existsFill.get(id)) added += 1;
       upsertFill.run({
         id,
@@ -993,17 +1056,30 @@ function persistModePayload(data = {}, updatedAt = Date.now()) {
         if (alertDoc) derivedAlerts.push(alertDoc);
       }
     }
-    const alertResult = upsertAlertRows(database, derivedAlerts);
+    alertResult = upsertAlertRows(database, [
+      ...derivedAlerts,
+      ...(Array.isArray(data.alerts) ? data.alerts : []),
+      ...(Array.isArray(data.snapshotAlerts) ? data.snapshotAlerts : []),
+    ]);
     added += alertResult.added || 0;
+    setMeta('whales_updated_at', String(now));
+    if (!options.patch || data.warnings !== undefined) setMeta('warnings', safeJson(data.warnings || []));
+    if (!options.patch || data.minUsd !== undefined) setMeta('min_usd', String(data.minUsd ?? 1000));
+    if (data.revision !== undefined) setMeta('state_revision', String(data.revision));
+    if (data.epoch !== undefined) setMeta('state_epoch', String(data.epoch));
+    if (added) bumpDailyAdded(added);
   });
 
   tx();
-  if (added) bumpDailyAdded(added);
-  setMeta('whales_updated_at', String(now));
-  setMeta('warnings', safeJson(data.warnings || []));
-  setMeta('min_usd', String(data.minUsd ?? 1000));
-  const purged = purgeOlderThan(RETENTION_MS);
-  return { whales: whales.length, trades: trades.length, added, purged };
+  const purged = options.patch ? null : purgeOlderThan(RETENTION_MS);
+  notifyAlertCommit(alertResult);
+  return { whales: whales.length, trades: trades.length, added, purged,
+    committedAlerts: alertResult.committedAlerts, removedAlertIds: alertResult.removedAlertIds };
+}
+
+/** Commit only changed whales, raw fills and derived/snapshot alerts atomically. */
+function persistStatePatch(data = {}, updatedAt = Date.now()) {
+  return persistModePayload({ ...data.metadata, ...data }, updatedAt, { patch: true });
 }
 
 function hasWhaleData() {
@@ -1048,6 +1124,8 @@ function loadModePayload() {
     },
     updatedAt,
     source: 'sqlite',
+    revision: Number(getMeta('state_revision')?.value) || 0,
+    epoch: getMeta('state_epoch')?.value || null,
   };
 }
 
@@ -1073,6 +1151,9 @@ function loadRecentEvents(limit = 200) {
 }
 
 module.exports = {
+  invalidateAlertQueries: () => pagedAlertCache.clear(),
+  setAlertCommitObserver,
+  persistStatePatch,
   loadResonanceInputs,
   countStoredAlerts,
   persistModePayload,

@@ -1,4 +1,5 @@
 import axios, { type AxiosError } from 'axios';
+import type { WhaleBootstrap } from '@/utils/whaleState';
 import type {
   AppConfig,
   CalendarResponse,
@@ -361,6 +362,11 @@ export async function fetchActivitySince(since: number) {
   return data;
 }
 
+export async function fetchWhaleBootstrap() {
+  const { data } = await http.get<WhaleBootstrap>('/whales/bootstrap', { timeout: 20000 });
+  return data;
+}
+
 export async function fetchWhalesBatch(query: {
   offset?: number;
   limit?: number;
@@ -445,6 +451,8 @@ export async function refreshAlertHistory(query: { maxWhales?: number } = {}) {
 export async function fetchPersistedAlertHistory(limit = 500) {
   const { data } = await http.get<{
     alerts: unknown[];
+    epoch: string;
+    seq: number;
     total: number;
     retentionDays?: number;
   }>('/whales/alert-history', {
@@ -479,6 +487,8 @@ export async function fetchPagedAlertHistory(query: AlertHistoryQuery = {}) {
     page: number;
     limit: number;
     retentionDays?: number;
+    epoch: string;
+    seq: number;
     facets?: {
       all: number;
       byCoin: Record<string, number>;

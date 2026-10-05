@@ -51,6 +51,26 @@ function kindLabel(kind) {
   return kind;
 }
 
+/** One exchange fill has one identity, regardless of the ingestion path. */
+function canonicalTradeId(trade) {
+  const id = trade?.tid ?? trade?.id ?? trade?.hash;
+  if (id == null || id === '') return '';
+  const whaleId = String(trade.whaleId || '').toLowerCase();
+  const prefix = `${whaleId}:`;
+  const raw = String(id);
+  return raw.startsWith(prefix) ? raw : `${prefix}${raw}`;
+}
+
+function fillSourceId(trade) {
+  const id = canonicalTradeId(trade);
+  return id ? `fill:${id}` : '';
+}
+
+function isRawTrade(trade) {
+  return Boolean(trade && Number(trade.fillCount || 1) <= 1 &&
+    Number(trade._fillCount || 1) <= 1 && !String(trade.id || '').includes('+'));
+}
+
 /** 事件 → 前端 WhaleAlert */
 function alertDocFromEvent(event) {
   if (!event || !ALL_KINDS.has(event.kind)) return null;
@@ -60,6 +80,8 @@ function alertDocFromEvent(event) {
   const mergedN = Math.max(1, Number(event.mergedCount) || 1);
   return {
     id: String(event.id),
+    sourceId: event.sourceId || fillSourceId(event.payload),
+    totalUsd: Math.abs(Number(event.usd) || 0),
     at: Number(event.time) || Date.now(),
     whaleId: event.whaleId ? String(event.whaleId) : '',
     whaleName: event.payload?.whaleName || '',
@@ -80,6 +102,8 @@ function alertDocFromEvent(event) {
         usd: Number(event.usd) || 0,
         time: Number(event.time) || 0,
         price: event.payload?.price ?? null,
+        sourceId: event.sourceId || fillSourceId(event.payload),
+        evidenceSource: 'fill',
       },
     ],
     layer: 'position',
@@ -100,4 +124,7 @@ module.exports = {
   preferKind,
   kindLabel,
   alertDocFromEvent,
+  fillSourceId,
+  canonicalTradeId,
+  isRawTrade,
 };

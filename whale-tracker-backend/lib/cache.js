@@ -98,42 +98,195 @@ function whaleCacheName(mode) {
   return mode === 'stable' ? 'whales-stable' : 'whales-hf';
 }
 
-function readWhaleModeCache(mode) {
+// SQLite is authoritative. JSON is only a best-effort compatibility mirror.
+const { randomUUID } = require('crypto');
+const { isRawTrade, canonicalTradeId } = require('./positionEventPolicy');
+const RAW_CACHE_MAX = 8000;
+const RAW_CACHE_RETENTION_MS = Math.max(86400000, (Number(process.env.FILL_RETENTION_DAYS) || 1) * 86400000);
+function rawTradeView(trades) {
+  const cutoff = Date.now() - RAW_CACHE_RETENTION_MS;
+  const byId = new Map();
+  for (const trade of trades || []) {
+    if (!isRawTrade(trade) || Number(trade.time) < cutoff) continue;
+    const id = canonicalTradeId(trade);
+    if (id) byId.set(id, { ...trade, id });
+  }
+  return [...byId.values()].sort((a, b) => Number(b.time) - Number(a.time)).slice(0, RAW_CACHE_MAX);
+}
+const stateEpoch = randomUUID();
+const states = new Map();
+let observationClock = 0;
+const commitListeners = new Set();
+const mirrorTimers = new Map();
+function scheduleMirror(mode, data) {
+  const pending = mirrorTimers.get(mode);
+  if (pending) { pending.data = data; return; }
+  const entry = { data };
+  entry.timer = setTimeout(() => {
+    mirrorTimers.delete(mode);
+    writeCache(whaleCacheName(mode), entry.data);
+  }, 2000);
+  entry.timer.unref?.();
+  mirrorTimers.set(mode, entry);
+}
+const copy = (value) => value == null ? value : structuredClone(value);
+const POSITION_METADATA = ['coinLabel', 'openTime', 'firstOpenTime', 'lastAddTime',
+  'openHistoryComplete', 'entryFills', 'entryFillsOmitted'];
+
+function stateFor(mode = 'hf') {
   const key = mode === 'stable' ? 'stable' : 'hf';
-  const named = readCache(whaleCacheName(mode));
-  if (named) return named;
-  const legacy = readCache('whales');
-  if (!legacy?.data?.whales?.length) return null;
-  const legacyMode = legacy.data.mode === 'stable' ? 'stable' : 'hf';
-  return legacyMode === key ? legacy : null;
+  if (!states.has(key)) {
+    const store = require('./sqliteStore');
+    const stored = store.loadModePayload();
+    // Never promote a possibly newer JSON snapshot over durable state.
+    const data = stored?.data || { mode: key, whales: [], trades: [], warnings: [] };
+    states.set(key, { data: { ...copy(data), mode: key, trades: rawTradeView(data.trades) }, updatedAt: stored?.updatedAt || 0,
+      revision: 0, epoch: stateEpoch, whaleRevisions: new Map() });
+  }
+  return states.get(key);
 }
 
-function writeWhaleModeCache(mode, data) {
-  const saved = writeCache(whaleCacheName(mode), data);
-  try {
-    const { persistModePayload } = require('./sqliteStore');
-    const result = persistModePayload(data, saved.updatedAt);
-    console.log(
-      `[sqlite] 已写入 whales=${result.whales} fills=${result.trades}` +
-        ` purgedFills=${result.purged.fillsDeleted} purgedEvents=${result.purged.eventsDeleted}`,
-    );
-  } catch (err) {
-    console.warn('[sqlite] 写入失败（不影响 JSON 缓存）:', err.message);
+function readStateSnapshot(mode = 'hf') {
+  const state = stateFor(mode);
+  return { data: copy(state.data), updatedAt: state.updatedAt, revision: state.revision,
+    epoch: state.epoch, stale: Date.now() - state.updatedAt > TTL_MS };
+}
+
+function readWhaleModeCache(mode) {
+  const snapshot = readStateSnapshot(mode);
+  return snapshot.updatedAt || snapshot.data.whales.length ? snapshot : null;
+}
+
+function captureWhaleRevisions(mode = 'hf', ids) {
+  const state = stateFor(mode);
+  const selected = ids || state.data.whales.map((whale) => whale.id);
+  return Object.fromEntries(selected.map((id) => [id, state.whaleRevisions.get(String(id)) || 0]));
+}
+
+function commitWhaleState(mode = 'hf', patch = {}) {
+  const state = stateFor(mode);
+  const byId = new Map((state.data.whales || []).map((whale) => [String(whale.id), whale]));
+  const roster = Array.isArray(patch.rosterIds) ? new Set(patch.rosterIds.map(String)) : null;
+  const removedWhaleIds = roster ? [...byId.keys()].filter((id) => !roster.has(id)) : [];
+  for (const id of removedWhaleIds) byId.delete(id);
+  const changedWhales = [];
+  const observedWhaleIds = [];
+  const rejectedWhaleIds = [];
+  for (const incoming of patch.whales || []) {
+    if (!incoming?.id) continue;
+    const id = String(incoming.id);
+    if (roster && !roster.has(id)) continue;
+    const previous = byId.get(id);
+    if (patch.expectedWhaleRevisions &&
+        (patch.expectedWhaleRevisions[id] ?? 0) !== (state.whaleRevisions.get(id) || 0)) {
+      rejectedWhaleIds.push(id);
+      continue;
+    }
+    if (incoming.__snapshotFresh === false && previous) { rejectedWhaleIds.push(id); continue; }
+    let next;
+    if (patch.positionMetadataOnly) {
+      if (!previous) continue;
+      next = { ...previous, positions: (previous.positions || []).map((position) => {
+        const enriched = (incoming.positions || []).find((item) =>
+          item.coin === position.coin && item.side === position.side &&
+          Number(item.size) === Number(position.size));
+        if (!enriched) return position;
+        const fields = Object.fromEntries(POSITION_METADATA.filter((key) => enriched[key] !== undefined)
+          .map((key) => [key, enriched[key]]));
+        return { ...position, ...fields };
+      }) };
+    } else {
+      next = { ...previous, ...incoming };
+    }
+    delete next.trades;
+    delete next.__snapshotFresh;
+    if (!patch.positionMetadataOnly) observedWhaleIds.push(id);
+    if (JSON.stringify(previous) === JSON.stringify(next)) continue;
+    byId.set(id, copy(next));
+    changedWhales.push(next);
   }
-  return saved;
+  const incomingTrades = (patch.trades || []).filter((trade) => trade?.id && isRawTrade(trade))
+    .map((trade) => ({ ...trade, id: canonicalTradeId(trade) }));
+  const tradeMap = new Map((state.data.trades || []).map((trade) => [String(trade.id), trade]));
+  const changedTrades = [];
+  for (const trade of incomingTrades) {
+    if (JSON.stringify(tradeMap.get(String(trade.id))) !== JSON.stringify(trade)) changedTrades.push(trade);
+    tradeMap.set(String(trade.id), copy(trade));
+  }
+  const metadata = patch.metadata || {};
+  const metadataChanged = Object.entries(metadata).some(([key, value]) =>
+    JSON.stringify(state.data[key]) !== JSON.stringify(value));
+  if (!changedWhales.length && !changedTrades.length && !metadataChanged && !removedWhaleIds.length && !(patch.snapshotAlerts || []).length) {
+    for (const id of observedWhaleIds) state.whaleRevisions.set(id, ++observationClock);
+    return { ...readStateSnapshot(mode), changedWhaleIds: [], changedWhales: [], removedWhaleIds: [], rejectedWhaleIds,
+      committedAlerts: [], removedAlertIds: [] };
+  }
+  const updatedAt = Date.now();
+  const revision = state.revision + 1;
+  const data = { ...state.data, ...copy(metadata), mode,
+    whales: [...byId.values()], trades: rawTradeView([...tradeMap.values()]) };
+  const store = require('./sqliteStore');
+  const result = store.persistStatePatch({ whales: changedWhales, trades: changedTrades,
+    metadata, revision, epoch: state.epoch, removedWhaleIds, snapshotAlerts: (patch.snapshotAlerts || []).filter((alert) =>
+      !rejectedWhaleIds.includes(String(alert.whaleId)) && !removedWhaleIds.includes(String(alert.whaleId))) }, updatedAt);
+  // Nothing observable advances before the transaction succeeds.
+  state.data = data;
+  state.updatedAt = updatedAt;
+  state.revision = revision;
+  for (const id of new Set([...observedWhaleIds, ...changedWhales.map((whale) => String(whale.id)), ...removedWhaleIds])) {
+    state.whaleRevisions.set(id, ++observationClock);
+  }
+  scheduleMirror(mode, data);
+  const committed = { ...readStateSnapshot(mode), changedWhaleIds: changedWhales.map((whale) => whale.id),
+    changedWhales: copy(changedWhales), removedWhaleIds, rejectedWhaleIds, committedAlerts: result?.committedAlerts || [],
+    removedAlertIds: result?.removedAlertIds || [] };
+  for (const listener of commitListeners) {
+    try { listener(copy(committed)); } catch (error) { console.warn('[state] subscriber:', error.message); }
+  }
+  return committed;
+}
+
+function subscribeStateCommits(listener) {
+  commitListeners.add(listener);
+  return () => commitListeners.delete(listener);
+}
+
+function writeWhaleModeCache(mode, data, options = {}) {
+  const { whales = [], trades = [], ...metadata } = data;
+  return commitWhaleState(mode, { whales, trades, metadata, ...options });
 }
 
 function clearWhaleModeCache(mode) {
-  if (mode) {
-    clearCache(whaleCacheName(mode));
-    return;
+  const modes = mode ? [mode === 'stable' ? 'stable' : 'hf'] : ['hf', 'stable'];
+  for (const key of modes) {
+    const previous = states.get(key);
+    const mirror = mirrorTimers.get(key);
+    if (mirror) clearTimeout(mirror.timer);
+    mirrorTimers.delete(key);
+    clearCache(whaleCacheName(key));
+    states.delete(key);
+    // Reload durable state after reset/config mutation and invalidate in-flight baselines.
+    const state = stateFor(key);
+    state.revision = (previous?.revision || 0) + 1;
+    const allIds = new Set([...(previous?.data?.whales || []), ...state.data.whales].map((whale) => String(whale.id)));
+    for (const id of previous?.whaleRevisions.keys() || []) allIds.add(id);
+    for (const id of allIds) state.whaleRevisions.set(id, ++observationClock);
+    const currentIds = new Set(state.data.whales.map((whale) => String(whale.id)));
+    const change = { ...readStateSnapshot(key), changedWhales: copy(state.data.whales),
+      changedWhaleIds: [...currentIds], removedWhaleIds: [...allIds].filter((id) => !currentIds.has(id)),
+      committedAlerts: [], removedAlertIds: [] };
+    for (const listener of commitListeners) {
+      try { listener(copy(change)); } catch (error) { console.warn('[state] subscriber:', error.message); }
+    }
   }
-  clearCache('whales');
-  clearCache('whales-hf');
-  clearCache('whales-stable');
+  if (!mode) clearCache('whales');
 }
 
 module.exports = {
+  readStateSnapshot,
+  captureWhaleRevisions,
+  commitWhaleState,
+  subscribeStateCommits,
   TTL_MS,
   readCache,
   writeCache,

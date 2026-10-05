@@ -32,6 +32,7 @@ async function resetSiteData(options = {}) {
   const rosterBefore = getActiveWhales();
 
   clearMarketTables();
+  require('./whaleSync').stream.reset();
   clearWhaleModeCache();
 
   setMeta(

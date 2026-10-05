@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { fetchQuotes, fetchAlertFlowSummary, fetchWhaleSummary } from '@/api';
+import { fetchQuotes, fetchAlertFlowSummary } from '@/api';
 import CoinPreferences from '@/components/CoinPreferences.vue';
 import ApiSettings from '@/components/ApiSettings.vue';
 import NewsList from '@/components/NewsList.vue';
@@ -29,10 +29,9 @@ import { preferredCoinsState } from '@/utils/watchedCoins';
 import { coinIconCandidates } from '@/utils/coinIcons';
 import { formatUsd } from '@/utils/format';
 import { unlockAlertSound } from '@/utils/alertSound';
-import type { WhaleAlert } from '@/utils/whaleAlerts';
 import { noteXTweets } from '@/stores/xFeed';
-import type { WhaleServerSummary, XFeedTweet } from '@/api';
-import type { WhaleProfile, WhaleTrade } from '@/types';
+import type { XFeedTweet } from '@/api';
+import type { WhaleProfile } from '@/types';
 
 const whaleStore = useWhaleStore();
 
@@ -60,20 +59,15 @@ const resonanceRef = ref<InstanceType<typeof WhaleResonanceBanner> | null>(null)
 let pageLoader: ReturnType<typeof createPageLoadScheduler<'virtual' | 'tradfi'>> | null = null;
 const whaleListRef = ref<InstanceType<typeof WhaleList> | null>(null);
 const whaleDetailOpen = ref(false);
-const whaleDetailProfile = ref<WhaleProfile | null>(null);
+const whaleDetailId = ref('');
+const whaleDetailProfile = computed(() => whaleStore.whalesById[whaleDetailId.value] || null);
 const newsListRef = ref<InstanceType<typeof NewsList> | null>(null);
 const quotes = ref<RecoQuotes>({});
 const fundingRates = ref<Record<string, number>>({});
 const flowCoin = ref<string>(readFocusCoin());
 const flowWindow = ref<'15m' | '1h' | '4h' | '24h'>('1h');
-const whaleSummary = ref<WhaleServerSummary | null>(null);
-const whaleSnapshotVersion = ref(0);
-let summaryRequestSeq = 0;
-async function loadWhaleSummary() {
-  const seq = ++summaryRequestSeq;
-  const data = await fetchWhaleSummary().catch(() => null);
-  if (seq === summaryRequestSeq && data) whaleSummary.value = data;
-}
+const whaleSummary = computed(() => whaleStore.summary);
+const whaleSnapshotVersion = computed(() => whaleStore.revision);
 const whaleNetFlow = ref({ longUsd: 0, shortUsd: 0, netUsd: 0, events: 0, whales: 0 });
 let flowRequestSeq = 0;
 async function loadWhaleNetFlow() {
@@ -124,6 +118,7 @@ function onFocusWhale(whale: { id: string; name: string }) {
 }
 
 function onFocusWhaleCard(payload: { id: string; name: string; coin?: string }) {
+  sideTab.value = 'virtual';
   nextTick(() => {
     void whaleListRef.value?.focusWhale({ id: payload.id, coin: payload.coin });
   });
@@ -131,7 +126,7 @@ function onFocusWhaleCard(payload: { id: string; name: string; coin?: string }) 
 
 function onSelectWhale(whale: WhaleProfile) {
   whaleStore.loadWhaleTrades(whale);
-  whaleDetailProfile.value = whale;
+  whaleDetailId.value = whale.id;
   whaleDetailOpen.value = true;
 }
 
@@ -151,26 +146,52 @@ async function loadQuotes() {
   if (funding && typeof funding === 'object') fundingRates.value = funding;
 }
 
-const {
-  status: realtimeStatus,
-  start: startRealtime,
-  stop: stopRealtime,
-} = useRealtime((msg) => {
-  if (msg.type === 'fill' && msg.trade) {
-    whaleStore.ingestRealtimeFill(msg.trade as unknown as WhaleTrade);
-  } else if (msg.type === 'alert' && msg.alert) {
-    const alert = msg.alert as unknown as WhaleAlert;
-    whaleStore.ingestRealtimeAlert(alert);
-    // 直接喂给异动列表（不依赖仅 store 序号）
-    newsListRef.value?.pushRealtimeAlert?.(alert);
-
-  } else if (msg.type === 'whalePatch' && msg.whaleId && msg.patch) {
-    whaleStore.ingestRealtimeWhalePatch(msg.whaleId, msg.patch as Partial<WhaleProfile>);
-
+let stateRetryTimer: ReturnType<typeof setTimeout> | undefined;
+let flowRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+let recoveringState = false;
+let stateCatchupPending = false;
+function scheduleFlowRefresh() {
+  if (flowRefreshTimer) return;
+  flowRefreshTimer = setTimeout(() => { flowRefreshTimer = undefined; if (sessionStarted) void loadWhaleNetFlow(); }, 1000);
+}
+const { status: transportStatus, start: startRealtime, stop: stopRealtime } = useRealtime((msg) => {
+  if (msg.type === 'stateCommit') {
+    if (stateCatchupPending) return;
+    const outcome = whaleStore.applyCommit(msg);
+    if (outcome === 'resync') void recoverState();
+    else if (outcome === 'applied' && (msg.alerts?.length || msg.removedAlertIds?.length)) scheduleFlowRefresh();
+  } else if (msg.type === 'resyncRequired') {
+    void recoverState();
+  } else if (msg.type === 'hello') {
+    if (whaleStore.epoch && msg.epoch !== whaleStore.epoch) void recoverState();
+  } else if (msg.type === 'caughtUp') {
+    if (!stateCatchupPending && msg.epoch === whaleStore.epoch && msg.seq === whaleStore.revision) whaleStore.synced = true;
+    else if (!stateCatchupPending) void recoverState();
   } else if (msg.type === 'xTweet' && Array.isArray(msg.tweets)) {
     noteXTweets(msg.tweets as unknown as XFeedTweet[]);
   }
-});
+}, () => whaleStore.cursor());
+const realtimeStatus = computed(() => transportStatus.value === 'connected' && !whaleStore.synced ? 'connecting' : transportStatus.value);
+watch(transportStatus, (status) => { if (status !== 'connected') whaleStore.synced = false; });
+
+async function recoverState() {
+  if (recoveringState || !sessionStarted) return;
+  recoveringState = true;
+  stateCatchupPending = true;
+  stopRealtime();
+  whaleStore.synced = false;
+  const generation = sessionGeneration;
+  try {
+    await whaleStore.bootstrap();
+    if (!sessionStarted || generation !== sessionGeneration) return;
+    stateCatchupPending = false;
+    startRealtime();
+    void newsListRef.value?.initialize();
+    scheduleFlowRefresh();
+  } catch {
+    if (sessionStarted && generation === sessionGeneration) stateRetryTimer = setTimeout(() => { stateRetryTimer = undefined; void recoverState(); }, 5000);
+  } finally { if (generation === sessionGeneration) recoveringState = false; }
+}
 
 watch(
   preferredCoinsState,
@@ -190,14 +211,15 @@ async function startAppSession() {
   const generation = ++sessionGeneration;
   await nextTick();
   if (!sessionStarted || generation !== sessionGeneration) return;
+  void recoverState();
   pageLoader = createPageLoadScheduler({
     virtual: async () => {
       await Promise.allSettled([
-        whaleListRef.value?.initialize(), newsListRef.value?.initialize(),
+        whaleListRef.value?.initialize(),
         macroRef.value?.initialize(), resonanceRef.value?.initialize(),
-        loadWhaleSummary(), loadWhaleNetFlow(), loadQuotes(),
+        loadWhaleNetFlow(), loadQuotes(),
       ]);
-      if (sessionStarted && generation === sessionGeneration) startRealtime();
+
     },
     tradfi: async () => { await radarRef.value?.initialize(); },
   });
@@ -211,8 +233,14 @@ watch(sideTab, (tab) => { if (sessionStarted && pageLoader) void pageLoader.load
 function stopAppSession() {
   sessionStarted = false;
   sessionGeneration += 1;
+  recoveringState = false;
+  stateCatchupPending = false;
   pageLoader = null;
-  whaleStore.stopActivityPolling();
+  clearTimeout(stateRetryTimer); stateRetryTimer = undefined;
+  clearTimeout(flowRefreshTimer); flowRefreshTimer = undefined;
+  whaleStore.resetForHardRefresh();
+  whaleDetailOpen.value = false;
+  whaleDetailId.value = '';
   stopRealtime();
 }
 

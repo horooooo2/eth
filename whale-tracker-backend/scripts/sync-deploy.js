@@ -18,6 +18,10 @@ const FILES = [
   'lib/authStore.js',
   'lib/realtimeBridge.js',
   'lib/realtimeHub.js',
+  'lib/stateStream.js',
+  'lib/whaleSync.js',
+  'lib/whaleRetention.js',
+  'lib/maintenanceAuth.js',
   'lib/hlWsClient.js',
   'lib/hlInfoClient.js',
   'lib/config.js',
@@ -84,6 +88,7 @@ const FILES = [
   'routes/okxTrade.js',
   'routes/okxKeys.js',
   'scripts/remote-deploy.sh',
+  'scripts/audit-whale-data.js',
 ];
 
 function copyFile(src, dest) {

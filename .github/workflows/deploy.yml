@@ -18,6 +18,12 @@ jobs:
           cache: npm
           cache-dependency-path: whale-tracker-frontend/package-lock.json
 
+      - name: Verify whale data and synchronization
+        working-directory: whale-tracker-backend
+        run: |
+          npm ci
+          npm run test:whale-sync
+
       - name: Sync backend into deploy package
         run: node whale-tracker-backend/scripts/sync-deploy.js
 
@@ -25,6 +31,7 @@ jobs:
         working-directory: whale-tracker-frontend
         run: |
           npm ci
+          node src/utils/whaleState.test.cjs
           npm run build
           mkdir -p ../whale-tracker-deploy/public
           rm -rf ../whale-tracker-deploy/public/assets

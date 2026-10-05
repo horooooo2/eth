@@ -1,4 +1,5 @@
 const { hlPost, hlPostOfficial, getHlInfoConfig, MAX_CONCURRENT, isRateLimited } = require('./hlInfoClient');
+const { canonicalTradeId, isRawTrade } = require('./positionEventPolicy');
 
 const cache = new Map();
 
@@ -47,8 +48,14 @@ async function withCache(key, ttlMs, loader, options = {}) {
  */
 async function fetchClearinghouseState(address) {
   const user = address.toLowerCase();
-  return withCache(`state:${user}`, 20000, () =>
-    hlPost({ type: 'clearinghouseState', user: address }),
+  return withCache(`state:${user}`, 20000, async () => {
+    const state = await hlPost({ type: 'clearinghouseState', user: address });
+    if (!state || !Array.isArray(state.assetPositions)) {
+      throw new Error('Invalid clearinghouse state: assetPositions must be an array');
+    }
+    return state;
+  },
+    { allowStale: false },
   );
 }
 
@@ -153,14 +160,15 @@ const FILL_MAX_PAGES = 6;
 
 /**
  * 按时间范围拉取成交（userFillsByTime）。
- * 官方单次最多 2000 条、升序返回；打满则用最后一条 time+1 继续翻页。
+ * 官方单次最多 2000 条、升序返回；边界时间重叠分页，按 fill 标识去重。
+ * 无法证明覆盖完整时抛错，调用方不能推进 backfill watermark。
  * 仅最近约 10000 条可查。
  */
 async function fetchUserFillsByTime(address, startTime, endTime = Date.now()) {
   const user = String(address || '').toLowerCase();
   const start = Math.max(0, Number(startTime) || 0);
   const end = Math.max(start, Number(endTime) || Date.now());
-  const cacheKey = `fills-by-time:${user}:${start}:${Math.floor(end / 60_000)}`;
+  const cacheKey = `fills-by-time:${user}:${start}:${end}`;
 
   return withCache(cacheKey, 60_000, async () => {
     const seen = new Set();
@@ -175,7 +183,8 @@ async function fetchUserFillsByTime(address, startTime, endTime = Date.now()) {
         startTime: cursorStart,
         endTime: end,
       });
-      const page = Array.isArray(data) ? data : [];
+      if (!Array.isArray(data)) throw new Error('Invalid userFillsByTime response');
+      const page = data;
       pages += 1;
       if (!page.length) break;
 
@@ -187,14 +196,19 @@ async function fetchUserFillsByTime(address, startTime, endTime = Date.now()) {
       }
 
       if (page.length < FILL_PAGE_SIZE) break;
-      const lastTime = Number(page[page.length - 1]?.time) || cursorStart;
-      const nextStart = lastTime + 1;
-      if (nextStart <= cursorStart) break;
-      cursorStart = nextStart;
+      const lastTime = Number(page[page.length - 1]?.time);
+      if (!Number.isFinite(lastTime) || lastTime <= cursorStart || pages >= FILL_MAX_PAGES) {
+        const error = new Error('Incomplete userFillsByTime coverage: pagination limit or saturated timestamp');
+        error.code = 'HL_FILLS_INCOMPLETE';
+        throw error;
+      }
+      // Include the boundary again: time+1 can silently skip executions sharing
+      // the last millisecond of a full page.
+      cursorStart = lastTime;
     }
 
     return all;
-  });
+  }, { allowStale: false });
 }
 
 /**
@@ -737,7 +751,8 @@ function mapFillToTrade(fill, whale, names = {}) {
   const startValue = fill.startPosition;
   const startRaw = startValue == null || startValue === '' ? NaN : Number(startValue);
   return {
-    id: String(fill.tid || fill.hash || `${whale.id}-${fill.time}`),
+    id: canonicalTradeId({ whaleId: whale.id, tid: fill.tid, id: fill.hash || `${fill.time}-${fill.coin}-${fill.side}-${fill.sz}-${fill.px}` }),
+    tid: fill.tid ?? undefined,
     time: Number(fill.time) || Date.now(),
     from: side === 'sell' ? whale.address : 'Hyperliquid',
     to: side === 'buy' ? whale.address : 'Hyperliquid',
@@ -765,6 +780,7 @@ function mapFillToTrade(fill, whale, names = {}) {
  */
 function normalizeToHlFill(row) {
   if (!row || typeof row !== 'object') return null;
+  if (!isRawTrade(row)) return null;
   const sideRaw = String(row.side || '');
   let side = '';
   if (sideRaw === 'B' || sideRaw === 'buy' || sideRaw === 'in') side = 'B';

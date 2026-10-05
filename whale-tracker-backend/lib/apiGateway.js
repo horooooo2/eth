@@ -187,14 +187,7 @@ async function dispatch(method, pathname, query, body) {
     }
   }
   if (method === 'POST' && path === '/whales/alert-history') {
-    try {
-      const { persistAlerts } = require('./sqliteStore');
-      const alerts = Array.isArray(body?.alerts) ? body.alerts : [];
-      const result = persistAlerts(alerts);
-      return json(200, { ok: true, saved: result.saved, retentionDays: 7 });
-    } catch (err) {
-      return json(500, { error: err.message || '写入异动历史失败' });
-    }
+    return json(410, { error: '异动由服务器采集，浏览器上传入口已停用' });
   }
   if (
     (method === 'POST' || method === 'GET') &&

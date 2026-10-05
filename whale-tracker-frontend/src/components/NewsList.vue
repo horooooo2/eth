@@ -36,6 +36,8 @@ import { useWhaleStore } from '@/stores/whale';
 import { getAuthUiSettings, patchAuthUiSettings } from '@/stores/auth';
 import { fetchPagedAlertHistory } from '@/api';
 
+const whaleStore = useWhaleStore();
+
 const props = defineProps<{
   /** @deprecated 列表已改服务端分页，保留仅兼容旧调用 */
   alerts?: WhaleAlert[];
@@ -61,10 +63,13 @@ const openOnly = ref(false);
 const alertCoinFilter = ref<'all' | string>('all');
 const alertMinUsd = ref(readAlertMinUsd());
 const ALERT_DISPLAY_LIMIT = 100;
-const activeAlert = ref<WhaleAlert | null>(null);
+const activeAlertId = ref('');
+const activeAlert = computed(() => whaleStore.alertsById[activeAlertId.value] || null);
 const alertVisible = ref(false);
-const pageAlerts = ref<WhaleAlert[]>([]);
-const alertTotal = ref(0);
+const pageAlertIds = ref<string[]>([]);
+const pageAlerts = computed(() => [...new Set([...pageAlertIds.value, ...whaleStore.alertHistory.map(alert => alert.id)])]
+  .map(id => whaleStore.alertsById[id]).filter((alert): alert is WhaleAlert => Boolean(alert && alertMatchesListFilters(alert)))
+  .sort((a, b) => alertEventTime(b) - alertEventTime(a)).slice(0, ALERT_DISPLAY_LIMIT));
 const alertLoading = ref(false);
 const alertFiltersReady = ref(false);
 const facets = ref<{ all: number; byCoin: Record<string, number>; long: number; short: number }>({
@@ -105,6 +110,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (nowTickTimer) clearInterval(nowTickTimer);
+  alertReqSeq += 1; pendingPage = null;
 
 });
 
@@ -143,9 +149,32 @@ async function loadAlertPage(silent = false) {
     const list = (data.alerts || [])
       .map((raw) => normalizeStoredAlert(raw as WhaleAlert))
       .filter((item): item is WhaleAlert => Boolean(item?.id && hasListEligibleItem(item)));
-    pageAlerts.value = list;
-    whaleStore.acceptAlertPage(list);
-    alertTotal.value = Number(data.total) || 0;
+    pendingPage = { data, list, request: seq };
+    installPendingPage();
+    return true;
+  } catch (err) {
+    if (seq !== alertReqSeq) return;
+    if (!silent) {
+
+      ElMessage.error(err instanceof Error ? err.message : '异动加载失败');
+    }
+    return false;
+  } finally {
+    if (seq === alertReqSeq) alertLoading.value = false;
+  }
+}
+type AlertPage = Awaited<ReturnType<typeof fetchPagedAlertHistory>>;
+let pendingPage: { data: AlertPage; list: WhaleAlert[]; request: number } | null = null;
+function installPendingPage() {
+  const pending = pendingPage;
+  if (!pending || pending.request !== alertReqSeq) return;
+  const { data, list } = pending;
+  if (data.epoch !== whaleStore.epoch) { pendingPage = null; return; }
+  if (data.seq > whaleStore.revision) return; // WS replay must catch up first.
+  if (data.seq < whaleStore.minimumAlertQuerySeq) { pendingPage = null; void loadAlertPage(true); return; }
+  if (!whaleStore.acceptAlertPage(list, { epoch: data.epoch, seq: data.seq })) return;
+  pendingPage = null;
+  pageAlertIds.value = list.map(alert => alert.id);
     const byCoin: Record<string, number> = {};
     for (const [rawCoin, count] of Object.entries(data.facets?.byCoin || {})) {
       const key = String(rawCoin).toUpperCase().replace(/^[UK]/, '');
@@ -157,19 +186,15 @@ async function loadAlertPage(silent = false) {
       long: Number(data.facets?.long) || 0,
       short: Number(data.facets?.short) || 0,
     };
-  } catch (err) {
-    if (seq !== alertReqSeq) return;
-    if (!silent) {
-      pageAlerts.value = [];
-      alertTotal.value = 0;
-      ElMessage.error(err instanceof Error ? err.message : '异动加载失败');
-    }
-  } finally {
-    if (seq === alertReqSeq) alertLoading.value = false;
-  }
+
 }
+watch(() => [whaleStore.epoch, whaleStore.revision], installPendingPage);
+watch(() => whaleStore.epoch, () => {
+  pageAlertIds.value = []; pendingPage = null;
+  if (started && whaleStore.epoch) void loadAlertPage(true);
+});
 function openAlert(item: WhaleAlert) {
-  activeAlert.value = item;
+  activeAlertId.value = item.id;
   alertVisible.value = true;
 }
 
@@ -235,7 +260,7 @@ function toggleSideFilter(side: 'long' | 'short') {
   alertSideFilter.value = alertSideFilter.value === side ? 'all' : side;
 }
 
-const whaleStore = useWhaleStore();
+
 const alertRefreshing = ref(false);
 
 /** 只重新请求异动列表当前页；不触发巨鲸仓位刷新或批次加载。 */
@@ -251,8 +276,8 @@ async function onRefreshAlerts() {
     alertCoinFilter.value = 'all';
     alertMinUsd.value = 0;
     await nextTick();
-    await loadAlertPage();
-    ElMessage.success('异动记录已刷新');
+    const loaded = await loadAlertPage();
+    if (loaded) ElMessage.success('异动记录已刷新');
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '异动刷新失败');
   } finally {
@@ -337,23 +362,9 @@ function hasListEligibleItem(alert: WhaleAlert) {
   return eligibleItems(alert).length > 0;
 }
 
-/** Apply server push directly; never turn a notification into another HTTP refresh. */
-function pushRealtimeAlert(raw: WhaleAlert | Record<string, unknown>) {
-  const alert = normalizeStoredAlert(raw as WhaleAlert);
-  if (!alert) return false;
-  if (alertMatchesListFilters(alert)) {
-    pageAlerts.value = [alert, ...pageAlerts.value.filter(item => item.id !== alert.id)]
-      .sort((a, b) => alertEventTime(b) - alertEventTime(a)).slice(0, ALERT_DISPLAY_LIMIT);
-    // Counts remain the server's snapshot; a limited browser page cannot recalculate totals.
-  }
-
-  return true;
-}
-
 defineExpose({
   initialize,
   reloadAlerts: (silent = true) => loadAlertPage(silent),
-  pushRealtimeAlert,
 });
 
 function whaleOf(alert: WhaleAlert) {

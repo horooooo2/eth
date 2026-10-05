@@ -1,136 +1,78 @@
 import { onUnmounted, ref } from 'vue';
+import type { StateCursor, WhaleStateCommit } from '@/utils/whaleState';
 
 export type RealtimeMessage =
-  | { type: 'hello'; at?: number; clients?: number }
+  | { type: 'hello'; epoch: string; seq: number }
   | { type: 'pong'; at?: number }
-  | { type: 'fill'; trade: Record<string, unknown>; at?: number }
-  | { type: 'alert'; alert: Record<string, unknown>; at?: number }
-  | { type: 'whalePatch'; whaleId: string; patch: Record<string, unknown>; at?: number }
-  | { type: 'whaleSnapshotUpdated'; mode: string; updatedAt: number; total: number }
-  | {
-      type: 'xTweet';
-      at?: number;
-      tweets?: Array<Record<string, unknown>>;
-      accounts?: unknown[];
-    };
-
-type Handler = (msg: RealtimeMessage) => void;
-
-const RECONNECT_MS = 2500;
-const PING_MS = 25000;
-
-function realtimeUrl() {
-  if (typeof window === 'undefined') return '';
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${window.location.host}/realtime`;
-}
-
+  | { type: 'caughtUp'; epoch: string; seq: number }
+  | { type: 'resyncRequired' }
+  | WhaleStateCommit
+  | { type: 'xTweet'; tweets?: Array<Record<string, unknown>> };
 export type RealtimeStatus = 'connected' | 'connecting' | 'disconnected';
 
-export function useRealtime(onMessage: Handler) {
+export function useRealtime(onMessage: (msg: RealtimeMessage) => void, getCursor: () => StateCursor) {
   const connected = ref(false);
   const status = ref<RealtimeStatus>('disconnected');
   let socket: WebSocket | null = null;
-  let reconnectTimer: number | undefined;
-  let pingTimer: number | undefined;
-  let stopped = false;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let pingTimer: ReturnType<typeof setInterval> | undefined;
+  let stopped = true;
+  let lastReceived = 0;
 
   function clearTimers() {
-    if (reconnectTimer) {
-      window.clearTimeout(reconnectTimer);
-      reconnectTimer = undefined;
-    }
-    if (pingTimer) {
-      window.clearInterval(pingTimer);
-      pingTimer = undefined;
-    }
+    clearTimeout(reconnectTimer); reconnectTimer = undefined;
+    clearInterval(pingTimer); pingTimer = undefined;
   }
-
   function scheduleReconnect() {
     if (stopped || reconnectTimer) return;
     status.value = 'connecting';
-    reconnectTimer = window.setTimeout(() => {
-      reconnectTimer = undefined;
-      connect();
-    }, RECONNECT_MS);
+    reconnectTimer = setTimeout(() => { reconnectTimer = undefined; connect(); }, 2500);
   }
-
+  function resume() {
+    if (socket?.readyState !== WebSocket.OPEN) return;
+    const cursor = getCursor();
+    socket.send(JSON.stringify({ type: 'resume', epoch: cursor.epoch, afterSeq: cursor.seq }));
+  }
   function connect() {
-    if (stopped || typeof window === 'undefined') return;
-    clearTimers();
-    const url = realtimeUrl();
-    if (!url) {
-      status.value = 'disconnected';
-      return;
-    }
+    if (stopped || typeof window === 'undefined' || socket) return;
     status.value = 'connecting';
-    try {
-      socket = new WebSocket(url);
-    } catch {
-      scheduleReconnect();
-      return;
-    }
-
-    socket.onopen = () => {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    let current: WebSocket;
+    try { current = new WebSocket(`${proto}//${window.location.host}/realtime`); }
+    catch { scheduleReconnect(); return; }
+    socket = current;
+    current.onopen = () => {
+      if (socket !== current || stopped) { current.close(); return; }
       connected.value = true;
       status.value = 'connected';
-      pingTimer = window.setInterval(() => {
-        try {
-          socket?.send(JSON.stringify({ type: 'ping' }));
-        } catch {
-          // ignore
-        }
-      }, PING_MS);
+      lastReceived = Date.now();
+      resume();
+      pingTimer = setInterval(() => {
+        if (Date.now() - lastReceived > 60_000) { current.close(); return; }
+        if (current.readyState === WebSocket.OPEN) current.send(JSON.stringify({ type: 'ping' }));
+      }, 25_000);
     };
-
-    socket.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(String(ev.data)) as RealtimeMessage;
-        if (msg?.type === 'pong' || msg?.type === 'hello') return;
-        onMessage(msg);
-      } catch {
-        // ignore
-      }
+    current.onmessage = event => {
+      if (socket !== current || stopped) return;
+      lastReceived = Date.now();
+      let message: RealtimeMessage;
+      try { message = JSON.parse(String(event.data)) as RealtimeMessage; }
+      catch { return; }
+      if (message.type !== 'pong') onMessage(message);
     };
-
-    socket.onclose = () => {
-      connected.value = false;
-      clearTimers();
-      if (stopped) {
-        status.value = 'disconnected';
-        return;
-      }
-      scheduleReconnect();
+    current.onclose = () => {
+      if (socket !== current) return;
+      socket = null; connected.value = false; clearTimers();
+      if (stopped) status.value = 'disconnected';
+      else scheduleReconnect();
     };
-
-    socket.onerror = () => {
-      try {
-        socket?.close();
-      } catch {
-        // ignore
-      }
-    };
+    current.onerror = () => current.close();
   }
-
-  function start() {
-    stopped = false;
-    connect();
-  }
-
+  function start() { stopped = false; connect(); }
   function stop() {
-    stopped = true;
-    clearTimers();
-    connected.value = false;
-    status.value = 'disconnected';
-    try {
-      socket?.close();
-    } catch {
-      // ignore
-    }
-    socket = null;
+    stopped = true; clearTimers(); connected.value = false; status.value = 'disconnected';
+    const current = socket; socket = null; current?.close();
   }
-
-  onUnmounted(() => stop());
-
-  return { connected, status, start, stop };
+  onUnmounted(stop);
+  return { connected, status, start, stop, resume };
 }

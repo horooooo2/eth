@@ -50,8 +50,22 @@ const loading = ref(false);
 const error = ref('');
 const whaleName = ref('');
 const whaleAddress = ref('');
-const activeWhale = ref<WhaleProfile | null>(null);
-const detail = ref<WhalePositionDetail | null>(null);
+const activeWhaleId = ref('');
+const activeWhale = computed(() => whaleStore.whalesById[activeWhaleId.value] || null);
+const detailResponse = ref<WhalePositionDetail | null>(null);
+const activePosition = ref<{ coin: string; side: string }>({ coin: '', side: '' });
+let openSeq = 0;
+const detail = computed({
+  get(): WhalePositionDetail | null {
+    const response = detailResponse.value;
+    const whale = activeWhale.value;
+    if (!response || !whale) return response;
+    const position = whale.positions.find(pos => pos.coin === activePosition.value.coin && (!activePosition.value.side || pos.side === activePosition.value.side));
+    if (!position) return { ...response, closed: true, size: 0, positionValue: 0, unrealizedPnl: 0 };
+    return { ...response, ...fromCached(position), explorerUrl: response.explorerUrl || hyperliquidExplorer(whale.address) };
+  },
+  set(value: WhalePositionDetail | null) { detailResponse.value = value; },
+});
 const entryFillsExpanded = ref(false);
 const analysisVisible = ref(false);
 const analysisPreset = ref<Partial<UserPositionInput> | null>(null);
@@ -114,10 +128,13 @@ function fromTrade(trade: WhaleTrade): WhalePositionDetail {
 type PositionSeed = WhalePosition | { coin: string; side?: 'long' | 'short' };
 
 async function open(whale: WhaleProfile, pos: PositionSeed, trade?: WhaleTrade) {
+  const requestSeq = ++openSeq;
+  const requested = whaleStore.whalesById[whale.id];
   visible.value = true;
   whaleName.value = whale.name;
   whaleAddress.value = whale.address;
-  activeWhale.value = whale;
+  activeWhaleId.value = whale.id;
+  activePosition.value = { coin: pos.coin, side: pos.side || '' };
   error.value = '';
   entryFillsExpanded.value = false;
   // 只有完整仓位对象才能先渲染缓存；{ coin, side } 是已平仓入口，直接等接口
@@ -132,6 +149,7 @@ async function open(whale: WhaleProfile, pos: PositionSeed, trade?: WhaleTrade) 
   loading.value = true;
   try {
     const data = await fetchWhalePosition(whale.id, pos.coin, wantSide);
+    if (requestSeq !== openSeq || !visible.value) return;
     detail.value = {
       ...data.position,
       explorerUrl: data.position.explorerUrl || hyperliquidExplorer(whale.address),
@@ -145,19 +163,15 @@ async function open(whale: WhaleProfile, pos: PositionSeed, trade?: WhaleTrade) 
         firstOpenTime: data.position.firstOpenTime ?? undefined,
         lastAddTime: data.position.lastAddTime ?? undefined,
         openHistoryComplete: data.position.openHistoryComplete,
-        entryPx: data.position.entryPx ?? undefined,
-        markPx: data.position.markPx ?? undefined,
-        size: data.position.size,
-        positionValue: data.position.positionValue ?? undefined,
-        unrealizedPnl: data.position.unrealizedPnl ?? undefined,
-      } as Partial<WhalePosition>);
+      } as Partial<WhalePosition>, requested);
     }
   } catch (err) {
+    if (requestSeq !== openSeq || !visible.value) return;
     if (isTimeoutError(err)) {
       scheduleSilentRetry(`position-${whale.id}-${pos.coin}`, async () => {
         try {
           const data = await fetchWhalePosition(whale.id, pos.coin, wantSide);
-          detail.value = data.position;
+          if (requestSeq === openSeq && visible.value) detail.value = data.position;
         } catch {
           // 已有缓存持仓
         }
@@ -169,7 +183,7 @@ async function open(whale: WhaleProfile, pos: PositionSeed, trade?: WhaleTrade) 
       error.value = err instanceof Error ? err.message : '未找到当前持仓，已显示成交数据';
     }
   } finally {
-    loading.value = false;
+    if (requestSeq === openSeq) loading.value = false;
   }
 }
 

@@ -124,7 +124,7 @@ export function enrichAlertView(
   const base = resolveAlertPos(alert, whale);
   const notionalUsd = base.usd;
   const leverage = base.leverage && base.leverage > 0 ? base.leverage : null;
-  const marginUsd = leverage && notionalUsd ? notionalUsd / leverage : null;
+  const marginUsd = base.marginUsed;
   const eventTime = alertEventTime(alert);
   const actionLabel = alertActionLabel(kind, item);
 

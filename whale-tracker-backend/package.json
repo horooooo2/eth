@@ -4,6 +4,7 @@
   "description": "巨鲸追踪与宏观共振仪表盘 · 后端 API",
   "main": "server.js",
   "scripts": {
+    "test:whale-sync": "node scripts/test-whale-sync.js",
     "start": "node server.js",
     "test:alpha-gate": "node --test tests/test_alpha_live_gate.js",
     "dev": "node --watch --watch-path=./server.js --watch-path=./lib --watch-path=./routes server.js",
