@@ -33,6 +33,19 @@ router.use((req, res, next) => {
   next();
 });
 
+router.get('/observations', (_req, res) => {
+  res.set('Cache-Control', 'no-store').json(require('../lib/whaleObservationWorker').snapshot());
+});
+router.get('/observations/:id/evidence', (req, res) => {
+  const offset = Number(req.query.offset || 0);
+  if (!/^[a-f0-9]{32}$/.test(req.params.id) || !Number.isSafeInteger(offset) || offset < 0 || offset > 100000) return res.status(400).json({error:'无效查询'});
+  try {
+    const result = require('../lib/whaleObservationStore').evidence(require('../lib/db').getDb(), req.params.id, offset);
+    if (!result) return res.status(404).json({error:'记录已合并、撤回或过期，请刷新列表'});
+    res.set('Cache-Control','no-store').json(result);
+  } catch { res.status(503).json({error:'成交依据暂不可用'}); }
+});
+
 router.get('/bootstrap', (_req, res) => {
   try { res.set('Cache-Control', 'no-store').json(whaleSync.bootstrap()); }
   catch (err) { console.error('[whales/bootstrap]', err); res.status(503).json({ error: '巨鲸快照暂不可用，请稍后重试' }); }
@@ -48,21 +61,41 @@ router.get('/summary', (req, res) => {
   }
 });
 
-router.get('/resonance', (req, res) => {
+const sharedStats = require('../lib/sharedQuery').createSharedQuery();
+router.get('/resonance', async (req, res) => {
   const windowHours = Number(req.query.windowHours || 6);
   if (![2, 4, 6, 12, 24].includes(windowHours)) return res.status(400).json({ error: '不支持的共振时间范围' });
   const watchedCoins = String(req.query.coins || 'BTC,ETH').split(',').map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 12);
-  try { res.json(getWhaleResonance({ windowHours, watchedCoins })); }
+  try { res.json(await sharedStats(JSON.stringify(['resonance', windowHours, [...watchedCoins].sort()]), async () => {
+    await require('../lib/sqliteStore').prepareFillProjection();
+    return getWhaleResonance({ windowHours, watchedCoins });
+  })); }
   catch (err) { console.error('[GET /api/whales/resonance]', err); res.status(500).json({ error: '读取共振信号失败' }); }
 });
 
+router.get('/direction-summary', async (req, res) => {
+  const durations = { '15m': 900000, '1h': 3600000, '4h': 14400000, '24h': 86400000 };
+  const windowKey = String(req.query.window || '1h');
+  if (!durations[windowKey]) return res.status(400).json({ error: '不支持的时间范围' });
+  try {
+    const result = await sharedStats('direction:' + windowKey, async () => {
+      await require('../lib/sqliteStore').prepareFillProjection();
+      const now = Date.now(), sinceMs = now - durations[windowKey];
+      return { ...require('../lib/sqliteStore').loadDirectionSummary(sinceMs, now), sinceMs, untilMs: now, asOf: now,
+        basis: 'stored-executions', coverage: 'locally-observed', executionCoverage: require('../lib/fillBackfill').getCoverageStatus() };
+    });
+    res.json(result);
+  } catch (err) { console.error('[direction-summary]', err); res.status(500).json({ error: '方向统计暂不可用' }); }
+});
+
 /** 净流入资金只查服务器异动库，时间窗口和币种由参数明确限定。 */
-router.get('/alert-history/summary', (req, res) => {
+router.get('/alert-history/summary', async (req, res) => {
   try {
     const windows = { '15m': 15 * 60_000, '1h': 60 * 60_000, '4h': 4 * 60 * 60_000, '24h': 24 * 60 * 60_000 };
     const windowKey = String(req.query.window || '1h');
     const duration = windows[windowKey];
     if (!duration) return res.status(400).json({ error: '不支持的异动统计时间范围' });
+    await require('../lib/sqliteStore').prepareFillProjection();
     res.json({ ...loadAlertFlowSummary({ sinceMs: Date.now() - duration, coin: req.query.coin }), executionCoverage: require("../lib/fillBackfill").getCoverageStatus() });
   } catch (err) {
     console.error('[GET /api/whales/alert-history/summary]', err);

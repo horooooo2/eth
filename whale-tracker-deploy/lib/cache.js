@@ -116,15 +116,17 @@ function rawTradeView(trades) {
 const stateEpoch = randomUUID();
 const states = new Map();
 let observationClock = 0;
+let summaryClock = 0;
 const commitListeners = new Set();
 const mirrorTimers = new Map();
+const mirrorWriter = require('./asyncMirror').createMirrorWriter(cachePath);
 function scheduleMirror(mode, data) {
   const pending = mirrorTimers.get(mode);
   if (pending) { pending.data = data; return; }
   const entry = { data };
   entry.timer = setTimeout(() => {
     mirrorTimers.delete(mode);
-    writeCache(whaleCacheName(mode), entry.data);
+    void mirrorWriter.write(whaleCacheName(mode), entry.data);
   }, 2000);
   entry.timer.unref?.();
   mirrorTimers.set(mode, entry);
@@ -141,7 +143,7 @@ function stateFor(mode = 'hf') {
     // Never promote a possibly newer JSON snapshot over durable state.
     const data = stored?.data || { mode: key, whales: [], trades: [], warnings: [] };
     states.set(key, { data: { ...copy(data), mode: key, trades: rawTradeView(data.trades) }, updatedAt: stored?.updatedAt || 0,
-      revision: 0, epoch: stateEpoch, whaleRevisions: new Map() });
+      revision: 0, summaryVersion: ++summaryClock, epoch: stateEpoch, whaleRevisions: new Map() });
   }
   return states.get(key);
 }
@@ -231,6 +233,7 @@ function commitWhaleState(mode = 'hf', patch = {}) {
       !rejectedWhaleIds.includes(String(alert.whaleId)) && !removedWhaleIds.includes(String(alert.whaleId))) }, updatedAt);
   // Nothing observable advances before the transaction succeeds.
   state.data = data;
+  if (changedWhales.length || removedWhaleIds.length) state.summaryVersion = ++summaryClock;
   state.updatedAt = updatedAt;
   state.revision = revision;
   for (const id of new Set([...observedWhaleIds, ...changedWhales.map((whale) => String(whale.id)), ...removedWhaleIds])) {
@@ -263,6 +266,7 @@ function clearWhaleModeCache(mode) {
     const mirror = mirrorTimers.get(key);
     if (mirror) clearTimeout(mirror.timer);
     mirrorTimers.delete(key);
+    void mirrorWriter.clear(whaleCacheName(key));
     clearCache(whaleCacheName(key));
     states.delete(key);
     // Reload durable state after reset/config mutation and invalidate in-flight baselines.
@@ -283,6 +287,7 @@ function clearWhaleModeCache(mode) {
 }
 
 module.exports = {
+  readSummaryVersion: () => { const s = stateFor('hf'); return { version: s.summaryVersion, updatedAt: s.updatedAt }; },
   readStateSnapshot,
   captureWhaleRevisions,
   commitWhaleState,

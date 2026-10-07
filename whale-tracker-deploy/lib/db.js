@@ -74,7 +74,38 @@ function migrate(database) {
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
+    PRAGMA recursive_triggers = ON;
 
+    CREATE TABLE IF NOT EXISTS observation_inputs (
+      id TEXT PRIMARY KEY, whale_id TEXT NOT NULL, coin TEXT NOT NULL,
+      time INTEGER NOT NULL, received_at INTEGER NOT NULL, payload_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS observation_inputs_pair ON observation_inputs(whale_id, coin, time);
+    CREATE INDEX IF NOT EXISTS observation_inputs_time ON observation_inputs(time);
+    CREATE TABLE IF NOT EXISTS observation_jobs (
+      whale_id TEXT NOT NULL, coin TEXT NOT NULL, PRIMARY KEY(whale_id, coin)
+    );
+    CREATE TABLE IF NOT EXISTS observation_pair_runs (
+      whale_id TEXT NOT NULL, coin TEXT NOT NULL, last_run INTEGER NOT NULL,
+      PRIMARY KEY(whale_id, coin)
+    );
+    CREATE TABLE IF NOT EXISTS whale_observations (
+      id TEXT PRIMARY KEY, whale_id TEXT NOT NULL, coin TEXT NOT NULL,
+      last_at INTEGER NOT NULL, payload_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS observation_evidence (
+      event_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS observation_evidence_rows (
+      hash TEXT PRIMARY KEY, payload_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS observation_evidence_links (
+      event_id TEXT NOT NULL, ordinal INTEGER NOT NULL, hash TEXT NOT NULL,
+      PRIMARY KEY(event_id, ordinal)
+    );
+    CREATE INDEX IF NOT EXISTS observation_evidence_links_hash ON observation_evidence_links(hash);
+    CREATE INDEX IF NOT EXISTS observations_pair ON whale_observations(whale_id, coin);
+    CREATE INDEX IF NOT EXISTS observations_time ON whale_observations(last_at DESC, id);
     CREATE TABLE IF NOT EXISTS whales (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL DEFAULT '',
@@ -121,6 +152,7 @@ function migrate(database) {
       payload_json TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_fills_time ON fills(time);
+    CREATE INDEX IF NOT EXISTS idx_fills_observation_scan ON fills(time,id);
     CREATE INDEX IF NOT EXISTS idx_fills_whale_time ON fills(whale_id, time);
 
     CREATE TABLE IF NOT EXISTS events (
@@ -329,6 +361,21 @@ function migrate(database) {
     })();
   }
   database.exec('CREATE INDEX IF NOT EXISTS idx_alerts_visible_time ON alerts(is_visible, time DESC)');
+  // Transactional counter: inserts, corrections, deletes and rollbacks stay exact.
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS alert_totals (id INTEGER PRIMARY KEY CHECK(id=1), visible INTEGER NOT NULL);
+    INSERT INTO alert_totals SELECT 1, (SELECT COUNT(*) FROM alerts WHERE is_visible=1)
+      WHERE NOT EXISTS (SELECT 1 FROM alert_totals WHERE id=1);
+    CREATE TRIGGER IF NOT EXISTS alert_total_insert AFTER INSERT ON alerts BEGIN
+      UPDATE alert_totals SET visible=visible+(NEW.is_visible=1) WHERE id=1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS alert_total_delete AFTER DELETE ON alerts BEGIN
+      UPDATE alert_totals SET visible=visible-(OLD.is_visible=1) WHERE id=1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS alert_total_update AFTER UPDATE OF is_visible ON alerts BEGIN
+      UPDATE alert_totals SET visible=visible+(NEW.is_visible=1)-(OLD.is_visible=1) WHERE id=1;
+    END;
+  `);
   // Upgrade the brief development schema that stored only source_id.
   let alertSourcesUpgraded = false;
   try {

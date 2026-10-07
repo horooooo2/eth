@@ -179,8 +179,22 @@ async function getRadarAvailableContracts() {
 }
 
 // A single bulk ticker request keeps the all-contract radar list inexpensive;
-// detailed short-interval klines remain limited to the user's watchlist.
-async function getRadarMarketQuotes() {
+// Only the selected short interval is enriched, using shared caches and bounded concurrency.
+async function getRadarMarketQuotes(interval = '24h') {
+  if (SHORT_INTERVALS.includes(interval)) {
+    const snapshot = await getRadarMarketQuotes();
+    const quotes = new Array(snapshot.quotes.length);
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(4, quotes.length) }, async () => {
+      while (next < quotes.length) {
+        const index = next++;
+        const quote = snapshot.quotes[index];
+        const change = await fetchShortChange(quote.symbol, interval, quote.lastPrice, Number(quote.closeTime) || Date.now());
+        quotes[index] = { ...quote, changes: { [interval]: change.change }, changeMeta: { [interval]: change }, stale: quote.stale || change.stale };
+      }
+    }));
+    return { ...snapshot, quotes, interval, stale: Boolean(snapshot.stale) || quotes.some(quote => quote.stale) };
+  }
   if (radarMarketCache.expiresAt > Date.now()) return radarMarketCache;
   if (!radarMarketPromise) {
     radarMarketPromise = (async () => {

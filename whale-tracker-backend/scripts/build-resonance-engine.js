@@ -14,7 +14,7 @@ function functions(file, names) {
 const helpers = [
   'const WAN = 10000, YI = 100000000, MAINTENANCE_MARGIN_RATE = 0.004;',
   functions('format.ts', ['formatUsd', 'formatWanNumber', 'formatYiNumber', 'trimTrailingZeros']),
-  functions('positionAnalysis.ts', ['estimateLiquidationPx']),
+  functions('liquidationEstimate.ts', ['estimateLiquidationPx']),
   functions('whaleAlerts.ts', ['alertEventTime', 'inferSide', 'tradeFillSide']),
   functions('watchedCoins.ts', ['normalizeCoinId', 'coinMatchesWatch']),
   'function readWatchedCoins() { return []; }',

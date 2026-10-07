@@ -1932,15 +1932,20 @@ function getWhaleResonance({ windowHours = 6, watchedCoins = [] } = {}) {
   const cached = readActiveWhaleSnapshot();
   const ids = new Set(getActiveWhales().map(item => String(item.id)));
   const whales = (cached?.data?.whales || []).filter(item => ids.has(String(item.id)) && !isPendingPlaceholder(item));
-  const inputs = loadResonanceInputs(since, now, config.minNotionalUsd, new Set(whales.filter(w => Number(w.winRate) >= config.minWinRate).map(w => String(w.id))));
+  const inputs = loadResonanceInputs(since, now, config.minNotionalUsd, new Set(whales.filter(w => Number(w.winRate) >= config.minWinRate).map(w => String(w.id))), { stream: true });
   return { ...scanResonanceSignals({ ...inputs, whales, config, now, watchedCoins }), updatedAt: now, basis: 'stored-executions', coverage: 'locally-observed', executionCoverage: require('./fillBackfill').getCoverageStatus() };
 }
 
+const whaleSummaryCache = new Map();
 function getWhaleSummary({ coin = 'all' } = {}) {
-  const cached = require('./cache').readStateSnapshot('hf', { includeTrades: false });
   const roster = getActiveWhales();
-  const byId = new Map((cached?.data?.whales || []).map((item) => [String(item.id), item]));
   const normalizedCoin = String(coin || 'all').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/^K(?=[A-Z])/, '');
+  const cache = require('./cache'), version = cache.readSummaryVersion?.();
+  const summaryKey = JSON.stringify([version?.version, normalizedCoin, roster.map(row => String(row.id))]);
+  const hit = version && whaleSummaryCache.get(summaryKey);
+  if (hit) return { ...hit.value, updatedAt: version.updatedAt, ...require('./dataFreshness').summarizeFreshness(hit.times) };
+  const cached = cache.readStateSnapshot('hf', { includeTrades: false });
+  const byId = new Map((cached?.data?.whales || []).map((item) => [String(item.id), item]));
   let longUsd = 0;
   let shortUsd = 0;
   let longPnlUsd = 0;
@@ -1987,7 +1992,7 @@ function getWhaleSummary({ coin = 'all' } = {}) {
     if (whaleLongUsd > whaleShortUsd && whaleLongUsd > 0) longWhales += 1;
     else if (whaleShortUsd > whaleLongUsd && whaleShortUsd > 0) shortWhales += 1;
   }
-  return {
+  const value = {
     total: normalizedCoin === 'ALL' ? roster.length : knownCount,
     knownCount,
     longUsd,
@@ -2020,8 +2025,14 @@ function getWhaleSummary({ coin = 'all' } = {}) {
     shortWhales,
     positionCount,
     updatedAt: Number(cached?.updatedAt) || 0,
-    ...require('./dataFreshness').summarizeFreshness(roster.map(row => byId.get(String(row.id)))),
+
   };
+  const times = roster.map(row => ({ positionObservedAt: byId.get(String(row.id))?.positionObservedAt }));
+  if (version) {
+    if (whaleSummaryCache.size >= 32) whaleSummaryCache.clear();
+    whaleSummaryCache.set(summaryKey, { value, times });
+  }
+  return { ...value, ...require('./dataFreshness').summarizeFreshness(times) };
 }
 
 /** 按需读取该巨鲸当前合约仓位的标记价格，不请求现货账户数据。 */

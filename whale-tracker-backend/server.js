@@ -164,7 +164,8 @@ server.listen(PORT, '0.0.0.0', () => {
   try {
     startFillBackfill();
     require('./lib/positionPoller').start();
-    console.log('[fill-backfill]', JSON.stringify(getBackfillStatus()));
+    const { watermarks: _watermarks, ...backfillSummary } = getBackfillStatus();
+    console.log('[fill-backfill]', JSON.stringify(backfillSummary));
   } catch (err) {
     console.warn('[fill-backfill] 启动失败:', err.message);
   }
@@ -179,6 +180,9 @@ server.listen(PORT, '0.0.0.0', () => {
   } catch (err) {
     console.warn('[defillama] 启动失败:', err.message);
   }
+  // Build derived execution facts in bounded batches, without blocking unrelated HTTP requests.
+  setImmediate(() => require('./lib/sqliteStore').prepareFillProjection()
+    .catch(err => console.warn('[execution-facts] warmup failed:', err.message)));
   refreshAll('启动预热');
   setInterval(() => refreshAll('定时刷新'), REFRESH_MS);
 });

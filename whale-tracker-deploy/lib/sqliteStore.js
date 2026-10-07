@@ -393,49 +393,25 @@ function persistAlerts(alerts = []) {
     committedAlerts: result.committedAlerts, removedAlertIds: result.removedAlertIds };
 }
 
-// Compact derived facts are rebuilt from SQLite once, then replaced by canonical
-// fill identity only after a successful transaction. No payload parsing per reader.
-let fillProjection = null;
-let fillProjectionDb = null;
-let projectionPrunedAt = 0;
-function updateFillProjection(trades) {
-  if (!fillProjection) return;
-  const cutoff = Date.now() - FILL_RETENTION_MS;
-  for (const trade of trades) {
-    const key = canonicalTradeId(trade);
-    if (!key) continue;
-    const events = trade.source === 'onchain' || Number(trade.time) < cutoff ? [] : eventsFromTrade(trade)
-      .filter(event => OPEN_KINDS.has(event.kind))
-      .map(event => ({ ...event, payload: { price: trade.price, whaleName: trade.whaleName, from: trade.from || trade.address } }));
-    if (events.length) fillProjection.set(key, events); else fillProjection.delete(key);
-  }
+// Raw executions remain authoritative; derived facts live in a bounded SQLite TEMP cache.
+const fillProjection = require('./fillFactProjection').createFillFactProjection({
+  getDb, retentionMs: FILL_RETENTION_MS, classify: eventsFromTrade, canonicalId: canonicalTradeId,
+});
+function updateFillProjection(trades) { fillProjection.update(trades); }
+function fillFacts(since, until, includeExits = false, eligibleWhales) {
+  return fillProjection.read(since, until, includeExits, eligibleWhales);
 }
-function fillFacts(since, until) {
-  const database = getDb();
-  if (!fillProjection || database !== fillProjectionDb) {
-    fillProjection = new Map(); fillProjectionDb = database;
-    const rows = database.prepare("SELECT payload_json FROM fills WHERE time >= ? AND COALESCE(source, '') != 'onchain'").all(Date.now() - FILL_RETENTION_MS);
-    updateFillProjection(rows.map(row => parseJson(row.payload_json)).filter(Boolean));
-  }
-  const cutoff = Date.now() - FILL_RETENTION_MS;
-  if (Date.now() - projectionPrunedAt > 60000) {
-    for (const [id, events] of fillProjection) if (events.every(event => event.time < cutoff)) fillProjection.delete(id);
-    projectionPrunedAt = Date.now();
-  }
-  const result = [];
-  for (const events of fillProjection.values()) for (const event of events) {
-    if (event.time >= Math.max(since, cutoff) && event.time <= until) result.push(event);
-  }
-  return result;
-}
-function invalidateFillProjection() { fillProjection = null; fillProjectionDb = null; flowCache.clear(); }
+function invalidateFillProjection() { fillProjection.invalidate(); flowCache.clear(); }
 /** Thresholds belong after event aggregation, never before it. */
-function loadResonanceInputs(sinceMs, untilMs, _legacyMinUsd, eligibleWhales) {
-  return { alerts: fillFacts(sinceMs, untilMs).filter(event => !eligibleWhales || eligibleWhales.has(String(event.whaleId))).map(alertDocFromEvent), activity: [] };
+function loadResonanceInputs(sinceMs, untilMs, _legacyMinUsd, eligibleWhales, { stream = false } = {}) {
+  function* alerts() {
+    for (const event of fillFacts(sinceMs, untilMs, false, eligibleWhales)) yield alertDocFromEvent(event);
+  }
+  return { alerts: stream ? alerts() : [...alerts()], activity: [] };
 }
 
 function countStoredAlerts() {
-  return Number(getDb().prepare(`SELECT COUNT(*) AS total FROM alerts WHERE ${ALERT_VISIBLE_SQL}`).get()?.total) || 0;
+  return Number(getDb().prepare('SELECT visible FROM alert_totals WHERE id=1').get()?.visible) || 0;
 }
 
 function loadRecentAlerts(limit = 500) {
@@ -502,7 +478,7 @@ function loadPagedAlerts(query = {}) {
   const minUsd = Math.max(0, Number(query.minUsd) || 0);
   const excludeExotic = String(query.excludeExotic || '') === '1' || query.excludeExotic === true;
   const cacheKey = JSON.stringify({
-    page, limit,
+    page, limit, rowsOnly: query.rowsOnly === true,
     // The default rolling 180d cutoff changes every millisecond and otherwise
     // makes the short cache unreachable. Writes/purges invalidate it, and the
     // 10s TTL bounds staleness at the retention boundary. Explicit sinceMs is exact.
@@ -562,11 +538,6 @@ function loadPagedAlerts(query = {}) {
 
   const whereSql = where.join(' AND ');
   const database = getDb();
-  const total =
-    Number(
-      database.prepare(`SELECT COUNT(*) AS c FROM alerts WHERE ${whereSql}`).get(...params)
-        ?.c,
-    ) || 0;
 
   const rows = database
     .prepare(
@@ -580,6 +551,13 @@ function loadPagedAlerts(query = {}) {
   const alerts = rows
     .map((row) => presentAlert(parseJson(row.payload_json, null)))
     .filter((item) => item && item.id);
+
+  if (query.rowsOnly === true) return { alerts, page, limit };
+  const total =
+    Number(
+      database.prepare(`SELECT COUNT(*) AS c FROM alerts WHERE ${whereSql}`).get(...params)
+        ?.c,
+    ) || 0;
 
   const facetWhere = [ALERT_VISIBLE_SQL,
     `alerts.time >= ?`,
@@ -599,11 +577,16 @@ function loadPagedAlerts(query = {}) {
   facetWhere.push(facetItems.sql);
   facetParams.push(...facetItems.params);
   const facetSql = facetWhere.join(' AND ');
-  const allCount =
-    Number(
-      database.prepare(`SELECT COUNT(*) AS c FROM alerts WHERE ${facetSql}`).get(...facetParams)
-        ?.c,
-    ) || 0;
+  const sideExists = direction => `EXISTS (SELECT 1 FROM alert_items AS alert_item
+    WHERE alert_item.alert_id=alerts.id AND alert_item.side='${direction}'
+      AND ABS(COALESCE(alert_item.usd,0)) >= ?
+      ${excludeExotic ? "AND alert_item.coin NOT LIKE '@%' AND instr(alert_item.coin, ':') = 0" : ''}
+      ${coins.length ? `AND alert_item.coin IN (${coins.map(() => '?').join(', ')})` : ''})`;
+  const counts = database.prepare(`SELECT COUNT(*) AS allCount,
+    COALESCE(SUM(${sideExists('long')}),0) AS longCount,
+    COALESCE(SUM(${sideExists('short')}),0) AS shortCount
+    FROM alerts WHERE ${facetSql}`).get(minUsd, ...coins, minUsd, ...coins, ...facetParams);
+  const { allCount, longCount, shortCount } = counts;
   const coinRows = database
     .prepare(
       `SELECT alert_item.coin AS coin,
@@ -623,36 +606,6 @@ function loadPagedAlerts(query = {}) {
     if (!key) continue;
     byCoin[key] = Number(row.c) || 0;
   }
-  const longCount =
-    Number(
-      database
-        .prepare(
-          `SELECT COUNT(*) AS c FROM alerts
-           WHERE ${facetSql}
-             AND EXISTS (SELECT 1 FROM alert_items AS alert_item
-                         WHERE alert_item.alert_id = alerts.id
-                           AND alert_item.side = 'long'
-                           AND ABS(COALESCE(alert_item.usd, 0)) >= ?
-                           ${excludeExotic ? `AND alert_item.coin NOT LIKE '@%' AND instr(alert_item.coin, ':') = 0` : ''}
-                           ${coins.length ? `AND alert_item.coin IN (${coins.map(() => '?').join(', ')})` : ''})`,
-        )
-        .get(...facetParams, minUsd, ...coins)?.c,
-    ) || 0;
-  const shortCount =
-    Number(
-      database
-        .prepare(
-          `SELECT COUNT(*) AS c FROM alerts
-           WHERE ${facetSql}
-             AND EXISTS (SELECT 1 FROM alert_items AS alert_item
-                         WHERE alert_item.alert_id = alerts.id
-                           AND alert_item.side = 'short'
-                           AND ABS(COALESCE(alert_item.usd, 0)) >= ?
-                           ${excludeExotic ? `AND alert_item.coin NOT LIKE '@%' AND instr(alert_item.coin, ':') = 0` : ''}
-                           ${coins.length ? `AND alert_item.coin IN (${coins.map(() => '?').join(', ')})` : ''})`,
-        )
-        .get(...facetParams, minUsd, ...coins)?.c,
-    ) || 0;
 
   const result = {
     alerts,
@@ -952,6 +905,7 @@ function persistTradesIncremental(trades = []) {
         payload_json: safeJson(trade),
       });
       fills += 1;
+      require('./whaleObservationStore').recordInput(database, trade);
       for (const event of eventsFromTrade(trade)) {
         if (!existsEvent.get(event.id)) added += 1;
         upsertEvent.run({
@@ -1130,6 +1084,7 @@ function persistModePayload(data = {}, updatedAt = Date.now(), options = {}) {
         source: trade.source ? String(trade.source) : 'hyperliquid',
         payload_json: safeJson(trade),
       });
+      require('./whaleObservationStore').recordInput(database, trade);
       for (const event of eventsFromTrade(trade)) {
         if (!existsEvent.get(event.id)) added += 1;
         upsertEvent.run({
@@ -1246,6 +1201,7 @@ function loadRecentEvents(limit = 200) {
 
 module.exports = {
   invalidateFillProjection,
+  prepareFillProjection: () => fillProjection.prepare(),
   invalidateAlertQueries: () => pagedAlertCache.clear(),
   setAlertCommitObserver,
   persistStatePatch,
@@ -1257,6 +1213,7 @@ module.exports = {
   loadRecentEvents,
   loadRecentAlerts,
   loadAlertFlowSummary,
+  loadDirectionSummary: (since, until) => require('./directionSummary').aggregateDirectionFacts(fillFacts(since, until, true), { unique: true }),
   loadPagedAlerts,
   loadDbBrowse,
   loadFillsByWhale,

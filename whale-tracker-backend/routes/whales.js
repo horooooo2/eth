@@ -61,37 +61,41 @@ router.get('/summary', (req, res) => {
   }
 });
 
-router.get('/resonance', (req, res) => {
+const sharedStats = require('../lib/sharedQuery').createSharedQuery();
+router.get('/resonance', async (req, res) => {
   const windowHours = Number(req.query.windowHours || 6);
   if (![2, 4, 6, 12, 24].includes(windowHours)) return res.status(400).json({ error: '不支持的共振时间范围' });
   const watchedCoins = String(req.query.coins || 'BTC,ETH').split(',').map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 12);
-  try { res.json(getWhaleResonance({ windowHours, watchedCoins })); }
+  try { res.json(await sharedStats(JSON.stringify(['resonance', windowHours, [...watchedCoins].sort()]), async () => {
+    await require('../lib/sqliteStore').prepareFillProjection();
+    return getWhaleResonance({ windowHours, watchedCoins });
+  })); }
   catch (err) { console.error('[GET /api/whales/resonance]', err); res.status(500).json({ error: '读取共振信号失败' }); }
 });
 
-// Small response cache; all readers share the canonical in-memory execution projection.
-const directionCache = new Map();
-router.get('/direction-summary', (req, res) => {
+router.get('/direction-summary', async (req, res) => {
   const durations = { '15m': 900000, '1h': 3600000, '4h': 14400000, '24h': 86400000 };
   const windowKey = String(req.query.window || '1h');
   if (!durations[windowKey]) return res.status(400).json({ error: '不支持的时间范围' });
   try {
-    const now = Date.now(), cached = directionCache.get(windowKey);
-    if (cached && now - cached.asOf < 3000) return res.json(cached);
-    const sinceMs = now - durations[windowKey];
-    const result = { ...require('../lib/sqliteStore').loadDirectionSummary(sinceMs, now), sinceMs, untilMs: now, asOf: now,
-      basis: 'stored-executions', coverage: 'locally-observed', executionCoverage: require('../lib/fillBackfill').getCoverageStatus() };
-    directionCache.set(windowKey, result); res.json(result);
+    const result = await sharedStats('direction:' + windowKey, async () => {
+      await require('../lib/sqliteStore').prepareFillProjection();
+      const now = Date.now(), sinceMs = now - durations[windowKey];
+      return { ...require('../lib/sqliteStore').loadDirectionSummary(sinceMs, now), sinceMs, untilMs: now, asOf: now,
+        basis: 'stored-executions', coverage: 'locally-observed', executionCoverage: require('../lib/fillBackfill').getCoverageStatus() };
+    });
+    res.json(result);
   } catch (err) { console.error('[direction-summary]', err); res.status(500).json({ error: '方向统计暂不可用' }); }
 });
 
 /** 净流入资金只查服务器异动库，时间窗口和币种由参数明确限定。 */
-router.get('/alert-history/summary', (req, res) => {
+router.get('/alert-history/summary', async (req, res) => {
   try {
     const windows = { '15m': 15 * 60_000, '1h': 60 * 60_000, '4h': 4 * 60 * 60_000, '24h': 24 * 60 * 60_000 };
     const windowKey = String(req.query.window || '1h');
     const duration = windows[windowKey];
     if (!duration) return res.status(400).json({ error: '不支持的异动统计时间范围' });
+    await require('../lib/sqliteStore').prepareFillProjection();
     res.json({ ...loadAlertFlowSummary({ sinceMs: Date.now() - duration, coin: req.query.coin }), executionCoverage: require("../lib/fillBackfill").getCoverageStatus() });
   } catch (err) {
     console.error('[GET /api/whales/alert-history/summary]', err);

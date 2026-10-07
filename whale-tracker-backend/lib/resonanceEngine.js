@@ -247,8 +247,7 @@ function classifyFillAction(trade) {
     const addsToShort = startPosition < 0 && (side === 'sell' || side === 'a' || side === 'out');
     return addsToLong || addsToShort ? 'increase' : null;
 }
-function rowsFromAlerts(alerts, whaleMap, since) {
-    const rows = [];
+function* rowsFromAlerts(alerts, whaleMap, since) {
     for (const alert of alerts) {
         const whale = whaleMap.get(alert.whaleId);
         if (!whale)
@@ -269,7 +268,7 @@ function rowsFromAlerts(alerts, whaleMap, since) {
             const side = item.side || inferSide(alert, item);
             if (!side)
                 continue;
-            rows.push(buildOpenRow(whale, {
+            yield buildOpenRow(whale, {
                 sourceId: item.sourceId || `${alert.id}:${item.coin}:${item.side}:${item.kind}:${time}`,
                 whaleId: alert.whaleId,
                 whaleName: alert.whaleName || whale.name,
@@ -281,10 +280,9 @@ function rowsFromAlerts(alerts, whaleMap, since) {
                 notionalUsd,
                 time,
                 winRate: Number(whale.winRate) || 0,
-            }));
+            });
         }
     }
-    return rows;
 }
 function dedupeRows(rows) {
     const map = new Map();
@@ -382,8 +380,11 @@ function collectOpenRows(input) {
             winRate: Number(whale.winRate) || 0,
         }));
     }
-    rawRows.push(...rowsFromAlerts(input.alerts || [], whaleMap, input.since));
     const watched = input.watchedCoins?.length ? input.watchedCoins : readWatchedCoins();
+    for (const row of rowsFromAlerts(input.alerts || [], whaleMap, input.since)) {
+        if (coinMatchesWatch(row.coin, watched) && row.winRate >= input.config.minWinRate)
+            rawRows.push(row);
+    }
     return dedupeRows(rawRows.filter((row) => coinMatchesWatch(row.coin, watched) && row.winRate >= input.config.minWinRate));
 }
 function scanClusterSignals(rows, config) {

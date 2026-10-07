@@ -13,6 +13,16 @@ const alert = (id, whaleId, time = now - 1000, extra = {}) => ({
 function scan(alerts, roster = whales) {
   return scanResonanceSignals({ whales: roster, activity: [], alerts, now, config: DEFAULT_RESONANCE_CONFIG, watchedCoins: ['BTC'] });
 }
+
+test('streamed resonance inputs match arrays and large input sets do not overflow argument stack', () => {
+  const small = whales.map(w => alert('stream-' + w.id, w.id));
+  function* events() { yield* small; }
+  assert.deepEqual(scan(events()), scan(small));
+  function* large() {
+    for (let i = 0; i < 150000; i++) yield alert('many-' + i, whales[i % 3].id);
+  }
+  assert.equal(scan(large()).primary.totalUsd, 150000 * 100000);
+});
 test('server uses the complete roster rather than the visible whale page', () => {
   const events = whales.map(w => alert('e' + w.id, w.id));
   assert.equal(scan(events).primary.whaleCount, 3);

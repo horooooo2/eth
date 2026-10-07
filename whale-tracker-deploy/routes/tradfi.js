@@ -124,9 +124,11 @@ router.get('/radar/quotes', async (req, res) => {
   }
 });
 
-router.get('/radar/market', async (_req, res) => {
+router.get('/radar/market', async (req, res) => {
+  const interval = req.query.interval || '24h';
+  if (!['24h', '1h', '15m', '5m'].includes(interval)) return res.status(400).json({ error: '不支持的榜单周期' });
   try {
-    const result = await getRadarMarketQuotes();
+    const result = await getRadarMarketQuotes(interval);
     res.json({ quotes: result.quotes, updatedAt: result.updatedAt, stale: Boolean(result.stale), source: 'Binance USDⓈ-M Futures' });
   } catch (err) {
     console.error('[GET /api/tradfi/radar/market]', err.message);

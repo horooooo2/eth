@@ -204,8 +204,7 @@ function classifyFillAction(trade: WhaleTrade): 'open' | 'increase' | null {
   return addsToLong || addsToShort ? 'increase' : null;
 }
 
-function rowsFromAlerts(alerts: WhaleAlert[], whaleMap: Map<string, WhaleProfile>, since: number) {
-  const rows: ResonanceOpenRow[] = [];
+function* rowsFromAlerts(alerts: Iterable<WhaleAlert>, whaleMap: Map<string, WhaleProfile>, since: number) {
   for (const alert of alerts) {
     const whale = whaleMap.get(alert.whaleId);
     if (!whale) continue;
@@ -220,8 +219,7 @@ function rowsFromAlerts(alerts: WhaleAlert[], whaleMap: Map<string, WhaleProfile
       if (!coin) continue;
       const side = item.side || inferSide(alert, item);
       if (!side) continue;
-      rows.push(
-        buildOpenRow(whale, {
+      yield buildOpenRow(whale, {
           sourceId: item.sourceId || `${alert.id}:${item.coin}:${item.side}:${item.kind}:${time}`,
           whaleId: alert.whaleId,
           whaleName: alert.whaleName || whale.name,
@@ -233,11 +231,9 @@ function rowsFromAlerts(alerts: WhaleAlert[], whaleMap: Map<string, WhaleProfile
           notionalUsd,
           time,
           winRate: Number(whale.winRate) || 0,
-        }),
-      );
+        });
     }
   }
-  return rows;
 }
 
 function dedupeRows(rows: ResonanceOpenRow[]) {
@@ -325,7 +321,7 @@ export function mergeRowsByWhale(
 
 function collectOpenRows(input: {
   activity: WhaleTrade[];
-  alerts?: WhaleAlert[];
+  alerts?: Iterable<WhaleAlert>;
   whales: WhaleProfile[];
   since: number;
   config: ResonanceConfig;
@@ -360,8 +356,10 @@ function collectOpenRows(input: {
     );
   }
 
-  rawRows.push(...rowsFromAlerts(input.alerts || [], whaleMap, input.since));
   const watched = input.watchedCoins?.length ? input.watchedCoins : readWatchedCoins();
+  for (const row of rowsFromAlerts(input.alerts || [], whaleMap, input.since)) {
+    if (coinMatchesWatch(row.coin, watched) && row.winRate >= input.config.minWinRate) rawRows.push(row);
+  }
   return dedupeRows(rawRows.filter((row) =>
     coinMatchesWatch(row.coin, watched) && row.winRate >= input.config.minWinRate,
   ));
@@ -476,7 +474,7 @@ function primaryBySignalSide(signals: ResonanceSignal[]) {
 
 export function scanResonanceSignals(input: {
   activity: WhaleTrade[];
-  alerts?: WhaleAlert[];
+  alerts?: Iterable<WhaleAlert>;
   whales: WhaleProfile[];
   config?: ResonanceConfig;
   now?: number;
