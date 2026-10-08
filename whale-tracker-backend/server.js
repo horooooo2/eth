@@ -149,7 +149,6 @@ server.listen(PORT, '0.0.0.0', () => {
   require('./lib/whaleRetention').startRetention();
   if(require('./lib/featureFlags').observationsEnabled())require('./lib/whaleObservationWorker').start();
   else {require('./lib/db').setMeta('observation_paused','1');console.log('[whale-observations] disabled');}
-  require('./lib/statisticsWorker').start();
   startTradfiRangeStrategy();
   const hl = getHlInfoConfig();
   console.log(`WhaleTracker 已启动 http://0.0.0.0:${PORT}`);

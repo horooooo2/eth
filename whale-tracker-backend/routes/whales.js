@@ -61,17 +61,7 @@ router.get('/summary', (req, res) => {
   }
 });
 
-router.get('/resonance', (req, res) => {
-  const windowHours = Number(req.query.windowHours || 6);
-  if (![2, 4, 6, 12, 24].includes(windowHours)) return res.status(400).json({ error: '不支持的共振时间范围' });
-  const watchedCoins = String(req.query.coins || 'BTC,ETH').split(',').map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 12);
-  try { res.set('Cache-Control','no-store').json(require('../lib/statisticsWorker').resonance(windowHours,watchedCoins)); }
-  catch (err) {
-    if(!err.status)console.error('[GET /api/whales/resonance]', err);
-    if(!err.status)require('../lib/opsMonitor').pushError({source:'resonance',message:err.message});
-    res.status(err.status||500).json({ error: err.status===503?err.message:'读取共振信号失败' });
-  }
-});
+
 
 
 /** 净流入资金只查服务器异动库，时间窗口和币种由参数明确限定。 */

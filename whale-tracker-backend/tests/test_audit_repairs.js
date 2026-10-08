@@ -6,7 +6,6 @@ const { createRequire } = require('node:module');
 const { EventEmitter } = require('node:events');
 require('./helpers/isolateSqlite');
 const store = require('../lib/sqliteStore');
-const { scanResonanceSignals, DEFAULT_RESONANCE_CONFIG } = require('../lib/resonanceEngine');
 function isolated(name, mocks, extra = {}) {
   const filename = require.resolve('../lib/' + name), real = createRequire(filename);
   const ctx = { module: { exports: {} }, __dirname: require('node:path').dirname(filename), process: { env: {} },
@@ -15,26 +14,6 @@ function isolated(name, mocks, extra = {}) {
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), ctx); return ctx.module.exports;
 }
 const now = Date.now();
-const whales = ['a','b','c'].map(id => ({ id, name: id, winRate: 80, positions: [] }));
-const event = (w, i, usd, kind = 'open', time = now - 1000 + i) => ({ id: w + '-' + i, whaleId: w, kind, at: time,
-  items: [{ sourceId: `fill:${w}:${i}`, coin: 'BTC', kind, side: 'long', usd, price: 60000, time }] });
-const scan = alerts => scanResonanceSignals({ whales, activity: [], alerts, now, config: DEFAULT_RESONANCE_CONFIG, watchedCoins: ['BTC'] });
-test('six independent same-minute fills conserve 600k; exact replays do not add money', () => {
-  const rows = whales.flatMap(w => [event(w.id,0,100000),event(w.id,1,100000)]);
-  assert.equal(scan(rows).primary.totalUsd, 600000);
-  assert.equal(scan([...rows,...rows]).primary.totalUsd, 600000);
-});
-test('initial small open plus split additions qualify only after event aggregation', () => {
-  const rows = whales.flatMap(w => Array.from({length:10},(_,i)=>event(w.id,i,6000,i ? 'increase':'open')));
-  const result = scan(rows);
-  assert.equal(result.primary.totalUsd, 180000); assert.equal(result.primary.whaleCount,3);
-  assert.equal(result.signals.some(s=>s.kind==='accumulation'),false);
-});
-test('independent event intervals count accumulation; one split burst does not', () => {
-  const rows = [0,1,2].map(i=>event('a',i,200000,'increase',now-1000-i*360000));
-  assert.equal(scan(rows).primary.kind,'accumulation');
-  assert.equal(scan(rows).primary.tradeCount,3);
-});
 test('future and expired raw facts cannot enter flow; correction replaces the original', () => {
   store.invalidateFillProjection();
   const trade = { id:'projection',whaleId:'projector',asset:'BTC',side:'buy',startPosition:0,amount:1,amountUsd:60000,price:60000,time:now-1000 };
@@ -138,16 +117,6 @@ test('a small coverage hole is incomplete and is backfilled before older history
   await api.runHistoryTick();assert.deepEqual(requested,[now-110000,now]);
   assert.equal(api.getCoverageStatus().complete,true);
 });
-
-test('resonance detail notional equals event total rather than current positions',()=>{
-  const positioned=whales.map(w=>({...w,positions:[{coin:'BTC',side:'long',szi:10,entryPx:50000,positionValue:600000}]}));
-  const r=scanResonanceSignals({whales:positioned,activity:[],alerts:whales.map(w=>event(w.id,0,60000)),now,config:DEFAULT_RESONANCE_CONFIG,watchedCoins:['BTC']});
-  assert.equal(r.primary.totalUsd,180000);
-  assert.equal(r.primary.rows.reduce((s,r)=>s+r.notionalUsd,0),180000);
-  assert.equal(r.primary.rows[0].price,60000);
-});
-
-
 
 test('state-patch corrections retract hidden alerts and rollback preserves old facts',()=>{
   const db=require('../lib/db').getDb(), time=Date.now()-1000;

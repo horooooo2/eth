@@ -34,7 +34,7 @@ const {
 const { getHlInfoConfig, MAX_CONCURRENT } = require('./hlInfoClient');
 
 const WHALE_MODES = ['hf'];
-/** 共振扫描最长窗口 24h，活动流按时间保留而非仅取全局最新 N 条 */
+/** 活动流至少保留 24h，并按配置的成交保留窗口读取 */
 const ACTIVITY_WINDOW_MS = Math.max(
   24 * 60 * 60 * 1000,
   (Number(process.env.FILL_RETENTION_DAYS) || 1) * 24 * 60 * 60 * 1000,
@@ -1922,19 +1922,6 @@ function queryWhaleCache(query = {}) {
   };
 }
 
-/** 从服务端最新已知快照计算总览；未采集占位和无效失败快照不当作零仓位。 */
-function getWhaleResonance({ windowHours = 6, watchedCoins = [] } = {}) {
-  const { scanResonanceSignals, DEFAULT_RESONANCE_CONFIG } = require('./resonanceEngine');
-  const { loadResonanceInputs } = require('./sqliteStore');
-  const now = Date.now();
-  const config = { ...DEFAULT_RESONANCE_CONFIG, windowHours };
-  const since = now - Math.max(windowHours, config.accumulationWindowHours) * 3600000;
-  const cached = readActiveWhaleSnapshot();
-  const ids = new Set(getActiveWhales().map(item => String(item.id)));
-  const whales = (cached?.data?.whales || []).filter(item => ids.has(String(item.id)) && !isPendingPlaceholder(item));
-  const inputs = loadResonanceInputs(since, now, config.minNotionalUsd, new Set(whales.filter(w => Number(w.winRate) >= config.minWinRate).map(w => String(w.id))), { stream: true });
-  return { ...scanResonanceSignals({ ...inputs, whales, config, now, watchedCoins }), updatedAt: now, basis: 'stored-executions', coverage: 'locally-observed', executionCoverage: require('./fillBackfill').getCoverageStatus() };
-}
 
 const whaleSummaryCache = new Map();
 function getWhaleSummary({ coin = 'all' } = {}) {
@@ -2592,7 +2579,6 @@ async function getWhalesBatch(query = {}) {
 }
 
 module.exports = {
-  getWhaleResonance,
   getWhales,
   getWhalesBatch,
   getWhaleCacheBatch,

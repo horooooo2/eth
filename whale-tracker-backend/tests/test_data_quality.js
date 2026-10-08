@@ -38,10 +38,9 @@ test('snapshot observation and arbitrarily delayed execution never double moneta
   s.persistTradesIncremental([trade('late', { time: now - 600000 })]);
   assert.equal(s.countStoredAlerts(), 1); assert.equal(flow().longUsd, 60000);
 });
-test('spot and other-dex fills cannot enter native-perp flow or resonance', () => {
+test('spot and other-dex fills cannot enter native-perp flow', () => {
   reset(); s.persistTradesIncremental([trade('spot', { asset: '@107' }), trade('hip3', { asset: 'xyz:SNDK' })]);
   assert.equal(flow().netUsd, 0); assert.equal(s.countStoredAlerts(), 0);
-  assert.equal(s.loadResonanceInputs(now - 3600000, now, 1).alerts.length, 0);
 });
 test('merged shorts never acquire a long-direction label', () => {
   reset(); s.persistTradesIncremental([trade('s1', { side: 'sell' }), trade('s2', { side: 'sell', startPosition: -1 })]);

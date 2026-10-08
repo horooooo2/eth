@@ -6,7 +6,6 @@ import CoinPreferences from '@/components/CoinPreferences.vue';
 import ApiSettings from '@/components/ApiSettings.vue';
 import NewsList from '@/components/NewsList.vue';
 import MarketBriefBanner from '@/components/MarketBriefBanner.vue';
-import WhaleResonanceBanner from '@/components/WhaleResonanceBanner.vue';
 import WhaleAlertDock from '@/components/WhaleAlertDock.vue';
 import WhaleList from '@/components/WhaleList.vue';
 import DataModule from '@/components/DataModule.vue';
@@ -61,7 +60,6 @@ watch(sideTab, (tab) => {
 if (sideTab.value === 'strategy') strategyVisited.value = true;
 const radarRef = ref<InstanceType<typeof TradFiBoard> | null>(null);
 const macroRef = ref<InstanceType<typeof DataModule> | null>(null);
-const resonanceRef = ref<InstanceType<typeof WhaleResonanceBanner> | null>(null);
 let pageLoader: ReturnType<typeof createPageLoadScheduler<'virtual' | 'tradfi'>> | null = null;
 const whaleListRef = ref<InstanceType<typeof WhaleList> | null>(null);
 const whaleDetailOpen = ref(false);
@@ -206,7 +204,6 @@ const { status: transportStatus, start: startRealtime, stop: stopRealtime } = us
     if (outcome === 'resync') void recoverState();
     else if (outcome === 'applied') {
       newsListRef.value?.animateLiveAlerts(animated);
-      resonanceRef.value?.refresh();
     }
   } else if (msg.type === 'resyncRequired') {
     void recoverState();
@@ -259,7 +256,7 @@ async function startAppSession() {
     virtual: async () => {
       await Promise.allSettled([
         whaleListRef.value?.initialize(),
-        macroRef.value?.initialize(), resonanceRef.value?.initialize(),
+        macroRef.value?.initialize(),
         loadQuotes(),
       ]);
 
@@ -430,15 +427,6 @@ onUnmounted(() => {
     <div class="layout" :class="{ 'is-tradfi': sideTab !== 'virtual' }">
       <div v-show="sideTab === 'virtual'" class="virtual-view">
       <header class="topbar">
-        <WhaleResonanceBanner
-          ref="resonanceRef"
-          :whales="whaleStore.displayWhales"
-          :activity="whaleStore.activity"
-          :alerts="whaleStore.alertHistory"
-          :quotes="quotes"
-          :ready="true"
-          @focus-whale="onFocusWhaleCard"
-        />
         <div class="topbar-right">
           <MarketBriefBanner />
         </div>
@@ -815,9 +803,8 @@ onUnmounted(() => {
   overflow-y: auto;
 }
 .topbar {
-  /* 移除方向横幅后，共振和 AI 入口共享顶栏。 */
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;
@@ -828,11 +815,6 @@ onUnmounted(() => {
   display: flex;
   justify-content: flex-end;
   align-items: center;
-  min-width: 0;
-}
-.topbar :deep(.resonance-wrap) {
-  width: 100%;
-  max-width: 100%;
   min-width: 0;
 }
 .topbar :deep(.notice-wrap),

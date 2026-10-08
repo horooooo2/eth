@@ -51,27 +51,3 @@ test('commit deltas avoid full clones and lazy snapshots retain isolation across
     assert.equal(cache.readPositionObservationTimes().get('lazy-test'), 789);
   } finally { global.structuredClone = original; off(); }
 });
-
-test('default statistics cadence tolerates updates between minute batches and ages without new fills', async () => {
-  const { getDb } = require('../lib/db');
-  const { createStatisticsWorker } = require('../lib/statisticsWorker');
-  let now = Date.now(), calls = 0;
-  const db = getDb();
-  const worker = createStatisticsWorker({ getDb, getRoster: () => ['minute-test'], now: () => now,
-    runner: { stop() {}, async run(request) {
-      calls++;
-      return { meta: { asOf: request.now, rosterKey: request.rosterKey,
-        version: db.prepare('SELECT version FROM statistics_input_version').get().version },
-        rows: [2, 4, 6, 12, 24].map(w => ({ key: 'resonance:' + w, payload_json: '{"signals":[]}' })) };
-    } } });
-  try {
-    await worker.tick(); assert.equal(calls, 1);
-    db.prepare('UPDATE statistics_input_version SET version=version+1').run();
-    now += 59000; await worker.tick(); assert.equal(calls, 1);
-    assert.equal(worker.getStatus().pendingUpdates, true);
-    assert.equal(worker.getStatus().stale, false);
-    now += 1000; await worker.tick(); assert.equal(calls, 2);
-    now += 60000; await worker.tick(); assert.equal(calls, 3);
-    now += 90001; assert.equal(worker.getStatus().stale, true);
-  } finally { worker.stop(); }
-});

@@ -26,9 +26,6 @@ const FILES = [
   'lib/whaleObservationStore.js',
   'lib/observationScope.js',
   'lib/whaleObservationWorker.js',
-  'lib/statisticsWorker.js',
-  'lib/statisticsCompute.js',
-  'lib/statisticsComputeChild.js',
   'lib/observationCompute.js',
   'lib/observationComputeChild.js',
   'lib/observationGarbage.js',
@@ -49,7 +46,6 @@ const FILES = [
   'lib/observationEvidence.js',
   'lib/asyncMirror.js',
   'lib/whales.js',
-  'lib/resonanceEngine.js',
   'lib/news.js',
   'lib/newsService.js',
   'lib/markets.js',
@@ -103,6 +99,11 @@ const FILES = [
 
 // Older packages may still contain these retired, unmounted modules.
 const RETIRED_FILES = [
+  'lib/statisticsWorker.js',
+  'lib/statisticsCompute.js',
+  'lib/statisticsComputeChild.js',
+  'lib/resonanceEngine.js',
+
   'lib/directionSummary.js',
   'lib/sharedQuery.js',
   'lib/binanceAiAccountBook.js',

@@ -402,13 +402,6 @@ function fillFacts(since, until, includeExits = false, eligibleWhales) {
   return fillProjection.read(since, until, includeExits, eligibleWhales);
 }
 function invalidateFillProjection() { fillProjection.invalidate(); flowCache.clear(); }
-/** Thresholds belong after event aggregation, never before it. */
-function loadResonanceInputs(sinceMs, untilMs, _legacyMinUsd, eligibleWhales, { stream = false } = {}) {
-  function* alerts() {
-    for (const event of fillFacts(sinceMs, untilMs, false, eligibleWhales)) yield alertDocFromEvent(event);
-  }
-  return { alerts: stream ? alerts() : [...alerts()], activity: [] };
-}
 
 function countStoredAlerts() {
   return Number(getDb().prepare('SELECT visible FROM alert_totals WHERE id=1').get()?.visible) || 0;
@@ -1205,7 +1198,6 @@ module.exports = {
   invalidateAlertQueries: () => pagedAlertCache.clear(),
   setAlertCommitObserver,
   persistStatePatch,
-  loadResonanceInputs,
   countStoredAlerts,
   persistModePayload,
   persistTradesIncremental,

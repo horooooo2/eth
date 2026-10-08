@@ -340,12 +340,6 @@ export function tradeFillSide(trade: WhaleTrade): 'long' | 'short' {
   return trade.side === 'buy' ? 'long' : 'short';
 }
 
-/** 成交是否为开仓侧（共振等旧逻辑用；异动主路径不再用成交推断开平） */
-export function isTradeOpen(trade: WhaleTrade) {
-  if (trade.source === 'onchain') return false;
-  return Math.abs(Number(trade.closedPnl) || 0) <= 1;
-}
-
 /** 从条目/标题推断多空；不含「加仓/减仓」（无方向，勿当成做多） */
 export function inferSide(alert: WhaleAlert, item?: WhaleAlertItem): 'long' | 'short' | null {
   if (item?.side === 'long' || item?.side === 'short') return item.side;

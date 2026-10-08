@@ -32,7 +32,6 @@ jobs:
         run: |
           npm ci
           node src/utils/whaleState.test.cjs
-          node src/utils/statisticsRead.test.cjs
           npm run build
           mkdir -p ../whale-tracker-deploy/public
           rm -rf ../whale-tracker-deploy/public/assets

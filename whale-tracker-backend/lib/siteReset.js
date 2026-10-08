@@ -16,11 +16,9 @@ function clearMarketTables() {
     database.prepare('DELETE FROM alerts').run();
     database.prepare('DELETE FROM positions').run();
     database.prepare('DELETE FROM whales').run();
-    database.prepare('DELETE FROM statistics_current').run();
     // 不删 users / sessions / user_settings
   });
   tx();
-  require('./statisticsWorker').invalidate();
   require("./sqliteStore").invalidateFillProjection();
 }
 

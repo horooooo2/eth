@@ -30,7 +30,7 @@ for (const directory of ['whale-tracker-backend', 'whale-tracker-deploy']) {
     }
     assert.deepEqual(missing, []);
     // fork() uses filenames rather than require(), so check these entries too.
-    for (const worker of ['statisticsComputeChild.js', 'observationComputeChild.js']) {
+    for (const worker of ['observationComputeChild.js']) {
       assert.ok(fs.existsSync(path.join(root, 'lib', worker)), `${worker} must remain packaged`);
     }
   });

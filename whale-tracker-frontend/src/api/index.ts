@@ -1,6 +1,5 @@
 import axios, { type AxiosError } from 'axios';
 import type { WhaleBootstrap } from '@/utils/whaleState';
-import { retryStatistics } from '@/utils/statisticsRead';
 import type {
   CalendarResponse,
   PagedTradesQuery,
@@ -187,16 +186,6 @@ export async function fetchPagedAlertHistory(query: AlertHistoryQuery = {}) {
   return data;
 }
 
-const pendingStatistics = new Map<string, Promise<unknown>>();
-function shareStatistics<T>(key: string, request: () => Promise<T>): Promise<T> {
-  const pending = pendingStatistics.get(key);
-  if (pending) return pending as Promise<T>;
-  const task = Promise.resolve().then(request).finally(() => pendingStatistics.delete(key));
-  pendingStatistics.set(key, task);
-  return task;
-}
-
-
 export type WhaleServerSummary = {
   freshness?: { total: number; freshCount: number; staleCount: number; unknownCount: number; oldestObservedAt: number | null; newestObservedAt: number | null; maxAgeMs: number };
   alertTotal: number;
@@ -206,16 +195,6 @@ export type WhaleServerSummary = {
   longCount: number; shortCount: number; neutralCount: number; deviationPct: number;
   hint: string; scopeLabel: string; positionCount: number; updatedAt: number; stale: boolean;
 };
-
-export async function fetchWhaleResonance(windowHours: number, coins: string[]) {
-  const watchedCoins = [...coins];
-  return shareStatistics(JSON.stringify(['resonance', windowHours, [...watchedCoins].sort()]), () => retryStatistics(async () => {
-  const { data } = await http.get<import('@/utils/whaleResonanceSignal').ResonanceScanResult>('/whales/resonance', {
-    params: { windowHours, coins: watchedCoins.join(',') }, timeout: 20000,
-  });
-  return data;
-  }));
-}
 
 function tradeQueryParams(query: PagedTradesQuery = {}) {
   return {

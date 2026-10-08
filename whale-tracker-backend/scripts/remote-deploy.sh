@@ -72,6 +72,7 @@ rm -f "$DEPLOY"/lib/v41*.js \
       "$DEPLOY"/routes/adminStrategyConfigs.js
 
 # tar extraction does not remove files omitted from a newer package.
+rm -f "$DEPLOY/lib/statisticsWorker.js" "$DEPLOY/lib/statisticsCompute.js" "$DEPLOY/lib/statisticsComputeChild.js" "$DEPLOY/lib/resonanceEngine.js"
 rm -f "$DEPLOY/lib/directionSummary.js" "$DEPLOY/lib/sharedQuery.js" \
       "$DEPLOY/lib/binanceAiAccountBook.js" \
       "$DEPLOY/lib/cryptoAiOrderGate.js" \

@@ -61,7 +61,6 @@ function getMonitorSnapshot() {
       },
     },
     observationCompute: require('./whaleObservationWorker').getStatus(),
-    statisticsCompute: require('./statisticsWorker').getStatus(),
     socket: [...socketLogs],
     requests: [...requestLogs],
     errors: [...errorLogs],
