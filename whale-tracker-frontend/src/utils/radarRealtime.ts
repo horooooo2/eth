@@ -1,9 +1,10 @@
 import { ref, shallowRef } from 'vue';
+import type { SocketStatus } from '@/utils/socketStatus';
 import { http, type TradFiMarketSymbol, type TradFiQuote, type RadarKline } from '@/api';
 
-export type TrendRow={currentPrice?:number;priceAsOf?:number;priceStale?:boolean;adjustmentNote?:string;symbol:string;name:string;assetType:string;direction:'UP'|'DOWN'|'NEUTRAL'|'INSUFFICIENT'|'TURN_UP'|'TURN_DOWN';days:number;partial?:boolean;recentDays?:number;monthDays?:number;monthChange?:number;change?:number;recentChange?:number;r2?:number;efficiency?:number;score?:number;streak?:number;maxDrawdown?:number;maxRebound?:number;points?:[number,number][];asOf:number|null;latestBarAt:number|null;stale:boolean;reason?:string;error?:string};
+export type TrendRow={assetGroup?:'STOCK'|'INDEX_ETF'|'METAL_ENERGY'|'UNKNOWN';stockMarket?:string|null;liquidityExempt?:boolean;liquidity?:{version:number;asOf:number;minimum:number;averageQuoteVolume:number|null;sampleDays:number;filtered:boolean;status:string}|null;currentPrice?:number;priceAsOf?:number;priceStale?:boolean;adjustmentNote?:string;symbol:string;name:string;assetType:string;direction:'UP'|'DOWN'|'NEUTRAL'|'INSUFFICIENT'|'TURN_UP'|'TURN_DOWN';days:number;partial?:boolean;recentDays?:number;monthDays?:number;monthChange?:number;change?:number;recentChange?:number;r2?:number;efficiency?:number;score?:number;streak?:number;maxDrawdown?:number;maxRebound?:number;points?:[number,number][];asOf:number|null;latestBarAt:number|null;stale:boolean;reason?:string;error?:string};
 export type LongRecord=Omit<TrendRow,'direction'|'days'> & {frames:Record<string,Partial<TrendRow>>};
-type Chart={available:boolean;stale:boolean;bars:RadarKline[];error?:string};
+type Chart={available:boolean;stale:boolean;bars:RadarKline[];error?:string;adjustmentNote?:string};
 export type RadarSnapshot={epoch:string;seq:number;catalog:TradFiMarketSymbol[];marketSymbols:string[];quotes:TradFiQuote[];long:{rows:LongRecord[];running:boolean;error:string};updatedAt:string|null;error:string};
 type PatchRows<T>={upserts:T[];remove:string[]};
 type Delta={type:'radarDelta';epoch:string;seq:number;patch:Partial<Pick<RadarSnapshot,'catalog'|'marketSymbols'|'updatedAt'|'error'>> & {quotes?:PatchRows<TradFiQuote>;long?:PatchRows<LongRecord> & {meta:Omit<RadarSnapshot['long'],'rows'>}}};
@@ -27,25 +28,28 @@ export function createRadarClient(deps={
   socket:()=>new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/realtime/radar`),
 }){
   const state=shallowRef<RadarSnapshot|null>(null),charts=shallowRef<Record<string,Chart>>({});
-  const loading=ref(false),error=ref(''),connected=ref(false);
+  const loading=ref(false),error=ref(''),connected=ref(false),status=ref<SocketStatus>('idle');
   let active=false,ws:WebSocket|null=null,bootstrap:Promise<void>|null=null,retry:ReturnType<typeof setTimeout>|undefined;
   let heartbeat:ReturnType<typeof setInterval>|undefined,attempt=0,lastPong=0;
-  let chart:{symbol:string;interval:'5m'|'1h'}|null=null,watches:string[]=[];
+  const chartSubscriptions=new Map<string,{symbol:string;interval:'5m'|'1h'|'1d'}>();let watches:string[]=[];
   const send=(value:unknown)=>{if(ws?.readyState===1)ws.send(JSON.stringify(value));};
-  function subscriptions(){send({type:'watch',symbols:watches});if(chart)send({type:'chart',...chart});}
+  function subscriptions(){send({type:'watch',symbols:watches});for(const chart of chartSubscriptions.values())send({type:'chart',...chart});}
   function schedule(){
     clearTimeout(retry);
     if(active)retry=setTimeout(()=>{if(state.value)connect();else void ensure();},Math.min(30000,1000*2**Math.min(attempt++,5)));
   }
   function connect(){
     if(!active||!state.value||ws)return;
-    const socket=deps.socket();ws=socket;
+    status.value='connecting';
+    let socket:WebSocket;
+    try { socket=deps.socket(); } catch { status.value='disconnected';error.value='实时连接创建失败，稍后重试';schedule();return; }
+    ws=socket;
     socket.onopen=()=>{
       if(ws!==socket)return;
       lastPong=Date.now();
       send({type:'resume',epoch:state.value!.epoch,seq:state.value!.seq});
       clearInterval(heartbeat);
-      heartbeat=setInterval(()=>{if(Date.now()-lastPong>65000)socket.close();else send({type:'ping'});},25000);
+      heartbeat=setInterval(()=>{if(Date.now()-lastPong>65000){connected.value=false;status.value='disconnected';socket.close();}else send({type:'ping'});},25000);
     };
     socket.onmessage=event=>{
       if(ws!==socket)return;
@@ -58,7 +62,7 @@ export function createRadarClient(deps={
           if(!next){void resync();return;}state.value=next;
         }else if(msg.type==='caughtUp'){
           if(!state.value||msg.epoch!==state.value.epoch||msg.seq!==state.value.seq){void resync();return;}
-          connected.value=true;error.value='';attempt=0;subscriptions();
+          connected.value=true;status.value='connected';error.value='';attempt=0;subscriptions();
         }else if(msg.type==='resyncRequired')void resync();
         else if(msg.type==='radarChart'){
           const previous=charts.value[msg.key];
@@ -69,14 +73,14 @@ export function createRadarClient(deps={
         }
       }catch{void resync();}
     };
-    socket.onerror=()=>{if(ws===socket)error.value='实时连接异常，保留最近结果';};
+    socket.onerror=()=>{if(ws===socket){connected.value=false;status.value='disconnected';error.value='实时连接异常，保留最近结果';socket.close();}};
     socket.onclose=()=>{
       if(ws!==socket)return;
-      ws=null;connected.value=false;clearInterval(heartbeat);
+      ws=null;connected.value=false;status.value=active?'disconnected':'idle';clearInterval(heartbeat);
       if(active){error.value='连接中断，保留最近结果并重新连接';schedule();}
     };
   }
-  function disconnect(){const old=ws;ws=null;connected.value=false;clearInterval(heartbeat);old?.close();}
+  function disconnect(){const old=ws;ws=null;connected.value=false;status.value=active?'disconnected':'idle';clearInterval(heartbeat);old?.close();}
   async function resync(){disconnect();await ensure(true);}
   function ensure(force=false):Promise<void>{
     if(bootstrap)return bootstrap;
@@ -84,16 +88,15 @@ export function createRadarClient(deps={
     loading.value=!state.value;
     bootstrap=(async()=>{
       try{state.value=await deps.snapshot();error.value='';if(active)connect();}
-      catch{error.value='快照读取失败，保留最近结果并稍后重试';schedule();}
+      catch{status.value=active?'disconnected':'idle';error.value='快照读取失败，保留最近结果并稍后重试';schedule();}
       finally{loading.value=false;bootstrap=null;}
     })();
     return bootstrap;
   }
-  return {state,charts,loading,error,connected,ensure,
-    setActive(value:boolean){active=value;clearTimeout(retry);if(value)void ensure();else disconnect();},
+  return {state,charts,loading,error,connected,status,ensure,
+    setActive(value:boolean){active=value;clearTimeout(retry);if(value){if(!connected.value)status.value='connecting';void ensure();}else disconnect();},
     setWatches(symbols:string[]){watches=[...new Set(symbols)].slice(0,30);if(connected.value)send({type:'watch',symbols:watches});},
-    selectChart(symbol:string,interval:'5m'|'1h'){chart={symbol,interval};if(connected.value)send({type:'chart',...chart});},
-    refresh(){if(connected.value)send({type:'refresh'});else void ensure();},
+    selectChart(symbol:string,interval:'5m'|'1h'|'1d'){const chart={symbol,interval};chartSubscriptions.set(interval==='1d'?'long':'short',chart);if(connected.value)send({type:'chart',...chart});},
   };
 }
 export const radarClient=createRadarClient();

@@ -9,7 +9,7 @@ const store = require('../lib/sqliteStore');
 function isolated(name, mocks, extra = {}) {
   const filename = require.resolve('../lib/' + name), real = createRequire(filename);
   const ctx = { module: { exports: {} }, __dirname: require('node:path').dirname(filename), process: { env: {} },
-    console: { log() {}, warn() {}, info() {} }, setTimeout, clearTimeout, setInterval, clearInterval,
+    console: { log() {}, warn() {}, info() {} }, setTimeout, clearTimeout, setInterval, clearInterval, setImmediate,
     require: key => Object.hasOwn(mocks, key) ? mocks[key] : real(key), ...extra };
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), ctx); return ctx.module.exports;
 }
@@ -48,7 +48,7 @@ test('history budget exhaustion does not consume the latest-execution budget',as
   const ctx={module:{exports:{}},process:{env:{}},console:{info(){}},setTimeout,clearTimeout,require:()=>({create:()=>({})})};
   vm.runInNewContext(fs.readFileSync(filename,'utf8')+'\nmodule.exports.reserve=canTakeWeight;',ctx);
   const take=ctx.module.exports.reserve;
-  assert.ok(take({type:'userFillsByTime'},{priority:'history'}));
+  for (let i=0;i<3;i++) assert.ok(take({type:'userFillsByTime'},{priority:'history'}));
   assert.equal(take({type:'userFillsByTime'},{priority:'history'}),false);
   assert.ok(take({type:'userFillsByTime'}));
 });
@@ -72,7 +72,7 @@ test('latest worker progresses while an independent history request is waiting; 
   const api=isolated('fillBackfill',{
     './db':{getMeta:k=>({value:meta.get(k)}),setMeta:(k,v)=>meta.set(k,v)},
     './config':{normalizeAddress:x=>x,getActiveWhales:()=>[{id:'a',address}]},
-    './cache':{commitWhaleState:()=>{commits++;return {};}},
+    './cache':{readWhaleModeCache:()=>null,captureWhaleRevisions:()=>new Map(),commitWhaleState:()=>{commits++;return {};}},
     './hyperliquid':{fetchUserFillsByTime:async(_a,_s,_e,options)=>options?.priority==='history'?pending:[],mapFillToTrade:x=>x},
   },{Date:{now:()=>now}});
   const history=api.runHistoryTick();await api.runOneTick();
@@ -110,7 +110,7 @@ test('a small coverage hole is incomplete and is backfilled before older history
   const api=isolated('fillBackfill',{
     './db':{getMeta:()=>({value:JSON.stringify(marks)}),setMeta:(_k,v)=>Object.assign(marks,JSON.parse(v))},
     './config':{normalizeAddress:x=>x,getActiveWhales:()=>[{id:'a',address:'0xa'}]},
-    './cache':{commitWhaleState:()=>({})},
+    './cache':{readWhaleModeCache:()=>null,captureWhaleRevisions:()=>new Map(),commitWhaleState:()=>({})},
     './hyperliquid':{fetchUserFillsByTime:async(_a,s,e)=>(requested=[s,e],[]),mapFillToTrade:x=>x}
   },{Date:{now:()=>now}});
   assert.equal(api.getCoverageStatus().complete,false);

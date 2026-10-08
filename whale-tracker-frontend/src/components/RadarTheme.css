@@ -29,7 +29,7 @@
 .watch-card:hover{transform:translateY(-2px);border-color:#5a6578;background:var(--surface);box-shadow:0 6px 16px #0003}
 .watch-card.chosen{border-color:var(--gold);background:linear-gradient(135deg,var(--surface),#f59e0b0d);box-shadow:0 0 0 1px #f59e0b4d}
 .watch-select{box-sizing:border-box;flex:1;height:auto;min-height:0;min-width:0;max-width:100%;justify-content:flex-start;align-items:stretch;gap:5px;padding:10px;overflow:visible}
-.watch-card-top{min-height:34px;padding-right:24px;align-items:center;gap:10px}
+.watch-card-top{min-height:34px;padding-right:52px;align-items:center;gap:10px}
 .watch-name{gap:5px;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.35}
 .watch-name small{display:block;font-family:inherit;font-size:11px;font-weight:400;color:var(--muted);overflow:hidden;text-overflow:ellipsis}
 .watch-card .asset-logo{width:32px;height:32px;flex:none;border-radius:8px}
@@ -67,7 +67,7 @@
 .chart-heading{flex:none;min-height:26px;padding:0;gap:12px}
 .chart-heading b,.chart-heading span{font-size:12px}
 .chart-periods button{height:26px;padding:0 9px;border-radius:5px;background:var(--surface2)}
-.chart-wrap{box-sizing:border-box;flex:none;height:224px;min-height:224px;max-height:224px;padding:10px 10px 26px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+.chart-wrap{box-sizing:border-box;flex:none;height:224px;min-height:224px;max-height:224px;padding:8px;border:1px solid var(--line);border-radius:8px;background:#181b21}
 .price-chart{display:block;height:100%;width:100%}
 .chart-state{height:100%;min-height:0}
 .chart-line{stroke:#3b82f6;stroke-width:2}
@@ -88,7 +88,9 @@
 .trend-tag{display:inline-flex;padding:4px 8px;border-radius:4px;font-family:inherit;font-size:12px;font-weight:600;background:#f59e0b1f;color:var(--gold)}
 .trend-tag.positive{background:#00e6761f}
 .trend-tag.negative{background:#ff4d4d1f}
-.table-wrap .follow-cell{width:60px;text-align:center}
+.table-wrap .operation-cell{width:88px;min-width:80px;text-align:center}
+.contract-actions{display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap}
+.watch-card .watch-detail{position:absolute;top:8px;right:36px}
 .market-foot{padding:12px 20px;color:#5a6578;font-size:11px}
 .result-panel{margin-top:20px}
 .pagination{margin-top:12px;border:0;font-size:12px}

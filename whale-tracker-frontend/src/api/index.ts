@@ -34,12 +34,14 @@ export type TradFiQuote = {
   lastPrice: string | null;
   priceChangePercent: string | null;
   quoteVolume24h?: string | null;
+  highPrice24h?: string | null;
+  lowPrice24h?: string | null;
   closeTime: number | null;
   source: string;
   stale: boolean;
   changes?: Partial<Record<'5m' | '1h', number | null>>;
   shortStale?: boolean;
-  changeMeta?: Partial<Record<'5m' | '1h', { stale: boolean; asOf: number | null; referenceAt: number | null }>>;
+  changeMeta?: Partial<Record<'5m' | '1h', { stale: boolean; asOf: number | null; referenceAt: number | null; highPrice?: number | null; lowPrice?: number | null; rangeStale?: boolean; rangeAsOf?: number | null }>>;
   error?: string;
 };
 
@@ -929,8 +931,18 @@ export async function updateAuthUserPassword(id: string, password: string) {
   return data;
 }
 
+export type ResetRecovery = { status: 'recovering' | 'complete' | 'disabled'; monitored: number; recovered: number; errors: number; startedAt: number; since: number };
+export async function fetchAlertCount() {
+  const { data } = await http.get<{ total: number; countedAt: number }>('/data/alert-count');
+  return data;
+}
+export async function fetchResetStatus() {
+  const { data } = await http.get<{ recovery: ResetRecovery | null; error?: string | null }>('/data/reset-status');
+  return data;
+}
+
 export async function resetSiteData(rounds = 3) {
-  const { data } = await http.post<Record<string, unknown>>(
+  const { data } = await http.post<{ keptManuals?: number; recovery?: ResetRecovery | null; warning?: string | null }>(
     '/data/reset',
     {},
     { params: { rounds }, timeout: 120_000 },

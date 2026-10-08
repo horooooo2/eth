@@ -1,10 +1,11 @@
 /** Latest observations and historical coverage have independent, bounded workers. */
-const { fetchUserFillsByTime, mapFillToTrade, FILL_LOOKBACK_MS } = require('./hyperliquid');
-const { commitWhaleState } = require('./cache');
+const { fetchUserFillsByTime, mapFillToTrade, FILL_LOOKBACK_MS, normalizeToHlFill, buildPositionOpenTiming, buildPositionEntryFills } = require('./hyperliquid');
+const { commitWhaleState, readWhaleModeCache, captureWhaleRevisions } = require('./cache');
 const { getMeta, setMeta } = require('./db');
 const { normalizeAddress, getActiveWhales } = require('./config');
 const DAY_MS = 86400000;
 const META_KEY = 'fills_address_watermarks_v2';
+const RESET_META_KEY = 'fills_reset_recovery_v1';
 const ENABLED = process.env.WHALE_FILL_CAPTURE !== '0';
 const INTERVAL_MS = Math.max(5000, Number(process.env.FILL_BACKFILL_INTERVAL_MS) || 5000);
 const DAYS = 1;
@@ -15,6 +16,9 @@ let timer, historyTimer;
 let historyRunning = false, cursor = 0, historyCursor = 0, rateLimitedUntil = 0, lastError = '', resetGeneration = 0;
 const active = new Set(), attempted = new Map();
 let lastWhaleTotal = null, rosterObservedAt = null;
+function loadRecovery() {
+  try { return JSON.parse(getMeta(RESET_META_KEY)?.value || 'null'); } catch { return null; }
+}
 function loadWatermarks() {
   try { return JSON.parse(getMeta(META_KEY)?.value || '{}') || {}; } catch { return {}; }
 }
@@ -38,9 +42,41 @@ function failed(address, error, generation, update = {}) {
   saveAddress(address, { ...update, lastError }, generation);
   console.warn('[fill-backfill]', address, lastError);
 }
-function ingest(whale, fills) {
+async function ingest(whale, fills, generation, restoreTiming = false) {
   if (!Array.isArray(fills) || fills.complete === false) throw Object.assign(new Error('Incomplete fill reconciliation'), { code: 'HL_FILLS_INCOMPLETE' });
-  return commitWhaleState('hf', { trades: fills.map(f => mapFillToTrade(f, whale, {})).filter(t => t?.id) });
+  const committedAlerts = [];
+  if (!fills.length && generation === resetGeneration) commitWhaleState('hf', { trades: [] });
+  for (let offset = 0; offset < fills.length; offset += 500) {
+    if (generation !== resetGeneration) return null;
+    const trades = fills.slice(offset, offset + 500).map(f => mapFillToTrade(f, whale, {})).filter(t => t?.id);
+    const result = commitWhaleState('hf', { trades });
+    committedAlerts.push(...(result?.committedAlerts || []));
+    if (committedAlerts.length > 50) committedAlerts.splice(0, committedAlerts.length - 50);
+    if (offset + 500 < fills.length) await new Promise(resolve => setImmediate(resolve));
+  }
+  if (generation !== resetGeneration) return null;
+  const patch = { trades: [] };
+  // Reuse captured executions for metadata; never fetch the same history again.
+  if (restoreTiming) {
+    const cached = readWhaleModeCache('hf')?.data;
+    const current = cached?.whales?.find(w => w.id === whale.id);
+    if (current && fills.length) {
+      const lastFillAt = fills.reduce((last, f) => Math.max(last, Number(f.time) || 0), 0);
+      const later = (cached.trades || []).filter(t => t.whaleId === whale.id && Number(t.time) > lastFillAt)
+        .map(normalizeToHlFill);
+      const captured = [...fills, ...later];
+      patch.whales = [{ ...current, positions: (current.positions || []).map(pos => {
+        if (pos.openHistoryComplete) return pos;
+        const timing = buildPositionOpenTiming(captured, pos.coin, pos.size, pos.side);
+        if (!timing.openTime || (!timing.openHistoryComplete && Number(pos.openTime) < timing.openTime && Number(pos.openTime) > 0)) return pos;
+        return { ...pos, ...timing, ...buildPositionEntryFills(captured, pos.coin, pos.size, pos.side) };
+      }) }];
+      patch.expectedWhaleRevisions = captureWhaleRevisions('hf');
+      patch.positionMetadataOnly = true;
+    }
+  }
+  if (patch.whales) commitWhaleState('hf', patch);
+  return { committedAlerts };
 }
 async function runOneTick() {
   if (!ENABLED || active.size >= 2 || rateLimitedUntil > Date.now()) return;
@@ -59,7 +95,8 @@ async function runOneTick() {
   try {
     const fills = await fetchUserFillsByTime(whale.address, start, now);
     if (generation !== resetGeneration) return;
-    const result = ingest(whale, fills);
+    const result = await ingest(whale, fills, generation);
+    if (generation !== resetGeneration) return;
     // Re-read after await: the historical worker may have advanced the same address.
     const current = loadWatermarks()[whale.address] || entry;
     const previous = Number(current.through) || 0;
@@ -81,30 +118,32 @@ async function runHistoryTick() {
   if (!ENABLED || historyRunning || rateLimitedUntil > Date.now()) return;
   const roster = listWhales(); if (!roster.length) return;
   const marks = loadWatermarks(), now = Date.now(), generation = resetGeneration;
+  const historyFloor = now - DAY_MS;
   const ordered = roster.map((_,i) => roster[(historyCursor + i) % roster.length]);
   const eligible = ordered.filter(w => marks[w.address]?.latestObservedAt && marks[w.address]?.through);
   const whale = eligible.find(w => Number(marks[w.address].through) < Number(marks[w.address].latestCoverageStart || marks[w.address].latestObservedAt))
-    || eligible.find(w => Number(marks[w.address].historyBefore) > now - DAYS * DAY_MS);
+    || eligible.find(w => Number(marks[w.address].historyBefore) > historyFloor);
   if (!whale) return;
   historyCursor = (roster.indexOf(whale) + 1) % roster.length;
   const entry = marks[whale.address];
   // Never allow history to seed or delay the first latest observation.
   if (!entry.latestObservedAt || !entry.through) return;
   const forward = Number(entry.through) < Number(entry.latestCoverageStart || entry.latestObservedAt);
-  const width = Math.max(1, Number(forward ? entry.windowMs : entry.historyWindowMs) || 3600000);
+  const width = Math.max(1, Number(forward ? entry.windowMs : entry.historyWindowMs) || (forward ? 3600000 : DAY_MS));
   const before = Number(entry.historyBefore);
-  if (!forward && !(before > now - DAYS * DAY_MS)) return;
-  const start = Math.max(now - DAYS * DAY_MS, forward ? Number(entry.through) : before - width);
+  if (!forward && !(before > historyFloor)) return;
+  const start = Math.max(historyFloor, forward ? Number(entry.through) : before - width);
   const end = forward ? Math.min(start + width, entry.latestObservedAt) : before;
   if (end <= start) return;
   historyRunning = true;
   try {
     const fills = await fetchUserFillsByTime(whale.address, start, end, { priority: 'history' });
     if (generation !== resetGeneration) return;
-    ingest(whale, fills);
+    await ingest(whale, fills, generation, !forward && start === historyFloor);
+    if (generation !== resetGeneration) return;
     const current = loadWatermarks()[whale.address] || entry;
-    saveAddress(whale.address, forward ? { through: Math.max(Number(current.through) || 0, end), windowMs: Math.min(3600000, width * 2), gap: null }
-      : { historyBefore: start, coverageStart: Math.min(Number(current.coverageStart) || start, start), historyWindowMs: Math.min(DAY_MS, width * 2), historyGap: null }, generation);
+    saveAddress(whale.address, forward ? { through: Math.max(Number(current.through) || 0, end), windowMs: Math.min(3600000, width * 2), gap: null, lastError: '' }
+      : { historyBefore: start, coverageStart: Math.min(Number(current.coverageStart) || start, start), historyWindowMs: Math.min(DAY_MS, width * 2), historyGap: null, lastError: '' }, generation);
   } catch (error) {
     failed(whale.address, error, generation, error.code === 'HL_FILLS_INCOMPLETE' ?
       (forward ? { windowMs: Math.max(1, Math.floor(width / 2)), gap: start } : { historyWindowMs: Math.max(1, Math.floor(width / 2)), historyGap: start }) : {});
@@ -135,11 +174,35 @@ function getBackfillStatus() {
     done: false, continuous: true, reconciledAddresses: whales.filter(w => watermarks[w.address]?.through).length,
     watermarks, coverage: getCoverageStatus(), lastError, rateLimited: rateLimitedUntil > Date.now(), rateLimitedUntil };
 }
-function resetFillBackfill() { resetGeneration++; setMeta(META_KEY, '{}'); attempted.clear(); cursor = historyCursor = 0; rateLimitedUntil = 0; startFillBackfill(); return getBackfillStatus(); }
+function getResetRecoveryStatus() {
+  const recovery = loadRecovery();
+  if (!recovery) return null;
+  const marks = loadWatermarks(), whales = listWhales();
+  const ids = new Set(whales.map(w => w.address));
+  const addresses = recovery.addresses.filter(address => ids.has(address));
+  const recovered = addresses.filter(address => {
+    const entry = marks[address];
+    return entry && Number(entry.coverageStart) <= Math.max(recovery.since, Date.now() - DAY_MS) && Number(entry.through) >= recovery.startedAt
+      && !entry.gap && !entry.historyGap;
+  }).length;
+  const errors = addresses.filter(address => marks[address]?.lastError).length;
+  return { startedAt: recovery.startedAt, since: recovery.since, monitored: addresses.length,
+    recovered, errors, status: !ENABLED ? 'disabled' : recovered === addresses.length ? 'complete' : 'recovering',
+    historicalCompleteness: 'unknown-upstream-retention' };
+}
+function resetFillBackfill() {
+  resetGeneration++;
+  const startedAt = Date.now();
+  setMeta(META_KEY, '{}');
+  setMeta(RESET_META_KEY, JSON.stringify({ startedAt, since: startedAt - DAY_MS, addresses: listWhales().map(w => w.address) }));
+  attempted.clear(); cursor = historyCursor = 0; rateLimitedUntil = 0; lastError = '';
+  startFillBackfill();
+  return getBackfillStatus();
+}
 function startFillBackfill() {
   if (!ENABLED || timer) return;
   timer = setInterval(() => void runOneTick(), INTERVAL_MS); timer.unref?.();
   historyTimer = setInterval(() => void runHistoryTick(), 15000); historyTimer.unref?.();
 }
 function stopFillBackfill() { resetGeneration++; clearInterval(timer); clearInterval(historyTimer); timer = historyTimer = null; }
-module.exports = { startFillBackfill, stopFillBackfill, resetFillBackfill, getBackfillStatus, getRuntimeStatus, getCoverageStatus, runOneTick, runHistoryTick };
+module.exports = { startFillBackfill, stopFillBackfill, resetFillBackfill, getBackfillStatus, getRuntimeStatus, getCoverageStatus, getResetRecoveryStatus, runOneTick, runHistoryTick };

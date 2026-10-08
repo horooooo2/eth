@@ -72,3 +72,25 @@ test('market short intervals preserve 24h values, share baseline requests and li
   assert.equal((await read()).quotes[0].changes,undefined);
   await read('1h'); assert.equal(calls,9);
 });
+
+test('rolling extrema share the baseline request, preserve real wicks and mark missing minutes unavailable',async()=>{
+  const clock=Date.UTC(2026,9,8,10,1,32);let requests=0;
+  const realRequire=createRequire(filename);
+  const context={module:{exports:{}},process:{env:{}},Date:{now:()=>clock},
+    require:id=>id==='axios'?{create:()=>({get:async(_url,options)=>{
+      requests++;const {startTime,limit,endTime}=options.params;
+      assert.equal(limit,6);assert.equal(endTime,clock);
+      const size=options.params.symbol==='BROKENUSDT'?limit-1:limit;
+      return {data:Array.from({length:size},(_,i)=>[startTime+i*60000,'100',i===2?'150':'110',i===3?'50':'90','105','10',startTime+(i+1)*60000-1])};
+    }})}:realRequire(id)};
+  vm.runInNewContext(fs.readFileSync(filename,'utf8')+'\nmodule.exports.read=fetchShortChange;',context);
+  const read=context.module.exports.read;
+  const first=await read('BTCUSDT','5m',105,clock);
+  assert.equal(first.highPrice,150);assert.equal(first.lowPrice,50);assert.equal(first.rangeStale,false);
+  const peak=await read('BTCUSDT','5m',170,clock+1000);
+  const later=await read('BTCUSDT','5m',110,clock+2000);
+  assert.equal(requests,1);assert.equal(peak.highPrice,170);assert.equal(later.highPrice,170);assert.equal(later.rangeStale,true);
+  const missing=await read('BROKENUSDT','5m',105,clock);
+  assert.equal(missing.highPrice,null);assert.equal(missing.lowPrice,null);
+  assert.equal(missing.rangeStale,true);assert.ok(Math.abs(missing.change-5)<1e-9);
+});

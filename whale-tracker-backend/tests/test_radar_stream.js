@@ -3,6 +3,17 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs'),vm=require('node:vm');
 const {createRequire}=require('node:module');
 const {createStream}=require('../lib/radarStream');
+const {prepareDailyChart}=require('../lib/radarRealtime');
+
+test('daily candles exclude the open UTC day and split-adjust every OHLC field',()=>{
+  const day=86400000,boundary=Date.parse('2026-07-15T00:00:00Z'),now=boundary+day;
+  const bar=(time,price)=>({openTime:time,closeTime:time+day-1,open:price,high:price*1.1,low:price*.9,close:price});
+  const result=prepareDailyChart({available:true,stale:false,bars:[bar(boundary-day,1000),bar(boundary,50),bar(now,55)]},'KORUUSDT',now+123);
+  assert.equal(result.bars.length,2);assert.equal(result.bars[0].open,50);assert.equal(result.bars[0].high,55);assert.equal(result.bars[0].low,45);assert.equal(result.bars[0].close,50);
+  assert.equal(result.latestBarTime,boundary);assert.equal(result.stale,false);
+  const bad=prepareDailyChart({available:true,bars:[bar(boundary-day,5000),bar(boundary,50)]},'KORUUSDT',now);
+  assert.equal(bad.available,false);assert.equal(bad.bars.length,0);assert.match(bad.error,/边界异常/);
+});
 
 test('snapshot cursor catches updates between HTTP bootstrap and subscription; deletes are replayed',()=>{
   const stream=createStream(),initial=stream.snapshot();

@@ -113,3 +113,32 @@ test('health and monitor respond without SQLite or configuration reads, includin
     await new Promise(resolve => server.close(resolve));
   }
 });
+
+test('reset returns partial refresh errors and progress endpoint never scans historical tables', async () => {
+  const auth = require('../lib/authStore');
+  auth.createUser('reset-progress-member', 'test-password');
+  const { token } = auth.login('reset-progress-member', 'test-password');
+  const reset = require('../lib/siteReset'), worker = require('../lib/fillBackfill');
+  const originals = { reset: reset.resetSiteData, status: worker.getResetRecoveryStatus };
+  const recovery = { status: 'recovering', monitored: 50, recovered: 3, errors: 1 };
+  reset.resetSiteData = async () => ({ keptManuals: 2, recovery, refresh: { error: 'upstream unavailable' } });
+  worker.getResetRecoveryStatus = () => recovery;
+  const server = require('../lib/createApp').createApp().listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  const database = require('../lib/db').getDb(), prepare = database.prepare;
+  database.prepare = function(sql) { assert.doesNotMatch(sql, /FROM (fills|alerts|events)/i); return prepare.call(this,sql); };
+  try {
+    const base = `http://127.0.0.1:${server.address().port}/api/data`;
+    assert.equal((await fetch(base+'/reset-status')).status,401);
+    const options = { headers: { Authorization: `Bearer ${token}` } };
+    const response = await fetch(base+'/reset',{ ...options, method:'POST' });
+    const data = await response.json();
+    assert.equal(data.whaleRefresh.status,'partial'); assert.equal(data.warning,'upstream unavailable');
+    const status = await (await fetch(base+'/reset-status',options)).json();
+    assert.equal(status.recovery.recovered,3); assert.equal(status.error,'upstream unavailable');
+  } finally {
+    database.prepare = prepare;
+    reset.resetSiteData = originals.reset; worker.getResetRecoveryStatus = originals.status;
+    await new Promise(resolve => server.close(resolve));
+  }
+});

@@ -424,11 +424,9 @@ function needsEntryFillDetail(whale) {
   });
 }
 
-let openTimingEnrichInflight = null;
-
 /**
- * 补齐 openTime，并把近 7 天 HL 成交写入 snap.trades（供异动「成交明细」/补种）。
- * 线上 light 列表默认不拉 fills，必须靠这步灌历史。
+ * 补齐 openTime，并把近 24 小时 HL 成交写入 snap.trades（供异动「成交明细」/补种）。
+ * 用于显式历史刷新；自动历史采集由 fillBackfill 统一调度。
  */
 async function enrichWhaleFillsAndTiming(whales, names = {}, options = {}) {
   const maxWhales = Math.max(1, Number(options.maxWhales) || 8);
@@ -503,43 +501,6 @@ async function enrichWhaleFillsAndTiming(whales, names = {}, options = {}) {
 async function enrichMissingOpenTiming(whales, names = {}, options = {}) {
   const result = await enrichWhaleFillsAndTiming(whales, names, options);
   return result.updated;
-}
-
-async function persistOpenTimingEnrichment(mode = 'hf') {
-  if (openTimingEnrichInflight) return openTimingEnrichInflight;
-  openTimingEnrichInflight = (async () => {
-    const cached = readWhaleModeCache(mode);
-    const whales = Array.isArray(cached?.data?.whales) ? cached.data.whales : [];
-    if (!whales.length) return;
-    const baseline = captureWhaleRevisions(mode);
-    const names = await fetchCoinNameMap().catch(() => ({}));
-    const prevTrades = Array.isArray(cached?.data?.trades) ? cached.data.trades : [];
-    const tradesByWhale = new Map();
-    for (const trade of prevTrades) {
-      if (!trade?.whaleId || trade.source === 'onchain') continue;
-      const list = tradesByWhale.get(trade.whaleId) || [];
-      list.push(trade);
-      tradesByWhale.set(trade.whaleId, list);
-    }
-    const { updated, trades: newTrades } = await enrichWhaleFillsAndTiming(whales, names, {
-      maxWhales: 40,
-      concurrency: 3,
-      force: true,
-      tradesByWhale,
-    });
-    if (!updated && !newTrades.length) return;
-
-    commitWhaleState(mode, { whales, trades: newTrades,
-      expectedWhaleRevisions: baseline, positionMetadataOnly: true });
-    console.log(`[whales] 已补齐 ${updated} 个巨鲸开仓时间/成交明细（+${newTrades.length} 笔）`);
-  })()
-    .catch((err) => {
-      console.warn('[whales] 开仓时间/成交补齐任务失败:', err.message);
-    })
-    .finally(() => {
-      openTimingEnrichInflight = null;
-    });
-  return openTimingEnrichInflight;
 }
 
 /**
@@ -942,8 +903,7 @@ async function refreshWhalesShard(options = {}) {
     console.log(
       `[cache] 分片刷新 ${slice.length}/${total}（优先热门≈${hotCount}，待补 ${pendingLeft}），写入完成`,
     );
-    // 轻量快照缺 openTime：后台补齐，供异动补种使用
-    persistOpenTimingEnrichment(mode).catch(() => null);
+    // Historical fills are owned by fillBackfill; listing must not start duplicate captures.
     // 冷启动还有占位时尽快续刷，避免前端只看到「等待刷新」干等定时器
     if (pendingLeft > 0 && !isProgressiveLoading()) {
       setTimeout(() => {
@@ -2503,19 +2463,7 @@ async function getWhalesBatch(query = {}) {
   session.updatedAt = Date.now();
 
   if (done) {
-    try {
-      // 异动完整性优先：尽量给有仓巨鲸补近 7 天成交 + openTime
-      const withPos = loadedSnapshots.filter(
-        (whale) => (whale?.positions || []).some((pos) => (Number(pos.positionValue) || 0) > 0),
-      ).length;
-      await enrichWhaleFillsAndTiming(loadedSnapshots, session.names || {}, {
-        maxWhales: Math.min(80, Math.max(24, withPos)),
-        concurrency: 4,
-        force: true,
-      });
-    } catch (err) {
-      console.warn('[whales] 分段完成时成交/开仓时间补齐失败:', err.message);
-    }
+    // Historical recovery runs in the bounded fill worker, never inside pagination.
     const diskTrades = Array.isArray(readWhaleModeCache(mode)?.data?.trades)
       ? readWhaleModeCache(mode).data.trades
       : [];
@@ -2555,7 +2503,7 @@ async function getWhalesBatch(query = {}) {
     }
     const saved = writeWhaleModeCache(mode, payload, { expectedWhaleRevisions: session.baseline, rosterIds: getActiveWhales().map((whale) => whale.id) });
     if (progressiveSession === session) progressiveSession = null;
-    persistOpenTimingEnrichment(mode).catch(() => null);
+    // Historical fills are owned by fillBackfill; listing must not start duplicate captures.
     return formatCachedBatchPayload(saved, mode, { offset, limit });
   }
 

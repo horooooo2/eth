@@ -5,7 +5,6 @@ import { http, fetchQuotes } from '@/api';
 import CoinPreferences from '@/components/CoinPreferences.vue';
 import ApiSettings from '@/components/ApiSettings.vue';
 import NewsList from '@/components/NewsList.vue';
-import MarketBriefBanner from '@/components/MarketBriefBanner.vue';
 import WhaleAlertDock from '@/components/WhaleAlertDock.vue';
 import WhaleList from '@/components/WhaleList.vue';
 import DataModule from '@/components/DataModule.vue';
@@ -13,6 +12,8 @@ import WhaleObservationPanel from '@/components/WhaleObservationPanel.vue';
 import { applyObservationCommit } from '@/utils/whaleObservationState';
 import type { ObservationSnapshot } from '@/types/whaleObservation';
 import TradFiBoard from '@/components/TradFiBoard.vue';
+import { radarClient } from '@/utils/radarRealtime';
+import { summarizeSocketConnections } from '@/utils/socketStatus';
 import WhaleDetailDialog from '@/components/WhaleDetailDialog.vue';
 import { createPageLoadScheduler } from '@/utils/pageLoadScheduler';
 import { STRATEGY_WORKSPACE_ENABLED, WHALE_OBSERVATIONS_ENABLED, RADAR_ENABLED } from '@/utils/featureFlags';
@@ -216,6 +217,10 @@ const { status: transportStatus, start: startRealtime, stop: stopRealtime } = us
   }
 }, () => whaleStore.cursor());
 const realtimeStatus = computed(() => transportStatus.value === 'connected' && !whaleStore.synced ? 'connecting' : transportStatus.value);
+const socketMonitor = computed(() => summarizeSocketConnections([
+  { name: '虚拟币数据', status: realtimeStatus.value },
+  { name: '雷达数据', status: RADAR_ENABLED ? radarClient.status.value : 'idle' },
+]));
 watch(transportStatus, (status) => { if (status !== 'connected') whaleStore.synced = false; });
 
 async function recoverState() {
@@ -362,15 +367,9 @@ onUnmounted(() => {
     <aside class="sidebar" aria-label="主导航">
       <div
         class="socket-dot"
-        :class="realtimeStatus"
-        :title="
-          realtimeStatus === 'connected'
-            ? '实时连接正常'
-            : realtimeStatus === 'connecting'
-              ? '实时连接中…'
-              : '实时连接已断开'
-        "
-        aria-label="实时连接状态"
+        :class="socketMonitor.status"
+        :title="socketMonitor.title"
+        :aria-label="socketMonitor.title"
       >
         <span class="socket-core" />
       </div>
@@ -426,12 +425,6 @@ onUnmounted(() => {
 
     <div class="layout" :class="{ 'is-tradfi': sideTab !== 'virtual' }">
       <div v-show="sideTab === 'virtual'" class="virtual-view">
-      <header class="topbar">
-        <div class="topbar-right">
-          <MarketBriefBanner />
-        </div>
-      </header>
-
       <el-alert
         v-if="whaleStore.error"
         class="warn"
@@ -636,7 +629,8 @@ onUnmounted(() => {
 .sidebar .socket-dot.connecting::after {
   animation-delay: 0.9s;
 }
-.sidebar .socket-dot.disconnected .socket-core {
+.sidebar .socket-dot.disconnected .socket-core,
+.sidebar .socket-dot.idle .socket-core {
   background: var(--soft);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--soft) 22%, transparent);
 }
@@ -805,31 +799,6 @@ onUnmounted(() => {
   overflow-x: hidden;
   overflow-y: auto;
 }
-.topbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
-  min-width: 0;
-  min-height: 44px;
-}
-.topbar-right {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  min-width: 0;
-}
-.topbar :deep(.notice-wrap),
-.topbar :deep(.liq-wrap) {
-  width: 100%;
-  max-width: 100%;
-  min-width: 0;
-}
-.topbar :deep(.ai-launcher) {
-  position: static;
-  flex: none;
-}
 .login-form :deep(.el-form-item) {
   margin-bottom: 18px;
 }
@@ -896,10 +865,10 @@ onUnmounted(() => {
 .whale-area{grid-column:2;grid-row:1}
 .side-info,.alerts-area{display:flex;flex-direction:column;border:1px solid var(--border);border-radius:10px;background:var(--card)}
 .side-info{grid-column:1;grid-row:1}.alerts-area{grid-column:3;grid-row:1}
-.side-info-tabs{display:flex;flex:none;border-bottom:1px solid var(--border)}
+.side-info-tabs{position:sticky;top:0;z-index:2;background:var(--card);display:flex;flex:none;border-bottom:1px solid var(--border)}
 .side-info-tabs button{flex:1;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--muted);cursor:pointer;padding:13px 8px;font:inherit;font-size:14px}
 .side-info-tabs button.active{color:var(--accent);border-bottom-color:var(--accent)}
-.alerts-heading{flex:none;padding:13px 14px;border-bottom:1px solid var(--border);font-size:14px;font-weight:600}
+.alerts-heading{position:sticky;top:0;z-index:2;background:var(--card);flex:none;padding:13px 14px;border-bottom:1px solid var(--border);font-size:14px;font-weight:600}
 .side-info-pane{flex:1;min-height:0;display:flex;flex-direction:column}.side-info-pane>*{height:100%;min-height:0}
 @media(max-width:1280px){
   .grid{grid-template-columns:minmax(0,1fr);grid-template-rows:auto}

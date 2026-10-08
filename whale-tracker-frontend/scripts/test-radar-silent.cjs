@@ -18,7 +18,10 @@ test('one bootstrap, replay before caughtUp, duplicates ignored and chart change
   const s=h.sockets[0];h.open(s);assert.deepEqual(s.sent[0],{type:'resume',epoch:'epoch',seq:0});
   const delta={type:'radarDelta',epoch:'epoch',seq:1,patch:{quotes:{upserts:[{symbol:'A',lastPrice:'11'}],remove:[]}}};
   h.message(s,delta);h.message(s,{type:'caughtUp',epoch:'epoch',seq:1});assert.equal(c.connected.value,true);assert.equal(c.state.value.quotes[0].lastPrice,'11');
-  h.message(s,delta);assert.equal(c.state.value.seq,1);c.setWatches(['A']);c.selectChart('A','5m');c.selectChart('A','1h');c.refresh();assert.equal(h.requests(),1);
+  h.message(s,delta);assert.equal(c.state.value.seq,1);c.setWatches(['A']);c.selectChart('A','5m');c.selectChart('A','1h');assert.equal(h.requests(),1);
+  c.selectChart('WDCUSDT','1d');
+  c.setActive(false);c.setActive(true);const resumed=h.sockets[1];h.open(resumed);h.message(resumed,{type:'caughtUp',epoch:'epoch',seq:1});
+  assert.deepEqual(resumed.sent.filter(msg=>msg.type==='chart').map(msg=>msg.interval),['1h','1d']);assert.equal(h.requests(),1);
  }finally{c.setActive(false);}
 });
 test('reactivation retains state without HTTP; gaps resync and replaced socket messages ignored',async()=>{
@@ -48,4 +51,27 @@ test('chart cache has bounded size',async()=>{
 test('local sorting places missing values last, uses symbol for ties and preserves shared order',()=>{
  const rows=[{symbol:'B',value:2},{symbol:'C',value:null},{symbol:'A',value:2}];
  for(const order of ['asc','desc'])assert.deepEqual(sortRadarRows(rows,row=>row.value,order).map(row=>row.symbol),['A','B','C']);assert.equal(rows[0].symbol,'B');
+});
+
+test('radar status distinguishes idle, connecting, synchronized, failed and resumed sockets',async()=>{
+ const h=setup(),c=h.client;
+ try{
+  assert.equal(c.status.value,'idle');c.setActive(true);assert.equal(c.status.value,'connecting');await c.ensure();
+  const socket=h.sockets[0];h.open(socket);assert.equal(c.status.value,'connecting');
+  h.message(socket,{type:'caughtUp',epoch:'epoch',seq:0});assert.equal(c.status.value,'connected');
+  socket.onerror();assert.equal(c.status.value,'disconnected');assert.equal(c.connected.value,false);
+  c.setActive(false);assert.equal(c.status.value,'idle');
+  c.setActive(true);assert.equal(c.status.value,'connecting');
+  const resumed=h.sockets[1];h.open(resumed);h.message(resumed,{type:'caughtUp',epoch:'epoch',seq:0});
+  assert.equal(c.status.value,'connected');assert.equal(h.requests(),1);
+ }finally{c.setActive(false);}
+});
+test('snapshot and constructor failures appear in radar status without creating extra connections',async()=>{
+ const failed=createRadarClient({snapshot:async()=>{throw Error('offline');},socket:()=>{throw Error('unexpected socket');}});
+ try{failed.setActive(true);await failed.ensure();assert.equal(failed.status.value,'disconnected');assert.equal(failed.connected.value,false);}
+ finally{failed.setActive(false);}
+ let calls=0;
+ const broken=createRadarClient({snapshot:async()=>initial(),socket:()=>{calls++;throw Error('blocked');}});
+ try{broken.setActive(true);await broken.ensure();assert.equal(broken.status.value,'disconnected');assert.equal(calls,1);}
+ finally{broken.setActive(false);}
 });

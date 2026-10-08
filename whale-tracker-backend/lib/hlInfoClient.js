@@ -59,7 +59,7 @@ function canTakeWeight(body, scheduling = {}) {
   while (budget.length && budget[0].at <= now - 60000) budget.shift();
   const limit = body.type === 'clearinghouseState' ? WEIGHT_LIMIT : WEIGHT_LIMIT - 120;
   const weight = requestWeight(body);
-  if (scheduling.priority === "history" && budget.filter(row => row.history).reduce((sum, row) => sum + row.weight, 0) + weight > Math.max(120, WEIGHT_LIMIT * 0.2)) return false;
+  if (scheduling.priority === "history" && budget.filter(row => row.history).reduce((sum, row) => sum + row.weight, 0) + weight > Math.max(120, WEIGHT_LIMIT * 0.4)) return false;
   if (budget.reduce((sum, row) => sum + row.weight, 0) + weight > Math.max(120, limit)) return false;
   const reservation = { at: now, weight, history: scheduling.priority === "history" }; budget.push(reservation); return reservation;
 }

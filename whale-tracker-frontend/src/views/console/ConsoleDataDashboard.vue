@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
-import { addManualWhale, createAuthUser, deleteAuthUser, fetchManagementWhales, listAuthUsers, renameWhale, resetSiteData, updateAuthUserPassword } from '@/api';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { addManualWhale, createAuthUser, deleteAuthUser, fetchManagementWhales, fetchAlertCount, listAuthUsers, renameWhale, resetSiteData, fetchResetStatus, type ResetRecovery, updateAuthUserPassword } from '@/api';
 
 type AuthUser = { id: string; username: string; createdAt: number };
 type WhaleRow = {
@@ -35,6 +35,23 @@ const manualAddr = ref('');
 const manualName = ref('');
 const resetBusy = ref(false);
 const resetStatus = ref('');
+const refreshing = ref(false);
+const alertTotal = ref<number | null>(null);
+const alertCountAt = ref(0);
+const alertCountError = ref('');
+let alertCountPending: Promise<void> | null = null;
+function loadAlertCount() {
+  if (alertCountPending) return alertCountPending;
+  alertCountPending = fetchAlertCount().then(data => {
+    if (disposed) return;
+    alertTotal.value = data.total;
+    alertCountAt.value = data.countedAt;
+    alertCountError.value = '';
+  }).catch(error => {
+    if (!disposed) alertCountError.value = error instanceof Error ? error.message : String(error);
+  }).finally(() => { alertCountPending = null; });
+  return alertCountPending;
+}
 
 function fmtTime(ts: unknown) {
   const n = Number(ts) || 0;
@@ -114,12 +131,14 @@ async function loadUsers() {
 }
 
 async function refreshAll() {
+  if (refreshing.value) return;
+  refreshing.value = true;
   try {
     showErr('');
-    await Promise.all([loadWhales(), loadUsers()]);
+    await Promise.all([loadWhales(), loadUsers(), loadAlertCount()]);
   } catch (e) {
     showErr(`加载失败：${e instanceof Error ? e.message : String(e)}`);
-  }
+  } finally { refreshing.value = false; }
 }
 
 async function createUser() {
@@ -206,6 +225,29 @@ async function renameWhaleRow(id: string, current: string) {
   }
 }
 
+let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+let disposed = false;
+let recoveryGeneration = 0;
+function displayRecovery(recovery: ResetRecovery | null | undefined, warning?: string | null) {
+  const suffix = warning ? `；仓位刷新失败：${warning}` : '';
+  if (!recovery) { resetStatus.value = `已清理数据，回补状态暂不可用${suffix}`; return; }
+  resetStatus.value = recovery.status === 'disabled' ? '已清理数据，成交采集已停用，无法自动回补'
+    : recovery.status === 'complete' ? `最近 24 小时回补检查完成（${recovery.recovered}/${recovery.monitored} 个地址），以数据源可返回的成交为准${suffix}`
+    : `历史回补中：${recovery.recovered}/${recovery.monitored} 个地址${recovery.errors ? `，${recovery.errors} 个待重试` : ''}${suffix}`;
+}
+async function pollRecovery(generation = recoveryGeneration) {
+  if (disposed || generation !== recoveryGeneration) return;
+  let pending = true;
+  try {
+    const data = await fetchResetStatus();
+    if (disposed || generation !== recoveryGeneration) return;
+    if (data.recovery) displayRecovery(data.recovery, data.error);
+    pending = data.recovery?.status === 'recovering';
+    if (data.recovery?.status === 'complete') void loadAlertCount();
+  } catch { if (!disposed && generation === recoveryGeneration) resetStatus.value = '回补进度读取失败，稍后重试'; }
+  if (pending && !disposed && generation === recoveryGeneration) recoveryTimer = setTimeout(() => void pollRecovery(generation), 10000);
+}
+
 async function resetSite() {
   if (
     !window.confirm(
@@ -214,12 +256,16 @@ async function resetSite() {
   ) {
     return;
   }
+  clearTimeout(recoveryTimer);
+  recoveryGeneration++;
   resetBusy.value = true;
   resetStatus.value = '正在重置并重新拉取…';
   try {
     const data = await resetSiteData(3);
-    resetStatus.value = `重置完成，保留用户及巨鲸配置（手动 ${data.keptManuals ?? 0} 个）`;
-    await loadWhales();
+    displayRecovery(data.recovery, data.warning);
+    clearTimeout(recoveryTimer);
+    if (!disposed && data.recovery?.status === 'recovering') recoveryTimer = setTimeout(() => void pollRecovery(), 10000);
+    await Promise.all([loadWhales(), loadAlertCount()]);
   } catch (e) {
     resetStatus.value = `失败：${e instanceof Error ? e.message : String(e)}`;
   } finally {
@@ -227,35 +273,36 @@ async function resetSite() {
   }
 }
 
-onMounted(() => { void refreshAll(); });
+onMounted(() => { void refreshAll(); void pollRecovery(); });
+onUnmounted(() => { disposed = true; clearTimeout(recoveryTimer); });
 </script>
 
 <template>
-  <main class="console-main">
+  <main class="console-main data-dashboard">
     <div class="err-banner" :class="{ show: Boolean(pageErr) }">{{ pageErr }}</div>
-    <section class="banner">
-      <div>
-        <button class="ghost" type="button" :disabled="resetBusy" @click="refreshAll">刷新列表</button>
-        <button class="warn" type="button" :disabled="resetBusy" @click="resetSite">重置</button>
-        <span class="status-text" role="status">{{ resetStatus }}</span>
+    <header class="data-heading">
+      <div><h2>数据管理</h2><p>管理用户、巨鲸与数据库记录</p></div>
+      <div class="data-actions">
+        <button class="ghost" type="button" :disabled="resetBusy || refreshing" @click="refreshAll">{{ refreshing ? '正在刷新…' : '刷新数据' }}</button>
+        <button class="warn" type="button" :disabled="resetBusy || refreshing" @click="resetSite">{{ resetBusy ? '正在重置…' : '重置数据' }}</button>
       </div>
-      <div class="banner-stats">
-        <div class="bstat" title="当前数据库中的巨鲸数量，刷新列表后更新">
-          <div class="n">{{ whaleTotal ?? '—' }}</div>
-          <div class="l">已拉取巨鲸</div>
-        </div>
-      </div>
+    </header>
+    <section class="data-overview" aria-label="数据库概览">
+      <div class="overview-item"><span>数据库异动记录</span><strong>{{ alertTotal == null ? '—' : alertTotal.toLocaleString('zh-CN') }}<small>条</small></strong><p v-if="alertCountError" class="count-error">{{ alertCountError }}{{ alertTotal == null ? '' : '（显示上次统计）' }}</p><p v-else>{{ alertCountAt ? `统计于 ${fmtTime(alertCountAt)}` : '正在读取…' }}</p></div>
+      <div class="overview-item"><span>已拉取巨鲸</span><strong>{{ whaleTotal ?? '—' }}<small>个</small></strong><p>当前数据库中的巨鲸</p></div>
+      <div class="overview-item"><span>用户账号</span><strong>{{ users.length }}<small>个</small></strong><p>已创建的登录账号</p></div>
     </section>
+    <div v-if="resetStatus" class="recovery-status" role="status">{{ resetStatus }}</div>
 
-    <div class="grid-2">
+    <div class="data-grid">
       <section class="card">
         <div class="card-head">
           <h2>用户管理</h2>
           <span class="pill">{{ users.length }}</span>
         </div>
         <div class="form-row">
-          <label>用户名 <input v-model="newUser" /></label>
-          <label>密码 <input v-model="newPass" type="password" /></label>
+          <label>用户名 <input v-model="newUser" placeholder="输入用户名" autocomplete="off" /></label>
+          <label>密码 <input v-model="newPass" type="password" placeholder="设置登录密码" autocomplete="new-password" /></label>
           <button type="button" class="sm" @click="createUser">增加</button>
           <span class="msg" :class="userMsg ? (userMsgOk ? 'ok' : 'err') : ''">{{ userMsg }}</span>
         </div>
@@ -308,7 +355,8 @@ onMounted(() => { void refreshAll(); });
             <input
               v-model="whaleSearch"
               type="search"
-              style="width: 160px"
+              placeholder="搜索名称或地址"
+              aria-label="搜索巨鲸"
               @input="whalePage = 1"
             />
             <button type="button" class="sm" @click="addWhaleOpen = true">新增</button>
@@ -407,3 +455,20 @@ onMounted(() => { void refreshAll(); });
     </div>
   </div>
 </template>
+
+<style scoped>
+.data-dashboard{max-width:1500px;padding-top:24px}
+.data-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+.data-heading h2{margin:0 0 6px;font-size:22px;font-weight:650}.data-heading p{margin:0;color:var(--c-muted);font-size:13px}
+.data-actions{display:flex;gap:10px}.data-overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-bottom:20px}
+.overview-item{min-width:0;padding:20px 22px;border:1px solid var(--c-line);border-radius:12px;background:var(--c-panel)}
+.overview-item>span{color:var(--c-muted);font-size:13px}.overview-item strong{display:block;margin-top:12px;font-size:30px;font-variant-numeric:tabular-nums;line-height:1.2}
+.overview-item small{margin-left:8px;font-size:12px;font-weight:400;color:var(--c-muted)}.overview-item p{margin:10px 0 0;color:var(--c-muted);font-size:12px;line-height:1.5;overflow-wrap:anywhere}.overview-item .count-error{color:var(--c-warn)}
+.recovery-status{margin-bottom:20px;padding:12px 16px;border:1px solid var(--c-line);border-radius:10px;background:var(--c-panel2);color:var(--c-muted);font-size:13px;line-height:1.6}
+.data-grid{display:grid;grid-template-columns:minmax(320px,.9fr) minmax(0,1.65fr);gap:20px;align-items:start}.data-grid .card{min-width:0;border-radius:12px;overflow:hidden}.data-grid .card-head{padding:16px 18px}.data-grid .card-head h2{font-size:15px}.data-grid .card-body{overflow-x:auto}.data-grid th,.data-grid td{padding:12px 14px;white-space:nowrap}.data-grid tbody tr:hover{background:var(--c-panel2)}
+.data-grid .form-row{padding:16px;gap:12px;align-items:flex-end}.form-row label{display:flex;flex-direction:column;gap:7px;flex:1;min-width:120px}.form-row input{width:100%;min-height:34px}.form-row .msg{flex-basis:100%}.data-grid .filters{padding:14px;gap:8px}.filters-right input{width:180px;max-width:100%;min-height:30px}.data-grid .pager-bar{justify-content:flex-start;padding:12px 14px}.pager-bar span{margin-right:auto;color:var(--c-muted)}
+.data-dashboard button{transition:background .15s,opacity .15s}.data-dashboard button:hover:not(:disabled){filter:brightness(1.12)}
+.data-grid .card-body{scrollbar-color:var(--c-line) var(--c-panel);scrollbar-width:thin}.data-grid .card-body::-webkit-scrollbar{width:6px;height:6px}.data-grid .card-body::-webkit-scrollbar-track{background:var(--c-panel)}.data-grid .card-body::-webkit-scrollbar-thumb{background:var(--c-line);border-radius:4px}
+@media(max-width:1100px){.data-grid{grid-template-columns:minmax(0,1fr)}.data-grid .form-row label{max-width:260px}}
+@media(max-width:600px){.data-dashboard{padding:16px 12px 32px}.data-overview{gap:8px}.overview-item{padding:14px 10px}.overview-item strong{font-size:24px}.overview-item>span{font-size:12px}.overview-item p{font-size:11px}.data-actions{width:100%}.data-actions button{flex:1}.data-grid .filters-right{width:100%;margin-left:0}.filters-right input{flex:1;min-width:0}}
+</style>

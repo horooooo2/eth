@@ -52,7 +52,7 @@ export function useRealtime(onMessage: (msg: RealtimeMessage) => void, getCursor
       lastReceived = Date.now();
       resume();
       pingTimer = setInterval(() => {
-        if (Date.now() - lastReceived > 60_000) { current.close(); return; }
+        if (Date.now() - lastReceived > 60_000) { connected.value = false; status.value = 'connecting'; current.close(); return; }
         if (current.readyState === WebSocket.OPEN) current.send(JSON.stringify({ type: 'ping' }));
       }, 25_000);
     };
@@ -70,7 +70,10 @@ export function useRealtime(onMessage: (msg: RealtimeMessage) => void, getCursor
       if (stopped) status.value = 'disconnected';
       else scheduleReconnect();
     };
-    current.onerror = () => current.close();
+    current.onerror = () => {
+      if (socket !== current) return;
+      connected.value = false; status.value = 'connecting'; current.close();
+    };
   }
   function start() { stopped = false; connect(); }
   function stop() {

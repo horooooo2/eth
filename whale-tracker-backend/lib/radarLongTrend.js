@@ -1,4 +1,5 @@
 const {sortRows}=require('./radarSort');
+const {classifyTradfi,liquidityFor}=require('./tradfiUniverse');
 const DAY=86400000;
 const WINDOWS=[30,60,90];
 const RULE_VERSION=3;
@@ -11,7 +12,7 @@ function normalizeHistory(symbol,bars){
   const after=bars.filter(b=>b.openTime>=KORU_SPLIT).sort((a,b)=>a.openTime-b.openTime);
   if(!before.length||!after.length)return {bars,note:''};
   const ratio=before.at(-1).close/after[0].close;
-  if(ratio>10&&ratio<40)return {bars:bars.map(b=>b.openTime<KORU_SPLIT?{...b,close:b.close/20}:b),note:'已按 2026-07-15 的 1 拆 20 调整历史收盘价'};
+  if(ratio>10&&ratio<40)return {bars:bars.map(b=>b.openTime<KORU_SPLIT?{...b,...Object.fromEntries(['open','high','low','close'].filter(key=>Number.isFinite(b[key])).map(key=>[key,b[key]/20]))}:b),note:'已按 2026-07-15 的 1 拆 20 调整历史价格'};
   if(ratio>=.25&&ratio<=4)return {bars,note:'历史收盘价已处于拆分后价格口径'};
   throw Error('拆分价格边界异常，暂不计算');
 }
@@ -65,6 +66,10 @@ function createService({catalog=()=>require('./tradfiMarkets').getLongTrendContr
   fetchPrices=null,now=Date.now,pause=()=>new Promise(r=>setTimeout(r,350)),getDb=()=>require('./db').getDb()}={}) {
   let initialized=false,running=false,task=null,nextAttempt=0,done=0,total=0,error='',records=new Map();
   let prices=new Map(),priceTask=null,priceAttempt=0;
+  function liquidityView(record,day) {
+    const result=record.liquidity;
+    return result?{...result,filtered:Boolean(result.filtered&&result.asOf===day&&!record.error&&!classifyTradfi(record.market.symbol).liquidityExempt)}:null;
+  }
   function refreshPrices(){
     if(!fetchPrices||priceTask||now()<priceAttempt)return;
     priceAttempt=now()+15000;
@@ -105,13 +110,16 @@ function createService({catalog=()=>require('./tradfiMarkets').getLongTrendContr
       for(const market of contracts) {
         const previous=records.get(market.symbol);
         const metadata={symbol:market.symbol,name:market.name,baseAsset:market.baseAsset,assetType:market.assetType};
-        if(previous?.asOf===day&&!previous.error){records.set(market.symbol,{...previous,market:metadata});done++;continue;}
+        if(previous?.asOf===day&&!previous.error&&(classifyTradfi(market.symbol).liquidityExempt||(previous.liquidity?.version===1&&previous.liquidity?.minimum===5000000))){
+          records.set(market.symbol,{...previous,market:metadata,liquidity:previous.liquidity||liquidityFor(market.symbol,[],day)});done++;continue;
+        }
         try {
           const bars=await fetchBars(market.symbol,day);
           const {points,frames,adjustmentNote}=framesFor(market.symbol,bars,day);
           const latestBarAt=points.at(-1)?.[0]??null;
           const rowError=latestBarAt!==day-DAY?'日线尚未更新或存在异常':'';
-          const value={market:metadata,frames,points,adjustmentNote,latestBarAt,asOf:day,ruleVersion:RULE_VERSION,error:rowError};
+          const liquidity=liquidityFor(market.symbol,bars,day);
+          const value={market:metadata,frames,points,adjustmentNote,liquidity,latestBarAt,asOf:day,ruleVersion:RULE_VERSION,error:rowError};
           if(rowError)error='部分日线尚未更新，稍后重试';
           getDb().prepare('INSERT OR REPLACE INTO radar_long_trends VALUES(?,?)').run(market.symbol,JSON.stringify(value));
           records.set(market.symbol,value);
@@ -138,12 +146,12 @@ function createService({catalog=()=>require('./tradfiMarkets').getLongTrendContr
   function snapshot({days=90,direction='ALL',assetType='ALL',search='',page=1,watchSymbols=[],focus='',sort='score',order='desc'}={}) {
     init();void refresh();refreshPrices();
     const day=Math.floor(now()/DAY)*DAY,query=String(search).slice(0,80).toLowerCase();
-    let rows=[...records.values()].map(record=>({...record.market,...livePrice(record.market.symbol),adjustmentNote:record.adjustmentNote,...(record.frames[days]||{direction:'INSUFFICIENT',days:0,reason:record.error}),
+    let rows=[...records.values()].map(record=>({...record.market,...classifyTradfi(record.market.symbol),liquidity:liquidityView(record,day),...livePrice(record.market.symbol),adjustmentNote:record.adjustmentNote,...(record.frames[days]||{direction:'INSUFFICIENT',days:0,reason:record.error}),
       latestBarAt:record.latestBarAt??record.points?.at(-1)?.[0]??null,
       asOf:record.asOf,stale:record.asOf!==day||Boolean(record.error),error:record.error}));
     const coverage={total:total||records.size,loaded:records.size,fresh:rows.filter(r=>!r.stale).length,insufficient:rows.filter(r=>r.direction==='INSUFFICIENT').length};
     const allRows=rows;
-    rows=rows.filter(r=>(assetType==='ALL'||r.assetType===assetType)&&(!query||`${r.symbol} ${r.name}`.toLowerCase().includes(query)))
+    rows=rows.filter(r=>!r.liquidity?.filtered&&(assetType==='ALL'||r.assetType===assetType)&&(!query||`${r.symbol} ${r.name}`.toLowerCase().includes(query)))
       .filter(r=>direction==='ALL'||(direction==='TREND'?['UP','DOWN'].includes(r.direction):r.direction===direction))
 ;
     rows=sortRows(rows,row=>sort==='price'?records.get(row.symbol)?.points?.at(-1)?.[1]:row[sort],order);
@@ -158,7 +166,7 @@ function createService({catalog=()=>require('./tradfiMarkets').getLongTrendContr
   function snapshotAll(){
     init();void refresh();refreshPrices();
     const day=Math.floor(now()/DAY)*DAY;
-    return {rows:[...records.values()].map(record=>({...record.market,...livePrice(record.market.symbol),
+    return {rows:[...records.values()].map(record=>({...record.market,...classifyTradfi(record.market.symbol),liquidity:liquidityView(record,day),...livePrice(record.market.symbol),
       frames:record.frames,points:record.points||[],adjustmentNote:record.adjustmentNote,
       latestBarAt:record.latestBarAt??null,asOf:record.asOf,stale:record.asOf!==day||Boolean(record.error),error:record.error})),
       running,done,total,error,asOf:day,ruleVersion:RULE_VERSION};

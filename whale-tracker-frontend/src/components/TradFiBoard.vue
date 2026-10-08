@@ -2,6 +2,8 @@
 import { computed, nextTick, onUnmounted, ref, watch as watchVue } from 'vue';
 import { radarClient, sortRadarRows } from '@/utils/radarRealtime';
 import { contractLogo } from '@/utils/contractLogo';
+import CandlestickChart from './CandlestickChart.vue';
+import ContractDetailLink from './ContractDetailLink.vue';
 import RadarLongTrend from '@/components/RadarLongTrend.vue';
 import { ElMessage } from 'element-plus';
 import { fetchRadarMarketCap, fetchRadarNews, streamChatMarketBrief, type MarketChatMessage, type RadarAvailableContract, type RadarKline, type RadarNewsItem, type TradFiMarketSymbol, type TradFiQuote } from '@/api';
@@ -33,8 +35,6 @@ const selected = ref('BTCUSDT');
 const activeInterval = ref<RadarInterval>('1h');
 const assetFilter = ref<AssetFilter>('ALL');
 const searchText = ref('');
-const anomalyOnly = ref(false);
-const anomalyThreshold = ref(2);
 const directionFilter = ref<DirectionFilter>('ALL');
 const watchPage = ref(1);
 const marketPage = ref(1);
@@ -52,12 +52,10 @@ const chartError = ref('');
 const selectedMarketCap = ref<string | null>(null);
 const marketCapSource = ref('');
 const marketCapLoading = ref(false);
-const chartHover = ref<{ index: number; x: number; y: number } | null>(null);
 const failedLogos = ref(new Set<string>());
 const WATCH_PAGE_SIZE = 6;
 const MARKET_PAGE_SIZE = 10;
 let started = false;
-const radarReady = ref(false);
 let initialLoad: Promise<void> | null = null;
 
 const addDialogVisible = ref(false);
@@ -142,7 +140,6 @@ const filteredRows = computed(() => {
     })
     .map((symbol) => ({ symbol, quote: quotes.value[symbol], change: changeValue(quotes.value[symbol], activeInterval.value) }))
     .filter((row) => directionFilter.value === 'ALL' || (directionFilter.value === 'UP' ? (row.change ?? -Infinity) > 0 : (row.change ?? Infinity) < 0))
-    .filter((row) => !anomalyOnly.value || (row.change != null && Math.abs(row.change) >= Math.max(0, Number(anomalyThreshold.value) || 0)))
     .sort((a, b) => Math.abs(b.change ?? 0) - Math.abs(a.change ?? 0));
 });
 const filteredMarketRows = computed(() => {
@@ -153,14 +150,20 @@ const filteredMarketRows = computed(() => {
     .filter((market) => assetFilter.value === 'ALL' || market.assetType === assetFilter.value)
     .filter((market) => !query || `${market.symbol} ${market.baseAsset} ${market.name}`.toLocaleLowerCase().includes(query))
     .map((market) => ({ symbol: market.symbol, market, quote: marketQuotes.value[market.symbol], change: changeValue(marketQuotes.value[market.symbol], activeInterval.value) }))
-    .filter((row) => directionFilter.value === 'ALL' || (directionFilter.value === 'UP' ? (row.change ?? -Infinity) > 0 : (row.change ?? Infinity) < 0))
-    .filter((row) => !anomalyOnly.value || (row.change != null && Math.abs(row.change) >= Math.max(0, Number(anomalyThreshold.value) || 0)));
+    .filter((row) => directionFilter.value === 'ALL' || (directionFilter.value === 'UP' ? (row.change ?? -Infinity) > 0 : (row.change ?? Infinity) < 0));
   return sortRadarRows(rows,row=>marketSort.value==='price'?row.quote?.lastPrice:marketSort.value==='change'?row.change:row.change==null?null:Math.abs(row.change),marketOrder.value);
 });
 const pagedWatchRows = computed(() => filteredRows.value.slice((watchPage.value - 1) * WATCH_PAGE_SIZE, watchPage.value * WATCH_PAGE_SIZE));
 const pagedMarketRows = computed(() => filteredMarketRows.value.slice((marketPage.value - 1) * MARKET_PAGE_SIZE, marketPage.value * MARKET_PAGE_SIZE));
 const watchPageCount = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / WATCH_PAGE_SIZE)));
 const marketPageCount = computed(() => Math.max(1, Math.ceil(filteredMarketRows.value.length / MARKET_PAGE_SIZE)));
+const selectedRange = computed(() => {
+  const quote = selectedQuote.value || selectedMarketQuote.value;
+  if (activeInterval.value === '24h') return { high: quote?.highPrice24h, low: quote?.lowPrice24h, stale: isQuoteStale(quote || undefined) };
+  const range = quote?.changeMeta?.[activeInterval.value];
+  return { high: range?.highPrice == null ? null : String(range.highPrice), low: range?.lowPrice == null ? null : String(range.lowPrice),
+    stale: isQuoteStale(quote || undefined) || range?.rangeStale !== false };
+});
 const selectedMarketQuote = computed(() => marketQuotes.value[selected.value]);
 const quoteTimestamp = computed(() => updatedAt.value ? new Date(updatedAt.value).toLocaleTimeString('zh-CN') : '—');
 const availableMatches = computed(() => {
@@ -177,24 +180,8 @@ const availableMatches = computed(() => {
     .filter((contract) => !query || `${contract.symbol} ${contract.baseAsset} ${contract.name}`.toLocaleLowerCase().includes(query))
     .slice(0, query ? 100 : 40);
 });
-const chartPoints = computed(() => {
-  const bars = chartBars.value;
-  if (!bars.length) return [];
-  const min = Math.min(...bars.map((bar) => bar.low));
-  const max = Math.max(...bars.map((bar) => bar.high));
-  const span = max - min || Math.max(max * 0.001, 1);
-  return bars.map((bar, index) => ({
-    x: 12 + index * (776 / Math.max(1, bars.length - 1)),
-    y: 12 + ((max - bar.close) / span) * 176,
-    bar,
-  }));
-});
-const chartPath = computed(() => chartPoints.value.map((point, index) => `${index ? 'L' : 'M'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(' '));
-const hoveredBar = computed(() => chartHover.value ? chartPoints.value[chartHover.value.index]?.bar || null : null);
-const chartTooltipStyle = computed(() => chartHover.value ? { left: `${chartHover.value.x}%`, top: `${chartHover.value.y}%` } : {});
-
 // Quote refreshes rebuild and sort rows; they must not reset navigation.
-watchVue([directionFilter, assetFilter, searchText, anomalyOnly, anomalyThreshold], () => {
+watchVue([directionFilter, assetFilter, searchText], () => {
   watchPage.value = 1;
   marketPage.value = 1;
 });
@@ -265,20 +252,7 @@ function logoUrl(symbol: string) {
 }
 function logoFailed(symbol: string) { return failedLogos.value.has(symbol); }
 function markLogoFailed(symbol: string) { failedLogos.value = new Set(failedLogos.value).add(symbol); }
-function formatChartDate(timestamp: number) {
-  return new Date(timestamp).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-}
-function handleChartMove(event: PointerEvent) {
-  if (!chartPoints.value.length) return;
-  const svg = event.currentTarget as SVGSVGElement;
-  const bounds = svg.getBoundingClientRect();
-  const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
-  const index = Math.round(ratio * (chartPoints.value.length - 1));
-  chartHover.value = { index, x: Math.max(14, Math.min(86, ratio * 100)), y: 15 };
-}
-function clearChartHover() { chartHover.value = null; }
 async function loadChart(_silent = false) {
-  chartHover.value=null;
   radarClient.selectChart(selected.value,chartInterval.value);
   applyChart();
 }
@@ -481,7 +455,7 @@ watchVue(watch, (symbols) => {
   radarClient.setWatches(symbols);
   if (!symbols.includes(selected.value)) selected.value = symbols[0] || 'BTCUSDT';
 });
-watchVue(() => [selected.value, chartInterval.value] as const, () => { chartBars.value = []; chartHover.value = null; if (started) void loadChart(); });
+watchVue(() => [selected.value, chartInterval.value] as const, () => { chartBars.value = []; if (started) void loadChart(); });
 watchVue(selected, (symbol) => { if (started) void loadMarketCap(symbol); });
 watchVue(()=>props.active,value=>radarClient.setActive(value),{immediate:true});
 function initialize() {
@@ -491,13 +465,9 @@ function initialize() {
     if(!watch.value.includes(selected.value))selected.value=watch.value[0]||'BTCUSDT';
     started=true;
     await Promise.allSettled([loadChart(),loadMarketCap(selected.value)]);
-    radarReady.value=true;
   })();
 }
 defineExpose({ initialize });
-async function refreshRadar(){
-  radarClient.refresh();
-}
 onUnmounted(()=>{
   radarClient.setActive(false);capRequestId++;started=false;
   aiRequestSeq++;aiAbort?.abort();
@@ -523,10 +493,8 @@ onUnmounted(()=>{
         </div>
         <div class="periods direction-filter" aria-label="涨跌类型"><button v-for="item in [{id:'ALL',label:'涨跌全部'},{id:'UP',label:'涨幅'},{id:'DOWN',label:'跌幅'}] as const" :key="item.id" type="button" :class="{ active: directionFilter === item.id }" @click="directionFilter = item.id">{{ item.label }}</button></div>
         <label class="search"><span>⌕</span><input v-model="searchText" type="search" placeholder="搜索代码或名称"></label>
-        <button type="button" class="refresh" :disabled="!radarReady" @click="refreshRadar">刷新行情</button>
-        <label class="threshold"><input v-model="anomalyOnly" type="checkbox"><span>只看异动</span></label>
-        <label v-if="anomalyOnly" class="threshold-value"><input v-model.number="anomalyThreshold" type="number" min="0.1" step="0.1"><span>%</span></label>
         <button type="button" class="add-contract-button" @click="openAddContractDialog">＋ 新增币种</button>
+        <button type="button" class="refresh" @click="marketSort='absoluteChange';marketOrder='desc';marketPage=1">重置排序</button>
       </section>
 
       <section class="watch-layout">
@@ -541,6 +509,7 @@ onUnmounted(()=>{
                 <span class="watch-card-bottom"><span>{{ intervals.find((item) => item.id === activeInterval)?.label }}涨跌</span><b v-if="isQuoteStale(row.quote)" class="neutral">缓存</b></span>
               </button>
               <button type="button" class="watch-ai-button" :disabled="aiLoading || aiSending" @click.stop="openAiAnalysis(row.symbol)">AI 分析</button>
+              <ContractDetailLink class="watch-detail" :symbol="row.symbol" :asset-type="assetType(row.symbol)" :name="assetLabel(row.symbol)" icon-only />
               <button type="button" class="follow-icon active" :aria-label="`取消关注 ${row.symbol}`" title="取消关注" @click.stop="toggleWatch(row.symbol)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.5 2.6 5.3 5.9.9-4.25 4.15 1 5.85L12 16.9l-5.25 2.8 1-5.85L3.5 9.7l5.9-.9L12 3.5Z"/></svg></button>
             </article>
             <div v-if="!pagedWatchRows.length" class="watch-empty">当前筛选没有关注标的</div>
@@ -551,48 +520,40 @@ onUnmounted(()=>{
         <section class="market-panel selected-panel">
           <header class="selected-summary">
             <div class="selected-name"><span class="asset-logo large"><img v-if="logoUrl(selected) && !logoFailed(selected)" :src="logoUrl(selected)" :alt="`${assetLabel(selected)} logo`" @error="markLogoFailed(selected)"><span v-else>{{ assetLabel(selected).slice(0, 2) }}</span></span><span><b>{{ assetLabel(selected) }}</b><small>{{ selected }} · {{ selectedAsset?.assetType === 'TRADFI' ? '传统金融' : '虚拟币' }}</small></span><button type="button" class="follow-icon" :class="{ active: isWatched(selected) }" :aria-label="isWatched(selected) ? '取消关注' : '添加关注'" :title="isWatched(selected) ? '取消关注' : '添加关注'" @click="toggleWatch(selected)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.5 2.6 5.3 5.9.9-4.25 4.15 1 5.85L12 16.9l-5.25 2.8 1-5.85L3.5 9.7l5.9-.9L12 3.5Z"/></svg></button></div>
-            <div class="selected-metrics"><div><span>最新价格</span><b>{{ formatPrice(selectedQuote?.lastPrice || selectedMarketQuote?.lastPrice) }}</b></div><div><span>{{ intervals.find((item) => item.id === activeInterval)?.label }}涨跌</span><b :class="changeClass(changeValue(selectedQuote || undefined, activeInterval))">{{ formatChange(changeValue(selectedQuote || undefined, activeInterval)) }}</b></div><div><span>滚动 24 小时</span><b :class="changeClass(changeValue(selectedQuote || selectedMarketQuote || undefined, '24h'))">{{ formatChange(changeValue(selectedQuote || selectedMarketQuote || undefined, '24h')) }}</b></div><div><span>24h 合约成交额</span><b>{{ formatVolume((selectedQuote || selectedMarketQuote)?.quoteVolume24h || null) }} USDT</b></div><div><span>市值{{ marketCapSource ? ` · ${marketCapSource}` : '' }}</span><b>{{ marketCapLoading ? '加载中…' : formatMarketCap(selectedMarketCap) }}</b></div></div>
+            <div class="selected-metrics"><div><span>最新价格</span><b>{{ formatPrice(selectedQuote?.lastPrice || selectedMarketQuote?.lastPrice) }}</b></div><div><span>{{ intervals.find((item) => item.id === activeInterval)?.label }}涨跌</span><b :class="changeClass(changeValue(selectedQuote || undefined, activeInterval))">{{ formatChange(changeValue(selectedQuote || undefined, activeInterval)) }}</b></div><div><span>滚动 24 小时</span><b :class="changeClass(changeValue(selectedQuote || selectedMarketQuote || undefined, '24h'))">{{ formatChange(changeValue(selectedQuote || selectedMarketQuote || undefined, '24h')) }}</b></div><div><span>24h 合约成交额</span><b>{{ formatVolume((selectedQuote || selectedMarketQuote)?.quoteVolume24h || null) }} USDT</b></div><div><span>{{ intervals.find(item=>item.id===activeInterval)?.label }}最高价</span><b>{{formatPrice(selectedRange.high)}}</b><small v-if="selectedRange.stale && selectedRange.high">缓存区间</small></div><div><span>{{ intervals.find(item=>item.id===activeInterval)?.label }}最低价</span><b>{{formatPrice(selectedRange.low)}}</b></div><div><span>市值{{ marketCapSource ? ` · ${marketCapSource}` : '' }}</span><b>{{ marketCapLoading ? '加载中…' : formatMarketCap(selectedMarketCap) }}</b></div></div>
           </header>
-          <div class="chart-heading"><div><b>价格走势</b><span>{{ chartInterval }} · {{ chartBars.length }} 根 K 线</span></div><div class="periods chart-periods"><button v-for="item in [{id:'5m',label:'5分'},{id:'1h',label:'1小时'}] as const" :key="item.id" type="button" :class="{ active: chartInterval === item.id }" @click="chartInterval = item.id">{{ item.label }}</button></div></div>
+          <div class="chart-heading"><div><b>K 线走势</b><span>{{ chartInterval }} · {{ chartBars.length }} 根 K 线</span></div><div class="periods chart-periods"><button v-for="item in [{id:'5m',label:'5分'},{id:'1h',label:'1小时'}] as const" :key="item.id" type="button" :class="{ active: chartInterval === item.id }" @click="chartInterval = item.id">{{ item.label }}</button></div></div>
           <div class="chart-wrap">
             <div v-if="chartLoading" class="chart-state">正在加载走势图…</div>
-            <div v-else-if="!chartPoints.length" class="chart-state">{{ chartError || '暂无走势图数据' }}</div>
+            <div v-else-if="!chartBars.length" class="chart-state">{{ chartError || '暂无走势图数据' }}</div>
             <template v-else>
               <div v-if="chartError" class="chart-refresh-note" role="status">{{ chartError }} · 保留最近可用走势</div>
-              <svg class="price-chart" viewBox="0 0 800 220" preserveAspectRatio="none" @pointermove="handleChartMove" @pointerleave="clearChartHover">
-                <line v-for="y in [12,56,100,144,188]" :key="y" x1="12" :y1="y" x2="788" :y2="y" class="chart-gridline" />
-                <path :d="`${chartPath} L 788 200 L 12 200 Z`" class="chart-area" />
-                <path :d="chartPath" class="chart-line" />
-                <line v-if="chartHover" :x1="chartPoints[chartHover.index]?.x" y1="8" :x2="chartPoints[chartHover.index]?.x" y2="200" class="chart-crosshair" />
-                <circle v-if="chartHover" :cx="chartPoints[chartHover.index]?.x" :cy="chartPoints[chartHover.index]?.y" r="4" class="chart-point" />
-              </svg>
-              <div v-if="hoveredBar" class="chart-tooltip" :style="chartTooltipStyle"><b>{{ formatPrice(String(hoveredBar.close)) }} USDT</b><span>{{ formatChartDate(hoveredBar.openTime) }}</span></div>
-              <div class="chart-axis"><span>{{ chartBars.length ? formatChartDate(chartBars[0].openTime) : '' }}</span><span>{{ chartBars.length ? formatChartDate(chartBars[chartBars.length - 1].openTime) : '' }}</span></div>
+              <CandlestickChart :bars="chartBars" :symbol="selected" :interval="chartInterval" />
             </template>
           </div>
         </section>
       </section>
 
       <section class="market-panel">
-        <header class="market-title"><div><h2>其他合约列表</h2><p>未关注的合约 · 按{{marketSort==='price'?'价格':marketSort==='change'?'涨跌幅':'涨跌幅绝对值'}}{{marketOrder==='asc'?'升序':'降序'}} · {{ filteredMarketRows.length }} 个标的</p></div><button type="button" class="refresh" @click="marketSort='absoluteChange';marketOrder='desc';marketPage=1">重置排序</button><span class="source">Binance USDⓈ-M Futures · 全市场批量行情</span></header>
+        <header class="market-title"><div><h2>其他合约列表</h2><p>未关注的合约 · 按{{marketSort==='price'?'价格':marketSort==='change'?'涨跌幅':'涨跌幅绝对值'}}{{marketOrder==='asc'?'升序':'降序'}} · {{ filteredMarketRows.length }} 个标的</p></div><span class="source">Binance USDⓈ-M Futures · 全市场批量行情</span></header>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>合约</th><th>类别</th><th :aria-sort="marketSort==='price'?(marketOrder==='asc'?'ascending':'descending'):'none'"><button class="sort-heading" @click="sortMarket('price')">最新价格 {{marketSort==='price'?(marketOrder==='asc'?'↑':'↓'):'↕'}}</button></th><th :aria-sort="marketSort==='change'?(marketOrder==='asc'?'ascending':'descending'):'none'"><button class="sort-heading" @click="sortMarket('change')">{{ intervals.find((item) => item.id === activeInterval)?.label }}涨跌 {{marketSort==='change'?(marketOrder==='asc'?'↑':'↓'):'↕'}}</button></th><th>状态</th><th class="follow-cell">关注</th></tr></thead>
+            <thead><tr><th>合约</th><th>类别</th><th :aria-sort="marketSort==='price'?(marketOrder==='asc'?'ascending':'descending'):'none'"><button class="sort-heading" @click="sortMarket('price')">最新价格 {{marketSort==='price'?(marketOrder==='asc'?'↑':'↓'):'↕'}}</button></th><th :aria-sort="marketSort==='change'?(marketOrder==='asc'?'ascending':'descending'):'none'"><button class="sort-heading" @click="sortMarket('change')">{{ intervals.find((item) => item.id === activeInterval)?.label }}涨跌 {{marketSort==='change'?(marketOrder==='asc'?'↑':'↓'):'↕'}}</button></th><th>状态</th><th class="operation-cell">操作</th></tr></thead>
             <tbody>
-              <tr v-for="row in pagedMarketRows" :key="row.symbol" :class="{ chosen: selected === row.symbol, anomalous: row.change != null && Math.abs(row.change) >= Math.max(0, Number(anomalyThreshold) || 0) }" @click="selectSymbol(row.symbol)">
+              <tr v-for="row in pagedMarketRows" :key="row.symbol" :class="{ chosen: selected === row.symbol }" @click="selectSymbol(row.symbol)">
                 <td><div class="contract-cell"><span class="asset-logo"><img v-if="logoUrl(row.symbol) && !logoFailed(row.symbol)" :src="logoUrl(row.symbol)" :alt="`${assetLabel(row.symbol)} logo`" @error="markLogoFailed(row.symbol)"><span v-else>{{ assetLabel(row.symbol).slice(0, 2) }}</span></span><span><b>{{ assetLabel(row.symbol) }}</b><small>{{ row.symbol }}</small><small v-if="row.market.radarTier === 'VOLATILE'" class="tier-label">高波动观察</small></span></div></td>
                 <td><span class="type-label" :class="assetType(row.symbol) === 'TRADFI' ? 'type-tradfi' : 'type-crypto'">{{ assetType(row.symbol) === 'TRADFI' ? '传统金融' : '虚拟币' }}</span></td>
                 <td class="price-cell">{{ formatPrice(row.quote?.lastPrice) }}</td>
                 <td :class="changeClass(row.change)">{{ formatChange(row.change) }}</td>
-                <td><span v-if="isQuoteStale(row.quote)" class="status stale">数据缓存</span><span v-else-if="row.change != null && Math.abs(row.change) >= Math.max(0, Number(anomalyThreshold) || 0)" class="status alert">波动异动</span><span v-else-if="row.change == null" class="status">周期数据暂无</span><span v-else class="status normal">监控中</span></td>
-                <td class="follow-cell"><button type="button" class="follow-icon" :class="{ active: isWatched(row.symbol) }" :aria-label="isWatched(row.symbol) ? `取消关注 ${row.symbol}` : `关注 ${row.symbol}`" :title="isWatched(row.symbol) ? '取消关注' : '加入关注'" @click.stop="toggleWatch(row.symbol)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.5 2.6 5.3 5.9.9-4.25 4.15 1 5.85L12 16.9l-5.25 2.8 1-5.85L3.5 9.7l5.9-.9L12 3.5Z"/></svg></button></td>
+                <td><span v-if="isQuoteStale(row.quote)" class="status stale">数据缓存</span><span v-else-if="row.change == null" class="status">周期数据暂无</span><span v-else class="status normal">监控中</span></td>
+                <td class="operation-cell"><div class="contract-actions"><button type="button" class="follow-icon" :class="{ active: isWatched(row.symbol) }" :aria-label="isWatched(row.symbol) ? `取消关注 ${row.symbol}` : `关注 ${row.symbol}`" :title="isWatched(row.symbol) ? '取消关注' : '加入关注'" @click.stop="toggleWatch(row.symbol)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.5 2.6 5.3 5.9.9-4.25 4.15 1 5.85L12 16.9l-5.25 2.8 1-5.85L3.5 9.7l5.9-.9L12 3.5Z"/></svg></button><ContractDetailLink :symbol="row.symbol" :asset-type="assetType(row.symbol)" :name="assetLabel(row.symbol)" icon-only /></div></td>
               </tr>
-              <tr v-if="!filteredMarketRows.length"><td colspan="6" class="empty-row">{{ marketLoading ? '正在获取合约行情…' : anomalyOnly ? '暂无达到阈值的未关注合约，可调低异动阈值或取消异动筛选。' : '没有符合筛选条件的合约。' }}</td></tr>
+              <tr v-if="!filteredMarketRows.length"><td colspan="6" class="empty-row">{{ marketLoading ? '正在获取合约行情…' : '没有符合筛选条件的合约。' }}</td></tr>
             </tbody>
           </table>
         </div>
         <div v-if="marketPageCount > 1" class="pagination list-pagination"><button type="button" :disabled="marketPage <= 1" @click="marketPage--">上一页</button><span>{{ marketPage }} / {{ marketPageCount }}</span><button type="button" :disabled="marketPage >= marketPageCount" @click="marketPage++">下一页</button></div>
-        <footer class="market-foot"><span>{{ marketError || `异动阈值：${Number(anomalyThreshold).toFixed(1)}% / ${intervals.find((item) => item.id === activeInterval)?.label}；行情更新于 ${quoteTimestamp}` }}</span><span>卡片与列表使用同一涨跌周期；短周期由服务器缓存计算，缺失时显示 —。</span></footer>
+        <footer class="market-foot"><span>{{ marketError || `行情更新于 ${quoteTimestamp}` }}</span><span>卡片与列表使用同一涨跌周期；短周期由服务器缓存计算，缺失时显示 —。</span></footer>
       </section>
       </div>
       <section v-show="trendView === 'long'" id="radar-long-panel"

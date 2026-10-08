@@ -232,6 +232,8 @@ async function getRadarMarketQuotes(interval = '24h') {
           lastPrice: String(row.lastPrice),
           priceChangePercent: row.priceChangePercent == null ? null : String(row.priceChangePercent),
           quoteVolume24h: row.quoteVolume == null ? null : String(row.quoteVolume),
+          highPrice24h: Number(row.highPrice)>0 ? String(row.highPrice) : null,
+          lowPrice24h: Number(row.lowPrice)>0 ? String(row.lowPrice) : null,
           closeTime: Number(row.closeTime) || null,
           source: 'Binance USDⓈ-M Futures',
           stale: false,
@@ -291,6 +293,8 @@ async function fetchQuote(symbol) {
       lastPrice: String(data.lastPrice),
       priceChangePercent: data.priceChangePercent == null || data.priceChangePercent === '' ? null : String(data.priceChangePercent),
       quoteVolume24h: data.quoteVolume == null || data.quoteVolume === '' ? null : String(data.quoteVolume),
+      highPrice24h: Number(data.highPrice)>0 ? String(data.highPrice) : null,
+      lowPrice24h: Number(data.lowPrice)>0 ? String(data.lowPrice) : null,
       closeTime: Number(data.closeTime) || null,
       source: 'Binance USDⓈ-M Futures',
       stale: false,
@@ -345,10 +349,16 @@ async function fetchShortChange(symbol, interval, currentPrice, observedAt = Dat
       const requestKey = `${key}:${referenceAt}`;
       let task = shortChangeInflight.get(requestKey);
       if (!task) {
-        task = client.get('/fapi/v1/klines', { params: { symbol, interval: '1m', startTime: referenceAt, endTime: referenceAt + 59999, limit: 1 } }).then(({data}) => {
+        task = client.get('/fapi/v1/klines', { params: { symbol, interval: '1m', startTime: referenceAt, endTime: observedAt, limit: minutes + 1 } }).then(({data}) => {
           const row = Array.isArray(data) ? data[0] : null, open = Number(row?.[1]);
           if (Number(row?.[0]) !== referenceAt || !(open > 0) || !Number.isFinite(open)) throw Error('滚动周期基准数据缺失');
-          return { open, referenceAt, expiresAt: Date.now() + 60000 };
+          // The existing minute request also supplies real wick extrema, with no additional requests.
+          const bars = Array.isArray(data) ? data.map(mapKline) : [];
+          const expected = Math.floor(observedAt / 60000) - referenceAt / 60000 + 1;
+          const complete = bars.length === expected && bars.every((bar,i) => bar && bar.openTime === referenceAt+i*60000 && bar.high >= Math.max(bar.open,bar.close) && bar.low <= Math.min(bar.open,bar.close));
+          const highPrice = complete ? bars.reduce((high,bar)=>Math.max(high,bar.high),0) : null;
+          const lowPrice = complete ? bars.reduce((low,bar)=>Math.min(low,bar.low),Infinity) : null;
+          return { open, referenceAt, highPrice, lowPrice, rangeAsOf: observedAt, expiresAt: Date.now() + 60000 };
         }).finally(() => shortChangeInflight.delete(requestKey));
         shortChangeInflight.set(requestKey, task);
       }
@@ -356,7 +366,9 @@ async function fetchShortChange(symbol, interval, currentPrice, observedAt = Dat
     }
     const price = Number(currentPrice);
     if (!(price > 0) || !Number.isFinite(price)) throw Error('现价不可用');
-    const value = { change: (price / baseline.open - 1) * 100, asOf: observedAt, referenceAt, stale: false, windowMode: 'rolling-minute' };
+    const value = { change: (price / baseline.open - 1) * 100, asOf: observedAt, referenceAt, stale: false, highPrice: baseline.highPrice == null ? null : Math.max(baseline.highPrice,price,baseline.value?.highPrice || 0),
+      lowPrice: baseline.lowPrice == null ? null : Math.min(baseline.lowPrice,price,baseline.value?.lowPrice || Infinity), rangeAsOf: baseline.rangeAsOf,
+      rangeStale: baseline.highPrice == null || observedAt > baseline.rangeAsOf, windowMode: 'rolling-minute' };
     const latest = shortChangeCache.get(key);
     if (!latest || !latest.value || observedAt >= latest.value.asOf) shortChangeCache.set(key, { ...baseline, value });
     return value;
@@ -406,7 +418,9 @@ function mapKline(row) {
   const closeTime = Number(closeTimeRaw);
   if (![openTime, open, high, low, close, volume, closeTime].every(Number.isFinite)
     || openTime <= 0 || closeTime < openTime || open <= 0 || high <= 0 || low <= 0 || close <= 0 || volume < 0) return null;
-  return { openTime, open, high, low, close, volume, closeTime };
+  const quoteVolume = row[7] == null || row[7] === '' ? null : Number(row[7]);
+  return { openTime, open, high, low, close, volume, closeTime,
+    quoteVolume: Number.isFinite(quoteVolume) && quoteVolume >= 0 ? quoteVolume : null };
 }
 
 function intervalMs(interval) {
@@ -472,6 +486,7 @@ async function getRadarStreamQuotes(extra=[],onBase=()=>{}){
   const known=new Set(catalog.map(row=>row.symbol));
   const quotes=data.filter(row=>known.has(row.symbol)&&Number(row.lastPrice)>0).map(row=>({symbol:row.symbol,
     lastPrice:String(row.lastPrice),priceChangePercent:row.priceChangePercent==null?null:String(row.priceChangePercent),
+    highPrice24h:Number(row.highPrice)>0?String(row.highPrice):null,lowPrice24h:Number(row.lowPrice)>0?String(row.lowPrice):null,
     quoteVolume24h:row.quoteVolume==null?null:String(row.quoteVolume),closeTime:Number(row.closeTime)||null,
     source:'Binance USDⓈ-M Futures',stale:Boolean(info.stale)}));
   const base={catalog,marketSymbols,quotes,updatedAt:new Date().toISOString(),stale:Boolean(info.stale),error:''};

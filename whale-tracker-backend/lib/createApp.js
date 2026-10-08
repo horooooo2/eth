@@ -80,6 +80,11 @@ function mountRoutes(app, prefix) {
       res.status(500).json({ error: err.message || '读取巨鲸列表失败' });
     }
   });
+  app.get(`${base}/data/alert-count`, requireAuthenticated, async (_req, res) => {
+    try {
+      res.set('Cache-Control', 'no-store').json(await require('./alertCount').getAlertCount());
+    } catch (err) { res.status(503).json({ error: err.message || '读取异动条数失败' }); }
+  });
   app.get(`${base}/data/browse`, (req, res) => {
     try {
       const { loadDbBrowse } = require('./sqliteStore');
@@ -165,6 +170,14 @@ function mountRoutes(app, prefix) {
     }
   });
 
+  // Bounded progress: reads watermarks only, never scans fills/events or calls upstream.
+  app.get(`${base}/data/reset-status`, requireAuthenticated, (_req, res) => {
+    try {
+      res.json({ recovery: require('./fillBackfill').getResetRecoveryStatus(),
+        error: whaleRefreshLast?.kind === 'reset' ? whaleRefreshLast.error : null });
+    } catch (err) { res.status(500).json({ error: err.message || '读取回补进度失败' }); }
+  });
+
   /** POST /api/data/reset — 清空市场数据，保留用户与手动巨鲸，并重启补齐 */
   app.post(`${base}/data/reset`, requireAuthenticated, async (_req, res) => {
     if (whaleRefreshBusy) {
@@ -187,11 +200,11 @@ function mountRoutes(app, prefix) {
         rounds: Math.max(1, Math.min(8, Number(_req.query?.rounds) || 3)),
       });
       whaleRefreshLast = {
-        status: 'ok',
+        status: result.refresh?.error ? 'partial' : 'recovering',
         kind: 'reset',
         startedAt: started,
         finishedAt: Date.now(),
-        error: null,
+        error: result.refresh?.error || null,
         result,
       };
       pushRequest({
@@ -206,6 +219,8 @@ function mountRoutes(app, prefix) {
         ok: true,
         whaleRefresh: whaleRefreshLast,
         fillBackfill: result.backfill,
+        recovery: result.recovery,
+        warning: result.refresh?.error || null,
         keptManuals: result.keptManuals,
       });
     } catch (err) {

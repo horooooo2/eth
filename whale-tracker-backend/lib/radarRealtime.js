@@ -3,29 +3,41 @@ const {WebSocketServer}=require('ws');
 const {safeSend}=require('./socketSend');
 const radar=require('./radarStream');
 const enabled=()=>require('./featureFlags').radarEnabled();
+function prepareDailyChart(result,symbol,now=Date.now()){
+  if(!result.bars?.length)return result;
+  const end=Math.floor(now/86400000)*86400000;
+  try{
+    const normalized=require('./radarLongTrend').normalizeHistory(symbol,result.bars.filter(bar=>bar.closeTime<end));
+    const latestBarTime=normalized.bars.at(-1)?.openTime??null;
+    return {...result,bars:normalized.bars,adjustmentNote:normalized.note,latestBarTime,
+      ageMs:latestBarTime==null?null:now-latestBarTime,available:normalized.bars.length>0,
+      stale:result.stale||latestBarTime!==end-86400000};
+  }catch(error){return {...result,available:false,stale:true,bars:[],error:error.message};}
+}
 function attachRadarRealtime(server){
   const wss=new WebSocketServer({noServer:true,maxPayload:4096}),clients=new Set();
   const chartCache=new Map(),chartQueue=new Set(),chartInFlight=new Set();let chartTask=null;
-  const extras=()=>[...new Set([...clients].flatMap(socket=>socket.watches||[]))].slice(0,150);
+  const extras=()=>[...new Set([...clients].flatMap(socket=>[...(socket.watches||[]),...(socket.charts?.short?[socket.charts.short.split(':')[0]]:[])]))].slice(0,150);
   async function refreshCharts(){
     if(!enabled())return;
-    for(const socket of clients)if(socket.ready&&socket.chart&&!chartInFlight.has(socket.chart))chartQueue.add(socket.chart);
+    for(const socket of clients)if(socket.ready)for(const key of Object.values(socket.charts||{}))if(!chartInFlight.has(key))chartQueue.add(key);
     if(chartTask)return chartTask;
     chartTask=(async()=>{
       // Two shared workers, including subscriptions arriving during a fetch.
       await Promise.all(Array.from({length:2},async()=>{while(chartQueue.size){
         const key=chartQueue.values().next().value;chartQueue.delete(key);
-        if(!enabled()||![...clients].some(socket=>socket.ready&&socket.chart===key))continue;
+        if(!enabled()||![...clients].some(socket=>socket.ready&&Object.values(socket.charts||{}).includes(key)))continue;
         chartInFlight.add(key);
         const [symbol,interval]=key.split(':');
         try{
           let result=await require('./tradfiMarkets').getTradFiKlines(symbol,interval);
+          if(interval==='1d')result=prepareDailyChart(result,symbol);
           const previous=chartCache.get(key);
           if(!result.bars?.length&&previous?.bars?.length)result={...previous,stale:true,error:result.error||'图表更新失败'};
           chartCache.delete(key);chartCache.set(key,result);
           while(chartCache.size>40)chartCache.delete(chartCache.keys().next().value);
           const payload=JSON.stringify({type:'radarChart',key,result});
-          for(const socket of clients)if(socket.ready&&socket.chart===key)safeSend(socket,payload);
+          for(const socket of clients)if(socket.ready&&Object.values(socket.charts||{}).includes(key))safeSend(socket,payload);
         }finally{chartInFlight.delete(key);}
       }}));
     })().catch(()=>{}).finally(()=>{chartTask=null;});
@@ -52,13 +64,13 @@ function attachRadarRealtime(server){
           socket.watches=Array.isArray(msg.symbols)?[...new Set(msg.symbols.filter(s=>known.has(s)))].slice(0,30):[];
         }else if(msg.type==='chart'){
           const known=radar.stream.snapshot().catalog.some(row=>row.symbol===msg.symbol);
-          if(!known||!['5m','1h'].includes(msg.interval))return;
-          socket.chart=`${msg.symbol}:${msg.interval}`;
-          const cached=chartCache.get(socket.chart);
-          if(cached)safeSend(socket,{type:'radarChart',key:socket.chart,result:cached});
+          if(!known||!['5m','1h','1d'].includes(msg.interval))return;
+          const slot=msg.interval==='1d'?'long':'short',key=`${msg.symbol}:${msg.interval}`;
+          socket.charts={...socket.charts,[slot]:key};
+          const cached=chartCache.get(key);
+          if(cached)safeSend(socket,{type:'radarChart',key,result:cached});
           void refreshCharts();
-        }else if(msg.type==='refresh')void radar.refresh(extras());
-        else if(msg.type==='ping')safeSend(socket,{type:'pong',at:Date.now()});
+        }else if(msg.type==='ping')safeSend(socket,{type:'pong',at:Date.now()});
       }catch{safeSend(socket,{type:'resyncRequired'});}
     });
     void radar.refresh(extras());
@@ -78,4 +90,4 @@ function attachRadarRealtime(server){
     wss.handleUpgrade(req,socket,head,ws=>wss.emit('connection',ws,req));
   }};
 }
-module.exports={attachRadarRealtime};
+module.exports={attachRadarRealtime,prepareDailyChart};

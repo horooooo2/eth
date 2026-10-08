@@ -20,3 +20,14 @@ test('weight exhaustion leaves concurrency available for position requests', asy
   timers[0](); assert.equal(await slow, 'HL_QUEUE_TIMEOUT');
   assert.equal(api.getHlInfoConfig().queued, 0);
 });
+
+test('bounded recovery budget admits three maximum-size pages while preserving position capacity', () => {
+  const context = { module: { exports: {} }, process: { env: {} }, console: { info() {} },
+    require: () => ({ create: () => ({}) }), setTimeout() {}, clearTimeout() {} };
+  vm.runInNewContext(fs.readFileSync(file, 'utf8') + '\nmodule.exports.reserve = canTakeWeight;', context);
+  const reserve = context.module.exports.reserve;
+  for(let i=0;i<3;i++) assert.ok(reserve({type:'userFillsByTime'},{priority:'history'}));
+  assert.equal(reserve({type:'userFillsByTime'},{priority:'history'}),false);
+  assert.ok(reserve({type:'userFillsByTime'}));
+  assert.ok(reserve({type:'clearinghouseState'}));
+});

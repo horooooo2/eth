@@ -2,7 +2,7 @@
  * 整站数据重置：清空成交/异动/仓位/缓存，保留用户与手动巨鲸名单，
  * 其余监控地址仍保留以便重新拉取与历史补齐。
  */
-const { getDb, setMeta } = require('./db');
+const { getDb } = require('./db');
 const { clearWhaleModeCache } = require('./cache');
 const { readConfig, getActiveWhales } = require('./config');
 
@@ -20,6 +20,7 @@ function clearMarketTables() {
   });
   tx();
   require("./sqliteStore").invalidateFillProjection();
+  require("./sqliteStore").invalidateAlertQueries();
 }
 
 /**
@@ -36,16 +37,9 @@ async function resetSiteData(options = {}) {
   require('./whaleSync').stream.reset();
   clearWhaleModeCache();
 
-  setMeta(
-    'fills_backfill_cursor',
-    JSON.stringify({ dayOffset: 0, whaleIndex: 0, done: false }),
-  );
-  try {
-    const { resetFillBackfill } = require('./fillBackfill');
-    resetFillBackfill();
-  } catch (err) {
-    console.warn('[reset] fillBackfill restart:', err.message);
-  }
+  // Restart failure must reach the caller instead of reporting successful recovery.
+  const { resetFillBackfill } = require('./fillBackfill');
+  resetFillBackfill();
 
   let refresh = null;
   try {
@@ -77,6 +71,7 @@ async function resetSiteData(options = {}) {
     rosterSize: rosterBefore.length,
     manuals: manuals.map((w) => ({ id: w.id, name: w.name, address: w.address })),
     backfill,
+    recovery: require('./fillBackfill').getResetRecoveryStatus(),
     refresh: refresh
       ? {
           pending: refresh.pending ?? null,
