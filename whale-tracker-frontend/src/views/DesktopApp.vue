@@ -2,6 +2,7 @@
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { http, fetchQuotes, fetchDirectionSummary, type DirectionSummary } from '@/api';
+import { statisticsErrorText } from '@/utils/statisticsRead';
 import CoinPreferences from '@/components/CoinPreferences.vue';
 import ApiSettings from '@/components/ApiSettings.vue';
 import NewsList from '@/components/NewsList.vue';
@@ -112,7 +113,7 @@ async function loadDirections() {
   try {
     const result = await fetchDirectionSummary(flowWindow.value);
     if (seq === directionRequest) { directionData.value = result; directionError.value = ''; }
-  } catch { if (seq === directionRequest) directionError.value = '方向统计读取失败，暂不展示旧窗口数据'; }
+  } catch (error) { if (seq === directionRequest) directionError.value = `方向统计暂不可用：${statisticsErrorText(error)}，稍后自动重试`; }
 }
 const whaleNetFlow = computed(() => {
   const rows = (directionData.value?.coins || []).filter(row => coinMatchesWatch(row.coin, flowCoin.value === 'ALL' ? preferredCoinsState.value : [flowCoin.value]));
@@ -472,7 +473,7 @@ onUnmounted(() => {
             <span>方向变化</span>
             <small>{{ whaleNetFlow.events }} 段成交 · 含减平仓</small>
           </div>
-          <small v-else class="flow-empty">{{ directionError ? '方向统计暂不可用' : '正在读取方向统计…' }}</small>
+          <small v-else class="flow-empty">{{ directionError || '正在读取方向统计…' }}</small>
         </div>
         <WhaleResonanceBanner
           ref="resonanceRef"

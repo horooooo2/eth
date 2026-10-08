@@ -1,5 +1,6 @@
 import axios, { type AxiosError } from 'axios';
 import type { WhaleBootstrap } from '@/utils/whaleState';
+import { retryStatistics } from '@/utils/statisticsRead';
 import type {
   CalendarResponse,
   PagedTradesQuery,
@@ -227,8 +228,8 @@ function shareStatistics<T>(key: string, request: () => Promise<T>): Promise<T> 
 }
 
 export async function fetchDirectionSummary(window: string) {
-  return shareStatistics('direction:' + window, async () =>
-    (await http.get<DirectionSummary>('/whales/direction-summary', { params: { window }, timeout: 15000 })).data);
+  return shareStatistics('direction:' + window, () => retryStatistics(async () =>
+    (await http.get<DirectionSummary>('/whales/direction-summary', { params: { window }, timeout: 15000 })).data));
 }
 
 export type WhaleServerSummary = {
@@ -242,12 +243,13 @@ export type WhaleServerSummary = {
 };
 
 export async function fetchWhaleResonance(windowHours: number, coins: string[]) {
-  return shareStatistics(JSON.stringify(['resonance', windowHours, [...coins].sort()]), async () => {
+  const watchedCoins = [...coins];
+  return shareStatistics(JSON.stringify(['resonance', windowHours, [...watchedCoins].sort()]), () => retryStatistics(async () => {
   const { data } = await http.get<import('@/utils/whaleResonanceSignal').ResonanceScanResult>('/whales/resonance', {
-    params: { windowHours, coins: coins.join(',') }, timeout: 20000,
+    params: { windowHours, coins: watchedCoins.join(',') }, timeout: 20000,
   });
   return data;
-  });
+  }));
 }
 
 function tradeQueryParams(query: PagedTradesQuery = {}) {

@@ -70,7 +70,11 @@ router.get('/resonance', async (req, res) => {
     await require('../lib/sqliteStore').prepareFillProjection();
     return getWhaleResonance({ windowHours, watchedCoins });
   })); }
-  catch (err) { console.error('[GET /api/whales/resonance]', err); res.status(500).json({ error: '读取共振信号失败' }); }
+  catch (err) {
+    console.error('[GET /api/whales/resonance]', err);
+    require('../lib/opsMonitor').pushError({source:'resonance',message:err.message});
+    res.status(500).json({ error: '读取共振信号失败' });
+  }
 });
 
 router.get('/direction-summary', async (req, res) => {
@@ -85,7 +89,11 @@ router.get('/direction-summary', async (req, res) => {
         basis: 'stored-executions', coverage: 'locally-observed', executionCoverage: require('../lib/fillBackfill').getCoverageStatus() };
     });
     res.json(result);
-  } catch (err) { console.error('[direction-summary]', err); res.status(500).json({ error: '方向统计暂不可用' }); }
+  } catch (err) {
+    console.error('[direction-summary]', err);
+    require('../lib/opsMonitor').pushError({source:'direction-summary',message:err.message});
+    res.status(500).json({ error: '方向统计暂不可用' });
+  }
 });
 
 /** 净流入资金只查服务器异动库，时间窗口和币种由参数明确限定。 */

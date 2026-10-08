@@ -228,6 +228,7 @@ function migrate(database) {
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (whale_id, coin, side)
     );
+    CREATE INDEX IF NOT EXISTS idx_positions_retention_match ON positions(whale_id,UPPER(coin),LOWER(side));
 
     CREATE TABLE IF NOT EXISTS fills (
       id TEXT PRIMARY KEY,
@@ -259,6 +260,7 @@ function migrate(database) {
       payload_json TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_events_time ON events(time);
+    CREATE INDEX IF NOT EXISTS idx_events_retention_scan ON events(time,id);
     CREATE INDEX IF NOT EXISTS idx_events_whale_time ON events(whale_id, time);
 
     CREATE TABLE IF NOT EXISTS alerts (
@@ -269,6 +271,7 @@ function migrate(database) {
       payload_json TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_alerts_time ON alerts(time);
+    CREATE INDEX IF NOT EXISTS idx_alerts_retention_scan ON alerts(time,id);
     CREATE INDEX IF NOT EXISTS idx_alerts_whale_time ON alerts(whale_id, time);
 
     CREATE TABLE IF NOT EXISTS alert_items (

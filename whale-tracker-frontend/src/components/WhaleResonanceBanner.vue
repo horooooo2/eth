@@ -12,6 +12,7 @@ import {
 import type { RecoQuotes } from '@/utils/recommend';
 import { preferredCoinsState } from '@/utils/watchedCoins';
 import { fetchWhaleResonance } from '@/api';
+import { statisticsErrorText } from '@/utils/statisticsRead';
 import { resolveWhaleTitle } from '@/utils/whaleReference';
 import {
   readResonanceConfig,
@@ -41,15 +42,19 @@ const windowHours = ref(readResonanceConfig().windowHours);
 const activeSignal = ref<ResonanceSignal | null>(null);
 
 const scan = ref<ResonanceScanResult>({ hit: false, primary: null, signals: [], emptyText: '正在读取共振信号…' });
+const readFailed = ref(false);
 let initialLoad: Promise<void> | null = null;
 let requestSeq = 0;
 async function loadSignals() {
   const seq = ++requestSeq;
   try {
     const result = await fetchWhaleResonance(windowHours.value, preferredCoinsState.value);
-    if (seq === requestSeq) scan.value = result;
-  } catch {
-    if (seq === requestSeq) scan.value = { hit: false, primary: null, signals: [], emptyText: '共振信号读取失败，请切换时间范围重试' };
+    if (seq === requestSeq) { scan.value = result; readFailed.value = false; }
+  } catch (error) {
+    if (seq === requestSeq) {
+      readFailed.value = true;
+      scan.value = { hit: false, primary: null, signals: [], emptyText: `共振信号暂不可用：${statisticsErrorText(error)}，稍后自动重试` };
+    }
   }
 }
 let expiryTimer: ReturnType<typeof setInterval> | undefined;
@@ -123,6 +128,7 @@ function rowWhaleTitle(row: ResonanceOpenRow) {
   <div v-if="ready" class="resonance-wrap notice-wrap">
     <div class="resonance-banner">
       <div class="banner-toolbar">
+        <el-button v-if="readFailed" size="small" @click.stop="loadSignals">重试</el-button>
         <div class="window-box" @click.stop>
           <el-select v-model="windowHours" class="window-select" placeholder="时间范围">
             <el-option
