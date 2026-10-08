@@ -38,6 +38,8 @@ export type TradFiQuote = {
   source: string;
   stale: boolean;
   changes?: Partial<Record<'5m' | '1h', number | null>>;
+  shortStale?: boolean;
+  changeMeta?: Partial<Record<'5m' | '1h', { stale: boolean; asOf: number | null; referenceAt: number | null }>>;
   error?: string;
 };
 
@@ -955,6 +957,6 @@ export async function renameWhale(id: string, name: string) {
 }
 
 export async function fetchManagementWhales() {
-  const { data } = await http.get<{ whales: Array<Record<string, unknown>> }>('/data/whales');
+  const { data } = await http.get<{ whales: Array<Record<string, unknown>>; total: number }>('/data/whales');
   return data;
 }

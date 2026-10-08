@@ -18,6 +18,7 @@ type WhaleRow = {
 const pageErr = ref('');
 const users = ref<AuthUser[]>([]);
 const whales = ref<WhaleRow[]>([]);
+const whaleTotal = ref<number | null>(null);
 const whaleDir = ref('all');
 const whaleSort = ref<{ key: string; dir: number }>({ key: 'netUsd', dir: -1 });
 const whaleSearch = ref('');
@@ -101,6 +102,7 @@ function loadWhales() {
   if (whalesPending) return whalesPending;
   whalesPending = fetchManagementWhales().then(data => {
     whales.value = data.whales as WhaleRow[];
+    whaleTotal.value = data.total;
     if (whalePage.value > whalePageCount.value) whalePage.value = whalePageCount.value;
   }).finally(() => { whalesPending = null; });
   return whalesPending;
@@ -236,6 +238,12 @@ onMounted(() => { void refreshAll(); });
         <button class="ghost" type="button" :disabled="resetBusy" @click="refreshAll">刷新列表</button>
         <button class="warn" type="button" :disabled="resetBusy" @click="resetSite">重置</button>
         <span class="status-text" role="status">{{ resetStatus }}</span>
+      </div>
+      <div class="banner-stats">
+        <div class="bstat" title="当前数据库中的巨鲸数量，刷新列表后更新">
+          <div class="n">{{ whaleTotal ?? '—' }}</div>
+          <div class="l">已拉取巨鲸</div>
+        </div>
       </div>
     </section>
 

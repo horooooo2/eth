@@ -57,7 +57,7 @@ const RADAR_VOLATILE_SYMBOLS = new Set([
 const RADAR_SYMBOLS = new Set([...RADAR_CORE_SYMBOLS, ...RADAR_VOLATILE_SYMBOLS]);
 
 const SHORT_INTERVALS = ['5m', '1h'];
-const shortChangeCache = new BoundedCache(256, 3600000, () => Date.now());
+const shortChangeCache = new BoundedCache(512, 3600000, () => Date.now());
 let exchangeInfoCache = { expiresAt: 0, data: null, updatedAt: null };
 let exchangeInfoPromise = null;
 let radarMarketCache = { expiresAt: 0, quotes: [], updatedAt: null };
@@ -463,6 +463,33 @@ async function getRadarDailyHistory(symbol, day) {
   return data.map(mapKline).filter(Boolean);
 }
 
+async function getRadarStreamQuotes(extra=[],onBase=()=>{}){
+  const info=await getExchangeInfo();
+  const catalog=normalizeAvailableRadarCatalog(info.data);
+  const marketSymbols=normalizeRadarCatalog(info.data).map(row=>row.symbol);
+  const wanted=new Set([...marketSymbols,...extra.slice(0,150)]);
+  const {data}=await getTickerSnapshot();
+  const known=new Set(catalog.map(row=>row.symbol));
+  const quotes=data.filter(row=>known.has(row.symbol)&&Number(row.lastPrice)>0).map(row=>({symbol:row.symbol,
+    lastPrice:String(row.lastPrice),priceChangePercent:row.priceChangePercent==null?null:String(row.priceChangePercent),
+    quoteVolume24h:row.quoteVolume==null?null:String(row.quoteVolume),closeTime:Number(row.closeTime)||null,
+    source:'Binance USDⓈ-M Futures',stale:Boolean(info.stale)}));
+  const base={catalog,marketSymbols,quotes,updatedAt:new Date().toISOString(),stale:Boolean(info.stale),error:''};
+  onBase(base);
+  const tracked=quotes.filter(row=>wanted.has(row.symbol));let next=0;
+  await Promise.all(Array.from({length:Math.min(4,tracked.length)},async()=>{
+    while(next<tracked.length){
+      const quote=tracked[next++];quote.changes={};quote.changeMeta={};
+      for(const interval of SHORT_INTERVALS){
+        const change=await fetchShortChange(quote.symbol,interval,quote.lastPrice,quote.closeTime||Date.now());
+        quote.changes[interval]=change.change;quote.changeMeta[interval]=change;
+      }
+      quote.shortStale=Object.values(quote.changeMeta).some(value=>value.stale);
+    }
+  }));
+  return base;
+}
+
 async function getTradFiMarketContext(symbolInput, options = {}) {
   const symbol = String(symbolInput || '').trim().toUpperCase();
   const intervals = Object.keys(KLINE_CONFIG);
@@ -482,4 +509,4 @@ async function getTradFiMarketContext(symbolInput, options = {}) {
   return { symbol, quote, klines, source: 'binance-futures', generatedAt: new Date().toISOString() };
 }
 
-module.exports = { getLongTrendPrices, getLongTrendContracts, getRadarDailyHistory, getCatalog, getQuotes, getRadarCatalog, getRadarQuotes, getRadarMarketQuotes, getRadarAvailableContracts, getRadarMarketCap, getTradFiKlines, getTradFiMarketContext, normalizeCatalog, normalizeRadarCatalog, normalizeAvailableRadarCatalog, parseSymbols, KLINE_CONFIG, mapKline, RADAR_SYMBOLS, RADAR_CORE_SYMBOLS, RADAR_VOLATILE_SYMBOLS };
+module.exports = { getRadarStreamQuotes, getLongTrendPrices, getLongTrendContracts, getRadarDailyHistory, getCatalog, getQuotes, getRadarCatalog, getRadarQuotes, getRadarMarketQuotes, getRadarAvailableContracts, getRadarMarketCap, getTradFiKlines, getTradFiMarketContext, normalizeCatalog, normalizeRadarCatalog, normalizeAvailableRadarCatalog, parseSymbols, KLINE_CONFIG, mapKline, RADAR_SYMBOLS, RADAR_CORE_SYMBOLS, RADAR_VOLATILE_SYMBOLS };

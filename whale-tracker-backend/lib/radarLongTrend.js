@@ -155,13 +155,22 @@ function createService({catalog=()=>require('./tradfiMarkets').getLongTrendContr
     return {sort,order,watched,focused:focused?withPoints(focused):null,catalog:allRows.map(({symbol,name})=>({symbol,name})),rows:visible,count,page:current,pages,days,running,done,total,coverage,error,ruleVersion:RULE_VERSION,
       source:'Binance USDⓈ-M Futures · 已收盘日线',asOf:day};
   }
-  return {snapshot,refresh};
+  function snapshotAll(){
+    init();void refresh();refreshPrices();
+    const day=Math.floor(now()/DAY)*DAY;
+    return {rows:[...records.values()].map(record=>({...record.market,...livePrice(record.market.symbol),
+      frames:record.frames,points:record.points||[],adjustmentNote:record.adjustmentNote,
+      latestBarAt:record.latestBarAt??null,asOf:record.asOf,stale:record.asOf!==day||Boolean(record.error),error:record.error})),
+      running,done,total,error,asOf:day,ruleVersion:RULE_VERSION};
+  }
+  return {snapshot,snapshotAll,refresh};
 }
 const service=createService({fetchPrices:()=>require('./tradfiMarkets').getLongTrendPrices()});
 function requireRadarEnabled() {
   if (!require('./featureFlags').radarEnabled()) throw Object.assign(new Error('雷达已暂停'), {status:503,code:'RADAR_DISABLED'});
 }
 module.exports={...service,
+  snapshotAll(){requireRadarEnabled();return service.snapshotAll();},
   snapshot(options){requireRadarEnabled();return service.snapshot(options);},
   refresh(){if(!require('./featureFlags').radarEnabled())return Promise.resolve();return service.refresh();},
   createService,analyze,normalizeHistory,WINDOWS};

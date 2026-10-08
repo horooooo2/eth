@@ -74,6 +74,7 @@ function attachRealtimeHub(httpServer) {
   });
 
   privateWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 });
+  const radarHub=require('./radarRealtime').attachRadarRealtime(httpServer);
   httpServer.on('upgrade', (req, socket, head) => {
     let pathname = '';
     try {
@@ -81,6 +82,7 @@ function attachRealtimeHub(httpServer) {
     } catch {
       return;
     }
+    if (pathname === '/realtime/radar') {radarHub.upgrade(req,socket,head);return;}
     if (pathname === '/realtime') {
       if (publicClients.size >= 200) { socket.destroy(); return; }
       publicWss.handleUpgrade(req, socket, head, ws => publicWss.emit('connection', ws, req));

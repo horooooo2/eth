@@ -18,6 +18,10 @@ router.use('/radar', (_req, res, next) => {
     code: 'RADAR_DISABLED', error: '雷达已暂停，暂不请求行情数据',
   });
 });
+router.get('/radar/snapshot',(_req,res)=>{
+  try{res.set('Cache-Control','no-store').json(require('../lib/radarStream').snapshot());}
+  catch{res.status(503).json({error:'雷达缓存暂不可用'});}
+});
 router.get('/radar/long-trends',(req,res)=>{
   const days=Number(req.query.days||90),direction=String(req.query.direction||'ALL'),assetType=String(req.query.assetType||'ALL');
   if(![30,60,90].includes(days)||!['TREND','ALL','UP','DOWN','TURN_UP','TURN_DOWN','NEUTRAL'].includes(direction)||!['ALL','CRYPTO','TRADFI'].includes(assetType))return res.status(400).json({error:'无效的趋势筛选参数'});

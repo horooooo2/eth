@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch as watchVue } from 'vue';
+import { radarClient, sortRadarRows } from '@/utils/radarRealtime';
 import { contractLogo } from '@/utils/contractLogo';
 import RadarLongTrend from '@/components/RadarLongTrend.vue';
 import { ElMessage } from 'element-plus';
-import { fetchRadarAvailableContracts, fetchRadarCatalog, fetchRadarKlines, fetchRadarMarket, fetchRadarMarketCap, fetchRadarNews, fetchRadarQuotes, streamChatMarketBrief, type MarketChatMessage, type RadarAvailableContract, type RadarKline, type RadarNewsItem, type TradFiMarketSymbol, type TradFiQuote } from '@/api';
+import { fetchRadarMarketCap, fetchRadarNews, streamChatMarketBrief, type MarketChatMessage, type RadarAvailableContract, type RadarKline, type RadarNewsItem, type TradFiMarketSymbol, type TradFiQuote } from '@/api';
 import { DEFAULT_RADAR_WATCH, isDefaultRadarWatch, tradfiWatch, writeTradFiWatch } from '@/utils/tradfiWatch';
 
 const props = withDefaults(defineProps<{ active?: boolean }>(), { active: true });
@@ -43,7 +44,7 @@ function sortMarket(key:'price'|'change'){
   if(marketSort.value===key)marketOrder.value=marketOrder.value==='desc'?'asc':'desc';
   else {marketSort.value=key;marketOrder.value='desc';}
 }
-watchVue([marketSort,marketOrder],()=>{marketPage.value=1;if(started)void refreshQuotes();});
+watchVue([marketSort,marketOrder],()=>{marketPage.value=1;});
 const chartInterval = ref<'5m' | '1h'>('1h');
 const chartBars = ref<RadarKline[]>([]);
 const chartLoading = ref(false);
@@ -57,11 +58,7 @@ const WATCH_PAGE_SIZE = 6;
 const MARKET_PAGE_SIZE = 10;
 let started = false;
 const radarReady = ref(false);
-const radarRefreshing = ref(false);
 let initialLoad: Promise<void> | null = null;
-let refreshInFlight = false;
-let refreshQueued = false;
-let chartRequestId = 0;
 
 const addDialogVisible = ref(false);
 const addSearch = ref('');
@@ -105,6 +102,10 @@ function changeValue(quote: TradFiQuote | undefined, interval: RadarInterval): n
   if (raw == null || raw === '' || !Number.isFinite(Number(raw))) return null;
   return Number(raw);
 }
+function isQuoteStale(quote:TradFiQuote|undefined){
+  return Boolean(!radarClient.connected.value||quote?.stale||(activeInterval.value!=='24h'
+    &&(quote?.changeMeta?.[activeInterval.value]?.stale||quote?.shortStale)));
+}
 function formatChange(value: number | null) {
   if (value == null) return '—';
   return `${value > 0 ? '+' : ''}${value.toFixed(2)}%`;
@@ -147,13 +148,14 @@ const filteredRows = computed(() => {
 const filteredMarketRows = computed(() => {
   const query = searchText.value.trim().toLocaleLowerCase();
   const watched = new Set(watch.value);
-  return Object.keys(marketQuotes.value).map(symbol=>catalogBySymbol.value.get(symbol)).filter((market):market is TradFiMarketSymbol=>Boolean(market))
+  const rows=Object.keys(marketQuotes.value).map(symbol=>catalogBySymbol.value.get(symbol)).filter((market):market is TradFiMarketSymbol=>Boolean(market))
     .filter((market) => !watched.has(market.symbol))
     .filter((market) => assetFilter.value === 'ALL' || market.assetType === assetFilter.value)
     .filter((market) => !query || `${market.symbol} ${market.baseAsset} ${market.name}`.toLocaleLowerCase().includes(query))
     .map((market) => ({ symbol: market.symbol, market, quote: marketQuotes.value[market.symbol], change: changeValue(marketQuotes.value[market.symbol], activeInterval.value) }))
     .filter((row) => directionFilter.value === 'ALL' || (directionFilter.value === 'UP' ? (row.change ?? -Infinity) > 0 : (row.change ?? Infinity) < 0))
     .filter((row) => !anomalyOnly.value || (row.change != null && Math.abs(row.change) >= Math.max(0, Number(anomalyThreshold.value) || 0)));
+  return sortRadarRows(rows,row=>marketSort.value==='price'?row.quote?.lastPrice:marketSort.value==='change'?row.change:row.change==null?null:Math.abs(row.change),marketOrder.value);
 });
 const pagedWatchRows = computed(() => filteredRows.value.slice((watchPage.value - 1) * WATCH_PAGE_SIZE, watchPage.value * WATCH_PAGE_SIZE));
 const pagedMarketRows = computed(() => filteredMarketRows.value.slice((marketPage.value - 1) * MARKET_PAGE_SIZE, marketPage.value * MARKET_PAGE_SIZE));
@@ -199,7 +201,6 @@ watchVue([directionFilter, assetFilter, searchText, anomalyOnly, anomalyThreshol
 watchVue(activeInterval, () => {
   watchPage.value = 1;
   marketPage.value = 1;
-  if (started) void refreshQuotes();
 });
 watchVue(watchPageCount, (count) => { watchPage.value = Math.min(watchPage.value, count); });
 watchVue(marketPageCount, (count) => { marketPage.value = Math.min(marketPage.value, count); });
@@ -208,7 +209,6 @@ function isWatched(symbol: string) { return watch.value.some((item) => item.toUp
 function toggleWatch(symbol: string) {
   if (isWatched(symbol)) {
     if (watch.value.length <= 1) { ElMessage.warning('至少保留 1 个关注合约'); return; }
-    if (quotes.value[symbol]) marketQuotes.value = { ...marketQuotes.value, [symbol]: quotes.value[symbol] };
     writeTradFiWatch(watch.value.filter((item) => item !== symbol));
     if (selected.value === symbol) selected.value = watch.value.find((item) => item !== symbol) || 'BTCUSDT';
     return;
@@ -217,20 +217,12 @@ function toggleWatch(symbol: string) {
   writeTradFiWatch([...watch.value, symbol]);
 }
 async function openAddContractDialog() {
-  addDialogVisible.value = true;
-  addSearch.value = '';
-  if (availableContracts.value.length || availableLoading.value) return;
-  availableLoading.value = true;
-  availableError.value = '';
-  try {
-    const result = await fetchRadarAvailableContracts();
-    availableContracts.value = result.contracts;
-    if (result.stale) availableError.value = '正在显示缓存的合约清单';
-  } catch (error) {
-    availableError.value = error instanceof Error ? error.message : '可添加合约获取失败';
-  } finally {
-    availableLoading.value = false;
-  }
+  addDialogVisible.value = true;addSearch.value = '';
+  availableLoading.value=true;
+  await radarClient.ensure();
+  availableContracts.value = catalog.value.map(contract=>({...contract,lastPrice:quotes.value[contract.symbol]?.lastPrice??null,
+    priceChangePercent:quotes.value[contract.symbol]?.priceChangePercent??null,quoteVolume24h:quotes.value[contract.symbol]?.quoteVolume24h??null}));
+  availableLoading.value=false;availableError.value=radarClient.error.value;
 }
 function addContract(contract: RadarAvailableContract) {
   if (isWatched(contract.symbol)) { ElMessage.info('该合约已在关注列表中'); return; }
@@ -250,7 +242,6 @@ function addContract(contract: RadarAvailableContract) {
   writeTradFiWatch([...watch.value, contract.symbol]);
   selected.value = contract.symbol;
   addDialogVisible.value = false;
-  void refreshQuotes();
 }
 function formatVolume(raw: string | null | undefined) {
   const value = Number(raw);
@@ -286,37 +277,18 @@ function handleChartMove(event: PointerEvent) {
   chartHover.value = { index, x: Math.max(14, Math.min(86, ratio * 100)), y: 15 };
 }
 function clearChartHover() { chartHover.value = null; }
-async function loadChart(silent = false) {
-  const symbol = selected.value;
-  const interval = chartInterval.value;
-  const requestId = ++chartRequestId;
-  const retainChart = silent && chartBars.value.length > 0;
-  chartLoading.value = !retainChart;
-  if (!retainChart) {
-    chartError.value = '';
-    chartHover.value = null;
-  }
-  try {
-    const result = await fetchRadarKlines(symbol, interval);
-    if (requestId !== chartRequestId || selected.value !== symbol || chartInterval.value !== interval) return;
-    if (result.available && result.bars.length) {
-      const hoverTime = chartHover.value ? chartBars.value[chartHover.value.index]?.openTime : undefined;
-      chartBars.value = result.bars;
-      if (chartHover.value) {
-        const index = result.bars.findIndex((bar) => bar.openTime === hoverTime);
-        chartHover.value = index >= 0 ? { ...chartHover.value, index } : null;
-      }
-      chartError.value = result.stale ? '行情源暂不可用，当前为缓存走势' : '';
-    } else {
-      if (!retainChart) chartBars.value = [];
-      chartError.value = result.error || '暂无新的走势图数据';
-    }
-  } catch (error) {
-    if (requestId === chartRequestId && selected.value === symbol && chartInterval.value === interval) chartError.value = error instanceof Error ? error.message : '走势图请求失败';
-  } finally {
-    if (requestId === chartRequestId) chartLoading.value = false;
-  }
+async function loadChart(_silent = false) {
+  chartHover.value=null;
+  radarClient.selectChart(selected.value,chartInterval.value);
+  applyChart();
 }
+function applyChart(){
+  const result=radarClient.charts.value[`${selected.value}:${chartInterval.value}`];
+  chartLoading.value=!result;
+  chartBars.value=result?.bars||[];
+  chartError.value=result?.error||(result?.stale?'行情源暂不可用，当前为缓存走势':'');
+}
+watchVue(radarClient.charts,applyChart);
 
 let capRequestId = 0;
 async function loadMarketCap(symbol: string, silent = false) {
@@ -377,7 +349,7 @@ async function openAiAnalysis(symbol: string) {
   const prompt = `请帮我分析${assetLabel(symbol)}（${symbol}）近期这次涨跌。希望像一篇有依据的简短市场观察：开头先给判断，再分层说明最重要的新闻催化、可能的市场逻辑、其他背景，以及风险和仍不确定的地方，最后用一两句话总结。重要新闻事实请用[新闻1]这样的编号标注，编号对应弹窗里的相关新闻列表。可以写具体事件和数据，但必须能从提供的新闻或行情里核实；不要补造机构评级、目标价、估值或公司说法。没有足够新闻证据时请坦白说明。不要做技术分析，不使用K线、指标、支撑阻力等说法。中文表达自然易懂，像认真和我聊市场，不要写成模板化研报，也不要把猜测说成事实。`;
   try {
     const [quoteResult, newsResult] = await Promise.all([
-      fetchRadarQuotes([symbol], activeInterval.value),
+      Promise.resolve({quotes:quotes.value[symbol]?[quotes.value[symbol]]:[]}),
       fetchRadarNews(symbol).catch((error) => ({
         symbol, items: [], source: '', updatedAt: '', error: error instanceof Error ? error.message : '相关新闻获取失败',
       })),
@@ -485,102 +457,50 @@ function recommendedWatch(symbols: TradFiMarketSymbol[]) {
   return DEFAULT_RADAR_WATCH.filter((symbol) => available.has(symbol));
 }
 
-async function refreshQuotes() {
-  if (refreshInFlight) { refreshQueued = true; return; }
-  refreshInFlight = true;
-  const interval = activeInterval.value;
-  const sort=marketSort.value,order=marketOrder.value;
-  try {
-    const [result, selectedResult, marketResult] = await Promise.all([
-      watch.value.length ? fetchRadarQuotes(watch.value, interval) : Promise.resolve({ quotes: [], invalidSymbols: [], updatedAt: new Date().toISOString() }),
-      selected.value && !watch.value.includes(selected.value) ? fetchRadarQuotes([selected.value], interval) : Promise.resolve({ quotes: [], invalidSymbols: [], updatedAt: new Date().toISOString() }),
-      fetchRadarMarket(interval,sort,order),
-    ]);
-    if (interval !== activeInterval.value) return;
-    const next = { ...quotes.value };
-    for (const quote of [...result.quotes, ...selectedResult.quotes]) next[quote.symbol] = quote;
-    quotes.value = next;
-    if (interval === activeInterval.value && sort===marketSort.value && order===marketOrder.value) marketQuotes.value = Object.fromEntries(marketResult.quotes.map((quote) => [quote.symbol, quote]));
-    updatedAt.value = marketResult.updatedAt || result.updatedAt;
-    marketError.value = marketResult.stale || (result.quotes.length && result.quotes.every((quote) => quote.stale))
-      ? '行情源暂不可用，正在保留最近一次数据' : '';
-    if (result.invalidSymbols.length) {
-      marketError.value = `部分合约暂不可用：${result.invalidSymbols.join('、')}`;
-    }
-  } catch (error) {
-    marketError.value = error instanceof Error ? error.message : '行情请求失败';
-  } finally {
-    refreshInFlight = false;
-    if (refreshQueued && started) {
-      refreshQueued = false;
-      void refreshQuotes();
-    }
+function syncSnapshot(){
+  const frame=radarClient.state.value;if(!frame)return;
+  catalog.value=frame.catalog;
+  quotes.value=Object.fromEntries(frame.quotes.map(quote=>[quote.symbol,quote]));
+  const visible=new Set(frame.marketSymbols);
+  marketQuotes.value=Object.fromEntries(frame.quotes.filter(quote=>visible.has(quote.symbol)).map(quote=>[quote.symbol,quote]));
+  updatedAt.value=frame.updatedAt||'';
+  marketError.value=frame.error||radarClient.error.value;
+  marketLoading.value=!frame.catalog.length;
+  if(frame.catalog.length&&isDefaultRadarWatch(watch.value)){
+    const defaults=recommendedWatch(frame.catalog);if(defaults.length)writeTradFiWatch(defaults);
   }
+  radarClient.setWatches(watch.value);
+  if(started && frame.catalog.some(row=>row.symbol===selected.value) && !radarClient.charts.value[`${selected.value}:${chartInterval.value}`])void loadChart();
 }
-
-async function loadCatalog() {
-  marketLoading.value = true;
-  try {
-    const result = await fetchRadarCatalog(watch.value);
-    catalog.value = result.symbols;
-    if (isDefaultRadarWatch(watch.value)) {
-      const defaults = recommendedWatch(result.symbols);
-      if (defaults.length) writeTradFiWatch(defaults);
-    } else {
-      const available = new Set(result.symbols.map((item) => item.symbol));
-      const supportedWatches = watch.value.filter((symbol) => available.has(symbol));
-      if (supportedWatches.length !== watch.value.length) {
-        writeTradFiWatch(supportedWatches.length ? supportedWatches : recommendedWatch(result.symbols));
-      }
-    }
-    if (!watch.value.includes(selected.value)) selected.value = watch.value[0] || 'BTCUSDT';
-    marketError.value = result.stale ? '合约清单使用缓存数据' : '';
-    await refreshQuotes();
-  } catch (error) {
-    marketError.value = error instanceof Error ? error.message : '合约清单获取失败';
-  } finally {
-    marketLoading.value = false;
-  }
-}
-
+watchVue(radarClient.state,syncSnapshot);
+watchVue(radarClient.error,value=>{marketError.value=value||radarClient.state.value?.error||'';});
 function selectSymbol(symbol: string) {
   selected.value = symbol;
-  if (!quotes.value[symbol]) void refreshQuotes();
 }
 watchVue(watch, (symbols) => {
+  radarClient.setWatches(symbols);
   if (!symbols.includes(selected.value)) selected.value = symbols[0] || 'BTCUSDT';
-  if (started) void refreshQuotes();
 });
 watchVue(() => [selected.value, chartInterval.value] as const, () => { chartBars.value = []; chartHover.value = null; if (started) void loadChart(); });
 watchVue(selected, (symbol) => { if (started) void loadMarketCap(symbol); });
-let radarPoll: ReturnType<typeof setInterval> | undefined;
+watchVue(()=>props.active,value=>radarClient.setActive(value),{immediate:true});
 function initialize() {
-  return initialLoad ||= (async () => {
-    await loadCatalog();
-    await nextTick();
-    await Promise.allSettled([loadChart(), loadMarketCap(selected.value)]);
-    started = true;
-    radarPoll = setInterval(() => { if (!document.hidden && props.active && trendView.value === 'short') void refreshRadar(); }, 15000);
-    radarReady.value = true;
+  return initialLoad ||= (async()=>{
+    radarClient.setActive(props.active);
+    await radarClient.ensure();syncSnapshot();
+    if(!watch.value.includes(selected.value))selected.value=watch.value[0]||'BTCUSDT';
+    started=true;
+    await Promise.allSettled([loadChart(),loadMarketCap(selected.value)]);
+    radarReady.value=true;
   })();
 }
 defineExpose({ initialize });
-async function refreshRadar() {
-  if (!started || radarRefreshing.value) return;
-  radarRefreshing.value = true;
-  try { await Promise.allSettled([refreshQuotes(), loadChart(true), loadMarketCap(selected.value, true)]); }
-  finally { radarRefreshing.value = false; }
+async function refreshRadar(){
+  radarClient.refresh();
 }
-watchVue(trendView, (view) => {
-  if (view === 'short' && started && props.active && !document.hidden) void refreshRadar();
-});
-onUnmounted(() => {
-  clearInterval(radarPoll);
-  chartRequestId++; capRequestId++;
-  started = false; refreshQueued = false;
-
-  aiRequestSeq += 1;
-  aiAbort?.abort();
+onUnmounted(()=>{
+  radarClient.setActive(false);capRequestId++;started=false;
+  aiRequestSeq++;aiAbort?.abort();
 });
 </script>
 
@@ -603,7 +523,7 @@ onUnmounted(() => {
         </div>
         <div class="periods direction-filter" aria-label="涨跌类型"><button v-for="item in [{id:'ALL',label:'涨跌全部'},{id:'UP',label:'涨幅'},{id:'DOWN',label:'跌幅'}] as const" :key="item.id" type="button" :class="{ active: directionFilter === item.id }" @click="directionFilter = item.id">{{ item.label }}</button></div>
         <label class="search"><span>⌕</span><input v-model="searchText" type="search" placeholder="搜索代码或名称"></label>
-        <button type="button" class="refresh" :disabled="!radarReady || radarRefreshing" @click="refreshRadar">{{ radarRefreshing ? '更新中…' : '刷新行情' }}</button>
+        <button type="button" class="refresh" :disabled="!radarReady" @click="refreshRadar">刷新行情</button>
         <label class="threshold"><input v-model="anomalyOnly" type="checkbox"><span>只看异动</span></label>
         <label v-if="anomalyOnly" class="threshold-value"><input v-model.number="anomalyThreshold" type="number" min="0.1" step="0.1"><span>%</span></label>
         <button type="button" class="add-contract-button" @click="openAddContractDialog">＋ 新增币种</button>
@@ -611,14 +531,14 @@ onUnmounted(() => {
 
       <section class="watch-layout">
         <section class="market-panel watch-panel">
-          <header class="market-title"><div><h2>我的关注</h2><p>{{ filteredRows.length }} 个标的 · 按{{ intervals.find((item) => item.id === activeInterval)?.label }}涨跌幅绝对值排序</p></div></header>
+
           <div class="watch-cards">
             <article v-for="row in pagedWatchRows" :key="row.symbol" class="watch-card" :class="{ chosen: selected === row.symbol }" @click="selectSymbol(row.symbol)">
               <button type="button" class="watch-select" :aria-label="`查看 ${row.symbol}`" @click="selectSymbol(row.symbol)">
                 <span class="watch-card-top"><span class="asset-logo"><img v-if="logoUrl(row.symbol) && !logoFailed(row.symbol)" :src="logoUrl(row.symbol)" :alt="`${assetLabel(row.symbol)} logo`" @error="markLogoFailed(row.symbol)"><span v-else>{{ row.symbol.replace(/USDT$/, '').slice(0, 2) }}</span></span><span class="watch-name" :title="`${assetLabel(row.symbol)} · ${row.symbol}`">{{ row.symbol.replace(/USDT$/, '') }}<small>{{ assetType(row.symbol) === 'TRADFI' ? assetLabel(row.symbol) : 'USDT 永续' }}</small></span></span>
-                <span class="watch-price">{{ formatPrice(row.quote?.lastPrice) }}<small>USDT</small></span>
+                <span class="watch-price"><span class="watch-price-value">{{ formatPrice(row.quote?.lastPrice) }}</span><small>USDT</small></span>
                 <b class="watch-change" :class="changeClass(row.change)">{{ formatChange(row.change) }}</b>
-                <span class="watch-card-bottom">{{ intervals.find((item) => item.id === activeInterval)?.label }}涨跌</span>
+                <span class="watch-card-bottom"><span>{{ intervals.find((item) => item.id === activeInterval)?.label }}涨跌</span><b v-if="isQuoteStale(row.quote)" class="neutral">缓存</b></span>
               </button>
               <button type="button" class="watch-ai-button" :disabled="aiLoading || aiSending" @click.stop="openAiAnalysis(row.symbol)">AI 分析</button>
               <button type="button" class="follow-icon active" :aria-label="`取消关注 ${row.symbol}`" title="取消关注" @click.stop="toggleWatch(row.symbol)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.5 2.6 5.3 5.9.9-4.25 4.15 1 5.85L12 16.9l-5.25 2.8 1-5.85L3.5 9.7l5.9-.9L12 3.5Z"/></svg></button>
@@ -654,7 +574,7 @@ onUnmounted(() => {
       </section>
 
       <section class="market-panel">
-        <header class="market-title"><div><h2>其他合约列表</h2><p>未关注的合约 · 接口按{{marketSort==='price'?'价格':marketSort==='change'?'涨跌幅':'涨跌幅绝对值'}}{{marketOrder==='asc'?'升序':'降序'}} · {{ filteredMarketRows.length }} 个标的</p></div><button class="refresh" :disabled="marketSort==='absoluteChange' && marketOrder==='desc'" @click="marketSort='absoluteChange';marketOrder='desc';marketPage=1">重置排序</button><span class="source">Binance USDⓈ-M Futures · 全市场批量行情</span></header>
+        <header class="market-title"><div><h2>其他合约列表</h2><p>未关注的合约 · 按{{marketSort==='price'?'价格':marketSort==='change'?'涨跌幅':'涨跌幅绝对值'}}{{marketOrder==='asc'?'升序':'降序'}} · {{ filteredMarketRows.length }} 个标的</p></div><button type="button" class="refresh" @click="marketSort='absoluteChange';marketOrder='desc';marketPage=1">重置排序</button><span class="source">Binance USDⓈ-M Futures · 全市场批量行情</span></header>
         <div class="table-wrap">
           <table>
             <thead><tr><th>合约</th><th>类别</th><th :aria-sort="marketSort==='price'?(marketOrder==='asc'?'ascending':'descending'):'none'"><button class="sort-heading" @click="sortMarket('price')">最新价格 {{marketSort==='price'?(marketOrder==='asc'?'↑':'↓'):'↕'}}</button></th><th :aria-sort="marketSort==='change'?(marketOrder==='asc'?'ascending':'descending'):'none'"><button class="sort-heading" @click="sortMarket('change')">{{ intervals.find((item) => item.id === activeInterval)?.label }}涨跌 {{marketSort==='change'?(marketOrder==='asc'?'↑':'↓'):'↕'}}</button></th><th>状态</th><th class="follow-cell">关注</th></tr></thead>
@@ -664,7 +584,7 @@ onUnmounted(() => {
                 <td><span class="type-label" :class="assetType(row.symbol) === 'TRADFI' ? 'type-tradfi' : 'type-crypto'">{{ assetType(row.symbol) === 'TRADFI' ? '传统金融' : '虚拟币' }}</span></td>
                 <td class="price-cell">{{ formatPrice(row.quote?.lastPrice) }}</td>
                 <td :class="changeClass(row.change)">{{ formatChange(row.change) }}</td>
-                <td><span v-if="row.quote?.stale" class="status stale">数据缓存</span><span v-else-if="row.change != null && Math.abs(row.change) >= Math.max(0, Number(anomalyThreshold) || 0)" class="status alert">波动异动</span><span v-else-if="row.change == null" class="status">周期数据暂无</span><span v-else class="status normal">监控中</span></td>
+                <td><span v-if="isQuoteStale(row.quote)" class="status stale">数据缓存</span><span v-else-if="row.change != null && Math.abs(row.change) >= Math.max(0, Number(anomalyThreshold) || 0)" class="status alert">波动异动</span><span v-else-if="row.change == null" class="status">周期数据暂无</span><span v-else class="status normal">监控中</span></td>
                 <td class="follow-cell"><button type="button" class="follow-icon" :class="{ active: isWatched(row.symbol) }" :aria-label="isWatched(row.symbol) ? `取消关注 ${row.symbol}` : `关注 ${row.symbol}`" :title="isWatched(row.symbol) ? '取消关注' : '加入关注'" @click.stop="toggleWatch(row.symbol)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.5 2.6 5.3 5.9.9-4.25 4.15 1 5.85L12 16.9l-5.25 2.8 1-5.85L3.5 9.7l5.9-.9L12 3.5Z"/></svg></button></td>
               </tr>
               <tr v-if="!filteredMarketRows.length"><td colspan="6" class="empty-row">{{ marketLoading ? '正在获取合约行情…' : anomalyOnly ? '暂无达到阈值的未关注合约，可调低异动阈值或取消异动筛选。' : '没有符合筛选条件的合约。' }}</td></tr>
@@ -677,7 +597,7 @@ onUnmounted(() => {
       </div>
       <section v-show="trendView === 'long'" id="radar-long-panel"
         role="tabpanel" aria-labelledby="radar-long-tab">
-        <RadarLongTrend :active="props.active && trendView === 'long'" />
+        <RadarLongTrend :active="props.active" />
       </section>
     </main>
 
@@ -724,3 +644,4 @@ onUnmounted(() => {
 </template>
 
 <style scoped src="./RadarBoard.css"></style>
+<style scoped src="./RadarTheme.css"></style>

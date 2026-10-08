@@ -8,7 +8,7 @@ const { fetchFedOdds } = require('./markets');
 const { getHlInfoConfig } = require('./hlInfoClient');
 const { getStartedAt, getUptimeMs } = require('./runtime');
 const { pushRequest, pushError, getMonitorSnapshot } = require('./opsMonitor');
-const { requireAdmin } = require('./maintenanceAuth');
+const { requireAdmin, requireAuthenticated } = require('./maintenanceAuth');
 
 /** 仅 POST /api/whales/alert-history 使用的 body 上限（有界，不是无限放大） */
 const ALERT_HISTORY_BODY_LIMIT = process.env.ALERT_HISTORY_BODY_LIMIT || '4mb';
@@ -73,7 +73,9 @@ function mountRoutes(app, prefix) {
   app.use(`${base}/whale-ai`, require('../routes/whaleAi'));
   app.get(`${base}/data/whales`, (_req, res) => {
     try {
-      res.json(require('./sqliteStore').loadManagementWhales(500));
+      const data = require('./sqliteStore').loadManagementWhales(500);
+      const total = require('./db').getDb().prepare('SELECT COUNT(*) AS total FROM whales').get().total;
+      res.json({ ...data, total });
     } catch (err) {
       res.status(500).json({ error: err.message || '读取巨鲸列表失败' });
     }
@@ -164,7 +166,7 @@ function mountRoutes(app, prefix) {
   });
 
   /** POST /api/data/reset — 清空市场数据，保留用户与手动巨鲸，并重启补齐 */
-  app.post(`${base}/data/reset`, requireAdmin, async (_req, res) => {
+  app.post(`${base}/data/reset`, requireAuthenticated, async (_req, res) => {
     if (whaleRefreshBusy) {
       return res.status(409).json({
         error: '正在重置/拉取中，请稍候',

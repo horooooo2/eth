@@ -51,6 +51,8 @@ const FILES = [
   'lib/markets.js',
   'lib/tradfiMarkets.js',
   'lib/radarLongTrend.js',
+  'lib/radarStream.js',
+  'lib/radarRealtime.js',
   'lib/radarSort.js',
   'lib/featureFlags.js',
   'lib/tradfiDirection.js',

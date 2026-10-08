@@ -2,6 +2,30 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 require('./helpers/isolateSqlite');
 
+test('ordinary signed-in users can reset; anonymous requests remain rejected', async () => {
+  const auth = require('../lib/authStore');
+  auth.createUser('reset-member', 'test-password');
+  const { token } = auth.login('reset-member', 'test-password');
+  const reset = require('../lib/siteReset');
+  const original = reset.resetSiteData;
+  let calls = 0;
+  reset.resetSiteData = async () => { calls++; return { keptManuals: 0, backfill: {} }; };
+  const server = require('../lib/createApp').createApp().listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  try {
+    const url = `http://127.0.0.1:${server.address().port}/api/data/reset`;
+    assert.equal((await fetch(url, { method: 'POST' })).status, 401);
+    assert.equal(calls, 0);
+    const response = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).ok, true);
+    assert.equal(calls, 1);
+  } finally {
+    reset.resetSiteData = original;
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test('management whale endpoint only reads the whale list', async () => {
   const db = require('../lib/db').getDb();
   const server = require('../lib/createApp').createApp().listen(0, '127.0.0.1');
@@ -10,7 +34,7 @@ test('management whale endpoint only reads the whale list', async () => {
   let queries = 0;
   db.prepare = function(sql) {
     assert.match(sql, /FROM whales/);
-    assert.doesNotMatch(sql, /COUNT\s*\(|GROUP\s+BY/i);
+    assert.doesNotMatch(sql, /GROUP\s+BY/i);
     queries++;
     return prepare.call(this, sql);
   };
@@ -18,9 +42,10 @@ test('management whale endpoint only reads the whale list', async () => {
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/data/whales`);
     assert.equal(response.status, 200);
     const data = await response.json();
-    assert.deepEqual(Object.keys(data), ['whales']);
+    assert.deepEqual(Object.keys(data), ['whales', 'total']);
     assert.ok(Array.isArray(data.whales));
-    assert.equal(queries, 1);
+    assert.equal(data.total, data.whales.length);
+    assert.equal(queries, 2);
   } finally {
     db.prepare = prepare;
     await new Promise(resolve => server.close(resolve));
