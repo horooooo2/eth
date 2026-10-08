@@ -5,7 +5,7 @@ const {createStatisticsWorker}=require('../lib/statisticsWorker');
 const {createStatisticsRunner}=require('../lib/statisticsCompute');
 const store=require('../lib/sqliteStore');
 const {scanResonanceSignals,selectResonanceSignals,DEFAULT_RESONANCE_CONFIG}=require('../lib/resonanceEngine');
-const {DURATIONS,WINDOWS}=require('../lib/statisticsComputeChild');
+const {WINDOWS}=require('../lib/statisticsComputeChild');
 let clock=Date.now(),roster=['a','b','c'];
 const whales=roster.map(id=>({id,name:id,winRate:80,positions:[],enabled:true}));
 const db=getDb();
@@ -23,26 +23,20 @@ db.transaction(()=>{
 })();
 const baseline=()=>{
   store.invalidateFillProjection();
-  const directions=new Map(),resonances=new Map();
-  for(const [window,duration] of Object.entries(DURATIONS))directions.set(window,store.loadDirectionSummary(clock-duration,clock));
+  const resonances=new Map();
   for(const windowHours of WINDOWS) {
     const config={...DEFAULT_RESONANCE_CONFIG,windowHours};
     const inputs=store.loadResonanceInputs(clock-Math.max(windowHours,config.accumulationWindowHours)*3600000,clock,config.minNotionalUsd,new Set(roster),{stream:true});
     resonances.set(windowHours,scanResonanceSignals({...inputs,whales:whales.filter(w=>roster.includes(w.id)),config,now:clock,watchedCoins:['BTC','ETH','SOL','PEPE']}));
   }
-  return {directions,resonances};
+  return {resonances};
 };
 const runner=createStatisticsRunner();
 const worker=createStatisticsWorker({getDb,getRoster:()=>roster,runner,now:()=>clock,minIntervalMs:0});
 test('all precomputed windows and coin subsets exactly match the original algorithms',async()=>{
-  assert.throws(()=>worker.direction('1h'),error=>error.status===503);
+  assert.throws(()=>worker.resonance(6,['BTC','ETH','SOL','PEPE']),error=>error.status===503);
   const expected=baseline();await worker.tick();
   assert.equal(worker.getStatus().error,null);
-  for(const [window,value] of expected.directions) {
-    const result=JSON.parse(worker.direction(window));
-    assert.deepEqual({coins:result.coins,accounts:result.accounts},value);
-    assert.equal(result.statistics.pendingUpdates,false);
-  }
   for(const [window,value] of expected.resonances) {
     for(const coins of [['BTC'],['ETH'],['BTC','ETH'],['SOL'],['UBTC'],['PEPE'],['KPEPE'],['BTC','PEPE'],['NONEXISTENT']]) {
       const config={...DEFAULT_RESONANCE_CONFIG,windowHours:window};
@@ -65,37 +59,40 @@ test('append and correction during computation publish a coherent batch and expo
   try {
     fill('before');const version=db.prepare('SELECT version FROM statistics_input_version').get().version;
     await worker.tick();
-    const snapshot=JSON.parse(worker.direction('1h'));
+    const snapshot=worker.resonance(6,['BTC','ETH','SOL','PEPE']);
     assert.equal(snapshot.statistics.inputVersion,version);
     assert.equal(snapshot.statistics.pendingUpdates,true);
-    assert.equal(snapshot.coins.find(row=>row.coin==='BTC').addLong,800000);
+    assert.ok(snapshot.signals.length>0);
   } finally {runner.run=realRun;}
-  await worker.tick();assert.equal(JSON.parse(worker.direction('1h')).statistics.pendingUpdates,false);
-  const expected=baseline();assert.deepEqual(JSON.parse(worker.direction('1h')).coins,expected.directions.get('1h').coins);
+  await worker.tick();assert.equal(worker.resonance(6,['BTC','ETH','SOL','PEPE']).statistics.pendingUpdates,false);
+  const expected=baseline();assert.deepEqual(worker.resonance(6,['BTC','ETH','SOL','PEPE']).signals,JSON.parse(JSON.stringify(expected.resonances.get(6).signals)));
 });
 test('failed computation retains persisted complete results and restart hydrates them first',async()=>{
-  clock+=11000;
-  const persisted=worker.direction('1h'),realRun=runner.run;
+  clock+=61000;
+  const persisted=worker.resonance(6,['BTC','ETH','SOL','PEPE']),realRun=runner.run;
   runner.run=async()=>{throw Error('forced statistics failure');};
-  try {await worker.tick();assert.equal(JSON.parse(worker.direction('1h')).statistics.stale,true);assert.match(worker.getStatus().error,/保留/);}
+  try {await worker.tick();assert.equal(worker.resonance(6,['BTC','ETH','SOL','PEPE']).statistics.stale,true);assert.match(worker.getStatus().error,/保留/);}
   finally {runner.run=realRun;}
   const restarted=createStatisticsWorker({getDb,getRoster:()=>roster,now:()=>clock,runner:{run:async()=>{throw Error('restart failure');},stop(){}}});
+  // Upgrade from the legacy nine-window batch must retain its five good caches.
+  const batch=db.prepare('SELECT batch_id FROM statistics_current WHERE id=1').get().batch_id;
+  for(const window of ['15m','1h','4h','24h'])db.prepare('INSERT INTO statistics_results VALUES(?,?,?)').run(batch,'direction:'+window,'retired');
   await restarted.tick();
-  assert.deepEqual(JSON.parse(restarted.direction('1h')).coins,JSON.parse(persisted).coins);
+  assert.deepEqual(restarted.resonance(6,['BTC','ETH','SOL','PEPE']).signals,persisted.signals);
   restarted.stop();
 });
 test('window aging, history deletion and roster changes update without a new fill',async()=>{
   clock+=25*3600000;
-  await worker.tick();assert.equal(JSON.parse(worker.direction('24h')).coins.length,0);
+  await worker.tick();assert.equal(worker.resonance(24,['BTC','ETH']).signals.length,0);
   fill('fresh-after-time');await worker.tick();
-  assert.equal(JSON.parse(worker.direction('1h')).coins[0].addLong,200000);
+  assert.equal(worker.resonance(6,['BTC']).statistics.pendingUpdates,false);
   db.prepare('DELETE FROM fills WHERE id=?').run('fresh-after-time');await worker.tick();
-  assert.equal(JSON.parse(worker.direction('1h')).coins.length,0);
+  assert.equal(worker.resonance(6,['BTC','ETH','SOL','PEPE']).signals.length,0);
   roster=['a'];assert.throws(()=>worker.resonance(6,['BTC']),error=>error.status===503);
   await worker.tick();assert.equal(worker.resonance(6,['BTC']).hit,false);
 });
 test('requests read completed snapshots while computation is pending, without scanning facts',async()=>{
-  clock+=11000;
+  clock+=61000;
   let release;
   const realRun=runner.run;
   runner.run=()=>new Promise((resolve,reject)=>{release=()=>reject(Error('held computation'));});
@@ -104,29 +101,28 @@ test('requests read completed snapshots while computation is pending, without sc
   const originalPrepare=db.prepare;
   db.prepare=function(sql){assert.doesNotMatch(sql,/\bFROM (fills|events|whales)\b/i);return originalPrepare.call(this,sql);};
   try {
-    for(let i=0;i<30;i++){assert.ok(worker.direction('1h'));assert.equal(worker.resonance(6,['BTC']).hit,false);}
+    for(let i=0;i<30;i++){assert.ok(worker.resonance(6,['BTC','ETH','SOL','PEPE']));assert.equal(worker.resonance(6,['BTC']).hit,false);}
     assert.equal(worker.getStatus().running,true);
   } finally {db.prepare=originalPrepare;release();await task;runner.run=realRun;}
 });
 test('HTTP routes return cached results and warming status without invoking the old statistics builders',async()=>{
   const express=require('express'),service=require('../lib/statisticsWorker');
-  const original={direction:service.direction,resonance:service.resonance,prepare:store.prepareFillProjection};
-  service.direction=worker.direction;service.resonance=worker.resonance;
+  const original={resonance:service.resonance,prepare:store.prepareFillProjection};
+  service.resonance=worker.resonance;
   store.prepareFillProjection=async()=>{throw Error('HTTP must never rebuild facts');};
   const app=express();app.use('/api/whales',require('../routes/whales'));
   const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
   const url='http://127.0.0.1:'+server.address().port;
   try {
     const direction=await fetch(url+'/api/whales/direction-summary?window=1h');
-    assert.equal(direction.status,200);assert.equal(direction.headers.get('cache-control'),'no-store');
-    assert.ok((await direction.json()).statistics);
+    assert.equal(direction.status,404);
     assert.equal((await fetch(url+'/api/whales/resonance?windowHours=6&coins=BTC,ETH')).status,200);
-    assert.equal((await fetch(url+'/api/whales/direction-summary?window=bad')).status,400);
+    assert.equal((await fetch(url+'/api/whales/direction-summary?window=bad')).status,404);
     worker.invalidate();
-    assert.equal((await fetch(url+'/api/whales/direction-summary?window=1h')).status,503);
+    assert.equal((await fetch(url+'/api/whales/direction-summary?window=1h')).status,404);
     assert.equal((await fetch(url+'/api/whales/resonance?windowHours=6&coins=BTC')).status,503);
   } finally {
-    service.direction=original.direction;service.resonance=original.resonance;store.prepareFillProjection=original.prepare;
+    service.resonance=original.resonance;store.prepareFillProjection=original.prepare;
     await new Promise(resolve=>server.close(resolve));worker.stop();
   }
 });
@@ -134,7 +130,7 @@ test('HTTP routes return cached results and warming status without invoking the 
 test('cancelled staging never exposes partial windows or overwrites the current pointer',async()=>{
   await worker.tick();
   const before=db.prepare('SELECT batch_id FROM statistics_current WHERE id=1').get().batch_id;
-  clock+=11000;
+  clock+=61000;
   const originalPrepare=db.prepare;
   db.prepare=function(sql) {
     const statement=originalPrepare.call(this,sql);
@@ -148,10 +144,10 @@ test('cancelled staging never exposes partial windows or overwrites the current 
   finally {db.prepare=originalPrepare;}
   assert.equal(db.prepare('SELECT batch_id FROM statistics_current WHERE id=1').get().batch_id,before);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM statistics_results WHERE batch_id!=?').get(before).n,0);
-  assert.ok(worker.direction('1h'));
+  assert.ok(worker.resonance(6,['BTC','ETH','SOL','PEPE']));
 });
 test('an import write failure keeps the old pointer and retries the complete batch',async()=>{
-  clock+=11000;
+  clock+=61000;
   const before=db.prepare('SELECT batch_id FROM statistics_current WHERE id=1').get().batch_id;
   const originalPrepare=db.prepare;
   db.prepare=function(sql) {
@@ -161,27 +157,26 @@ test('an import write failure keeps the old pointer and retries the complete bat
   try {await worker.tick();}
   finally {db.prepare=originalPrepare;}
   assert.equal(db.prepare('SELECT batch_id FROM statistics_current WHERE id=1').get().batch_id,before);
-  assert.equal(JSON.parse(worker.direction('1h')).statistics.stale,true);
+  assert.equal(worker.resonance(6,['BTC','ETH','SOL','PEPE']).statistics.stale,true);
   await worker.tick();
-  assert.equal(JSON.parse(worker.direction('1h')).statistics.error,null);
+  assert.equal(worker.resonance(6,['BTC','ETH','SOL','PEPE']).statistics.error,null);
 });
 test('a timed-out child is terminated and the next runner can compute successfully',async()=>{
   const request={database:db.name,now:clock,roster,rosterKey:'timeout',retentionMs:2*86400000};
   const timed=createStatisticsRunner({timeoutMs:1});
   await assert.rejects(timed.run(request),/timed out/);
   const recovery=createStatisticsRunner();
-  try {assert.equal((await recovery.run(request)).rows.length,9);}
+  try {assert.equal((await recovery.run(request)).rows.length,5);}
   finally {timed.stop();recovery.stop();worker.stop();}
 });
 test('corrupt persisted resonance summaries rebuild instead of trapping startup in hydration failures',async()=>{
   db.prepare("UPDATE statistics_results SET payload_json='broken' WHERE batch_id=(SELECT batch_id FROM statistics_current WHERE id=1) AND key='resonance:6'").run();
-  db.prepare("UPDATE statistics_results SET payload_json='{}' WHERE batch_id=(SELECT batch_id FROM statistics_current WHERE id=1) AND key='direction:1h'").run();
   const restored=createStatisticsWorker({getDb,getRoster:()=>roster,now:()=>clock,minIntervalMs:0});
   try {
     await restored.tick();
     assert.equal(restored.getStatus().warming,false);
     assert.equal(restored.getStatus().error,null);
     assert.equal(restored.resonance(6,['BTC']).hit,false);
-    assert.equal(JSON.parse(restored.direction('1h')).statistics.pendingUpdates,false);
+    assert.equal(restored.resonance(6,['BTC']).statistics.pendingUpdates,false);
   } finally {restored.stop();}
 });

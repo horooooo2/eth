@@ -1,3 +1,4 @@
+const {observationsEnabled}=require('./featureFlags');
 /**
  * 浏览器端实时推送
  * - /realtime          公开频道（巨鲸状态）
@@ -33,13 +34,18 @@ function attachRealtimeHub(httpServer) {
   const sync = require('./whaleSync');
   sync.initialize();
   publicWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 });
-  publicWss.on('connection', (socket) => {
+  publicWss.on('connection', (socket, req) => {
+    const coins=new URL(req.url,'http://localhost').searchParams.get('coins');
+    if(observationsEnabled())socket.observationCoins=require('./observationScope').normalize(String(coins||'').split(','));
     socket.syncReady = false;
     socket.alive = true;
     socket.on('pong', () => { socket.alive = true; });
     publicClients.add(socket);
     try {
-      safeSend(socket, require('./whaleObservationWorker').snapshot());
+      if(observationsEnabled()){
+        socket.observationFrame=require('./whaleObservationWorker').snapshot(socket.observationCoins);
+        safeSend(socket, socket.observationFrame);
+      }
       safeSend(socket, { type: 'hello', ...sync.stream.cursor(), at: Date.now(), clients: publicClients.size });
     } catch {
       // ignore
@@ -176,6 +182,23 @@ function broadcastState(event) {
   for (const socket of publicClients) if (socket.syncReady) safeSend(socket, payload);
 }
 
+function broadcastObservations() {
+  if(!observationsEnabled())return;
+  const frames=new Map();
+  for(const socket of publicClients) {
+    const coins=socket.observationCoins;
+    const key=JSON.stringify(coins);
+    if(!frames.has(key))frames.set(key,require('./whaleObservationWorker').snapshot(coins));
+    const frame=frames.get(key),previous=socket.observationFrame;
+    if(previous?.epoch===frame.epoch) {
+      const old=new Map(previous.rows.map(row=>[row.id,JSON.stringify(row)]));
+      safeSend(socket,{...frame,type:'observationCommit',ids:frame.rows.map(row=>row.id),
+        rows:frame.rows.filter(row=>old.get(row.id)!==JSON.stringify(row))});
+    } else safeSend(socket,frame);
+    socket.observationFrame=frame;
+  }
+}
+
 function sendToUser(userId, message) {
   const set = privateByUser.get(String(userId || ''));
   if (!set || !set.size) return 0;
@@ -223,6 +246,7 @@ module.exports = {
   attachRealtimeHub,
   broadcast,
   broadcastState,
+  broadcastObservations,
   sendToUser,
   broadcastPrivate,
   clientCount,

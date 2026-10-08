@@ -1,3 +1,4 @@
+process.env.WHALE_OBSERVATIONS_ENABLED='1';
 const test=require('node:test');
 const assert=require('node:assert/strict');
 require('./helpers/isolateSqlite');
@@ -8,10 +9,10 @@ const originalFactory=compute.createComputeRunner;
 let failure='collective';
 compute.createComputeRunner=()=>{
   const runner=originalFactory();
-  return {run:(kind,...args)=>kind===failure?Promise.reject(Error(`forced ${kind} failure`)):runner.run(kind,...args),stop:()=>runner.stop()};
+  return {run:(kind,...args)=>kind===failure?Promise.reject(Error(`forced ${kind} failure`)):runner.run(kind,...args),stop:()=>runner.stop(),getStatus:()=>runner.getStatus()};
 };
 const hub=require('../lib/realtimeHub'),messages=[];
-hub.broadcast=message=>messages.push(message);
+hub.broadcastObservations=()=>messages.push(require('../lib/whaleObservationWorker').snapshot());
 const now=Math.floor(Date.now()/3600000)*3600000-30*60000;
 function seed(id) {
   for(let i=0;i<3;i++)store.recordInput(getDb(),{id:`${id}-${i}`,whaleId:id,asset:'BTC',side:'buy',
@@ -26,7 +27,7 @@ test('collective failure does not suppress pair commits, and retries have a back
     assert.match(worker.snapshot().error,/集体观察/);
     assert.equal(worker.getStatus().pendingPairs,0);
     assert.equal(worker.getStatus().failedRuns,1);
-    assert.ok(messages.some(m=>m.type==='observationCommit'&&m.rows.some(r=>r.whaleId==='failure-first')&&!m.error));
+    assert.ok(messages.some(m=>m.type==='observationSnapshot'&&m.rows.some(r=>r.whaleId==='failure-first')&&!m.error));
     seed('failure-second');await worker.tick();
     assert.ok(worker.snapshot().rows.some(r=>r.whaleId==='failure-second'));
     assert.equal(worker.getStatus().failedRuns,1);

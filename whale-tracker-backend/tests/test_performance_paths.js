@@ -38,17 +38,6 @@ test('evidence pages preserve order, legacy compatibility, shared rows and atomi
   assert.equal([...evidence.readEvidence(db, 'two')].length, 140);
 });
 
-test('shared query coalesces slow readers, separates keys, and retries errors', async () => {
-  const read = require('../lib/sharedQuery').createSharedQuery({ ttlMs: 0 });
-  let calls = 0, release;
-  const gate = new Promise(resolve => { release = resolve; });
-  const build = async () => { calls++; await gate; return 42; };
-  const a = read('a', build), b = read('a', build), c = read('b', build);
-  release(); assert.deepEqual(await Promise.all([a, b, c]), [42, 42, 42]); assert.equal(calls, 2);
-  await assert.rejects(read('a', () => { throw Error('retry'); }));
-  assert.equal(await read('a', () => 7), 7);
-});
-
 test('mirror writes stay ordered, resets cannot resurrect old data, failures do not spin', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'whale-mirror-'));
   const target = path.join(dir, 'mirror.json');

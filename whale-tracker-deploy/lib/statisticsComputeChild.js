@@ -3,9 +3,7 @@ const Database=require('better-sqlite3');
 const {createFillFactProjection}=require('./fillFactProjection');
 const {eventsFromTrade}=require('./sqliteStore');
 const {canonicalTradeId,alertDocFromEvent}=require('./positionEventPolicy');
-const {aggregateDirectionFacts}=require('./directionSummary');
 const {scanResonanceSignals,coinKey,DEFAULT_RESONANCE_CONFIG}=require('./resonanceEngine');
-const DURATIONS={'15m':900000,'1h':3600000,'4h':14400000,'24h':86400000};
 const WINDOWS=[2,4,6,12,24];
 
 function compute(request, report = () => {}) {
@@ -17,7 +15,7 @@ function compute(request, report = () => {}) {
     const put=output.prepare('INSERT INTO results VALUES(?,?)');
     // Statistics use at most 24 hours. Use the batch clock throughout rebuild:
     // a slow computation must not silently lose facts near its window boundary.
-    const horizon=Math.max(...Object.values(DURATIONS), ...WINDOWS.map(w=>Math.max(w,DEFAULT_RESONANCE_CONFIG.accumulationWindowHours)*3600000));
+    const horizon=Math.max(...WINDOWS.map(w=>Math.max(w,DEFAULT_RESONANCE_CONFIG.accumulationWindowHours)*3600000));
     const projection=createFillFactProjection({getDb:()=>source,retentionMs:Math.min(request.retentionMs,horizon),
       now:()=>request.now,untilMs:request.now,cacheKiB:8192,onProgress:report,classify:eventsFromTrade,canonicalId:canonicalTradeId});
     let version;
@@ -31,14 +29,10 @@ function compute(request, report = () => {}) {
         const whale=JSON.parse(row.payload_json);
         if(String(whale.error||'')!=='等待刷新')whales.push(whale);
       }
-      let watched;
-      for(const [window,duration] of Object.entries(DURATIONS)) {
-        report({phase:'direction:'+window});
-        const sinceMs=request.now-duration;
-        const summary=aggregateDirectionFacts(projection.read(sinceMs,request.now,true),{unique:true});
-        put.run('direction:'+window,JSON.stringify({...summary,sinceMs,untilMs:request.now,asOf:request.now}));
-        if(window==='24h')watched=[...new Set(summary.coins.map(row=>coinKey(row.coin)))];
-      }
+      // Discover assets without constructing four account/coin direction summaries.
+      const coins=new Set();
+      for(const event of projection.read(request.now-horizon,request.now,true))coins.add(coinKey(event.coin));
+      const watched=[...coins];
       const eligible=new Set(whales.filter(w=>Number(w.winRate)>=DEFAULT_RESONANCE_CONFIG.minWinRate).map(w=>String(w.id)));
       for(const windowHours of WINDOWS) {
         report({phase:'resonance:'+windowHours});
@@ -56,4 +50,4 @@ if(require.main===module)process.once('message',request=>{
   try {compute(request,progress=>process.send({progress}));process.send({ok:true},()=>process.exit(0));}
   catch(error){process.send({ok:false,error:error.message},()=>process.exit(1));}
 });
-module.exports={compute,DURATIONS,WINDOWS};
+module.exports={compute,WINDOWS};

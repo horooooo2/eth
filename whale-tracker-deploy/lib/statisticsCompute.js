@@ -26,7 +26,7 @@ function createStatisticsRunner({timeoutMs=DEFAULT_TIMEOUT_MS,heapMb=256}={}) {
             if(!child.pid){clearTimeout(timer);reject(error);}
             else {message={ok:false,error:error.message};child.kill();}
           });
-          child.once('exit',(code,signal)=>{
+          child.once('close',(code,signal)=>{
             clearTimeout(timer);
             if(timedOut)reject(Error('Statistics computation timed out ('+phase+')'));
             else if(current!==generation)reject(Error('Statistics computation cancelled'));
@@ -39,7 +39,7 @@ function createStatisticsRunner({timeoutMs=DEFAULT_TIMEOUT_MS,heapMb=256}={}) {
         try {
           // Bound final-result import too; facts never cross this boundary.
           const sizes=result.prepare('SELECT COUNT(*) AS n,MAX(length(CAST(payload_json AS BLOB))) AS max,SUM(length(CAST(payload_json AS BLOB))) AS total FROM results').get();
-          if(sizes.n!==9||sizes.max>8*1024*1024||sizes.total>32*1024*1024)throw Error('Statistics result exceeds import budget');
+          if(sizes.n!==5||sizes.max>8*1024*1024||sizes.total>32*1024*1024)throw Error('Statistics result exceeds import budget');
           const meta=JSON.parse(result.prepare('SELECT payload_json FROM metadata').get().payload_json);
           const rows=[];
           for(const row of result.prepare('SELECT * FROM results').iterate()) {

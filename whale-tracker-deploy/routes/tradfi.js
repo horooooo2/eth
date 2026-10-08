@@ -1,3 +1,4 @@
+const {sortRows}=require('../lib/radarSort');
 const express = require('express');
 const { getCatalog, getQuotes, getRadarCatalog, getRadarQuotes, getRadarMarketQuotes, getRadarAvailableContracts, getRadarMarketCap, getTradFiKlines } = require('../lib/tradfiMarkets');
 const { getWhaleActivity, getAllWhaleActivity } = require('../lib/tradfiWhales');
@@ -10,6 +11,14 @@ const analysisStore = require('../lib/tradfiAnalysisStore');
 const { getRadarNews } = require('../lib/tradfiIntel');
 
 const router = express.Router();
+router.get('/radar/long-trends',(req,res)=>{
+  const days=Number(req.query.days||90),direction=String(req.query.direction||'ALL'),assetType=String(req.query.assetType||'ALL');
+  if(![30,60,90].includes(days)||!['TREND','ALL','UP','DOWN','TURN_UP','TURN_DOWN','NEUTRAL'].includes(direction)||!['ALL','CRYPTO','TRADFI'].includes(assetType))return res.status(400).json({error:'无效的趋势筛选参数'});
+  const sort=String(req.query.sort||'score'),order=String(req.query.order||'desc');
+  if(!['score','change','monthChange'].includes(sort)||!['asc','desc'].includes(order))return res.status(400).json({error:'无效排序参数'});
+  try {res.set('Cache-Control','no-store').json(require('../lib/radarLongTrend').snapshot({sort,order,days,direction,assetType,search:req.query.search,page:Number(req.query.page||1),watchSymbols:String(req.query.watch||'').split(',').filter(s=>/^[A-Z0-9]{3,30}$/.test(s)).slice(0,30),focus:String(req.query.focus||'').slice(0,30)}));}
+  catch {res.status(503).json({error:'长期趋势缓存暂不可用'});}
+});
 router.use('/strategy-shadow', require('./strategyShadow'));
 const inFlightAnalyses = new Map();
 
@@ -117,7 +126,9 @@ router.get('/radar/available', async (_req, res) => {
 
 router.get('/radar/quotes', async (req, res) => {
   try {
-    res.json(await getRadarQuotes(req.query.symbols));
+    const interval = String(req.query.interval || '24h');
+    if (!['24h', '1h', '5m'].includes(interval)) return res.status(400).json({ error: '不支持的榜单周期' });
+    res.json(await getRadarQuotes(req.query.symbols, interval));
   } catch (err) {
     console.error('[GET /api/tradfi/radar/quotes]', err.message);
     res.status(502).json({ error: '雷达行情暂不可用', details: err.message });
@@ -126,10 +137,17 @@ router.get('/radar/quotes', async (req, res) => {
 
 router.get('/radar/market', async (req, res) => {
   const interval = req.query.interval || '24h';
-  if (!['24h', '1h', '15m', '5m'].includes(interval)) return res.status(400).json({ error: '不支持的榜单周期' });
+  if (!['24h', '1h', '5m'].includes(interval)) return res.status(400).json({ error: '不支持的榜单周期' });
+  const sort=String(req.query.sort||'absoluteChange'),order=String(req.query.order||'desc');
+  if(!['absoluteChange','price','change'].includes(sort)||!['asc','desc'].includes(order))return res.status(400).json({error:'无效排序参数'});
   try {
     const result = await getRadarMarketQuotes(interval);
-    res.json({ quotes: result.quotes, updatedAt: result.updatedAt, stale: Boolean(result.stale), source: 'Binance USDⓈ-M Futures' });
+    const quotes=sortRows(result.quotes,row=>{
+      if(sort==='price')return row.lastPrice;
+      const change=interval==='24h'?row.priceChangePercent:row.changes?.[interval];
+      return sort==='absoluteChange'&&change!=null?Math.abs(Number(change)):change;
+    },order);
+    res.json({ quotes, sort, order, updatedAt: result.updatedAt, stale: Boolean(result.stale), source: 'Binance USDⓈ-M Futures' });
   } catch (err) {
     console.error('[GET /api/tradfi/radar/market]', err.message);
     res.status(502).json({ error: '雷达全市场行情暂不可用', details: err.message });
@@ -161,7 +179,7 @@ router.get('/radar/news', async (req, res) => {
 router.get('/radar/klines', async (req, res) => {
   try {
     const symbol = String(req.query.symbol || '').trim().toUpperCase();
-    const interval = String(req.query.interval || '15m');
+    const interval = String(req.query.interval || '1h');
     const catalog = await getRadarCatalog([symbol]);
     if (!catalog.symbols.some((item) => item.symbol === symbol)) return res.status(400).json({ error: '无效的雷达合约' });
     if (!['5m', '15m', '1h'].includes(interval)) return res.status(400).json({ error: '无效的走势图周期' });

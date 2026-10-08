@@ -5,7 +5,6 @@ const { getDb } = require('../lib/db');
 const { createFillFactProjection } = require('../lib/fillFactProjection');
 const { canonicalTradeId } = require('../lib/positionEventPolicy');
 const { eventsFromTrade } = require('../lib/sqliteStore');
-const { aggregateDirectionFacts } = require('../lib/directionSummary');
 const now = Date.now(), day = 86400000;
 const projection = () => createFillFactProjection({ getDb, retentionMs: 2 * day,
   classify: eventsFromTrade, canonicalId: canonicalTradeId });
@@ -31,11 +30,12 @@ test('batched rebuild yields, shares work and preserves same-timestamp fills and
   assert.ok(ticks > 0, 'the rebuild must not monopolize the event loop');
   const facts = [...p.read(now - day, now, true)];
   assert.equal(facts.length, 1101);
-  const result = aggregateDirectionFacts(facts).coins[0];
-  assert.equal(result.addLong, 110000); assert.equal(result.addShort, 200);
+  assert.equal(facts.filter(r=>r.side==='long').reduce((n,r)=>n+r.usd,0),110000);
+  assert.equal(facts.filter(r=>r.side==='short').reduce((n,r)=>n+r.usd,0),200);
   assert.equal([...p.read(now - day, now, true, new Set(['missing']))].length, 0);
   p.invalidate(); await p.prepare();
-  assert.deepEqual(aggregateDirectionFacts(p.read(now - day, now, true)), aggregateDirectionFacts(facts));
+  const byId=(a,b)=>a.id.localeCompare(b.id);
+  assert.deepEqual([...p.read(now - day, now, true)].sort(byId), facts.sort(byId));
 });
 
 test('corrections remove ineligible facts and reversal legs retain exact values', async () => {
@@ -60,7 +60,7 @@ test('fixed batch clock retains both window boundaries and excludes old and futu
   assert.equal(progress.at(-1).scanned,2);
   assert.equal(progress.at(-1).ready,true);
   assert.deepEqual([...p.read(batchNow-day,batchNow,true)].map(row=>row.time),[batchNow-day,batchNow]);
-  assert.equal(aggregateDirectionFacts(p.read(batchNow-day,batchNow,true)).coins[0].addLong,200);
+  assert.equal([...p.read(batchNow-day,batchNow,true)].reduce((sum,r)=>sum+r.usd,0),200);
 });
 
 test('large raw payloads are not retained in JS heap and statistics have no display cap', async () => {
@@ -78,9 +78,9 @@ test('large raw payloads are not retained in JS heap and statistics have no disp
   const timer = setInterval(() => { ticks++; peakHeap = Math.max(peakHeap, process.memoryUsage().heapUsed); }, 1);
   const start = Date.now();
   try { await p.prepare(); } finally { clearInterval(timer); }
-  const result = aggregateDirectionFacts(p.read(now - day, now, true), { unique: true });
-  assert.equal(result.coins[0].addLong, count * 100);
-  assert.equal(result.coins[0].legs, count);
+  const result = [...p.read(now - day, now, true)];
+  assert.equal(result.reduce((sum,r)=>sum+r.usd,0), count * 100);
+  assert.equal(result.length, count);
   assert.ok(ticks > 0);
   assert.equal(db.pragma('temp_store', { simple: true }), 1);
   console.log(JSON.stringify({ rows: count, rawPaddingBytes: count * padding.length,

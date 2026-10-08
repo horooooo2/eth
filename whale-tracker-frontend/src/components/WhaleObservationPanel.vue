@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { http } from '@/api';
+import { preferredCoinsState, coinMatchesWatch } from '@/utils/watchedCoins';
 import type { ObservationSnapshot, ObservationEvidence, WhaleObservation, ObservationPosition } from '@/types/whaleObservation';
 const props = defineProps<{ snapshot: ObservationSnapshot | null; active: boolean; connected: boolean; linkedCoin: string }>();
 const emit = defineEmits<{ locate: [payload: { id: string; name: string; coin: string }]; detail: [id: string] }>();
@@ -27,8 +28,8 @@ function highlightChanges(next:ObservationSnapshot) {
     highlightTimers.set(row.id,setTimeout(()=>{delete highlights.value[row.id];highlightTimers.delete(row.id);},1800));
   }
 }
-const coins=computed(()=>[...new Set([...(data.value?.rows || []).map(r=>r.coin), ...(coin.value==='ALL'?[]:[coin.value])])].sort());
-const rows=computed(()=>(data.value?.rows || []).filter(r=>(coin.value==='ALL'||r.coin===coin.value)&&(kind.value==='all'||r.type===kind.value)));
+const coins=computed(()=>preferredCoinsState.value);
+const rows=computed(()=>(data.value?.rows || []).filter(r=>coinMatchesWatch(r.coin)&&(coin.value==='ALL'||coinMatchesWatch(r.coin,[coin.value]))&&(kind.value==='all'||r.type===kind.value)));
 function install(next: ObservationSnapshot) {
   highlightChanges(next);
   data.value=next; error.value='';
@@ -45,10 +46,15 @@ function accept(next: ObservationSnapshot, live=false) {
 }
 watch(()=>props.snapshot,next=>{if(next){request++;loading.value=false;accept(next,true);}}, {immediate:true});
 watch(()=>props.linkedCoin,next=>{coin.value=next || 'ALL';});
+watch(preferredCoinsState,()=>{
+  if(coin.value!=='ALL'&&!coins.value.includes(coin.value))coin.value='ALL';
+  request++;evidenceRequest++;expanded.value='';evidence.value=null;pending.value=null;data.value=null;
+  void refresh();
+},{deep:true});
 watch([coin,kind],()=>{for(const timer of highlightTimers.values())clearTimeout(timer);highlightTimers.clear();highlights.value={};});
 async function refresh() {
   const id=++request;loading.value=true;
-  try {const {data:next}=await http.get<ObservationSnapshot>('/whales/observations'); if(id===request&&!disposed){error.value='';accept(next);}}
+  try {const {data:next}=await http.get<ObservationSnapshot>('/whales/observations',{params:{coins:preferredCoinsState.value.join(',')}}); if(id===request&&!disposed){error.value='';accept(next);}}
   catch {if(id===request)error.value='读取失败，保留最近结果。';}
   finally {if(id===request)loading.value=false;}
 }
@@ -83,7 +89,7 @@ onUnmounted(()=>{disposed=true;request++;evidenceRequest++;for(const timer of hi
       <select v-model="coin" aria-label="观察币种"><option value="ALL">全部币种</option><option v-for="c in coins" :key="c" :value="c">{{ c }}</option></select>
       <select v-model="kind" aria-label="观察类型"><option value="all">全部行为</option><option value="collective">多地址共同动作</option><option value="build">持续建仓</option><option value="reverse">方向反转</option><option value="reduce">减仓 / 平仓</option></select>
     </header>
-    <div class="scope">近 24 小时 · 最近 100 条 · 已采集合约成交 <span v-if="!connected"> · 连接恢复中</span></div>
+    <div class="scope">偏好币种 · 近 24 小时 · 最近 50 条 · 已采集合约成交 <span v-if="!connected"> · 连接恢复中</span></div>
     <button v-if="pending" class="updates" @click="showUpdates">观察记录有更新，点击查看</button>
     <div v-if="error || data?.error" class="notice">{{error || data?.error}}</div>
     <div ref="scroller" class="observation-scroll">

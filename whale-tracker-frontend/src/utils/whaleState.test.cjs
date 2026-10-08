@@ -124,7 +124,7 @@ test('socket resumes the latest cursor, forwards hello/caughtUp, and ignores ret
     static OPEN = 1;
     readyState = 0;
     sent = [];
-    constructor() { sockets.push(this); }
+    constructor(url) { this.url=url; sockets.push(this); }
     send(value) { this.sent.push(JSON.parse(value)); }
     close() { this.readyState = 3; this.onclose?.(); }
     open() { this.readyState = 1; this.onopen(); }
@@ -133,7 +133,10 @@ test('socket resumes the latest cursor, forwards hello/caughtUp, and ignores ret
   const exports = {};
   const code = fs.readFileSync(require('node:path').join(__dirname, '../composables/useRealtime.ts'), 'utf8');
   vm.runInNewContext(ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, {
-    exports, require: name => { assert.equal(name, 'vue'); return { ref: value => ({ value }), onUnmounted: () => {} }; },
+    exports, require: name => {
+      if(name==='@/utils/watchedCoins')return {readWatchedCoins:()=>['SOL','ETH']};
+      assert.equal(name, 'vue'); return { ref: value => ({ value }), onUnmounted: () => {} };
+    },
     window: { location: { protocol: 'https:', host: 'example.invalid' } }, WebSocket: FakeSocket,
     setTimeout: callback => { const id = ++timerId; timers.set(id, callback); return id; },
     clearTimeout: id => timers.delete(id), setInterval: () => ++timerId, clearInterval: () => {},
@@ -143,6 +146,7 @@ test('socket resumes the latest cursor, forwards hello/caughtUp, and ignores ret
   const realtime = exports.useRealtime(message => messages.push(message), () => cursor);
   realtime.start(); realtime.start();
   assert.equal(sockets.length, 1);
+  assert.equal(sockets[0].url,'wss://example.invalid/realtime?coins=SOL%2CETH');
   sockets[0].open();
   assert.deepEqual(sockets[0].sent[0], { type: 'resume', epoch: 'one', afterSeq: 10 });
   sockets[0].message({ type: 'hello', epoch: 'one', seq: 10 });

@@ -1,9 +1,9 @@
 const axios = require('axios');
+const { BoundedCache } = require('./boundedCache');
 
 const BASE_URL = 'https://fapi.binance.com';
 const CATALOG_TTL_MS = 10 * 60 * 1000;
 const QUOTE_TTL_MS = 15 * 1000;
-const RADAR_MARKET_TTL_MS = 15 * 1000;
 const RADAR_AVAILABLE_TTL_MS = 60 * 1000;
 const KLINE_CONFIG = {
   '5m': { ttlMs: 45_000, limit: 200 },
@@ -20,17 +20,18 @@ const COIN_IDS = {
   ETC: 'ethereum-classic', ATOM: 'cosmos', AVAX: 'avalanche-2', TON: 'the-open-network', SUI: 'sui',
   APT: 'aptos', NEAR: 'near', ARB: 'arbitrum', OP: 'optimism', PEPE: 'pepe', DOGE: 'dogecoin',
 };
-const marketCapCache = new Map();
+const marketCapCache = new BoundedCache(64, 3600000, () => Date.now());
 
 let catalogCache = { expiresAt: 0, symbols: [], updatedAt: null };
 let catalogPromise = null;
-const quoteCache = new Map();
-const klineCache = new Map();
+const quoteCache = new BoundedCache(512, 3600000, () => Date.now());
+const klineCache = new BoundedCache(128, 3600000, () => Date.now());
 const klineInFlight = new Map();
 
 const LABELS = {
   XAU: '黄金', XAG: '白银', XPT: '铂金', XPD: '钯金',
   TSLA: '特斯拉', INTC: '英特尔', SNDK: '闪迪', SKHYNIX: '海力士', SPCX: 'SpaceX',
+  WDC: '西部数据', KUAISHOU: '快手', XIAOMI: '小米', HK1810: '小米',
   QQQ: '纳指 100 ETF', SPY: '标普 500 ETF', NVDA: '英伟达', AAPL: '苹果', MSFT: '微软',
   AMZN: '亚马逊', AVGO: '博通', AMD: '超威半导体', META: 'Meta', EWY: '韩国 ETF', EWJ: '日本 ETF',
   BTC: '比特币', ETH: '以太坊', BNB: '币安币', SOL: 'Solana', XRP: '瑞波币',
@@ -55,9 +56,8 @@ const RADAR_VOLATILE_SYMBOLS = new Set([
 ]);
 const RADAR_SYMBOLS = new Set([...RADAR_CORE_SYMBOLS, ...RADAR_VOLATILE_SYMBOLS]);
 
-const SHORT_INTERVALS = ['5m', '15m', '1h'];
-const SHORT_CHANGE_TTL_MS = 12_000;
-const shortChangeCache = new Map();
+const SHORT_INTERVALS = ['5m', '1h'];
+const shortChangeCache = new BoundedCache(256, 3600000, () => Date.now());
 let exchangeInfoCache = { expiresAt: 0, data: null, updatedAt: null };
 let exchangeInfoPromise = null;
 let radarMarketCache = { expiresAt: 0, quotes: [], updatedAt: null };
@@ -139,13 +139,34 @@ async function getRadarCatalog(includeSymbols = []) {
   };
 }
 
+let tickerSnapshot = null, tickerPromise = null;
+async function getTickerSnapshot() {
+  if (tickerSnapshot?.expiresAt > Date.now()) return tickerSnapshot;
+  if (!tickerPromise) tickerPromise = client.get('/fapi/v1/ticker/24hr').then(({data}) => {
+    if (!Array.isArray(data) || !data.length) throw Error('全市场行情格式异常');
+    tickerSnapshot = { data, expiresAt: Date.now() + QUOTE_TTL_MS };
+    return tickerSnapshot;
+  }).finally(() => { tickerPromise = null; });
+  return tickerPromise;
+}
+async function getLongTrendPrices(){
+  const [catalog,response]=await Promise.all([getLongTrendContracts(),getTickerSnapshot()]);
+  if(catalog.stale||!Array.isArray(response.data))throw Error('合约现价暂不可用');
+  const symbols=new Set(catalog.contracts.map(row=>row.symbol));
+  return response.data.filter(row=>symbols.has(row.symbol)&&Number(row.lastPrice)>0&&Number.isFinite(Number(row.lastPrice))).map(row=>({symbol:row.symbol,price:Number(row.lastPrice),time:Number(row.closeTime)||Date.now()}));
+}
+async function getLongTrendContracts() {
+  const info=await getExchangeInfo();
+  return {contracts:normalizeAvailableRadarCatalog(info.data).filter(row=>row.assetType==='TRADFI'),stale:Boolean(info.stale)};
+}
+
 async function getRadarAvailableContracts() {
   if (radarAvailableCache.expiresAt > Date.now()) return radarAvailableCache;
   if (!radarAvailablePromise) {
     radarAvailablePromise = (async () => {
       const [exchangeInfo, tickerResponse] = await Promise.all([
         getExchangeInfo(),
-        client.get('/fapi/v1/ticker/24hr'),
+        getTickerSnapshot(),
       ]);
       if (!Array.isArray(tickerResponse.data)) throw new Error('全市场行情格式异常');
       const tickerBySymbol = new Map(tickerResponse.data.map((row) => [row.symbol, row]));
@@ -198,8 +219,8 @@ async function getRadarMarketQuotes(interval = '24h') {
   if (radarMarketCache.expiresAt > Date.now()) return radarMarketCache;
   if (!radarMarketPromise) {
     radarMarketPromise = (async () => {
-      const [{ data }, catalog] = await Promise.all([
-        client.get('/fapi/v1/ticker/24hr'),
+      const [{ data, expiresAt }, catalog] = await Promise.all([
+        getTickerSnapshot(),
         getRadarCatalog(),
       ]);
       if (!Array.isArray(data)) throw new Error('全市场行情格式异常');
@@ -215,8 +236,8 @@ async function getRadarMarketQuotes(interval = '24h') {
           source: 'Binance USDⓈ-M Futures',
           stale: false,
         }));
-      radarMarketCache = { quotes, updatedAt: new Date().toISOString(), expiresAt: Date.now() + RADAR_MARKET_TTL_MS };
-      for (const quote of quotes) quoteCache.set(quote.symbol, { value: quote, expiresAt: Date.now() + QUOTE_TTL_MS });
+      radarMarketCache = { quotes, updatedAt: new Date().toISOString(), expiresAt };
+      for (const quote of quotes) quoteCache.set(quote.symbol, { value: quote, expiresAt });
       return radarMarketCache;
     })().finally(() => { radarMarketPromise = null; });
   }
@@ -260,7 +281,8 @@ async function fetchQuote(symbol) {
   const cached = quoteCache.get(symbol);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
   try {
-    const { data } = await client.get('/fapi/v1/ticker/24hr', { params: { symbol } });
+    const snapshot = await getTickerSnapshot();
+    const data = snapshot.data.find(row => row.symbol === symbol);
     if (data?.symbol !== symbol || data.lastPrice == null || data.lastPrice === '' || !Number.isFinite(Number(data.lastPrice)) || Number(data.lastPrice) <= 0) {
       throw new Error('行情响应格式异常');
     }
@@ -273,7 +295,7 @@ async function fetchQuote(symbol) {
       source: 'Binance USDⓈ-M Futures',
       stale: false,
     };
-    quoteCache.set(symbol, { value, expiresAt: Date.now() + QUOTE_TTL_MS });
+    quoteCache.set(symbol, { value, expiresAt: snapshot.expiresAt });
     return value;
   } catch (err) {
     if (cached) return { ...cached.value, stale: true };
@@ -315,28 +337,36 @@ const shortChangeInflight = new Map();
 async function fetchShortChange(symbol, interval, currentPrice, observedAt = Date.now()) {
   const key = `${symbol}:${interval}`;
   const cached = shortChangeCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) return cached.value;
-  if (shortChangeInflight.has(key)) return shortChangeInflight.get(key);
-  const task = (async () => {
-    try {
-      const minutes = { '5m': 5, '15m': 15, '1h': 60 }[interval];
-      const referenceAt = Math.floor((observedAt - minutes * 60000) / 60000) * 60000;
-      const { data } = await client.get('/fapi/v1/klines', { params: { symbol, interval: '1m', startTime: referenceAt, endTime: referenceAt + 59999, limit: 1 } });
-      const row = Array.isArray(data) ? data[0] : null;
-      const open = Number(row?.[1]), price = Number(currentPrice);
-      if (Number(row?.[0]) !== referenceAt || !(open > 0) || !(price > 0)) throw new Error('滚动周期基准数据缺失');
-      const value = { change: (price / open - 1) * 100, asOf: observedAt, referenceAt, stale: false, windowMode: 'rolling-minute' };
-      shortChangeCache.set(key, { value, expiresAt: Date.now() + SHORT_CHANGE_TTL_MS });
-      if (shortChangeCache.size > 1000) shortChangeCache.delete(shortChangeCache.keys().next().value);
-      return value;
-    } catch {
-      return cached ? { ...cached.value, stale: true } : { change: null, asOf: null, referenceAt: null, stale: true };
+  const minutes = { '5m': 5, '1h': 60 }[interval];
+  const referenceAt = Math.floor((observedAt - minutes * 60000) / 60000) * 60000;
+  try {
+    let baseline = cached;
+    if (!baseline || baseline.referenceAt !== referenceAt) {
+      const requestKey = `${key}:${referenceAt}`;
+      let task = shortChangeInflight.get(requestKey);
+      if (!task) {
+        task = client.get('/fapi/v1/klines', { params: { symbol, interval: '1m', startTime: referenceAt, endTime: referenceAt + 59999, limit: 1 } }).then(({data}) => {
+          const row = Array.isArray(data) ? data[0] : null, open = Number(row?.[1]);
+          if (Number(row?.[0]) !== referenceAt || !(open > 0) || !Number.isFinite(open)) throw Error('滚动周期基准数据缺失');
+          return { open, referenceAt, expiresAt: Date.now() + 60000 };
+        }).finally(() => shortChangeInflight.delete(requestKey));
+        shortChangeInflight.set(requestKey, task);
+      }
+      baseline = await task;
     }
-  })().finally(() => shortChangeInflight.delete(key));
-  shortChangeInflight.set(key, task); return task;
+    const price = Number(currentPrice);
+    if (!(price > 0) || !Number.isFinite(price)) throw Error('现价不可用');
+    const value = { change: (price / baseline.open - 1) * 100, asOf: observedAt, referenceAt, stale: false, windowMode: 'rolling-minute' };
+    const latest = shortChangeCache.get(key);
+    if (!latest || !latest.value || observedAt >= latest.value.asOf) shortChangeCache.set(key, { ...baseline, value });
+    return value;
+  } catch {
+    return cached?.value ? { ...cached.value, stale: true } : { change: null, asOf: null, referenceAt: null, stale: true };
+  }
 }
 
-async function getRadarQuotes(input) {
+async function getRadarQuotes(input, interval = '24h') {
+  const intervals = SHORT_INTERVALS.includes(interval) ? [interval] : [];
   const requested = parseSymbols(input);
   if (!requested.length) return { quotes: [], invalidSymbols: [], updatedAt: new Date().toISOString(), source: 'Binance USDⓈ-M Futures' };
   const catalog = await getRadarCatalog(requested);
@@ -351,11 +381,11 @@ async function getRadarQuotes(input) {
       const index = nextIndex++;
       const symbol = valid[index];
       const quote = await fetchQuote(symbol);
-      const shortChanges = await Promise.all(SHORT_INTERVALS.map((interval) => fetchShortChange(symbol, interval, quote.lastPrice, Number(quote.closeTime) || Date.now())));
+      const shortChanges = await Promise.all(intervals.map((interval) => fetchShortChange(symbol, interval, quote.lastPrice, Number(quote.closeTime) || Date.now())));
       quotes[index] = {
         ...quote,
-        changes: { '5m': shortChanges[0].change, '15m': shortChanges[1].change, '1h': shortChanges[2].change },
-        changeMeta: Object.fromEntries(SHORT_INTERVALS.map((interval, i) => [interval, shortChanges[i]])),
+        changes: Object.fromEntries(intervals.map((interval, i) => [interval, shortChanges[i].change])),
+        changeMeta: Object.fromEntries(intervals.map((interval, i) => [interval, shortChanges[i]])),
         stale: quote.stale || shortChanges.some(value => value.stale),
       };
     }
@@ -426,6 +456,13 @@ async function getTradFiKlines(symbolInput, intervalInput, options = {}) {
   return request;
 }
 
+async function getRadarDailyHistory(symbol, day) {
+  if(!/^[A-Z0-9]{3,30}$/.test(symbol))throw Error('无效合约');
+  const {data}=await client.get('/fapi/v1/klines',{params:{symbol,interval:'1d',endTime:day-1,limit:91}});
+  if(!Array.isArray(data)||!data.length)throw Error('日线响应为空');
+  return data.map(mapKline).filter(Boolean);
+}
+
 async function getTradFiMarketContext(symbolInput, options = {}) {
   const symbol = String(symbolInput || '').trim().toUpperCase();
   const intervals = Object.keys(KLINE_CONFIG);
@@ -445,4 +482,4 @@ async function getTradFiMarketContext(symbolInput, options = {}) {
   return { symbol, quote, klines, source: 'binance-futures', generatedAt: new Date().toISOString() };
 }
 
-module.exports = { getCatalog, getQuotes, getRadarCatalog, getRadarQuotes, getRadarMarketQuotes, getRadarAvailableContracts, getRadarMarketCap, getTradFiKlines, getTradFiMarketContext, normalizeCatalog, normalizeRadarCatalog, normalizeAvailableRadarCatalog, parseSymbols, KLINE_CONFIG, mapKline, RADAR_SYMBOLS, RADAR_CORE_SYMBOLS, RADAR_VOLATILE_SYMBOLS };
+module.exports = { getLongTrendPrices, getLongTrendContracts, getRadarDailyHistory, getCatalog, getQuotes, getRadarCatalog, getRadarQuotes, getRadarMarketQuotes, getRadarAvailableContracts, getRadarMarketCap, getTradFiKlines, getTradFiMarketContext, normalizeCatalog, normalizeRadarCatalog, normalizeAvailableRadarCatalog, parseSymbols, KLINE_CONFIG, mapKline, RADAR_SYMBOLS, RADAR_CORE_SYMBOLS, RADAR_VOLATILE_SYMBOLS };

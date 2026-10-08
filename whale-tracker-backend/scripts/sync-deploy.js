@@ -24,6 +24,7 @@ const FILES = [
   'lib/whaleSync.js',
   'lib/whaleObservationEngine.js',
   'lib/whaleObservationStore.js',
+  'lib/observationScope.js',
   'lib/whaleObservationWorker.js',
   'lib/statisticsWorker.js',
   'lib/statisticsCompute.js',
@@ -40,20 +41,22 @@ const FILES = [
   'lib/hlInfoClient.js',
   'lib/config.js',
   'lib/cache.js',
+  'lib/boundedCache.js',
   'lib/runtime.js',
   'lib/opsMonitor.js',
   'lib/sqliteStore.js',
   'lib/fillFactProjection.js',
-  'lib/sharedQuery.js',
   'lib/observationEvidence.js',
   'lib/asyncMirror.js',
-  'lib/directionSummary.js',
   'lib/whales.js',
   'lib/resonanceEngine.js',
   'lib/news.js',
   'lib/newsService.js',
   'lib/markets.js',
   'lib/tradfiMarkets.js',
+  'lib/radarLongTrend.js',
+  'lib/radarSort.js',
+  'lib/featureFlags.js',
   'lib/tradfiDirection.js',
   'lib/tradfiAnalysis.js',
   'lib/tradfiAnalysisStore.js',
@@ -62,9 +65,7 @@ const FILES = [
   'lib/tradfiIntel.js',
   'lib/tradfiWhales.js',
   'lib/binanceTradfiTrade.js',
-  'lib/binanceAiAccountBook.js',
   'lib/binanceAiLedger.js',
-  'lib/cryptoAiOrderGate.js',
   'lib/tradfiRangeCore.cjs',
   'lib/tradfiRangeStrategy.js',
   'lib/hyperliquid.js',
@@ -86,9 +87,6 @@ const FILES = [
   'lib/briefAnalysisStore.js',
   'lib/userAiKeys.js',
   'lib/userExchangeKeys.js',
-  'lib/okxTradeClient.js',
-  'lib/okxAiLedger.js',
-  'lib/dexpaprikaFlow.js',
   'lib/defillamaMacro.js',
   'public/data.html',
   'routes/auth.js',
@@ -99,11 +97,31 @@ const FILES = [
   'routes/strategyShadow.js',
   'routes/flow.js',
   'routes/whaleAi.js',
-  'routes/okxTrade.js',
-  'routes/okxKeys.js',
   'scripts/remote-deploy.sh',
   'scripts/audit-whale-data.js',
 ];
+
+// Older packages may still contain these retired, unmounted modules.
+const RETIRED_FILES = [
+  'lib/directionSummary.js',
+  'lib/sharedQuery.js',
+  'lib/binanceAiAccountBook.js',
+  'lib/cryptoAiOrderGate.js',
+  'lib/okxTradeClient.js',
+  'lib/okxAiLedger.js',
+  'lib/dexpaprikaFlow.js',
+  'lib/binanceCryptoTrade.js',
+  'routes/okxTrade.js',
+  'routes/okxKeys.js',
+  'routes/binanceTrade.js',
+];
+for (const rel of RETIRED_FILES) {
+  const target = path.resolve(deployRoot, rel);
+  if (!target.startsWith(`${path.resolve(deployRoot)}${path.sep}`)) {
+    throw new Error(`Retired module escapes deploy directory: ${rel}`);
+  }
+  fs.rmSync(target, { force: true });
+}
 
 function copyFile(src, dest) {
   fs.mkdirSync(path.dirname(dest), { recursive: true });

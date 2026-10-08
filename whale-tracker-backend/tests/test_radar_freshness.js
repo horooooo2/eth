@@ -4,6 +4,27 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const filename = require.resolve('../lib/tradfiMarkets');
+
+test('radar fetches only the selected interval and shares the bulk ticker with long trends', async () => {
+  const realRequire = createRequire(filename);
+  const calls = [];
+  const context = { module: { exports: {} }, process: { env: {} }, Date,
+    require: id => id === 'axios' ? { create: () => ({ get: async (url, options) => {
+      calls.push({ url, params: options?.params });
+      if (url.endsWith('exchangeInfo')) return { data: { symbols: [{ symbol: 'XAUUSDT', baseAsset: 'XAU', quoteAsset: 'USDT', status: 'TRADING', contractType: 'TRADIFI_PERPETUAL', underlyingSubType: ['TradFi'] }] } };
+      if (url.endsWith('24hr')) return { data: [{ symbol: 'XAUUSDT', lastPrice: '110', priceChangePercent: '2', closeTime: Date.now() }] };
+      return { data: [[options.params.startTime, '100']] };
+    } }) } : realRequire(id) };
+  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), context);
+  const api = context.module.exports;
+  const [short, prices] = await Promise.all([api.getRadarQuotes('XAUUSDT', '5m'), api.getLongTrendPrices()]);
+  assert.deepEqual(Object.keys(short.quotes[0].changes), ['5m']);
+  assert.equal(prices[0].price, 110);
+  assert.equal(calls.filter(call => call.url.endsWith('24hr')).length, 1);
+  assert.equal(calls.filter(call => call.url.endsWith('klines')).length, 1);
+  await api.getRadarQuotes('XAUUSDT', '24h');
+  assert.equal(calls.filter(call => call.url.endsWith('klines')).length, 1);
+});
 test('rolling changes use a minute baseline one full hour earlier and identify failed refreshes', async () => {
   let clock = Date.UTC(2026, 9, 5, 10, 1, 32), failed = false;
   const requests = [];
@@ -20,10 +41,13 @@ test('rolling changes use a minute baseline one full hour earlier and identify f
   assert.equal(requests[0].interval, '1m');
   assert.equal(requests[0].startTime, Date.UTC(2026, 9, 5, 9, 1));
   assert.ok(Math.abs(first.change - 10) < 1e-9);
+  const newer = await read('BTCUSDT', '1h', 120, clock + 1000);
+  assert.equal(requests.length, 1);
+  assert.ok(Math.abs(newer.change - 20) < 1e-9);
   clock += 60000; failed = true;
   const old = await read('BTCUSDT', '1h', 120, clock);
-  assert.equal(old.stale, true); assert.equal(old.asOf, first.asOf);
-  assert.equal(old.change, first.change);
+  assert.equal(old.stale, true); assert.equal(old.asOf, newer.asOf);
+  assert.equal(old.change, newer.change);
 });
 
 test('market short intervals preserve 24h values, share baseline requests and limit concurrency', async () => {

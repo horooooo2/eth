@@ -6,15 +6,14 @@ const attempted = new Map();
 function tick() {
   const now = Date.now();
   const { getActiveWhales } = require('./config');
-  const rows = require('./cache').readStateSnapshot('hf', { includeTrades: false }).data.whales || [];
-  const byId = new Map(rows.map(row => [row.id, row]));
+  const byId = require('./cache').readPositionObservationTimes('hf');
   const roster = getActiveWhales();
   const ids = new Set(roster.map(w => w.id));
   for (const id of attempted.keys()) if (!ids.has(id)) attempted.delete(id);
   const due = roster.filter(w => !active.has(w.id) && now - (attempted.get(w.id) || 0) > 30000 &&
-    now - (Number(byId.get(w.id)?.positionObservedAt) || 0) > 60000)
-    .sort((a, b) => Math.max(attempted.get(a.id) || 0, Number(byId.get(a.id)?.positionObservedAt) || 0) -
-      Math.max(attempted.get(b.id) || 0, Number(byId.get(b.id)?.positionObservedAt) || 0));
+    now - (Number(byId.get(w.id)) || 0) > 60000)
+    .sort((a, b) => Math.max(attempted.get(a.id) || 0, Number(byId.get(a.id)) || 0) -
+      Math.max(attempted.get(b.id) || 0, Number(byId.get(b.id)) || 0));
   for (const whale of due.slice(0, Math.max(0, 2 - active.size))) {
     active.add(whale.id); attempted.set(whale.id, now);
     Promise.resolve().then(() => require('./whales').refreshWhalePositionFromSource(whale.id))

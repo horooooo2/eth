@@ -40,6 +40,7 @@ const props = withDefaults(
 );
 
 const emit = defineEmits<{
+  openAlert: [];
   focusWhale: [payload: { id: string; name: string; coin?: string }];
   focusWhaleTrades: [whale: { id: string; name: string }];
 }>();
@@ -104,6 +105,7 @@ function dismissAll() {
 }
 
 function openAlert(alert: WhaleAlert) {
+  emit('openAlert');
   activeId.value = alert.id;
   dialogVisible.value = true;
 }

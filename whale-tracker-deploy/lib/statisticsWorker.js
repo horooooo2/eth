@@ -1,11 +1,11 @@
 const {randomUUID}=require('node:crypto');
 const {createStatisticsRunner,DEFAULT_TIMEOUT_MS}=require('./statisticsCompute');
 const {selectResonanceSignals,DEFAULT_RESONANCE_CONFIG}=require('./resonanceEngine');
-const KEYS=['direction:15m','direction:1h','direction:4h','direction:24h',...['2','4','6','12','24'].map(w=>'resonance:'+w)];
+const KEYS=['2','4','6','12','24'].map(w=>'resonance:'+w);
 const yieldTurn=()=>new Promise(resolve=>setImmediate(resolve));
 
 function createStatisticsWorker({getDb=()=>require('./db').getDb(),getRoster=()=>require('./config').getActiveWhales().map(w=>String(w.id)),
-  runner=createStatisticsRunner(),now=Date.now,minIntervalMs=5000,maxAgeMs=10000}={}) {
+  runner=createStatisticsRunner(),now=Date.now,minIntervalMs=60000,maxAgeMs=60000}={}) {
   let timer,running=false,generation=0,hydrated=false,frames=new Map(),meta=null;
   let lastAttemptAt=null,lastDurationMs=null,error='',attempts=0,progress=null;
   function context() {
@@ -15,10 +15,6 @@ function createStatisticsWorker({getDb=()=>require('./db').getDb(),getRoster=()=
   const version=()=>getDb().prepare('SELECT version FROM statistics_input_version WHERE id=1').get().version;
   function decodeFrame(row) {
     const value=JSON.parse(row.payload_json);
-    if(row.key.startsWith('direction:')) {
-      if(!Array.isArray(value.coins)||!Array.isArray(value.accounts))throw Error('Invalid persisted direction summary');
-      return row.payload_json;
-    }
     if(!Array.isArray(value.signals))throw Error('Invalid persisted resonance summary');
     return value;
   }
@@ -34,7 +30,7 @@ function createStatisticsWorker({getDb=()=>require('./db').getDb(),getRoster=()=
     try {
       const stored=db.prepare(`SELECT b.* FROM statistics_batches b JOIN statistics_current c ON c.batch_id=b.id WHERE c.id=1`).get();
       if(stored&&stored.roster_key===ctx.rosterKey) {
-        const rows=db.prepare('SELECT key,payload_json FROM statistics_results WHERE batch_id=?').all(stored.id);
+        const rows=db.prepare("SELECT key,payload_json FROM statistics_results WHERE batch_id=? AND key LIKE 'resonance:%'").all(stored.id);
         if(rows.length===KEYS.length&&KEYS.every(key=>rows.some(row=>row.key===key))) {
           const next=new Map();
           for(const row of rows) {
@@ -109,7 +105,7 @@ function createStatisticsWorker({getDb=()=>require('./db').getDb(),getRoster=()=
     const inputVersion=version();
     return {asOf:meta?.asOf||null,inputVersion:meta?.version??null,currentInputVersion:inputVersion,
       pendingUpdates:!meta||meta.version!==inputVersion,refreshing:running,
-      stale:!meta||now()-meta.asOf>15000||Boolean(error),error:error?(meta?'统计暂未更新，保留最近完整结果':'统计暂未生成，请稍后重试'):null};
+      stale:!meta||now()-meta.asOf>Math.max(minIntervalMs,maxAgeMs)+30000||Boolean(error),error:error?(meta?'统计暂未更新，保留最近完整结果':'统计暂未生成，请稍后重试'):null};
   }
   function ready(key) {
     const value=frames.get(key);
@@ -117,11 +113,6 @@ function createStatisticsWorker({getDb=()=>require('./db').getDb(),getRoster=()=
       const err=Error('统计正在预计算，请稍后重试');err.status=503;throw err;
     }
     return value;
-  }
-  function direction(window) {
-    const raw=ready('direction:'+window);
-    const extra={statistics:freshness(),basis:'stored-executions',coverage:'locally-observed',executionCoverage:require('./fillBackfill').getCoverageStatus()};
-    return raw.slice(0,-1)+','+JSON.stringify(extra).slice(1);
   }
   function resonance(window,watched) {
     const completed=ready('resonance:'+window);
@@ -140,7 +131,7 @@ function createStatisticsWorker({getDb=()=>require('./db').getDb(),getRoster=()=
   }
   function stop(){generation++;clearTimeout(timer);timer=undefined;runner.stop();}
   function invalidate(){const restart=Boolean(timer);stop();frames=new Map();meta=null;hydrated=false;lastAttemptAt=null;error='';if(restart)start();}
-  return {tick,start,stop,invalidate,direction,resonance,getStatus:()=>({running,warming:!meta||meta.rosterKey!==context().rosterKey,lastAttemptAt,lastDurationMs,attempts,progress,...freshness(),processHeapLimitMb:256,processTimeoutMs:DEFAULT_TIMEOUT_MS})};
+  return {tick,start,stop,invalidate,resonance,getStatus:()=>({running,warming:!meta||meta.rosterKey!==context().rosterKey,lastAttemptAt,lastDurationMs,attempts,progress,...freshness(),processHeapLimitMb:256,processTimeoutMs:DEFAULT_TIMEOUT_MS})};
 }
 const worker=createStatisticsWorker();
 module.exports={...worker,createStatisticsWorker};

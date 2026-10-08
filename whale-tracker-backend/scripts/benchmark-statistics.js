@@ -20,18 +20,25 @@ async function main() {
   const coldAt=performance.now();await worker.tick();const coldMs=performance.now()-coldAt;
   assert.equal(worker.getStatus().warming,false);
   const store=require('../lib/sqliteStore');
-  const summary=JSON.parse(worker.direction('24h'));
-  const expected=store.loadDirectionSummary(summary.sinceMs,summary.untilMs);
-  assert.deepEqual(summary.coins,expected.coins);assert.deepEqual(summary.accounts,expected.accounts);
+  function verify() {
+    const result=worker.resonance(24,['BTC','ETH']);
+    const {scanResonanceSignals,DEFAULT_RESONANCE_CONFIG}=require('../lib/resonanceEngine');
+    const config={...DEFAULT_RESONANCE_CONFIG,windowHours:24};
+    store.invalidateFillProjection();
+    const inputs=store.loadResonanceInputs(result.updatedAt-24*3600000,result.updatedAt,config.minNotionalUsd,new Set(roster),{stream:true});
+    const whales=roster.map(id=>({id,name:id,winRate:80,positions:[]}));
+    const expected=scanResonanceSignals({...inputs,whales,config,now:result.updatedAt,watchedCoins:['BTC','ETH']});
+    assert.deepEqual(result.signals,JSON.parse(JSON.stringify(expected.signals)));
+  }
+  verify();
   const app=express();
-  app.get('/direction',(_req,res)=>res.type('json').send(worker.direction('24h')));
   app.get('/resonance',(_req,res)=>res.json(worker.resonance(24,['BTC','ETH'])));
   const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
   const base='http://127.0.0.1:'+server.address().port;
   const delays=monitorEventLoopDelay({resolution:10});delays.enable();
   const latencies=[],pending=[];let errors=0;
   const timer=setInterval(()=>{
-    for(const endpoint of ['/direction','/resonance'])pending.push((async()=>{
+    for(const endpoint of ['/resonance'])pending.push((async()=>{
       const at=performance.now();
       try {const response=await fetch(base+endpoint);if(response.status!==200)errors++;await response.arrayBuffer();latencies.push(performance.now()-at);}
       catch{errors++;}
@@ -42,9 +49,8 @@ async function main() {
     put.run('append',roster[0],time,JSON.stringify({id:'append',whaleId:roster[0],asset:'BTC',side:'buy',startPosition:0,amount:1,amountUsd:100000,price:100000,time}));
     const started=performance.now();await worker.tick();const refreshMs=performance.now()-started;
     clearInterval(timer);await Promise.all(pending);delays.disable();
-    assert.equal(errors,0);assert.ok(latencies.length>0);assert.equal(JSON.parse(worker.direction('24h')).statistics.pendingUpdates,false);
-    const final=JSON.parse(worker.direction('24h'));store.invalidateFillProjection();
-    assert.deepEqual(final.coins,store.loadDirectionSummary(final.sinceMs,final.untilMs).coins);
+    assert.equal(errors,0);assert.ok(latencies.length>0);assert.equal(worker.resonance(24,['BTC','ETH']).statistics.pendingUpdates,false);
+    verify();
     latencies.sort((a,b)=>a-b);
     console.log(JSON.stringify({inputCount:count,coldMs:Math.round(coldMs),refreshMs:Math.round(refreshMs),requests:latencies.length,
       requestP95Ms:Math.round(latencies[Math.floor((latencies.length-1)*.95)]),requestMaxMs:Math.round(latencies.at(-1)),mainLoopMaxDelayMs:Math.round(delays.max/1e6),resultsEqual:true},null,2));

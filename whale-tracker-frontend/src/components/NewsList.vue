@@ -2,8 +2,6 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Refresh } from '@element-plus/icons-vue';
-import WhaleDirectionBoard from '@/components/WhaleDirectionBoard.vue';
-import type { DirectionSummary } from '@/api';
 import type { WhaleProfile } from '@/types';
 import {
   normalizeStoredAlert,
@@ -48,9 +46,6 @@ const props = defineProps<{
   bottomPanel?: boolean;
   linkedCoin?: string;
   windowMs?: number;
-  directionData?: DirectionSummary | null;
-  directionError?: string;
-  directionLabel?: string;
   filterWhaleId?: string;
   /** 巨鲸首屏就绪后再拉异动 */
   bootReady?: boolean;
@@ -59,7 +54,6 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  retryDirection: [];
   focusWhale: [whale: { id: string; name: string }];
   locateWhale: [payload: { id: string; name: string; coin?: string }];
 }>();
@@ -496,7 +490,6 @@ function alertFundingWarn(row: {
 
     <div class="tab-panel">
       <div class="alert-toolbar">
-        <WhaleDirectionBoard :data="directionData || null" :error="directionError || ''" :coin="alertCoinFilter" :window-label="props.directionLabel || ''" @retry="emit('retryDirection')" />
         <div v-if="filterWhaleName" class="whale-link-chip" :title="filterWhaleName">
           <span class="chip-label">联动</span>
           <span class="chip-name">{{ filterWhaleName }}</span>
@@ -1311,7 +1304,7 @@ function alertFundingWarn(row: {
   font-size: 16px;
   line-height: 1.7;
 }
-.alert-toolbar{flex-direction:column;align-items:stretch}.alert-toolbar :deep(.direction-board){width:100%}
+.alert-toolbar{flex-direction:column;align-items:stretch}
 </style>
 
 <style scoped>
@@ -1332,5 +1325,5 @@ function alertFundingWarn(row: {
 @media (prefers-reduced-motion: reduce) {
   .alert-item.live-new, .alert-item.live-update { animation: none; outline: 1px solid rgba(96, 165, 250, .55); outline-offset: -1px; }
 }
-.alert-toolbar{flex-direction:column;align-items:stretch}.alert-toolbar :deep(.direction-board){width:100%}
+.alert-toolbar{flex-direction:column;align-items:stretch}
 </style>

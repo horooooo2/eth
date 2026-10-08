@@ -1,6 +1,6 @@
 import axios, { type AxiosError } from 'axios';
 import type { WhaleBootstrap } from '@/utils/whaleState';
-import { retryStatistics, type StatisticsFreshness } from '@/utils/statisticsRead';
+import { retryStatistics } from '@/utils/statisticsRead';
 import type {
   CalendarResponse,
   PagedTradesQuery,
@@ -38,7 +38,7 @@ export type TradFiQuote = {
   closeTime: number | null;
   source: string;
   stale: boolean;
-  changes?: Partial<Record<'5m' | '15m' | '1h', number | null>>;
+  changes?: Partial<Record<'5m' | '1h', number | null>>;
   error?: string;
 };
 
@@ -54,15 +54,15 @@ export async function fetchRadarAvailableContracts() {
   return data;
 }
 
-export async function fetchRadarQuotes(symbols: string[]) {
+export async function fetchRadarQuotes(symbols: string[], interval: '24h' | '1h' | '5m' = '24h') {
   const { data } = await http.get<{ quotes: TradFiQuote[]; invalidSymbols: string[]; updatedAt: string; source: string }>('/tradfi/radar/quotes', {
-    params: { symbols: symbols.join(',') },
+    params: { symbols: symbols.join(','), interval },
   });
   return data;
 }
 
-export async function fetchRadarMarket(interval: '24h' | '1h' | '15m' | '5m' = '24h') {
-  const { data } = await http.get<{ quotes: TradFiQuote[]; updatedAt: string; stale: boolean; source: string }>('/tradfi/radar/market', { params: { interval } });
+export async function fetchRadarMarket(interval: '24h' | '1h' | '5m' = '24h', sort: 'absoluteChange'|'price'|'change'='absoluteChange', order:'asc'|'desc'='desc') {
+  const { data } = await http.get<{ quotes: TradFiQuote[]; updatedAt: string; stale: boolean; source: string }>('/tradfi/radar/market', { params: { interval, sort, order } });
   return data;
 }
 
@@ -130,23 +130,6 @@ http.interceptors.response.use(
   },
 );
 
-export function isTimeoutError(err: unknown) {
-  const msg = err instanceof Error ? err.message : String(err || '');
-  return msg === 'TIMEOUT' || /timeout|timed out|ECONNABORTED|ETIMEDOUT/i.test(msg);
-}
-
-const silentRetryTimers = new Map<string, number>();
-
-export function scheduleSilentRetry(key: string, run: () => void, delayMs = 4000) {
-  if (typeof window === 'undefined') return;
-  if (silentRetryTimers.has(key)) return;
-  const timer = window.setTimeout(() => {
-    silentRetryTimers.delete(key);
-    run();
-  }, delayMs);
-  silentRetryTimers.set(key, timer);
-}
-
 export async function fetchWhaleBootstrap() {
   const { data } = await http.get<WhaleBootstrap>('/whales/bootstrap', { timeout: 20000 });
   return data;
@@ -204,20 +187,6 @@ export async function fetchPagedAlertHistory(query: AlertHistoryQuery = {}) {
   return data;
 }
 
-/** 服务端异动资金聚合，避免从浏览器本地历史推导实时横幅。 */
-export async function fetchAlertFlowSummary(query: { window: '15m' | '1h' | '4h' | '24h'; coin?: string }) {
-  const { data } = await http.get<{
-    longUsd: number; shortUsd: number; netUsd: number; events: number; whales: number;
-    sinceMs: number; untilMs: number;
-  }>('/whales/alert-history/summary', { params: query, timeout: 15000 });
-  return data;
-}
-
-export type DirectionRow = {
-  coin: string; whaleId?: string; addLong: number; addShort: number; reduceLong: number; reduceShort: number;
-  net: number; lastAt: number; legs: number; longAccounts: number; shortAccounts: number; concentration: number | null;
-};
-export type DirectionSummary = { coins: DirectionRow[]; accounts: DirectionRow[]; sinceMs: number; untilMs: number; asOf: number; statistics?: StatisticsFreshness };
 const pendingStatistics = new Map<string, Promise<unknown>>();
 function shareStatistics<T>(key: string, request: () => Promise<T>): Promise<T> {
   const pending = pendingStatistics.get(key);
@@ -227,10 +196,6 @@ function shareStatistics<T>(key: string, request: () => Promise<T>): Promise<T> 
   return task;
 }
 
-export async function fetchDirectionSummary(window: string) {
-  return shareStatistics('direction:' + window, () => retryStatistics(async () =>
-    (await http.get<DirectionSummary>('/whales/direction-summary', { params: { window }, timeout: 15000 })).data));
-}
 
 export type WhaleServerSummary = {
   freshness?: { total: number; freshCount: number; staleCount: number; unknownCount: number; oldestObservedAt: number | null; newestObservedAt: number | null; maxAgeMs: number };

@@ -1,13 +1,26 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch as watchVue } from 'vue';
+import { contractLogo } from '@/utils/contractLogo';
+import RadarLongTrend from '@/components/RadarLongTrend.vue';
 import { ElMessage } from 'element-plus';
 import { fetchRadarAvailableContracts, fetchRadarCatalog, fetchRadarKlines, fetchRadarMarket, fetchRadarMarketCap, fetchRadarNews, fetchRadarQuotes, streamChatMarketBrief, type MarketChatMessage, type RadarAvailableContract, type RadarKline, type RadarNewsItem, type TradFiMarketSymbol, type TradFiQuote } from '@/api';
 import { DEFAULT_RADAR_WATCH, isDefaultRadarWatch, tradfiWatch, writeTradFiWatch } from '@/utils/tradfiWatch';
 
 const props = withDefaults(defineProps<{ active?: boolean }>(), { active: true });
-type RadarInterval = '24h' | '1h' | '15m' | '5m';
+type RadarInterval = '24h' | '1h' | '5m';
 type AssetFilter = 'ALL' | 'CRYPTO' | 'TRADFI';
 type DirectionFilter = 'ALL' | 'UP' | 'DOWN';
+const trendView = ref<'short' | 'long'>('short');
+const trendViews = [
+  { id: 'short', label: '短期趋势' },
+  { id: 'long', label: '长期趋势' },
+] as const;
+function handleTrendTabKey(event: KeyboardEvent) {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  trendView.value = event.key === 'Home' ? 'short' : event.key === 'End' ? 'long' : trendView.value === 'short' ? 'long' : 'short';
+  void nextTick(() => document.getElementById(`radar-${trendView.value}-tab`)?.focus());
+}
 const watch = tradfiWatch;
 const catalog = ref<TradFiMarketSymbol[]>([]);
 const quotes = ref<Record<string, TradFiQuote>>({});
@@ -24,7 +37,14 @@ const anomalyThreshold = ref(2);
 const directionFilter = ref<DirectionFilter>('ALL');
 const watchPage = ref(1);
 const marketPage = ref(1);
-const chartInterval = ref<'5m' | '15m' | '1h'>('15m');
+const marketSort=ref<'absoluteChange'|'price'|'change'>('absoluteChange');
+const marketOrder=ref<'asc'|'desc'>('desc');
+function sortMarket(key:'price'|'change'){
+  if(marketSort.value===key)marketOrder.value=marketOrder.value==='desc'?'asc':'desc';
+  else {marketSort.value=key;marketOrder.value='desc';}
+}
+watchVue([marketSort,marketOrder],()=>{marketPage.value=1;if(started)void refreshQuotes();});
+const chartInterval = ref<'5m' | '1h'>('1h');
 const chartBars = ref<RadarKline[]>([]);
 const chartLoading = ref(false);
 const chartError = ref('');
@@ -76,7 +96,6 @@ const categories = [
 const intervals: Array<{ id: RadarInterval; label: string }> = [
   { id: '24h', label: '24 小时' },
   { id: '1h', label: '1 小时' },
-  { id: '15m', label: '15 分钟' },
   { id: '5m', label: '5 分钟' },
 ];
 
@@ -128,14 +147,13 @@ const filteredRows = computed(() => {
 const filteredMarketRows = computed(() => {
   const query = searchText.value.trim().toLocaleLowerCase();
   const watched = new Set(watch.value);
-  return catalog.value
+  return Object.keys(marketQuotes.value).map(symbol=>catalogBySymbol.value.get(symbol)).filter((market):market is TradFiMarketSymbol=>Boolean(market))
     .filter((market) => !watched.has(market.symbol))
     .filter((market) => assetFilter.value === 'ALL' || market.assetType === assetFilter.value)
     .filter((market) => !query || `${market.symbol} ${market.baseAsset} ${market.name}`.toLocaleLowerCase().includes(query))
     .map((market) => ({ symbol: market.symbol, market, quote: marketQuotes.value[market.symbol], change: changeValue(marketQuotes.value[market.symbol], activeInterval.value) }))
     .filter((row) => directionFilter.value === 'ALL' || (directionFilter.value === 'UP' ? (row.change ?? -Infinity) > 0 : (row.change ?? Infinity) < 0))
-    .filter((row) => !anomalyOnly.value || (row.change != null && Math.abs(row.change) >= Math.max(0, Number(anomalyThreshold.value) || 0)))
-    .sort((a, b) => Math.abs(b.change ?? 0) - Math.abs(a.change ?? 0));
+    .filter((row) => !anomalyOnly.value || (row.change != null && Math.abs(row.change) >= Math.max(0, Number(anomalyThreshold.value) || 0)));
 });
 const pagedWatchRows = computed(() => filteredRows.value.slice((watchPage.value - 1) * WATCH_PAGE_SIZE, watchPage.value * WATCH_PAGE_SIZE));
 const pagedMarketRows = computed(() => filteredMarketRows.value.slice((marketPage.value - 1) * MARKET_PAGE_SIZE, marketPage.value * MARKET_PAGE_SIZE));
@@ -251,20 +269,8 @@ function formatMarketCap(raw: string | null) {
   return `$${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 }
 function logoUrl(symbol: string) {
-  const market = catalogBySymbol.value.get(symbol) || availableContracts.value.find((item) => item.symbol === symbol);
-  const base = market?.baseAsset || symbol.replace(/USDT$/, '');
-  if (assetType(symbol) === 'TRADFI') {
-    const domains: Record<string, string> = {
-      XAU: 'cmegroup.com', XAG: 'cmegroup.com', CL: 'cmegroup.com', WTI: 'cmegroup.com', USOIL: 'cmegroup.com', XTI: 'cmegroup.com',
-      BZ: 'ice.com', BRENT: 'ice.com',
-      QQQ: 'invesco.com', SPY: 'ssga.com', NVDA: 'nvidia.com', AAPL: 'apple.com', MSFT: 'microsoft.com',
-      AMZN: 'amazon.com', AVGO: 'broadcom.com', AMD: 'amd.com', META: 'meta.com', SPCX: 'spacex.com',
-      SNDK: 'sandisk.com', SKHYNIX: 'skhynix.com', TSLA: 'tesla.com', INTC: 'intel.com',
-    };
-    const domain = domains[base];
-    if (domain) return `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
-  }
-  return `https://assets.coincap.io/assets/icons/${base.toLowerCase()}@2x.png`;
+  const market=catalogBySymbol.value.get(symbol)||availableContracts.value.find(item=>item.symbol===symbol);
+  return contractLogo(symbol,assetType(symbol),market?.baseAsset);
 }
 function logoFailed(symbol: string) { return failedLogos.value.has(symbol); }
 function markLogoFailed(symbol: string) { failedLogos.value = new Set(failedLogos.value).add(symbol); }
@@ -371,16 +377,15 @@ async function openAiAnalysis(symbol: string) {
   const prompt = `请帮我分析${assetLabel(symbol)}（${symbol}）近期这次涨跌。希望像一篇有依据的简短市场观察：开头先给判断，再分层说明最重要的新闻催化、可能的市场逻辑、其他背景，以及风险和仍不确定的地方，最后用一两句话总结。重要新闻事实请用[新闻1]这样的编号标注，编号对应弹窗里的相关新闻列表。可以写具体事件和数据，但必须能从提供的新闻或行情里核实；不要补造机构评级、目标价、估值或公司说法。没有足够新闻证据时请坦白说明。不要做技术分析，不使用K线、指标、支撑阻力等说法。中文表达自然易懂，像认真和我聊市场，不要写成模板化研报，也不要把猜测说成事实。`;
   try {
     const [quoteResult, newsResult] = await Promise.all([
-      fetchRadarQuotes([symbol]),
+      fetchRadarQuotes([symbol], activeInterval.value),
       fetchRadarNews(symbol).catch((error) => ({
         symbol, items: [], source: '', updatedAt: '', error: error instanceof Error ? error.message : '相关新闻获取失败',
       })),
     ]);
     if (sequence !== aiRequestSeq) return;
     const quote = quoteResult.quotes.find((item) => item.symbol === symbol) || quotes.value[symbol];
-    if (quote) quotes.value = { ...quotes.value, [symbol]: quote };
-    const changeLines = ['5m', '15m', '1h'].map((interval) => {
-      const value = quote?.changes?.[interval as '5m' | '15m' | '1h'];
+    const changeLines = (activeInterval.value === '24h' ? [] : [activeInterval.value]).map((interval) => {
+      const value = quote?.changes?.[interval as '5m' | '1h'];
       return `${interval} 涨跌：${formatChange(value == null ? null : Number(value))}`;
     });
     aiNews.value = newsResult.items;
@@ -484,16 +489,18 @@ async function refreshQuotes() {
   if (refreshInFlight) { refreshQueued = true; return; }
   refreshInFlight = true;
   const interval = activeInterval.value;
+  const sort=marketSort.value,order=marketOrder.value;
   try {
     const [result, selectedResult, marketResult] = await Promise.all([
-      watch.value.length ? fetchRadarQuotes(watch.value) : Promise.resolve({ quotes: [], invalidSymbols: [], updatedAt: new Date().toISOString() }),
-      selected.value && !watch.value.includes(selected.value) ? fetchRadarQuotes([selected.value]) : Promise.resolve({ quotes: [], invalidSymbols: [], updatedAt: new Date().toISOString() }),
-      fetchRadarMarket(interval),
+      watch.value.length ? fetchRadarQuotes(watch.value, interval) : Promise.resolve({ quotes: [], invalidSymbols: [], updatedAt: new Date().toISOString() }),
+      selected.value && !watch.value.includes(selected.value) ? fetchRadarQuotes([selected.value], interval) : Promise.resolve({ quotes: [], invalidSymbols: [], updatedAt: new Date().toISOString() }),
+      fetchRadarMarket(interval,sort,order),
     ]);
+    if (interval !== activeInterval.value) return;
     const next = { ...quotes.value };
     for (const quote of [...result.quotes, ...selectedResult.quotes]) next[quote.symbol] = quote;
     quotes.value = next;
-    if (interval === activeInterval.value) marketQuotes.value = Object.fromEntries(marketResult.quotes.map((quote) => [quote.symbol, quote]));
+    if (interval === activeInterval.value && sort===marketSort.value && order===marketOrder.value) marketQuotes.value = Object.fromEntries(marketResult.quotes.map((quote) => [quote.symbol, quote]));
     updatedAt.value = marketResult.updatedAt || result.updatedAt;
     marketError.value = marketResult.stale || (result.quotes.length && result.quotes.every((quote) => quote.stale))
       ? '行情源暂不可用，正在保留最近一次数据' : '';
@@ -553,7 +560,7 @@ function initialize() {
     await nextTick();
     await Promise.allSettled([loadChart(), loadMarketCap(selected.value)]);
     started = true;
-    radarPoll = setInterval(() => { if (!document.hidden && props.active) void refreshRadar(); }, 15000);
+    radarPoll = setInterval(() => { if (!document.hidden && props.active && trendView.value === 'short') void refreshRadar(); }, 15000);
     radarReady.value = true;
   })();
 }
@@ -564,6 +571,9 @@ async function refreshRadar() {
   try { await Promise.allSettled([refreshQuotes(), loadChart(true), loadMarketCap(selected.value, true)]); }
   finally { radarRefreshing.value = false; }
 }
+watchVue(trendView, (view) => {
+  if (view === 'short' && started && props.active && !document.hidden) void refreshRadar();
+});
 onUnmounted(() => {
   clearInterval(radarPoll);
   chartRequestId++; capRequestId++;
@@ -577,6 +587,13 @@ onUnmounted(() => {
 <template>
   <div class="radar">
     <main class="radar-content">
+      <nav class="trend-tabs" role="tablist" aria-label="雷达趋势范围" @keydown="handleTrendTabKey">
+        <button v-for="view in trendViews" :id="`radar-${view.id}-tab`" :key="view.id" type="button" role="tab"
+          :aria-selected="trendView === view.id" :aria-controls="`radar-${view.id}-panel`"
+          :tabindex="trendView === view.id ? 0 : -1" :class="{ active: trendView === view.id }"
+          @click="trendView = view.id">{{ view.label }}</button>
+      </nav>
+      <div v-show="trendView === 'short'" id="radar-short-panel" role="tabpanel" aria-labelledby="radar-short-tab">
       <section class="toolbar" aria-label="行情筛选和排序">
         <div class="filters">
           <button v-for="item in categories" :key="item.id" type="button" :class="{ active: assetFilter === item.id }" @click="assetFilter = item.id">{{ item.label }}</button>
@@ -598,7 +615,7 @@ onUnmounted(() => {
           <div class="watch-cards">
             <article v-for="row in pagedWatchRows" :key="row.symbol" class="watch-card" :class="{ chosen: selected === row.symbol }" @click="selectSymbol(row.symbol)">
               <button type="button" class="watch-select" :aria-label="`查看 ${row.symbol}`" @click="selectSymbol(row.symbol)">
-                <span class="watch-card-top"><span class="asset-logo"><img v-if="!logoFailed(row.symbol)" :src="logoUrl(row.symbol)" :alt="`${assetLabel(row.symbol)} logo`" @error="markLogoFailed(row.symbol)"><span v-else>{{ row.symbol.replace(/USDT$/, '').slice(0, 2) }}</span></span><span class="watch-name" :title="`${assetLabel(row.symbol)} · ${row.symbol}`">{{ row.symbol.replace(/USDT$/, '') }}<small>{{ assetType(row.symbol) === 'TRADFI' ? assetLabel(row.symbol) : 'USDT 永续' }}</small></span></span>
+                <span class="watch-card-top"><span class="asset-logo"><img v-if="logoUrl(row.symbol) && !logoFailed(row.symbol)" :src="logoUrl(row.symbol)" :alt="`${assetLabel(row.symbol)} logo`" @error="markLogoFailed(row.symbol)"><span v-else>{{ row.symbol.replace(/USDT$/, '').slice(0, 2) }}</span></span><span class="watch-name" :title="`${assetLabel(row.symbol)} · ${row.symbol}`">{{ row.symbol.replace(/USDT$/, '') }}<small>{{ assetType(row.symbol) === 'TRADFI' ? assetLabel(row.symbol) : 'USDT 永续' }}</small></span></span>
                 <span class="watch-price">{{ formatPrice(row.quote?.lastPrice) }}<small>USDT</small></span>
                 <b class="watch-change" :class="changeClass(row.change)">{{ formatChange(row.change) }}</b>
                 <span class="watch-card-bottom">{{ intervals.find((item) => item.id === activeInterval)?.label }}涨跌</span>
@@ -613,10 +630,10 @@ onUnmounted(() => {
 
         <section class="market-panel selected-panel">
           <header class="selected-summary">
-            <div class="selected-name"><span class="asset-logo large"><img v-if="!logoFailed(selected)" :src="logoUrl(selected)" :alt="`${assetLabel(selected)} logo`" @error="markLogoFailed(selected)"><span v-else>{{ assetLabel(selected).slice(0, 2) }}</span></span><span><b>{{ assetLabel(selected) }}</b><small>{{ selected }} · {{ selectedAsset?.assetType === 'TRADFI' ? '传统金融' : '虚拟币' }}</small></span><button type="button" class="follow-icon" :class="{ active: isWatched(selected) }" :aria-label="isWatched(selected) ? '取消关注' : '添加关注'" :title="isWatched(selected) ? '取消关注' : '添加关注'" @click="toggleWatch(selected)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.5 2.6 5.3 5.9.9-4.25 4.15 1 5.85L12 16.9l-5.25 2.8 1-5.85L3.5 9.7l5.9-.9L12 3.5Z"/></svg></button></div>
+            <div class="selected-name"><span class="asset-logo large"><img v-if="logoUrl(selected) && !logoFailed(selected)" :src="logoUrl(selected)" :alt="`${assetLabel(selected)} logo`" @error="markLogoFailed(selected)"><span v-else>{{ assetLabel(selected).slice(0, 2) }}</span></span><span><b>{{ assetLabel(selected) }}</b><small>{{ selected }} · {{ selectedAsset?.assetType === 'TRADFI' ? '传统金融' : '虚拟币' }}</small></span><button type="button" class="follow-icon" :class="{ active: isWatched(selected) }" :aria-label="isWatched(selected) ? '取消关注' : '添加关注'" :title="isWatched(selected) ? '取消关注' : '添加关注'" @click="toggleWatch(selected)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.5 2.6 5.3 5.9.9-4.25 4.15 1 5.85L12 16.9l-5.25 2.8 1-5.85L3.5 9.7l5.9-.9L12 3.5Z"/></svg></button></div>
             <div class="selected-metrics"><div><span>最新价格</span><b>{{ formatPrice(selectedQuote?.lastPrice || selectedMarketQuote?.lastPrice) }}</b></div><div><span>{{ intervals.find((item) => item.id === activeInterval)?.label }}涨跌</span><b :class="changeClass(changeValue(selectedQuote || undefined, activeInterval))">{{ formatChange(changeValue(selectedQuote || undefined, activeInterval)) }}</b></div><div><span>滚动 24 小时</span><b :class="changeClass(changeValue(selectedQuote || selectedMarketQuote || undefined, '24h'))">{{ formatChange(changeValue(selectedQuote || selectedMarketQuote || undefined, '24h')) }}</b></div><div><span>24h 合约成交额</span><b>{{ formatVolume((selectedQuote || selectedMarketQuote)?.quoteVolume24h || null) }} USDT</b></div><div><span>市值{{ marketCapSource ? ` · ${marketCapSource}` : '' }}</span><b>{{ marketCapLoading ? '加载中…' : formatMarketCap(selectedMarketCap) }}</b></div></div>
           </header>
-          <div class="chart-heading"><div><b>价格走势</b><span>{{ chartInterval }} · {{ chartBars.length }} 根 K 线</span></div><div class="periods chart-periods"><button v-for="item in [{id:'5m',label:'5分'},{id:'15m',label:'15分'},{id:'1h',label:'1小时'}] as const" :key="item.id" type="button" :class="{ active: chartInterval === item.id }" @click="chartInterval = item.id">{{ item.label }}</button></div></div>
+          <div class="chart-heading"><div><b>价格走势</b><span>{{ chartInterval }} · {{ chartBars.length }} 根 K 线</span></div><div class="periods chart-periods"><button v-for="item in [{id:'5m',label:'5分'},{id:'1h',label:'1小时'}] as const" :key="item.id" type="button" :class="{ active: chartInterval === item.id }" @click="chartInterval = item.id">{{ item.label }}</button></div></div>
           <div class="chart-wrap">
             <div v-if="chartLoading" class="chart-state">正在加载走势图…</div>
             <div v-else-if="!chartPoints.length" class="chart-state">{{ chartError || '暂无走势图数据' }}</div>
@@ -637,13 +654,13 @@ onUnmounted(() => {
       </section>
 
       <section class="market-panel">
-        <header class="market-title"><div><h2>其他合约列表</h2><p>未关注的全部合约，按{{ intervals.find((item) => item.id === activeInterval)?.label }}涨跌幅绝对值排序 · {{ filteredMarketRows.length }} 个标的</p></div><span class="source">Binance USDⓈ-M Futures · 全市场批量行情</span></header>
+        <header class="market-title"><div><h2>其他合约列表</h2><p>未关注的合约 · 接口按{{marketSort==='price'?'价格':marketSort==='change'?'涨跌幅':'涨跌幅绝对值'}}{{marketOrder==='asc'?'升序':'降序'}} · {{ filteredMarketRows.length }} 个标的</p></div><button class="refresh" :disabled="marketSort==='absoluteChange' && marketOrder==='desc'" @click="marketSort='absoluteChange';marketOrder='desc';marketPage=1">重置排序</button><span class="source">Binance USDⓈ-M Futures · 全市场批量行情</span></header>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>合约</th><th>类别</th><th>最新价格</th><th>{{ intervals.find((item) => item.id === activeInterval)?.label }}涨跌</th><th>状态</th><th class="follow-cell">关注</th></tr></thead>
+            <thead><tr><th>合约</th><th>类别</th><th :aria-sort="marketSort==='price'?(marketOrder==='asc'?'ascending':'descending'):'none'"><button class="sort-heading" @click="sortMarket('price')">最新价格 {{marketSort==='price'?(marketOrder==='asc'?'↑':'↓'):'↕'}}</button></th><th :aria-sort="marketSort==='change'?(marketOrder==='asc'?'ascending':'descending'):'none'"><button class="sort-heading" @click="sortMarket('change')">{{ intervals.find((item) => item.id === activeInterval)?.label }}涨跌 {{marketSort==='change'?(marketOrder==='asc'?'↑':'↓'):'↕'}}</button></th><th>状态</th><th class="follow-cell">关注</th></tr></thead>
             <tbody>
               <tr v-for="row in pagedMarketRows" :key="row.symbol" :class="{ chosen: selected === row.symbol, anomalous: row.change != null && Math.abs(row.change) >= Math.max(0, Number(anomalyThreshold) || 0) }" @click="selectSymbol(row.symbol)">
-                <td><div class="contract-cell"><span class="asset-logo"><img v-if="!logoFailed(row.symbol)" :src="logoUrl(row.symbol)" :alt="`${assetLabel(row.symbol)} logo`" @error="markLogoFailed(row.symbol)"><span v-else>{{ assetLabel(row.symbol).slice(0, 2) }}</span></span><span><b>{{ assetLabel(row.symbol) }}</b><small>{{ row.symbol }}</small><small v-if="row.market.radarTier === 'VOLATILE'" class="tier-label">高波动观察</small></span></div></td>
+                <td><div class="contract-cell"><span class="asset-logo"><img v-if="logoUrl(row.symbol) && !logoFailed(row.symbol)" :src="logoUrl(row.symbol)" :alt="`${assetLabel(row.symbol)} logo`" @error="markLogoFailed(row.symbol)"><span v-else>{{ assetLabel(row.symbol).slice(0, 2) }}</span></span><span><b>{{ assetLabel(row.symbol) }}</b><small>{{ row.symbol }}</small><small v-if="row.market.radarTier === 'VOLATILE'" class="tier-label">高波动观察</small></span></div></td>
                 <td><span class="type-label" :class="assetType(row.symbol) === 'TRADFI' ? 'type-tradfi' : 'type-crypto'">{{ assetType(row.symbol) === 'TRADFI' ? '传统金融' : '虚拟币' }}</span></td>
                 <td class="price-cell">{{ formatPrice(row.quote?.lastPrice) }}</td>
                 <td :class="changeClass(row.change)">{{ formatChange(row.change) }}</td>
@@ -657,6 +674,11 @@ onUnmounted(() => {
         <div v-if="marketPageCount > 1" class="pagination list-pagination"><button type="button" :disabled="marketPage <= 1" @click="marketPage--">上一页</button><span>{{ marketPage }} / {{ marketPageCount }}</span><button type="button" :disabled="marketPage >= marketPageCount" @click="marketPage++">下一页</button></div>
         <footer class="market-foot"><span>{{ marketError || `异动阈值：${Number(anomalyThreshold).toFixed(1)}% / ${intervals.find((item) => item.id === activeInterval)?.label}；行情更新于 ${quoteTimestamp}` }}</span><span>卡片与列表使用同一涨跌周期；短周期由服务器缓存计算，缺失时显示 —。</span></footer>
       </section>
+      </div>
+      <section v-show="trendView === 'long'" id="radar-long-panel"
+        role="tabpanel" aria-labelledby="radar-long-tab">
+        <RadarLongTrend :active="props.active && trendView === 'long'" />
+      </section>
     </main>
 
     <div v-if="addDialogVisible" class="dialog-shade" @click.self="addDialogVisible = false">
@@ -669,7 +691,7 @@ onUnmounted(() => {
           <p v-else-if="availableError && !availableContracts.length" class="dialog-state error">{{ availableError }}</p>
           <p v-else-if="!availableMatches.length" class="dialog-state">没有匹配的可添加合约</p>
           <button v-for="contract in availableMatches" :key="contract.symbol" type="button" class="candidate-row" @click="addContract(contract)">
-            <span class="asset-logo"><img v-if="!logoFailed(contract.symbol)" :src="logoUrl(contract.symbol)" :alt="`${assetLabel(contract.symbol)} logo`" @error="markLogoFailed(contract.symbol)"><span v-else>{{ assetLabel(contract.symbol).slice(0, 2) }}</span></span>
+            <span class="asset-logo"><img v-if="logoUrl(contract.symbol) && !logoFailed(contract.symbol)" :src="logoUrl(contract.symbol)" :alt="`${assetLabel(contract.symbol)} logo`" @error="markLogoFailed(contract.symbol)"><span v-else>{{ assetLabel(contract.symbol).slice(0, 2) }}</span></span>
             <span class="candidate-name"><b>{{ assetLabel(contract.symbol) }}</b><small>{{ contract.symbol }} · {{ contract.assetType === 'TRADFI' ? '传统金融' : '虚拟币' }}</small></span>
             <span class="candidate-market"><b :class="changeClass(Number(contract.priceChangePercent))">{{ formatChange(contract.priceChangePercent == null ? null : Number(contract.priceChangePercent)) }}</b><small>24h · 成交额 {{ formatVolume(contract.quoteVolume24h) }} USDT</small></span>
             <span class="candidate-add">添加</span>
@@ -701,199 +723,4 @@ onUnmounted(() => {
   </div>
 </template>
 
-<style scoped>
-.radar{--bg:#090e15;--surface:#0d141e;--surface2:#111a26;--line:#1d2938;--line-soft:#172230;--text:#e7edf5;--muted:#8593a6;--green:#34d399;--red:#fb7185;--gold:#d9b454;width:100%;height:100%;min-height:0;overflow:auto;background:var(--bg);color:var(--text);font-size:13px;font-variant-numeric:tabular-nums}.radar-head{position:sticky;top:0;z-index:3;min-height:66px;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:10px 22px;border-bottom:1px solid var(--line);background:#0a1018}.brand,.brand>div,.head-status,.focus-instrument,.focus-instrument>div,.market-title,.market-title>div{display:flex;align-items:center}.brand{gap:11px}.brand-mark{width:35px;height:35px;display:grid;place-items:center;border:1px solid #6c5927;border-radius:9px;background:#2a2314;color:var(--gold);font-weight:900;font-size:17px}.brand>div{align-items:flex-start;flex-direction:column;gap:2px}.brand h1,.market-title h2,.leader-panel h2{margin:0;font-size:16px;font-weight:800}.brand p,.market-title p{margin:0;color:var(--muted);font-size:11px}.head-status{gap:9px;color:#aeb9c8;font-size:11px}.live-dot,.leader-dot{width:7px;height:7px;border-radius:50%;background:var(--green)}.updated{margin-left:7px;color:var(--muted)}.refresh{height:30px;padding:0 11px;border:1px solid #334152;border-radius:6px;background:#131c28;color:var(--text);font:inherit;font-weight:700;cursor:pointer}.refresh:hover{border-color:#72829a}.refresh:disabled{opacity:.55;cursor:wait}.radar-content{max-width:1600px;margin:auto;padding:13px 18px 22px}.focus-bar{display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr;align-items:center;gap:14px;min-height:90px;padding:12px 16px;border:1px solid var(--line);border-radius:9px;background:var(--surface)}.focus-instrument{gap:11px}.focus-instrument>div{align-items:flex-start;flex-direction:column;gap:4px}.focus-instrument b{font-size:16px}.focus-instrument>div span,.focus-price>span,.focus-change>span{color:var(--muted);font-size:10px}.asset-badge{width:35px;height:35px;display:grid;place-items:center;border-radius:9px;font-size:12px;font-weight:900}.asset-badge.crypto{background:#16283a;color:#73b8ff}.asset-badge.traditional{background:#2c2515;color:var(--gold)}.focus-price,.focus-change{display:flex;flex-direction:column;gap:4px;padding-left:15px;border-left:1px solid var(--line)}.focus-price b,.focus-change b{font-size:19px}.focus-change b{font-size:18px}.positive{color:var(--green)!important}.negative{color:var(--red)!important}.neutral{color:var(--muted)!important}.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 1px}.filters,.periods{display:flex;gap:4px;padding:3px;border:1px solid var(--line);border-radius:7px;background:var(--surface)}.filters button,.periods button{height:27px;padding:0 10px;border:0;border-radius:5px;background:transparent;color:#95a2b4;font:inherit;font-size:11px;font-weight:700;cursor:pointer}.filters button:hover,.periods button:hover{color:var(--text)}.filters button.active,.periods button.active{background:#263244;color:#f2f5fa}.periods button.active{color:#f1cf74}.search{height:33px;display:flex;align-items:center;gap:7px;min-width:160px;padding:0 9px;border:1px solid var(--line);border-radius:6px;background:var(--surface)}.search span{color:#718096;font-size:18px}.search input{width:155px;border:0;outline:0;background:transparent;color:var(--text);font:inherit;font-size:11px}.search input::placeholder{color:#718096}.threshold{display:flex;align-items:center;gap:6px;color:#adb8c7;font-size:11px;cursor:pointer}.threshold input{accent-color:#d9b454;cursor:pointer}.threshold-value{height:30px;display:flex;align-items:center;gap:5px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--muted);font-size:11px}.threshold-value input{width:45px;border:0;outline:0;background:transparent;color:var(--text);font:inherit}.leader-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:11px}.leader-panel,.market-panel{min-width:0;border:1px solid var(--line-soft);border-radius:8px;background:var(--surface)}.leader-panel{padding:0 12px 5px}.leader-panel>header{height:39px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line-soft);color:var(--muted);font-size:10px}.leader-panel>header>div{display:flex;align-items:center;gap:8px}.leader-panel h2{font-size:12px}.up-dot{background:var(--green)}.down-dot{background:var(--red)}.leader-row{width:100%;min-height:38px;display:grid;grid-template-columns:28px minmax(95px,1fr) minmax(75px,auto) minmax(70px,auto);align-items:center;gap:8px;padding:4px 2px;border:0;border-bottom:1px solid #151f2b;background:transparent;color:var(--text);text-align:left;font:inherit;cursor:pointer}.leader-row:last-of-type{border-bottom:0}.leader-row:hover,.leader-row.selected{background:#141e2b}.rank{color:#66768b;font-size:10px}.leader-name{display:flex;min-width:0;flex-direction:column;gap:2px}.leader-name b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.leader-name small{color:var(--muted);font-size:9px}.leader-price{color:#c5ceda;font-size:10px;text-align:right}.leader-change{text-align:right;font-size:12px}.leader-empty{padding:14px 2px;color:var(--muted);font-size:11px}.market-title{justify-content:space-between;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line-soft)}.market-title>div{align-items:flex-start;flex-direction:column;gap:4px}.market-title h2{font-size:13px}.source{color:var(--muted);font-size:10px}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;white-space:nowrap}thead{background:#0b121b}th{height:35px;padding:0 12px;color:#8290a4;font-size:10px;font-weight:700;text-align:right}th:first-child,td:first-child{text-align:left;padding-left:14px}th:nth-child(2){text-align:left}td{height:45px;padding:0 12px;border-top:1px solid #141f2d;color:#c6d0dd;font-size:11px;text-align:right}tbody tr{cursor:pointer}tbody tr:hover{background:#111a25}tbody tr.chosen{background:#141e2a}tbody tr.anomalous td:first-child{box-shadow:inset 2px 0 #d9b454}.contract-cell{display:flex;align-items:center;gap:9px}.asset-badge.small{width:27px;height:27px;border-radius:7px;font-size:9px}.contract-cell>span:last-child{display:flex;flex-direction:column;gap:3px}.contract-cell b{font-size:11px}.contract-cell small{color:var(--muted);font-size:9px}.type-label{padding:3px 6px;border-radius:4px;font-size:9px}.type-crypto{background:#152337;color:#82baff}.type-tradfi{background:#2a2416;color:#dfc16b}.price-cell{color:#e0e6ef}.status{display:inline-flex;align-items:center;padding:3px 6px;border-radius:4px;font-size:9px}.status.normal{background:#14231f;color:#7dc8a3}.status.alert{background:#302817;color:#e0c46c}.status.stale{background:#29212a;color:#c4a3ca}.empty-row{height:95px;text-align:center!important;color:var(--muted)}.market-foot{display:flex;justify-content:space-between;gap:14px;padding:9px 13px;border-top:1px solid var(--line-soft);color:#738196;font-size:9px;line-height:1.5}@media(max-width:850px){.radar-head{align-items:flex-start;flex-direction:column;padding:11px 14px}.head-status{flex-wrap:wrap}.updated{margin-left:0}.radar-content{padding:10px}.focus-bar{grid-template-columns:1fr 1fr}.focus-price,.focus-change{padding-left:10px}.leader-grid{grid-template-columns:1fr}.toolbar{gap:7px}.market-foot{flex-direction:column}}@media(max-width:560px){.focus-bar{grid-template-columns:1fr 1fr;gap:10px}.focus-instrument{grid-column:1/-1}.focus-price{padding-left:0;border-left:0}.filters,.periods{max-width:100%;overflow:auto}.filters button,.periods button{padding:0 7px}.search{flex:1}.search input{width:100%;min-width:40px}.source{display:none}th,td{padding:0 8px}.market-title{padding:11px}}
-.radar{
-  overflow-x:hidden;
-  overflow-y:auto;
-  overscroll-behavior:contain;
-  scrollbar-gutter:stable;
-}
-.watch-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(185px,1fr));gap:8px;padding:10px}
-.watch-card{min-width:0;display:flex;flex-direction:column;align-items:stretch;gap:5px;padding:10px 11px;border:1px solid #223044;border-radius:7px;background:#101925;color:var(--text);text-align:left;font:inherit;cursor:pointer;transition:border-color .15s,background .15s}
-.watch-card:hover,.watch-card.chosen{border-color:#6d5929;background:#171e27}
-.watch-card-top,.watch-card-bottom{display:flex;align-items:center;gap:6px}
-.watch-card-top{justify-content:space-between}
-.watch-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:800}
-.watch-price{font-size:16px;line-height:1.2}
-.watch-symbol{color:var(--muted);font-size:9px}
-.watch-card-bottom{justify-content:space-between;padding-top:6px;border-top:1px solid var(--line-soft);color:var(--muted);font-size:9px}
-.watch-card-bottom b{font-size:10px}
-.watch-empty{padding:14px;color:var(--muted);font-size:11px}
-.radar{display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;overscroll-behavior:contain}
-.radar-content{width:min(100%,1600px);box-sizing:border-box;flex:none}
-.head-actions{display:flex;align-items:center;gap:10px}
-.watch-layout{display:grid;grid-template-columns:minmax(300px,.85fr) minmax(380px,1.35fr);align-items:stretch;gap:10px}
-.watch-panel,.selected-panel{min-width:0;overflow:hidden}
-.watch-cards{grid-template-columns:repeat(auto-fill,minmax(145px,1fr));align-content:start;min-height:80px}
-.watch-card{position:relative;min-height:98px;padding:0;overflow:hidden}
-.watch-select{width:100%;height:100%;display:flex;flex-direction:column;justify-content:space-between;gap:10px;padding:11px 34px 10px 10px;border:0;background:transparent;color:inherit;text-align:left;font:inherit;cursor:pointer}
-.watch-card-top{min-width:0;justify-content:flex-start}
-.watch-name{display:flex;min-width:0;flex:1;flex-direction:column;gap:3px}
-.watch-name small{color:var(--muted);font-size:9px;font-weight:500}
-.watch-change{margin-left:auto;font-size:11px;white-space:nowrap}
-.watch-card-bottom{width:100%;justify-content:space-between;gap:5px;font-size:9px;white-space:nowrap}
-.watch-card-bottom span{overflow:hidden;text-overflow:ellipsis}
-.follow-icon{width:28px;height:28px;display:grid;place-items:center;flex:none;padding:0;border:1px solid #2a3646;border-radius:6px;background:#111a26;color:#8c9aab;cursor:pointer}
-.follow-icon:hover{border-color:#d2b35d;color:#e7cc76}
-.follow-icon.active{border-color:#65542c;background:#2a2417;color:#e6c968}
-.follow-icon svg{width:15px;height:15px;fill:transparent;stroke:currentColor;stroke-width:1.8;stroke-linejoin:round}
-.follow-icon.active svg{fill:currentColor}
-.watch-card>.follow-icon{position:absolute;top:7px;right:7px;width:23px;height:23px;border:0;background:transparent}
-.watch-card>.follow-icon svg{width:14px;height:14px}
-.asset-logo{width:27px;height:27px;display:grid;place-items:center;flex:none;overflow:hidden;border:1px solid #2b394b;border-radius:50%;background:#182333;color:#a9c8f0;font-size:9px;font-weight:800}
-.asset-logo img{width:100%;height:100%;object-fit:cover}
-.asset-logo.large{width:36px;height:36px;font-size:11px}
-.selected-summary{padding:13px 14px;border-bottom:1px solid var(--line-soft)}
-.selected-name{display:flex;align-items:center;gap:9px}
-.selected-name>span:nth-child(2){display:flex;min-width:0;flex-direction:column;gap:3px}
-.selected-name>span:nth-child(2) b{font-size:14px}
-.selected-name small{color:var(--muted);font-size:10px}
-.selected-name .follow-icon{margin-left:auto}
-.selected-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:14px}
-.selected-metrics>div{display:flex;min-width:0;flex-direction:column;gap:5px;padding-left:10px;border-left:1px solid var(--line)}
-.selected-metrics>div:first-child{padding-left:0;border-left:0}
-.selected-metrics span{color:var(--muted);font-size:9px}
-.selected-metrics b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
-.chart-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px 0}
-.chart-heading>div:first-child{display:flex;align-items:baseline;gap:8px}
-.chart-heading b{font-size:11px}
-.chart-heading span{color:var(--muted);font-size:9px}
-.chart-periods{flex:none}
-.chart-periods button{height:23px;padding:0 8px;font-size:9px}
-.chart-wrap{position:relative;min-height:210px;padding:7px 12px 25px}
-.price-chart{width:100%;height:190px;display:block;overflow:visible;touch-action:pan-y}
-.chart-gridline{stroke:#1c2938;stroke-width:1;vector-effect:non-scaling-stroke}
-.chart-area{fill:rgba(75,150,220,.09);stroke:none}
-.chart-line{fill:none;stroke:#67b5ff;stroke-width:2;vector-effect:non-scaling-stroke}
-.chart-crosshair{stroke:#d5b85f;stroke-width:1;stroke-dasharray:4 4;vector-effect:non-scaling-stroke}
-.chart-point{fill:#f0d16e;stroke:#111923;stroke-width:2;vector-effect:non-scaling-stroke}
-.chart-tooltip{position:absolute;z-index:2;display:flex;flex-direction:column;gap:4px;min-width:130px;padding:8px 10px;border:1px solid #4b627d;border-radius:6px;background:rgba(9,15,23,.96);box-shadow:0 6px 18px #0006;pointer-events:none;transform:translate(-50%,0)}
-.chart-tooltip b{color:#edf5ff;font-size:11px}
-.chart-tooltip span{color:#aab8c9;font-size:9px}
-.chart-axis{position:absolute;right:13px;bottom:7px;left:13px;display:flex;justify-content:space-between;color:var(--muted);font-size:9px}
-.chart-state{height:190px;display:grid;place-items:center;color:var(--muted);font-size:11px}
-.chart-refresh-note{position:absolute;top:0;left:12px;right:12px;color:var(--muted);font-size:11px;pointer-events:none}
-.pagination{display:flex;align-items:center;justify-content:center;gap:10px;padding:8px 10px;border-top:1px solid var(--line-soft);color:var(--muted);font-size:10px}
-.pagination button{height:25px;padding:0 9px;border:1px solid #2a3646;border-radius:5px;background:#111a26;color:#c5d0de;font:inherit;cursor:pointer}
-.pagination button:disabled{opacity:.4;cursor:not-allowed}
-.list-pagination{border-top:0;border-bottom:1px solid var(--line-soft)}
-.follow-cell{width:54px;text-align:center!important}
-.tier-label{width:max-content;padding:2px 5px;border-radius:4px;background:#2b2119;color:#e5a76f!important;font-size:9px!important}
-th.follow-cell,td.follow-cell{padding:0 8px;text-align:center}
-@media(max-width:980px){.watch-layout{grid-template-columns:minmax(0,1fr)}.watch-cards{grid-template-columns:repeat(auto-fill,minmax(165px,1fr))}}
-@media(max-width:560px){.radar-content{padding:9px}.watch-cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;padding:8px}.watch-card{min-height:94px}.selected-metrics{gap:5px}.selected-metrics>div{padding-left:6px}.selected-metrics b{font-size:12px}.chart-wrap{padding-right:7px;padding-left:7px}.market-foot{flex-direction:column}.direction-filter{max-width:100%;overflow:auto}}
-.radar-content{width:100%;max-width:none;margin:0;padding-right:0;padding-left:0}
-.toolbar{padding-right:0;padding-left:0}
-.watch-card{min-height:112px}
-.watch-select{gap:12px;padding:13px 38px 12px 12px}
-.watch-name{font-size:13px}
-.watch-name small{font-size:11px}
-.watch-change{font-size:13px}
-.watch-card-bottom{font-size:11px}
-.watch-card-bottom b{font-size:12px}
-.asset-logo{width:31px;height:31px;font-size:10px}
-.market-title h2{font-size:15px}
-.market-title p{font-size:12px}
-.table-wrap th,.table-wrap td{height:54px;text-align:center;font-size:13px;vertical-align:middle}
-.table-wrap th{height:42px;font-size:12px}
-.table-wrap th:first-child,.table-wrap td:first-child{padding-left:12px;text-align:center}
-.table-wrap .contract-cell{justify-content:center}
-.table-wrap .contract-cell b{font-size:13px}
-.table-wrap .contract-cell small{font-size:11px}
-.table-wrap .type-label,.table-wrap .status{font-size:11px}
-.table-wrap .follow-cell{width:72px;text-align:center}
-.pagination{font-size:12px}
-.pagination button{height:30px;padding:0 12px}
-.watch-layout{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
-.watch-cards{grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:10px}
-.watch-card{min-height:128px}
-.watch-select{padding:15px 40px 14px 14px}
-.watch-name{font-size:14px}
-.watch-change{font-size:14px}
-.watch-card-bottom{font-size:12px}
-.watch-card-bottom b{font-size:13px}
-.asset-logo{width:34px;height:34px}
-.table-wrap th:first-child,.table-wrap td:first-child{text-align:left;padding-left:20px}
-.table-wrap .contract-cell{justify-content:flex-start}
-.add-contract-button{height:32px;padding:0 13px;border:1px solid #65542c;border-radius:6px;background:#282315;color:#e6c968;font:inherit;font-weight:700;cursor:pointer}
-.add-contract-button:hover{border-color:#d2b35d;background:#342d1b}
-.watch-panel,.selected-panel{min-height:540px}
-.watch-cards{grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px}
-.watch-card{min-height:170px}
-.watch-select{padding-bottom:44px}
-.watch-ai-button{position:absolute;right:9px;bottom:9px;height:27px;padding:0 11px;border:1px solid #354760;border-radius:5px;background:#172538;color:#a9d0ff;font:inherit;font-size:11px;font-weight:700;cursor:pointer}
-.watch-ai-button:hover{border-color:#5798dc;background:#1b2d43}
-.watch-ai-button:disabled{opacity:.6;cursor:wait}
-.chart-wrap{min-height:330px}
-.price-chart{height:300px}
-.chart-state{height:300px}
-.selected-metrics{grid-template-columns:repeat(5,minmax(0,1fr))}
-@media(max-width:720px){.selected-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}
-@media(max-width:560px){.selected-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
-/* Keep the quote and move on separate lines so three cards remain readable. */
-.watch-select{justify-content:flex-start;gap:10px;padding:14px 12px 42px}
-.watch-card{min-height:205px}
-.watch-card-top{width:100%;padding-right:22px;box-sizing:border-box;gap:7px}
-.watch-card-top .asset-logo{width:25px;height:25px;flex:0 0 25px}
-.watch-name{font-size:15px;white-space:normal;overflow-wrap:anywhere}
-.watch-name small{font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
-.watch-price{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;font-size:18px;font-weight:750;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
-.watch-price small{font-size:10px;color:var(--muted);font-weight:400}
-.watch-change{font-size:22px;line-height:1.1;font-variant-numeric:tabular-nums}
-.watch-card-bottom{border:0;padding:0;white-space:normal;font-size:11px}
-.watch-layout{grid-template-columns:minmax(0,45fr) minmax(0,55fr)}
-.watch-cards{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding:8px}
-.watch-panel>.pagination{gap:7px;padding:4px 7px;font-size:11px}
-.watch-panel>.pagination button{height:24px;padding:0 8px}
-@media(max-width:980px){.watch-layout{grid-template-columns:minmax(0,1fr)}}
-@media(max-width:720px){.watch-cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
-.dialog-shade{position:fixed;inset:0;z-index:1500;display:grid;place-items:center;padding:20px;background:rgba(2,6,12,.76);backdrop-filter:blur(4px)}
-.radar-dialog{width:min(720px,96vw);max-height:min(84vh,820px);display:flex;flex-direction:column;overflow:hidden;border:1px solid #2a394d;border-radius:12px;background:#0d141e;color:var(--text);box-shadow:0 20px 70px #0009}
-.dialog-header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:17px 20px;border-bottom:1px solid var(--line)}
-.dialog-header h2{margin:0;font-size:17px}
-.dialog-header p{margin:5px 0 0;color:var(--muted);font-size:11px}
-.dialog-close{width:32px;height:32px;border:1px solid #2a394d;border-radius:6px;background:#111a26;color:#c5ceda;font-size:22px;cursor:pointer}
-.add-search{display:flex;align-items:center;gap:8px;height:39px;margin:15px 18px 6px;padding:0 11px;border:1px solid #2b394c;border-radius:7px;background:#0a111a}
-.add-search span{color:#8190a4;font-size:19px}
-.add-search input{width:100%;border:0;outline:0;background:transparent;color:var(--text);font:inherit}
-.add-help{margin:4px 20px 10px;color:var(--muted);font-size:11px}
-.add-results{min-height:120px;overflow:auto;border-top:1px solid var(--line-soft)}
-.candidate-row{width:100%;min-height:62px;display:flex;align-items:center;gap:12px;padding:8px 20px;border:0;border-bottom:1px solid #182331;background:transparent;color:var(--text);text-align:left;font:inherit;cursor:pointer}
-.candidate-row:hover{background:#141f2d}
-.candidate-name,.candidate-market{display:flex;min-width:0;flex-direction:column;gap:4px}
-.candidate-name{flex:1}
-.candidate-name b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
-.candidate-name small,.candidate-market small{color:var(--muted);font-size:10px}
-.candidate-market{text-align:right}
-.candidate-market b{font-size:12px}
-.candidate-add{padding:5px 10px;border:1px solid #65542c;border-radius:5px;color:#e6c968;font-size:11px}
-.dialog-state{padding:28px 16px;color:var(--muted);text-align:center;font-size:12px}
-.dialog-state.error,.ai-error{color:#fda4af}
-.dialog-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:48px;padding:8px 18px;border-top:1px solid var(--line-soft);color:var(--muted);font-size:11px}
-.dialog-footer button{height:30px;padding:0 14px;border:1px solid #344356;border-radius:5px;background:#141e2b;color:var(--text);cursor:pointer}
-.ai-dialog{width:min(860px,96vw);height:min(82vh,800px)}
-.ai-market-context{max-height:120px;overflow:auto;padding:11px 18px;border-bottom:1px solid var(--line-soft);background:#0a1119;color:#aab7c8;font-size:10px;line-height:1.6;white-space:pre-wrap}
-.ai-news-evidence{max-height:150px;overflow:auto;padding:8px 18px;border-bottom:1px solid var(--line-soft);background:#0c131d}
-.ai-news-evidence header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:5px;color:#d9e2ed;font-size:10px}
-.ai-news-evidence header span,.ai-news-evidence a small{color:var(--muted);font-size:9px}
-.ai-news-evidence a{display:flex;flex-direction:column;gap:3px;padding:5px 0;border-top:1px solid #172230;color:#b8d6fa;text-decoration:none;font-size:10px;line-height:1.45}
-.ai-news-evidence a:hover{color:#e6c968}
-.ai-news-evidence a small{color:var(--muted)}
-.ai-news-evidence p{margin:6px 0 2px;color:var(--muted);font-size:10px}
-.ai-chat-messages{flex:1;min-height:100px;overflow:auto;padding:16px 18px}
-.chat-message{max-width:90%;margin:0 0 13px;padding:11px 13px;border:1px solid #243247;border-radius:8px;background:#111a26}
-.chat-message.user{margin-left:auto;border-color:#35517a;background:#14233a}
-.chat-message>b{color:#9dc5ff;font-size:11px}
-.chat-message>p{margin:6px 0 0;color:#dce5f1;font-size:13px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}
-.ai-status{display:flex;align-items:center;gap:8px;margin:0;padding:0 18px 8px;color:var(--muted);font-size:11px}
-.ai-status .live-dot{flex:none}
-.ai-error{margin:0;padding:5px 18px 8px;font-size:11px}
-.ai-composer{display:flex;align-items:flex-end;gap:9px;padding:12px 15px;border-top:1px solid var(--line)}
-.ai-composer textarea{flex:1;min-height:46px;max-height:120px;resize:vertical;padding:10px;border:1px solid #2b394c;border-radius:7px;outline:0;background:#0a1119;color:var(--text);font:inherit;font-size:12px;line-height:1.5}
-.ai-composer textarea:focus{border-color:#527fb5}
-.ai-composer button{height:38px;padding:0 17px;border:1px solid #5579a5;border-radius:6px;background:#203653;color:#e2efff;font:inherit;font-weight:700;cursor:pointer}
-.ai-composer button:disabled{opacity:.45;cursor:not-allowed}
-@media(max-width:980px){.watch-layout{grid-template-columns:minmax(0,1fr)}}
-@media(max-width:720px){.watch-panel,.selected-panel{min-height:480px}.watch-cards{grid-template-columns:repeat(2,minmax(0,1fr))}.dialog-shade{padding:8px}.radar-dialog{width:100%;max-height:92vh}.ai-dialog{height:90vh}.candidate-row{gap:8px;padding:8px 12px}.candidate-market small{max-width:135px;white-space:normal;text-align:right}}
-</style>
+<style scoped src="./RadarBoard.css"></style>

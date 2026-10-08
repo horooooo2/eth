@@ -71,6 +71,18 @@ rm -f "$DEPLOY"/lib/v41*.js \
       "$DEPLOY"/routes/whaleAiTrade.js \
       "$DEPLOY"/routes/adminStrategyConfigs.js
 
+# tar extraction does not remove files omitted from a newer package.
+rm -f "$DEPLOY/lib/directionSummary.js" "$DEPLOY/lib/sharedQuery.js" \
+      "$DEPLOY/lib/binanceAiAccountBook.js" \
+      "$DEPLOY/lib/cryptoAiOrderGate.js" \
+      "$DEPLOY/lib/okxTradeClient.js" \
+      "$DEPLOY/lib/okxAiLedger.js" \
+      "$DEPLOY/lib/dexpaprikaFlow.js" \
+      "$DEPLOY/lib/binanceCryptoTrade.js" \
+      "$DEPLOY/routes/okxTrade.js" \
+      "$DEPLOY/routes/okxKeys.js" \
+      "$DEPLOY/routes/binanceTrade.js"
+
 echo "==> npm install"
 cd "$DEPLOY"
 npm install --omit=dev

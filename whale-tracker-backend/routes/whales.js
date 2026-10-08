@@ -32,10 +32,11 @@ router.use((req, res, next) => {
   next();
 });
 
-router.get('/observations', (_req, res) => {
-  res.set('Cache-Control', 'no-store').json(require('../lib/whaleObservationWorker').snapshot());
+router.get('/observations', (req, res) => {
+  res.set('Cache-Control', 'no-store').json(require('../lib/whaleObservationWorker').snapshot(require('../lib/observationScope').normalize(String(req.query.coins||'').split(','))));
 });
 router.get('/observations/:id/evidence', (req, res) => {
+  if(!require('../lib/featureFlags').observationsEnabled())return res.status(404).json({error:'巨鲸观察已停用'});
   const offset = Number(req.query.offset || 0);
   if (!/^[a-f0-9]{32}$/.test(req.params.id) || !Number.isSafeInteger(offset) || offset < 0 || offset > 100000) return res.status(400).json({error:'无效查询'});
   try {
@@ -72,19 +73,6 @@ router.get('/resonance', (req, res) => {
   }
 });
 
-router.get('/direction-summary', (req, res) => {
-  const durations = { '15m': 900000, '1h': 3600000, '4h': 14400000, '24h': 86400000 };
-  const windowKey = String(req.query.window || '1h');
-  if (!Object.hasOwn(durations,windowKey)) return res.status(400).json({ error: '不支持的时间范围' });
-  try {
-    const result=require('../lib/statisticsWorker').direction(windowKey);
-    res.set('Cache-Control','no-store').type('json').send(result);
-  } catch (err) {
-    if(!err.status)console.error('[direction-summary]', err);
-    if(!err.status)require('../lib/opsMonitor').pushError({source:'direction-summary',message:err.message});
-    res.status(err.status||500).json({ error: err.status===503?err.message:'方向统计暂不可用' });
-  }
-});
 
 /** 净流入资金只查服务器异动库，时间窗口和币种由参数明确限定。 */
 router.get('/alert-history/summary', async (req, res) => {

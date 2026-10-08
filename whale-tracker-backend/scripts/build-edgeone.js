@@ -178,6 +178,7 @@ const libFiles = [
   'lib/createApp.js',
   'lib/apiGateway.js',
   'lib/cache.js',
+  'lib/boundedCache.js',
   'lib/config.js',
   'lib/calendar.js',
   'lib/calendarFeed.js',
@@ -187,10 +188,7 @@ const libFiles = [
   'lib/tradfiWhales.js',
   'lib/tradfiRangeStrategy.js',
   'lib/binanceTradfiTrade.js',
-  'lib/binanceAiAccountBook.js',
-  'lib/okxTradeClient.js',
   'lib/analysisResult.js',
-  'lib/cryptoAiOrderGate.js',
   'lib/marketBrief.js',
   'lib/hyperliquid.js',
   'lib/onchain.js',
@@ -209,7 +207,6 @@ const libFiles = [
   'routes/whales.js',
   'routes/news.js',
   'routes/whaleAi.js',
-  'routes/okxTrade.js',
   'server.js',
 ];
 for (const rel of libFiles) {

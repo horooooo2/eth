@@ -1,4 +1,5 @@
 import { onUnmounted, ref } from 'vue';
+import { readWatchedCoins } from '@/utils/watchedCoins';
 import type { StateCursor, WhaleStateCommit } from '@/utils/whaleState';
 
 import type { ObservationSnapshot, ObservationCommit } from '@/types/whaleObservation';
@@ -41,7 +42,7 @@ export function useRealtime(onMessage: (msg: RealtimeMessage) => void, getCursor
     status.value = 'connecting';
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     let current: WebSocket;
-    try { current = new WebSocket(`${proto}//${window.location.host}/realtime`); }
+    try { current = new WebSocket(`${proto}//${window.location.host}/realtime?coins=${encodeURIComponent(readWatchedCoins().join(','))}`); }
     catch { scheduleReconnect(); return; }
     socket = current;
     current.onopen = () => {

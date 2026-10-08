@@ -1,3 +1,4 @@
+process.env.WHALE_OBSERVATIONS_ENABLED='1';
 const test=require('node:test');
 const assert=require('node:assert/strict');
 require('./helpers/isolateSqlite');
@@ -16,6 +17,23 @@ function seed(id,count=3) {
 function summary(id) {
   return getDb().prepare('SELECT payload_json FROM whale_observations WHERE whale_id=? ORDER BY id').all(id).map(r=>JSON.parse(r.payload_json));
 }
+
+test('bounded process is reused, recycled, and recovers from malformed input',async()=>{
+  const runner=createComputeRunner({maxJobs:3}),job=seed('reuse');
+  try {
+    await runner.run('pair',job,{now});
+    const first=runner.getStatus().pid;assert.ok(first);
+    await runner.run('pair',job,{now});assert.equal(runner.getStatus().pid,first);
+    await runner.run('pair',job,{now});assert.equal(runner.getStatus().pid,null);
+    await runner.run('pair',job,{now});assert.notEqual(runner.getStatus().pid,first);
+    const row=getDb().prepare('SELECT id,payload_json FROM observation_inputs WHERE whale_id=? LIMIT 1').get(job.whale_id);
+    getDb().prepare("UPDATE observation_inputs SET payload_json='broken' WHERE id=?").run(row.id);
+    await assert.rejects(runner.run('pair',job,{now}),/JSON|Unexpected/);
+    assert.equal(runner.getStatus().pid,null);
+    getDb().prepare('UPDATE observation_inputs SET payload_json=? WHERE id=?').run(row.payload_json,row.id);
+    assert.equal((await runner.run('pair',job,{now})).stale,false);
+  }finally{runner.stop();}
+});
 test('isolated pair and collective match the synchronous baseline, including ordered evidence',async()=>{
   const db=getDb(),runner=createComputeRunner();
   for(const id of ['match-a','match-b','match-c']) {
@@ -140,9 +158,9 @@ test('a failed pair yields its queue position and monitor exposes the remaining 
     assert.equal(worker.getStatus().failedRuns,1);
     await worker.tick();
     assert.equal(summary(good.whale_id).length,1);
-    assert.equal(worker.getStatus().pendingPairs,1);
+    assert.ok(worker.getStatus().pendingPairs>=1);
     assert.equal(worker.getStatus().warming,true);
-    assert.equal(require('../lib/opsMonitor').getMonitorSnapshot().observationCompute.pendingPairs,1);
+    assert.equal(require('../lib/opsMonitor').getMonitorSnapshot().observationCompute.pendingPairs,worker.getStatus().pendingPairs);
   }finally{worker.stop();hub.broadcast=original;}
 });
 

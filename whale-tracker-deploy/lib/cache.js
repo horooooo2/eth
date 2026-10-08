@@ -150,8 +150,21 @@ function stateFor(mode = 'hf') {
 
 function readStateSnapshot(mode = 'hf', { includeTrades = true } = {}) {
   const state = stateFor(mode);
-  return { data: copy(includeTrades ? state.data : { ...state.data, trades: [] }), updatedAt: state.updatedAt, revision: state.revision,
+  return { data: copy(includeTrades ? retainedSnapshotData(state.data) : { ...state.data, trades: [] }), updatedAt: state.updatedAt, revision: state.revision,
     epoch: state.epoch, stale: Date.now() - state.updatedAt > TTL_MS };
+}
+
+function retainedSnapshotData(data) {
+  const cutoff = Date.now() - RAW_CACHE_RETENTION_MS;
+  return { ...data, trades: data.trades.filter(trade => Number(trade.time) >= cutoff) };
+}
+
+function commitSnapshot(state) {
+  const data = state.data;
+  let snapshot;
+  return { updatedAt: state.updatedAt, revision: state.revision, epoch: state.epoch,
+    stale: Date.now() - state.updatedAt > TTL_MS,
+    get data() { return snapshot ||= copy(retainedSnapshotData(data)); } };
 }
 
 function readWhaleModeCache(mode) {
@@ -209,7 +222,7 @@ function commitWhaleState(mode = 'hf', patch = {}) {
   }
   const incomingTrades = (patch.trades || []).filter((trade) => trade?.id && isRawTrade(trade))
     .map((trade) => ({ ...trade, id: canonicalTradeId(trade) }));
-  const tradeMap = new Map((state.data.trades || []).map((trade) => [String(trade.id), trade]));
+  const tradeMap = incomingTrades.length ? new Map((state.data.trades || []).map((trade) => [String(trade.id), trade])) : null;
   const changedTrades = [];
   for (const trade of incomingTrades) {
     if (JSON.stringify(tradeMap.get(String(trade.id))) !== JSON.stringify(trade)) changedTrades.push(trade);
@@ -220,13 +233,13 @@ function commitWhaleState(mode = 'hf', patch = {}) {
     JSON.stringify(state.data[key]) !== JSON.stringify(value));
   if (!changedWhales.length && !changedTrades.length && !metadataChanged && !removedWhaleIds.length && !(patch.snapshotAlerts || []).length) {
     for (const id of observedWhaleIds) state.whaleRevisions.set(id, ++observationClock);
-    return { ...readStateSnapshot(mode), changedWhaleIds: [], changedWhales: [], removedWhaleIds: [], rejectedWhaleIds,
-      committedAlerts: [], removedAlertIds: [] };
+    return Object.assign(commitSnapshot(state), { changedWhaleIds: [], changedWhales: [], removedWhaleIds: [], rejectedWhaleIds,
+      committedAlerts: [], removedAlertIds: [] });
   }
   const updatedAt = Date.now();
   const revision = state.revision + 1;
   const data = { ...state.data, ...copy(metadata), mode,
-    whales: [...byId.values()], trades: rawTradeView([...tradeMap.values()]) };
+    whales: [...byId.values()], trades: changedTrades.length ? rawTradeView([...tradeMap.values()]) : state.data.trades };
   const store = require('./sqliteStore');
   const result = store.persistStatePatch({ whales: changedWhales, trades: changedTrades,
     metadata, revision, epoch: state.epoch, removedWhaleIds, snapshotAlerts: (patch.snapshotAlerts || []).filter((alert) =>
@@ -240,11 +253,11 @@ function commitWhaleState(mode = 'hf', patch = {}) {
     state.whaleRevisions.set(id, ++observationClock);
   }
   scheduleMirror(mode, data);
-  const committed = { ...readStateSnapshot(mode), changedWhaleIds: changedWhales.map((whale) => whale.id),
+  const committed = Object.assign(commitSnapshot(state), { changedWhaleIds: changedWhales.map((whale) => whale.id),
     changedWhales: copy(changedWhales), removedWhaleIds, rejectedWhaleIds, committedAlerts: result?.committedAlerts || [],
-    removedAlertIds: result?.removedAlertIds || [] };
+    removedAlertIds: result?.removedAlertIds || [] });
   for (const listener of commitListeners) {
-    try { listener({ ...copy({ ...committed, data: undefined }), data: { mode } }); } catch (error) { console.warn('[state] subscriber:', error.message); }
+    try { const delta = Object.fromEntries(Object.keys(committed).filter(key => key !== 'data').map(key => [key, committed[key]])); listener({ ...copy(delta), data: { mode } }); } catch (error) { console.warn('[state] subscriber:', error.message); }
   }
   return committed;
 }
@@ -288,6 +301,7 @@ function clearWhaleModeCache(mode) {
 
 module.exports = {
   readSummaryVersion: () => { const s = stateFor('hf'); return { version: s.summaryVersion, updatedAt: s.updatedAt }; },
+  readPositionObservationTimes: (mode = 'hf') => new Map(stateFor(mode).data.whales.map(row => [row.id, Number(row.positionObservedAt) || 0])),
   readStateSnapshot,
   captureWhaleRevisions,
   commitWhaleState,

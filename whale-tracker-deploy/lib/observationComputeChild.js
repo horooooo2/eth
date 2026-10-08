@@ -5,8 +5,10 @@ const { createHash } = require('node:crypto');
 const { buildObservations, buildCollective } = require('./whaleObservationEngine');
 const { eventsFromTrade } = require('./sqliteStore');
 const { readTriggerEvidence, EVIDENCE_BLOCK_SIZE } = require('./observationEvidence');
+process.once('disconnect',()=>process.exit(0));
 
-process.once('message', request => {
+process.on('message', request => {
+  const reply=value=>{global.gc?.();process.send({...value,requestId:request.requestId,rss:process.memoryUsage().rss});};
   let source, output;
   try {
     source = new Database(request.database, { readonly: true, fileMustExist: true });
@@ -22,7 +24,7 @@ process.once('message', request => {
         output.prepare('INSERT INTO metadata VALUES(?)').run(JSON.stringify({kind:'prune',version:gcVersion}));
       })();
       source.close();source=null;output.close();output=null;
-      process.send({ok:true},()=>process.exit(0));return;
+      reply({ok:true});return;
     }
     let version, inputs, invalidation, throughAt=null;
     // Materialize compact inputs in a short read snapshot, then release the WAL
@@ -47,6 +49,7 @@ process.once('message', request => {
           JOIN observation_evidence e ON e.event_id=w.id WHERE w.last_at>=?
           AND json_extract(w.payload_json,'$.type') IN ('build','reverse')`).iterate(request.now-25*3600000)) {
           const event=JSON.parse(row.payload_json),evidence=[];
+          if(request.job?.coins&&!request.job.coins.includes(event.coin))continue;
           // Follow-up rows are time ordered and never enter collective amounts.
           // Close the iterator at the trigger instead of decoding the next 24h.
           for(const item of readTriggerEvidence(source,row.id,event.lastAt))evidence.push(item);
@@ -55,7 +58,9 @@ process.once('message', request => {
       }
     })();
     source.close(); source = null;
-    const events = request.kind === 'pair' ? buildObservations(inputs,eventsFromTrade) : buildCollective(inputs);
+    const events = request.kind === 'pair'
+      ? buildObservations(inputs,eventsFromTrade,undefined,{since:request.now-25*3600000})
+      : buildCollective(inputs);
     inputs = null;
     output = new Database(request.output);
     output.exec(`CREATE TABLE events(id TEXT PRIMARY KEY,payload_json TEXT);
@@ -101,9 +106,9 @@ process.once('message', request => {
       output.prepare('INSERT INTO metadata VALUES(?)').run(JSON.stringify({version,invalidation,throughAt,kind:request.kind,job:request.job,now:request.now}));
     })();
     output.close(); output=null;
-    process.send({ok:true}, () => process.exit(0));
+    reply({ok:true});
   } catch (error) {
     try { source?.close(); output?.close(); } catch {}
-    process.send({ok:false,error:error.message}, () => process.exit(1));
+    reply({ok:false,error:error.message});
   }
 });

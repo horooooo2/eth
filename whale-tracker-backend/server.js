@@ -147,7 +147,8 @@ attachRealtimeHub(server);
 
 server.listen(PORT, '0.0.0.0', () => {
   require('./lib/whaleRetention').startRetention();
-  require('./lib/whaleObservationWorker').start();
+  if(require('./lib/featureFlags').observationsEnabled())require('./lib/whaleObservationWorker').start();
+  else {require('./lib/db').setMeta('observation_paused','1');console.log('[whale-observations] disabled');}
   require('./lib/statisticsWorker').start();
   startTradfiRangeStrategy();
   const hl = getHlInfoConfig();

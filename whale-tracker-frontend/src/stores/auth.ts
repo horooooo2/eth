@@ -124,16 +124,27 @@ export function scheduleSettingsSync(delayMs = 600) {
 }
 
 export async function flushSettingsSync() {
-  if (!isLoggedIn.value || syncing.value) return;
+  if (!isLoggedIn.value) return;
+  if (syncing.value) { scheduleSettingsSync(); return; }
   syncing.value = true;
+  const syncingUserId=user.value?.id;
+  const payload = collectLocalSettings();
+  let failed=false;
   try {
-    const payload = collectLocalSettings();
     const data = await saveAuthSettings(payload);
-    settings.value = { ...settings.value, ...(data.settings || payload) };
+    if(user.value?.id===syncingUserId) {
+      const latest=collectLocalSettings();
+      settings.value = { ...settings.value, ...(data.settings || payload),
+        ...(JSON.stringify(latest)!==JSON.stringify(payload)?latest:{}) };
+    }
   } catch (err) {
+    failed=true;
     console.warn('[auth] 同步设置失败', err);
   } finally {
     syncing.value = false;
+    if(user.value?.id===syncingUserId && (failed || JSON.stringify(collectLocalSettings())!==JSON.stringify(payload))) {
+      scheduleSettingsSync(failed?5000:600);
+    }
   }
 }
 

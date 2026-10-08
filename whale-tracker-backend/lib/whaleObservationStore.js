@@ -99,7 +99,7 @@ function latestPosition(whale,coin,side,eventAt,now) {
   if(!active.length)return {status:'flat',asOf:at,size:0};
   const p=active[0];return {status:p.side===side?'same':'opposite',asOf:at,side:p.side,size:Math.abs(Number(p.size))};
 }
-function list(db, now = Date.now()) {
+function list(db, now = Date.now(), watched = null) {
   const roster=new Map(require('./config').getActiveWhales().map(w=>[String(w.id),w.address]));
   const whales=new Map();
   const calculations=new Map();
@@ -122,7 +122,12 @@ function list(db, now = Date.now()) {
     }
     return latestPosition(whales.get(id),coin,side,lastAt,now);
   };
-  return db.prepare('SELECT payload_json FROM whale_observations WHERE last_at>=? ORDER BY last_at DESC,id LIMIT 100').all(now-DAY).map(r=>{
+  const selected=watched ? require('./observationScope').retainedCoins(db,watched) : null;
+  // Filter before LIMIT: unrelated high-volume assets must not hide watched ones.
+  const records=selected
+    ? db.prepare('SELECT payload_json FROM whale_observations WHERE last_at>=? AND coin IN (SELECT value FROM json_each(?)) ORDER BY last_at DESC,id LIMIT 50').all(now-DAY,JSON.stringify(selected))
+    : db.prepare('SELECT payload_json FROM whale_observations WHERE last_at>=? ORDER BY last_at DESC,id LIMIT 50').all(now-DAY);
+  return records.map(r=>{
     const { evidenceHash, ...summary } = JSON.parse(r.payload_json);
     const address=roster.get(summary.whaleId) || (/^0x[0-9a-f]{40}$/i.test(summary.address) ? summary.address : '');
     if(summary.type==='collective') {

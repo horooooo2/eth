@@ -142,47 +142,65 @@ async function applyOutput(outputPath, token, isCurrent = () => true) {
   }
 }
 
-function createComputeRunner({ timeoutMs=120000, heapMb=256 } = {}) {
-  let active=null, busy=false, cancellation=0;
+function createComputeRunner({ timeoutMs=120000, heapMb=256, maxJobs=32, idleMs=30000 } = {}) {
+  let active=null, busy=false, cancellation=0, jobs=0, idleTimer;
+  function retire() {
+    clearTimeout(idleTimer);
+    const child=active;active=null;jobs=0;
+    if(!child)return Promise.resolve();
+    return new Promise(resolve=>{child.once('close',resolve);child.kill();});
+  }
   return {
     async run(kind,job,{isCurrent=()=>true,now=Date.now()}={}) {
-      if(busy) throw Error('Observation computation is already running');
-      busy=true;
-      const originalIsCurrent=isCurrent, startedCancellation=cancellation;
-      isCurrent=()=>cancellation===startedCancellation&&originalIsCurrent();
-      let child, directory;
+      if(busy)throw Error('Observation computation is already running');
+      busy=true;clearTimeout(idleTimer);
+      const check=isCurrent, startedCancellation=cancellation;
+      isCurrent=()=>cancellation===startedCancellation&&check();
+      let directory,failed=true,rss=0;
       try {
-        const database=getDb().name;
         directory=await fs.mkdtemp(path.join(os.tmpdir(),'whale-compute-'));
         const output=path.join(directory,'result.db');
-        if(!isCurrent()) throw Error('Observation computation cancelled');
+        if(!isCurrent())throw Error('Observation computation cancelled');
+        if(!active) {
+          active=fork(path.join(__dirname,'observationComputeChild.js'),[],{
+            execArgv:[`--max-old-space-size=${heapMb}`,'--expose-gc'],stdio:['ignore','ignore','ignore','ipc'],windowsHide:true});
+          const child=active;
+          child.on('error',()=>{});
+          child.once('close',()=>{if(active===child){active=null;jobs=0;}});
+        }
+        const child=active;child.ref();child.channel?.ref();
         await new Promise((resolve,reject)=>{
-          child=fork(path.join(__dirname,'observationComputeChild.js'),[],{
-            execArgv:[`--max-old-space-size=${heapMb}`],stdio:['ignore','ignore','ignore','ipc'],windowsHide:true });
-          active=child;
-          let message, timedOut=false;
-          // Wait for exit before removing the output file (Windows may still
-          // have it open between kill() and the child's exit notification).
-          const timer=setTimeout(()=>{timedOut=true;child.kill();},timeoutMs);
-          child.once('error',err=>{clearTimeout(timer);reject(err);});
-          child.on('message',value=>{message=value;});
-          child.once('exit',(code,signal)=>{
-            clearTimeout(timer);
-            if(timedOut)reject(Error('Observation computation timed out'));
-            else if(code===0&&message?.ok)resolve();
-            else reject(Error(message?.error||`Observation process exited (${code ?? signal})`));
-          });
-          child.send({database,output,kind,job,now},err=>{if(err){child.kill();reject(err);}});
+          const requestId=randomUUID();
+          let failure;
+          const timer=setTimeout(()=>{failure=Error('Observation computation timed out');child.kill();},timeoutMs);
+          const clean=()=>{clearTimeout(timer);child.off('message',onMessage);child.off('close',onClose);child.off('error',onError);};
+          const onClose=(code,signal)=>{clean();reject(failure||Error(`Observation process exited (${code??signal})`));};
+          const onError=err=>{failure=err;child.kill();};
+          const onMessage=value=>{
+            if(value?.requestId!==requestId)return;
+            // Child closes every SQLite handle before replying, including on error.
+            clean();rss=value.rss||0;
+            if(value.ok)resolve();else reject(Error(value.error||'Observation computation failed'));
+          };
+          child.on('message',onMessage);child.once('close',onClose);child.once('error',onError);
+          child.send({database:getDb().name,output,kind,job,now,requestId},err=>{if(err)onError(err);});
         });
-        return await applyOutput(output,randomUUID(),isCurrent);
+        jobs++;
+        const result=await applyOutput(output,randomUUID(),isCurrent);
+        failed=false;return result;
       } finally {
-        if(child && child.exitCode===null && child.signalCode===null) child.kill();
-        active=null; busy=false;
-        // mkdtemp created this exact direct child of the system temporary root.
-        if(directory && path.dirname(directory)===path.resolve(os.tmpdir())) await fs.rm(directory,{recursive:true,force:true});
+        if(failed||jobs>=maxJobs||rss>heapMb*1024*1024)await retire();
+        else if(active) {
+          active.unref();active.channel?.unref();
+          idleTimer=setTimeout(()=>{void retire();},idleMs);idleTimer.unref?.();
+        }
+        try {
+          if(directory&&path.dirname(directory)===path.resolve(os.tmpdir()))await fs.rm(directory,{recursive:true,force:true});
+        } finally {busy=false;}
       }
     },
-    stop(){cancellation++;active?.kill();},
+    stop(){cancellation++;void retire();},
+    getStatus(){return {pid:active?.pid||null,completedJobs:jobs,maxJobs,idleMs};},
   };
 }
 module.exports={createComputeRunner,applyOutput};

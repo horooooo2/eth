@@ -53,7 +53,7 @@ function normalize(trade, classify) {
     special: Boolean(trade.liquidation || /liquidat|adl/i.test(String(trade.dir || ''))) };
 }
 
-function buildObservations(trades, classify, policy = POLICY) {
+function buildObservations(trades, classify, policy = POLICY, {since = -Infinity} = {}) {
   const unique = new Map();
   for (const trade of trades) {
     const row = normalize(trade, classify);
@@ -70,6 +70,9 @@ function buildObservations(trades, classify, policy = POLICY) {
   const result = [];
   function emit(type, side, rows, text, metrics) {
     const first = rows[0], last = rows.at(-1);
+    // Keep full historical session boundaries, but don't follow/store events
+    // outside the consumer horizon. Filtering raw fills here would change IDs.
+    if(last.time<since)return;
     const key = [policy.version, first.whaleId, first.coin, type, side, first.id].join('|');
     result.push({ id: createHash('sha256').update(key).digest('hex').slice(0, 32),
       ruleVersion: policy.version, whaleId: first.whaleId, address: first.address, coin: first.coin,

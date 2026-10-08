@@ -3,7 +3,9 @@ const { getCatalog, getRadarCatalog } = require('./tradfiMarkets');
 const { getCalendar } = require('./calendar');
 
 const http = axios.create({ timeout: 14000, proxy: false, headers: { 'User-Agent': 'WhaleTracker/1.0 (personal market dashboard)' } });
-const cache = new Map();
+const { BoundedCache } = require('./boundedCache');
+const cache = new BoundedCache(256, 6 * 3600000);
+const inFlight = new Map();
 const NEWS_TTL = 5 * 60 * 1000;
 const FUND_TTL = 6 * 60 * 60 * 1000;
 const EVENT_TTL = 20 * 60 * 1000;
@@ -14,6 +16,8 @@ const TREASURY_BASE = 'https://home.treasury.gov/resource-center/data-chart-cent
 async function cached(key, ttl, loader) {
   const old = cache.get(key);
   if (old?.expiresAt > Date.now()) return old.value;
+  if (inFlight.has(key)) return inFlight.get(key);
+  const task = (async () => {
   try {
     const value = await loader();
     cache.set(key, { value, expiresAt: Date.now() + ttl });
@@ -22,6 +26,9 @@ async function cached(key, ttl, loader) {
     if (old) return { ...old.value, stale: true, error: err.message };
     throw err;
   }
+  })().finally(() => inFlight.delete(key));
+  inFlight.set(key, task);
+  return task;
 }
 
 function decodeXml(value) {

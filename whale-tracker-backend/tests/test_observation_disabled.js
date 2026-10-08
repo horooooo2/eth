@@ -1,0 +1,22 @@
+const test=require('node:test'),assert=require('node:assert/strict');
+require('./helpers/isolateSqlite');
+delete process.env.WHALE_OBSERVATIONS_ENABLED;
+const {getDb}=require('../lib/db');
+const store=require('../lib/whaleObservationStore');
+const sqlite=require('../lib/sqliteStore');
+const worker=require('../lib/whaleObservationWorker');
+test('disabled by default: preserves prior inputs, skips new observation jobs and leaves normal fills working',async()=>{
+  const db=getDb(),now=Date.now();
+  const trade={id:'saved-observation',whaleId:'test',asset:'BTC',side:'buy',startPosition:0,amount:2,price:100000,time:now-1000,address:'0x'+'a'.repeat(40)};
+  store.recordInput(db,trade,now);
+  const before=db.prepare('SELECT COUNT(*) n FROM observation_inputs').get().n;
+  const result=sqlite.persistTradesIncremental([{...trade,id:'new-fill'}]);
+  assert.equal(result.fills,1);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM observation_inputs').get().n,before);
+  worker.start();await worker.tick();
+  assert.equal(worker.getStatus().enabled,false);assert.equal(worker.getStatus().running,false);
+  assert.equal(worker.snapshot().enabled,false);assert.deepEqual(worker.snapshot().rows,[]);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM observation_inputs').get().n,before);
+  assert.ok(db.prepare('SELECT 1 FROM observation_jobs').get());
+  worker.stop();
+});
