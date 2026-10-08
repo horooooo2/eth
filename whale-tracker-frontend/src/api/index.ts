@@ -927,23 +927,6 @@ export async function updateAuthUserPassword(id: string, password: string) {
   return data;
 }
 
-export async function fetchDataBrowse(limit = 500) {
-  const { data } = await http.get<Record<string, unknown>>('/data/browse', {
-    params: { limit },
-  });
-  return data;
-}
-
-export async function fetchDataMonitor() {
-  const { data } = await http.get<{
-    socket?: Array<Record<string, unknown>>;
-    requests?: Array<Record<string, unknown>>;
-    errors?: Array<Record<string, unknown>>;
-    limits?: Record<string, number>;
-  }>('/data/monitor');
-  return data;
-}
-
 export async function resetSiteData(rounds = 3) {
   const { data } = await http.post<Record<string, unknown>>(
     '/data/reset',
@@ -971,7 +954,7 @@ export async function renameWhale(id: string, name: string) {
   return data;
 }
 
-export async function fetchApiHealth() {
-  const { data } = await http.get<Record<string, unknown>>('/health');
+export async function fetchManagementWhales() {
+  const { data } = await http.get<{ whales: Array<Record<string, unknown>> }>('/data/whales');
   return data;
 }

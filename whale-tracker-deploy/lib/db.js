@@ -697,6 +697,11 @@ function purgeOlderThan(retentionMs = RETENTION_MS) {
   };
 }
 
+// Liveness endpoints must not open SQLite or scan tables.
+function dbRuntimeStatus() {
+  return { connected: Boolean(db?.open), scope: 'connection-only', checked: false };
+}
+
 function dbStatus() {
   try {
     const database = getDb();
@@ -732,6 +737,7 @@ module.exports = {
   getMeta,
   purgeOlderThan,
   dbStatus,
+  dbRuntimeStatus,
   shanghaiYmd,
   ensureDailyIoBucket,
   bumpDailyAdded,

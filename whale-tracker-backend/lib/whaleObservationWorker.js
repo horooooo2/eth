@@ -24,8 +24,11 @@ function refreshScope(db) {
   scopeKey=next;collectiveDirty=true;
   return true;
 }
+let pendingPairs = null, pendingPairsObservedAt = null;
 function pendingCount(db) {
-  return db.prepare('SELECT COUNT(*) AS n FROM observation_jobs WHERE coin IN (SELECT value FROM json_each(?))').get(JSON.stringify(selected)).n;
+  pendingPairs = db.prepare('SELECT COUNT(*) AS n FROM observation_jobs WHERE coin IN (SELECT value FROM json_each(?))').get(JSON.stringify(selected)).n;
+  pendingPairsObservedAt = Date.now();
+  return pendingPairs;
 }
 const epoch=randomUUID();
 let seq=0, timer, cached=[], signature='', error='', warming=true, seedCursor=null, seeded=false, pruneAt=0;
@@ -52,7 +55,7 @@ async function calculate(kind,job,isCurrent) {
 function getStatus() {
   if(!observationsEnabled())return {enabled:false,running:false,warming:false,process:compute.getStatus()};
   return {running,warming,activeJob,lastFinishedAt,lastDurationMs,lastError,collectiveError,staleRuns,failedRuns,
-    pendingPairs:pendingCount(require('./db').getDb()),watchedCoins:watched,
+    pendingPairs,pendingPairsObservedAt,watchedCoins:watched,
     processHeapLimitMb:256,processTimeoutMs:120000,process:compute.getStatus()};
 }
 function snapshot(coins = ['BTC','ETH']) {

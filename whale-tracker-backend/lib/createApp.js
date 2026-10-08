@@ -26,7 +26,7 @@ function mountRoutes(app, prefix) {
   app.get(`${base}/health`, (_req, res) => {
     let sqlite = null;
     try {
-      sqlite = require('./db').dbStatus();
+      sqlite = require('./db').dbRuntimeStatus();
     } catch (err) {
       sqlite = { ok: false, error: err.message };
     }
@@ -48,7 +48,7 @@ function mountRoutes(app, prefix) {
       })(),
       fillBackfill: (() => {
         try {
-          return require('./fillBackfill').getBackfillStatus();
+          return require('./fillBackfill').getRuntimeStatus();
         } catch {
           return { enabled: false };
         }
@@ -71,6 +71,13 @@ function mountRoutes(app, prefix) {
   app.use(`${base}/flow`, require('../routes/flow'));
   // 通用 AI 数据分析（DeepSeek key + analyze），非策略
   app.use(`${base}/whale-ai`, require('../routes/whaleAi'));
+  app.get(`${base}/data/whales`, (_req, res) => {
+    try {
+      res.json(require('./sqliteStore').loadManagementWhales(500));
+    } catch (err) {
+      res.status(500).json({ error: err.message || '读取巨鲸列表失败' });
+    }
+  });
   app.get(`${base}/data/browse`, (req, res) => {
     try {
       const { loadDbBrowse } = require('./sqliteStore');

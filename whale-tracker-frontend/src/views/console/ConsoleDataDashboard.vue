@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
-import { addManualWhale, createAuthUser, deleteAuthUser, fetchApiHealth, fetchDataBrowse, fetchDataMonitor, listAuthUsers, renameWhale, resetSiteData, updateAuthUserPassword } from '@/api';
+import { computed, onMounted, ref } from 'vue';
+import { addManualWhale, createAuthUser, deleteAuthUser, fetchManagementWhales, listAuthUsers, renameWhale, resetSiteData, updateAuthUserPassword } from '@/api';
 
 type AuthUser = { id: string; username: string; createdAt: number };
 type WhaleRow = {
@@ -15,27 +15,14 @@ type WhaleRow = {
   manual?: boolean;
   customName?: boolean;
 };
-type MonitorItem = { at?: number; message?: string; detail?: string; ok?: boolean };
-
 const pageErr = ref('');
 const users = ref<AuthUser[]>([]);
 const whales = ref<WhaleRow[]>([]);
-const browse = ref<Record<string, unknown> | null>(null);
 const whaleDir = ref('all');
 const whaleSort = ref<{ key: string; dir: number }>({ key: 'netUsd', dir: -1 });
 const whaleSearch = ref('');
 const whalePage = ref(1);
 const whalePageSize = 20;
-const monitorTab = ref<'socket' | 'requests' | 'errors'>('socket');
-const monitor = ref<{
-  socket?: MonitorItem[];
-  requests?: MonitorItem[];
-  errors?: MonitorItem[];
-  limits?: Record<string, number>;
-}>({ socket: [], requests: [], errors: [] });
-const startedAtMs = ref(0);
-const nowMs = ref(Date.now());
-
 const newUser = ref('');
 const newPass = ref('');
 const userMsg = ref('');
@@ -46,34 +33,13 @@ const addWhaleOpen = ref(false);
 const manualAddr = ref('');
 const manualName = ref('');
 const resetBusy = ref(false);
-const rtText = ref('实时 —');
-const rtOn = ref(false);
-const pullStatus = ref('待命');
-const pullStatusClass = ref('status-text');
-const pullStatusHtml = ref('');
-
-let uptimeTimer: number | undefined;
-let monitorTimer: number | undefined;
-let browseTimer: number | undefined;
-
+const resetStatus = ref('');
 
 function fmtTime(ts: unknown) {
   const n = Number(ts) || 0;
   if (!n) return '—';
   const d = new Date(n);
   return Number.isNaN(d.getTime()) ? String(ts) : d.toLocaleString('zh-CN', { hour12: false });
-}
-
-function fmtDuration(ms: number) {
-  const sec = Math.floor(Math.max(0, Number(ms) || 0) / 1000);
-  const d = Math.floor(sec / 86400);
-  const h = Math.floor((sec % 86400) / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = sec % 60;
-  if (d) return `${d}天 ${h}时 ${m}分 ${s}秒`;
-  if (h) return `${h}时 ${m}分 ${s}秒`;
-  if (m) return `${m}分 ${s}秒`;
-  return `${s}秒`;
 }
 
 function fmtUsd(n: unknown) {
@@ -90,34 +56,6 @@ function shortAddr(s: unknown) {
   const t = String(s || '');
   return t.length < 12 ? t || '—' : `${t.slice(0, 6)}…${t.slice(-4)}`;
 }
-
-const uptimeLabel = computed(() => {
-  if (startedAtMs.value > 0) return fmtDuration(nowMs.value - startedAtMs.value);
-  const d = browse.value || {};
-  return fmtDuration(Number(d.uptimeMs) || 0);
-});
-
-const bannerStats = computed(() => {
-  const d = browse.value || {};
-  const st = (d.status || {}) as Record<string, number>;
-  const daily = (d.dailyIo || {}) as Record<string, unknown>;
-  return [
-    { l: '巨鲸', n: st.whales ?? 0, title: '' },
-    { l: '成交', n: st.fills ?? 0, title: '' },
-    { l: '事件', n: st.events ?? 0, title: '' },
-    { l: '异动', n: st.alerts ?? 0, title: '' },
-    {
-      l: '今日新增',
-      n: daily.addedRows ?? 0,
-      title: `上海时区 ${daily.ymd || '今日'} 新写入条数（成交/事件/异动），零点清零`,
-    },
-    {
-      l: '今日删除',
-      n: `${Number(daily.deletedRows) || 0}条`,
-      title: `今日清理涉及 ${Number(daily.deletedDays) || 0} 个自然日 · 共删 ${Number(daily.deletedRows) || 0} 条`,
-    },
-  ];
-});
 
 const filteredWhales = computed(() => {
   let list = whales.value.slice();
@@ -154,31 +92,18 @@ const pagedWhales = computed(() => {
   return filteredWhales.value.slice(start, start + whalePageSize);
 });
 
-const monitorList = computed(() => {
-  if (monitorTab.value === 'socket') return monitor.value.socket || [];
-  if (monitorTab.value === 'requests') return monitor.value.requests || [];
-  return monitor.value.errors || [];
-});
-
-const monitorHint = computed(() => {
-  const lim = monitor.value.limits || {};
-  const list = monitorList.value;
-  if (monitorTab.value === 'socket') return `最新 ${lim.socket || 100} 条`;
-  if (monitorTab.value === 'requests') return `请求 ${list.length}`;
-  return `报错 ${list.length}`;
-});
-
 function showErr(msg: string) {
   pageErr.value = msg || '';
 }
 
-async function loadBrowse() {
-  const data = await fetchDataBrowse(500);
-  browse.value = data;
-  whales.value = Array.isArray(data.whales) ? (data.whales as WhaleRow[]) : [];
-  const nextStarted = Number(data.startedAt) || 0;
-  if (nextStarted > 0) startedAtMs.value = nextStarted;
-  if (whalePage.value > whalePageCount.value) whalePage.value = whalePageCount.value;
+let whalesPending: Promise<void> | null = null;
+function loadWhales() {
+  if (whalesPending) return whalesPending;
+  whalesPending = fetchManagementWhales().then(data => {
+    whales.value = data.whales as WhaleRow[];
+    if (whalePage.value > whalePageCount.value) whalePage.value = whalePageCount.value;
+  }).finally(() => { whalesPending = null; });
+  return whalesPending;
 }
 
 async function loadUsers() {
@@ -186,70 +111,10 @@ async function loadUsers() {
   users.value = data.users || [];
 }
 
-async function loadMonitor() {
-  monitor.value = await fetchDataMonitor();
-}
-
-function updateProgressHint(
-  backfill: Record<string, unknown> | undefined,
-  whaleRefresh: Record<string, unknown> | undefined,
-) {
-  pullStatusHtml.value = '';
-  if (whaleRefresh && (whaleRefresh.status === 'resetting' || whaleRefresh.status === 'running')) {
-    pullStatus.value = '正在重置并重新拉取…';
-    pullStatusClass.value = 'status-text';
-    return;
-  }
-  const bf = backfill || {};
-  if (bf.enabled === false) {
-    pullStatus.value = '历史补齐已关闭';
-    pullStatusClass.value = 'status-text';
-    return;
-  }
-  if (bf.done) {
-    pullStatus.value = '历史补齐已完成 · 后续靠实时推送';
-    pullStatusClass.value = 'status-text on';
-    return;
-  }
-  const day = (Number(bf.dayOffset) || 0) + 1;
-  const days = Number(bf.days) || 7;
-  const idx = Number(bf.whaleIndex) || 0;
-  const total = Number(bf.whaleTotal) || 0;
-  const base =
-    total > 0
-      ? `历史补齐进行中：第 ${day}/${days} 天 · 地址 ${Math.min(idx + 1, total)}/${total}`
-      : `历史补齐待命：第 ${day}/${days} 天 · 等待巨鲸名单`;
-  if (bf.rateLimited) {
-    pullStatus.value = '';
-    pullStatusHtml.value = `${base}<span class="rate-limit">（429限流，半小时后重试）</span>`;
-  } else {
-    pullStatus.value = base;
-  }
-  pullStatusClass.value = 'status-text';
-}
-
-async function loadHealthBits() {
-  try {
-    const h = await fetchApiHealth();
-    const rt = (h.realtime || {}) as Record<string, unknown>;
-    rtOn.value = Boolean(rt.connected);
-    rtText.value = rt.connected
-      ? `实时已连接 · 订阅 ${rt.fillSubs || 0}`
-      : '实时未连接';
-    updateProgressHint(
-      h.fillBackfill as Record<string, unknown> | undefined,
-      h.whaleRefresh as Record<string, unknown> | undefined,
-    );
-  } catch {
-    rtText.value = '实时未知';
-    rtOn.value = false;
-  }
-}
-
 async function refreshAll() {
   try {
     showErr('');
-    await Promise.all([loadBrowse(), loadUsers(), loadMonitor(), loadHealthBits()]);
+    await Promise.all([loadWhales(), loadUsers()]);
   } catch (e) {
     showErr(`加载失败：${e instanceof Error ? e.message : String(e)}`);
   }
@@ -316,7 +181,7 @@ async function addWhale() {
     whaleMsgOk.value = true;
     whaleMsg.value = `已添加 ${data.whale?.name || manualAddr.value}`;
     addWhaleOpen.value = false;
-    await loadBrowse();
+    await loadWhales();
   } catch (e) {
     whaleMsgOk.value = false;
     whaleMsg.value = e instanceof Error ? e.message : String(e);
@@ -332,7 +197,7 @@ async function renameWhaleRow(id: string, current: string) {
     const data = await renameWhale(id, name);
     whaleMsgOk.value = true;
     whaleMsg.value = `已改名：${data.whale?.name || name}`;
-    await loadBrowse();
+    await loadWhales();
   } catch (e) {
     whaleMsgOk.value = false;
     whaleMsg.value = e instanceof Error ? e.message : String(e);
@@ -348,44 +213,19 @@ async function resetSite() {
     return;
   }
   resetBusy.value = true;
-  pullStatus.value = '正在重置并重新拉取…';
-  pullStatusHtml.value = '';
+  resetStatus.value = '正在重置并重新拉取…';
   try {
     const data = await resetSiteData(3);
-    const bf = (data.fillBackfill || {}) as Record<string, unknown>;
-    const kept = data.keptManuals ?? 0;
-    pullStatus.value =
-      `重置完成 · 保留手动 ${kept} 个 · ` +
-      (bf.done
-        ? '补齐已完成'
-        : `补齐第 ${(Number(bf.dayOffset) || 0) + 1}/${bf.days || 7} 天 · 地址 ${(Number(bf.whaleIndex) || 0) + 1}/${bf.whaleTotal || 0}`);
-    await loadBrowse();
-    await loadHealthBits();
+    resetStatus.value = `重置完成，保留用户及巨鲸配置（手动 ${data.keptManuals ?? 0} 个）`;
+    await loadWhales();
   } catch (e) {
-    pullStatus.value = `失败：${e instanceof Error ? e.message : String(e)}`;
+    resetStatus.value = `失败：${e instanceof Error ? e.message : String(e)}`;
   } finally {
     resetBusy.value = false;
   }
 }
 
-onMounted(() => {
-  void refreshAll();
-  uptimeTimer = window.setInterval(() => {
-    nowMs.value = Date.now();
-  }, 1000);
-  monitorTimer = window.setInterval(() => {
-    void Promise.all([loadMonitor(), loadHealthBits()]).catch(() => undefined);
-  }, 2500);
-  browseTimer = window.setInterval(() => {
-    void loadBrowse().catch(() => undefined);
-  }, 20000);
-});
-
-onUnmounted(() => {
-  if (uptimeTimer) window.clearInterval(uptimeTimer);
-  if (monitorTimer) window.clearInterval(monitorTimer);
-  if (browseTimer) window.clearInterval(browseTimer);
-});
+onMounted(() => { void refreshAll(); });
 </script>
 
 <template>
@@ -393,32 +233,9 @@ onUnmounted(() => {
     <div class="err-banner" :class="{ show: Boolean(pageErr) }">{{ pageErr }}</div>
     <section class="banner">
       <div>
-        <div class="meta">
-          启动：<b>{{ fmtTime(browse && browse.startedAt) }}</b>
-          · 已运行 <b>{{ uptimeLabel }}</b>
-          <template v-if="browse && browse.whaleRefresh">
-            · 最近任务
-            <b>{{ ((browse.whaleRefresh as Record<string, unknown>).status as string) || '—' }}</b>
-            {{
-              fmtTime(
-                (browse.whaleRefresh as Record<string, unknown>).finishedAt ||
-                  (browse.whaleRefresh as Record<string, unknown>).startedAt,
-              )
-            }}
-          </template>
-        </div>
-        <div style="margin-top: 10px; display: flex; gap: 12px; flex-wrap: wrap; align-items: center">
-          <button class="warn" type="button" :disabled="resetBusy" @click="resetSite">重置</button>
-          <span v-if="pullStatusHtml" :class="pullStatusClass" v-html="pullStatusHtml"></span>
-          <span v-else :class="pullStatusClass">{{ pullStatus }}</span>
-          <span class="status-text" :class="rtOn ? 'on' : 'off'">{{ rtText }}</span>
-        </div>
-      </div>
-      <div class="banner-stats">
-        <div v-for="item in bannerStats" :key="item.l" class="bstat" :title="item.title || undefined">
-          <div class="n">{{ item.n }}</div>
-          <div class="l">{{ item.l }}</div>
-        </div>
+        <button class="ghost" type="button" :disabled="resetBusy" @click="refreshAll">刷新列表</button>
+        <button class="warn" type="button" :disabled="resetBusy" @click="resetSite">重置</button>
+        <span class="status-text" role="status">{{ resetStatus }}</span>
       </div>
     </section>
 
@@ -561,52 +378,6 @@ onUnmounted(() => {
 
 
 
-      <section class="card">
-        <div class="card-head">
-          <h2>数据监控</h2>
-          <span class="pill">{{ monitorHint }}</span>
-        </div>
-        <div class="tabs">
-          <button
-            type="button"
-            class="tab"
-            :class="{ on: monitorTab === 'socket' }"
-            @click="monitorTab = 'socket'"
-          >
-            Socket
-          </button>
-          <button
-            type="button"
-            class="tab"
-            :class="{ on: monitorTab === 'requests' }"
-            @click="monitorTab = 'requests'"
-          >
-            正常请求
-          </button>
-          <button
-            type="button"
-            class="tab"
-            :class="{ on: monitorTab === 'errors' }"
-            @click="monitorTab = 'errors'"
-          >
-            报错记录
-          </button>
-        </div>
-        <div class="card-body">
-          <div class="log-stream">
-            <div v-if="!monitorList.length" class="empty">暂无记录</div>
-            <div
-              v-for="(item, idx) in monitorList"
-              :key="idx"
-              class="log-line"
-              :class="monitorTab === 'errors' || item.ok === false ? 'err' : 'ok'"
-            >
-              <span class="t">{{ fmtTime(item.at) }}</span>
-              {{ item.message || item.detail || JSON.stringify(item) }}
-            </div>
-          </div>
-        </div>
-      </section>
     </div>
   </main>
 

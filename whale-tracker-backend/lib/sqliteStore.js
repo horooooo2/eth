@@ -11,7 +11,6 @@ const {
   FILL_RETENTION_MS,
   CLOSED_POSITION_RETENTION_MS,
   FILL_MAX_PER_WHALE,
-  dbStatus,
   bumpDailyAdded,
   readDailyIoStats,
 } = require('./db');
@@ -662,13 +661,9 @@ function countFillsByWhale(whaleId) {
   return Number(row?.c) || 0;
 }
 
-function loadDbBrowse(options = {}) {
-  const limit = Math.max(1, Math.min(1000, Number(options.limit) || 50));
+function loadManagementWhales(limit = 50) {
   const database = getDb();
-  const fillCutoff = Date.now() - FILL_RETENTION_MS;
-  const alertCutoff = Date.now() - Math.max(CLOSED_POSITION_RETENTION_MS, 7 * 24 * 60 * 60 * 1000);
-  const status = dbStatus();
-
+  limit = Math.max(1, Math.min(500, Number(limit) || 50));
   const whales = database
     .prepare(
       `SELECT id, name, address, direction, long_usd, short_usd, net_usd, priority, closed_trades, updated_at, payload_json
@@ -692,6 +687,19 @@ function loadDbBrowse(options = {}) {
         customName: Boolean(payload.customName),
       };
     });
+
+  return { whales };
+}
+
+function loadDbBrowse(options = {}) {
+  const limit = Math.max(1, Math.min(1000, Number(options.limit) || 50));
+  const database = getDb();
+  const fillCutoff = Date.now() - FILL_RETENTION_MS;
+  const alertCutoff = Date.now() - Math.max(CLOSED_POSITION_RETENTION_MS, 7 * 24 * 60 * 60 * 1000);
+  // Do not scan historical tables to render the management page.
+  const status = { ok: true, countsAvailable: false, whales: null, fills: null, events: null, alerts: null };
+
+  const { whales } = loadManagementWhales(limit);
 
   const fills = database
     .prepare(
@@ -749,12 +757,7 @@ function loadDbBrowse(options = {}) {
       };
     });
 
-  const fillBySource = database
-    .prepare(
-      `SELECT COALESCE(source, 'unknown') AS source, COUNT(*) AS c
-       FROM fills WHERE time >= ? GROUP BY source`,
-    )
-    .all(fillCutoff);
+  const fillBySource = null; // Full-history source aggregation is retired.
 
   let backfill = null;
   try {
@@ -1207,6 +1210,7 @@ module.exports = {
   loadAlertFlowSummary,
   loadPagedAlerts,
   loadDbBrowse,
+  loadManagementWhales,
   loadFillsByWhale,
   loadRecentFills,
   countFillsByWhale,

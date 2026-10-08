@@ -14,13 +14,16 @@ const LATEST_WINDOW_MS = 15 * 60000;
 let timer, historyTimer;
 let historyRunning = false, cursor = 0, historyCursor = 0, rateLimitedUntil = 0, lastError = '', resetGeneration = 0;
 const active = new Set(), attempted = new Map();
+let lastWhaleTotal = null, rosterObservedAt = null;
 function loadWatermarks() {
   try { return JSON.parse(getMeta(META_KEY)?.value || '{}') || {}; } catch { return {}; }
 }
 function listWhales() {
-  return [...new Map(getActiveWhales().filter(w => normalizeAddress(w.address)).map(w => {
+  const whales = [...new Map(getActiveWhales().filter(w => normalizeAddress(w.address)).map(w => {
     const address = normalizeAddress(w.address); return [address, { ...w, address }];
   })).values()];
+  lastWhaleTotal = whales.length; rosterObservedAt = Date.now();
+  return whales;
 }
 function saveAddress(address, update, generation) {
   if (generation !== resetGeneration) return;
@@ -117,6 +120,14 @@ function getCoverageStatus(now = Date.now()) {
     complete: whales.length > 0 && continuous === whales.length, scope: 'locally-observed',
     historicalCompleteness: 'unknown-upstream-retention' };
 }
+// Health checks read only worker state; detailed coverage remains on-demand.
+function getRuntimeStatus() {
+  return { enabled: ENABLED, feature: 'continuous-fill-capture', intervalMs: INTERVAL_MS,
+    days: DAYS, lookbackMs: FILL_LOOKBACK_MS, running: active.size > 0,
+    activeLatestWorkers: active.size, historyRunning, whaleIndex: cursor,
+    whaleTotal: lastWhaleTotal, rosterObservedAt, done: false, continuous: true,
+    lastError, rateLimited: rateLimitedUntil > Date.now(), rateLimitedUntil };
+}
 function getBackfillStatus() {
   const watermarks = loadWatermarks(), whales = listWhales();
   return { enabled: ENABLED, feature: 'continuous-fill-capture', intervalMs: INTERVAL_MS, days: DAYS, lookbackMs: FILL_LOOKBACK_MS,
@@ -131,4 +142,4 @@ function startFillBackfill() {
   historyTimer = setInterval(() => void runHistoryTick(), 15000); historyTimer.unref?.();
 }
 function stopFillBackfill() { resetGeneration++; clearInterval(timer); clearInterval(historyTimer); timer = historyTimer = null; }
-module.exports = { startFillBackfill, stopFillBackfill, resetFillBackfill, getBackfillStatus, getCoverageStatus, runOneTick, runHistoryTick };
+module.exports = { startFillBackfill, stopFillBackfill, resetFillBackfill, getBackfillStatus, getRuntimeStatus, getCoverageStatus, runOneTick, runHistoryTick };
