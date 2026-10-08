@@ -158,4 +158,10 @@ function createService({catalog=()=>require('./tradfiMarkets').getLongTrendContr
   return {snapshot,refresh};
 }
 const service=createService({fetchPrices:()=>require('./tradfiMarkets').getLongTrendPrices()});
-module.exports={...service,createService,analyze,normalizeHistory,WINDOWS};
+function requireRadarEnabled() {
+  if (!require('./featureFlags').radarEnabled()) throw Object.assign(new Error('雷达已暂停'), {status:503,code:'RADAR_DISABLED'});
+}
+module.exports={...service,
+  snapshot(options){requireRadarEnabled();return service.snapshot(options);},
+  refresh(){if(!require('./featureFlags').radarEnabled())return Promise.resolve();return service.refresh();},
+  createService,analyze,normalizeHistory,WINDOWS};

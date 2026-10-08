@@ -1,3 +1,4 @@
 // Opt in explicitly; restart the backend after changing the environment.
 const observationsEnabled=()=>process.env.WHALE_OBSERVATIONS_ENABLED==='1';
-module.exports={observationsEnabled};
+const radarEnabled=()=>process.env.RADAR_ENABLED==='1';
+module.exports={observationsEnabled,radarEnabled};

@@ -11,6 +11,13 @@ const analysisStore = require('../lib/tradfiAnalysisStore');
 const { getRadarNews } = require('../lib/tradfiIntel');
 
 const router = express.Router();
+// Temporary diagnostic pause: old browser clients must not start upstream work.
+router.use('/radar', (_req, res, next) => {
+  if (require('../lib/featureFlags').radarEnabled()) return next();
+  res.set('Cache-Control', 'no-store').status(503).json({
+    code: 'RADAR_DISABLED', error: '雷达已暂停，暂不请求行情数据',
+  });
+});
 router.get('/radar/long-trends',(req,res)=>{
   const days=Number(req.query.days||90),direction=String(req.query.direction||'ALL'),assetType=String(req.query.assetType||'ALL');
   if(![30,60,90].includes(days)||!['TREND','ALL','UP','DOWN','TURN_UP','TURN_DOWN','NEUTRAL'].includes(direction)||!['ALL','CRYPTO','TRADFI'].includes(assetType))return res.status(400).json({error:'无效的趋势筛选参数'});

@@ -15,7 +15,7 @@ import type { ObservationSnapshot } from '@/types/whaleObservation';
 import TradFiBoard from '@/components/TradFiBoard.vue';
 import WhaleDetailDialog from '@/components/WhaleDetailDialog.vue';
 import { createPageLoadScheduler } from '@/utils/pageLoadScheduler';
-import { STRATEGY_WORKSPACE_ENABLED, WHALE_OBSERVATIONS_ENABLED } from '@/utils/featureFlags';
+import { STRATEGY_WORKSPACE_ENABLED, WHALE_OBSERVATIONS_ENABLED, RADAR_ENABLED } from '@/utils/featureFlags';
 import { useWhaleStore } from '@/stores/whale';
 import {
   authLoading,
@@ -502,7 +502,10 @@ onUnmounted(() => {
       </div>
       </div>
       <StrategyWorkspace v-if="STRATEGY_WORKSPACE_ENABLED && strategyVisited" v-show="sideTab === 'strategy'" :active="sideTab === 'strategy'" class="tradfi-host" />
-      <TradFiBoard :active="sideTab === 'tradfi'" ref="radarRef" v-show="sideTab === 'tradfi'" class="tradfi-host" />
+      <TradFiBoard v-if="RADAR_ENABLED" :active="sideTab === 'tradfi'" ref="radarRef" v-show="sideTab === 'tradfi'" class="tradfi-host" />
+      <div v-else v-show="sideTab === 'tradfi'" class="tradfi-host" role="status" style="padding: 24px">
+        雷达已暂停，暂不请求行情数据。
+      </div>
     </div>
     <WhaleDetailDialog v-model="whaleDetailOpen" :whale="whaleDetailProfile" :snapshot-updated-at="whaleStore.updatedAt" />
     </template>

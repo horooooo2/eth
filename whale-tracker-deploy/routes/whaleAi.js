@@ -815,6 +815,9 @@ router.post('/market-chat', async (req, res) => {
 
 /** POST /api/whale-ai/market-chat-stream — SSE 追问 */
 router.post('/market-chat-stream', async (req, res) => {
+  if (!require('../lib/featureFlags').radarEnabled()) {
+    return res.set('Cache-Control', 'no-store').status(503).json({ code: 'RADAR_DISABLED', error: '雷达已暂停，暂不请求分析数据' });
+  }
   if (!assertLogin(req, res)) return;
 
   const cred = getRawAiKey(req.user.user.id, DEFAULT_PROVIDER);
