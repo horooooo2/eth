@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch as watchVue } from 'vue';
 import { radarClient, sortRadarRows } from '@/utils/radarRealtime';
+import { scrollRadarToTop } from '@/utils/radarScroll';
 import { contractLogo } from '@/utils/contractLogo';
 import CandlestickChart from './CandlestickChart.vue';
 import ContractDetailLink from './ContractDetailLink.vue';
@@ -448,6 +449,10 @@ function syncSnapshot(){
 }
 watchVue(radarClient.state,syncSnapshot);
 watchVue(radarClient.error,value=>{marketError.value=value||radarClient.state.value?.error||'';});
+function selectListSymbol(symbol:string,event:MouseEvent) {
+  selectSymbol(symbol);
+  scrollRadarToTop(event.currentTarget as Element);
+}
 function selectSymbol(symbol: string) {
   selected.value = symbol;
 }
@@ -540,7 +545,7 @@ onUnmounted(()=>{
           <table>
             <thead><tr><th>合约</th><th>类别</th><th :aria-sort="marketSort==='price'?(marketOrder==='asc'?'ascending':'descending'):'none'"><button class="sort-heading" @click="sortMarket('price')">最新价格 {{marketSort==='price'?(marketOrder==='asc'?'↑':'↓'):'↕'}}</button></th><th :aria-sort="marketSort==='change'?(marketOrder==='asc'?'ascending':'descending'):'none'"><button class="sort-heading" @click="sortMarket('change')">{{ intervals.find((item) => item.id === activeInterval)?.label }}涨跌 {{marketSort==='change'?(marketOrder==='asc'?'↑':'↓'):'↕'}}</button></th><th>状态</th><th class="operation-cell">操作</th></tr></thead>
             <tbody>
-              <tr v-for="row in pagedMarketRows" :key="row.symbol" :class="{ chosen: selected === row.symbol }" @click="selectSymbol(row.symbol)">
+              <tr v-for="row in pagedMarketRows" :key="row.symbol" :class="{ chosen: selected === row.symbol }" @click="selectListSymbol(row.symbol,$event)">
                 <td><div class="contract-cell"><span class="asset-logo"><img v-if="logoUrl(row.symbol) && !logoFailed(row.symbol)" :src="logoUrl(row.symbol)" :alt="`${assetLabel(row.symbol)} logo`" @error="markLogoFailed(row.symbol)"><span v-else>{{ assetLabel(row.symbol).slice(0, 2) }}</span></span><span><b>{{ assetLabel(row.symbol) }}</b><small>{{ row.symbol }}</small><small v-if="row.market.radarTier === 'VOLATILE'" class="tier-label">高波动观察</small></span></div></td>
                 <td><span class="type-label" :class="assetType(row.symbol) === 'TRADFI' ? 'type-tradfi' : 'type-crypto'">{{ assetType(row.symbol) === 'TRADFI' ? '传统金融' : '虚拟币' }}</span></td>
                 <td class="price-cell">{{ formatPrice(row.quote?.lastPrice) }}</td>

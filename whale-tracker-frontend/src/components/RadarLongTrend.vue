@@ -4,6 +4,7 @@ import CandlestickChart from './CandlestickChart.vue';
 import ContractLogo from './ContractLogo.vue';
 import ContractDetailLink from './ContractDetailLink.vue';
 import { ElMessage } from 'element-plus';
+import { scrollRadarToTop } from '@/utils/radarScroll';
 import { candlePriceRange } from '@/utils/candleSeries';
 import { radarClient, sortRadarRows, type TrendRow } from '@/utils/radarRealtime';
 type Snapshot={watched:TrendRow[];focused:TrendRow|null;catalog:{symbol:string;name:string}[];rows:TrendRow[];count:number;page:number;pages:number;days:number;running:boolean;done:number;total:number;coverage:{total:number;loaded:number;fresh:number;insufficient:number};error:string;source:string};
@@ -32,6 +33,7 @@ const loading=radarClient.loading,error=radarClient.error;
 const selectedSymbol=ref('');
 const allRows=computed<TrendRow[]>(()=> (radarClient.state.value?.long.rows||[]).map(record=>({
   ...record,...(record.frames[String(days.value)]||{direction:'INSUFFICIENT',days:0,reason:record.error}),
+  periodChanges:Object.fromEntries(([30,60,90] as const).map(period=>{const frame=record.frames[String(period)];return [period,frame?.days===period?frame.change:undefined];})),
   priceStale:record.priceStale||!radarClient.connected.value,
   points:(record.points||[]).slice(-(days.value+1)),
 } as TrendRow)));
@@ -62,6 +64,7 @@ const selectedPrices=computed(()=>selected.value?.points||[]);
 const price=(value?:number)=>value==null?'—':value.toLocaleString('en-US',{maximumFractionDigits:value>=1?3:8});
 const color=(value?:number)=>value==null?'neutral':value>0?'positive':value<0?'negative':'neutral';
 function selectRow(row:TrendRow){selectedSymbol.value=row.symbol;const index=watchRows.value.findIndex(item=>item.symbol===row.symbol);if(index>=0)cardPage.value=Math.floor(index/6)+1;}
+function selectListRow(row:TrendRow,event:MouseEvent){selectRow(row);scrollRadarToTop(event.currentTarget as Element);}
 const dailyChart=computed(()=>selected.value?radarClient.charts.value[`${selected.value.symbol}:1d`]:undefined);
 const dailyBars=computed(()=>{
   const end=selected.value?.asOf;
@@ -114,7 +117,7 @@ const emptyMessage=computed(()=>loading.value?'正在读取长期趋势…':data
           <div><span>实际 / 目标天数</span><b>{{selected?.days??0}} / {{displayedDays}} 天</b></div>
           <div><span>区间最高价</span><b>{{price(selectedRange?.high)}}</b></div><div><span>区间最低价</span><b>{{price(selectedRange?.low)}}</b></div><div><span>趋势分</span><b :class="color(selected?.change)">{{selected?.score??'—'}}</b></div>
         </div>
-        <div class="detail-prices recent-performance"><span>近 {{selected?.recentDays??20}} 天<b :class="color(selected?.recentChange)">{{pct(selected?.recentChange)}}</b></span><span>近 {{selected?.monthDays??30}} 天<b :class="color(selected?.monthChange)">{{pct(selected?.monthChange)}}</b></span></div>
+        <div class="detail-prices recent-performance"><span v-for="period in [30,60,90] as const" :key="period" :title="selected?.periodChanges?.[period]==null?'完整周期日线不足或存在缺口':''">近 {{period}} 天<b :class="color(selected?.periodChanges?.[period])">{{pct(selected?.periodChanges?.[period])}}</b></span></div>
         <p v-if="selected?.adjustmentNote" class="adjustment-note">{{selected.adjustmentNote}}</p>
       </header>
       <div class="chart-heading"><div><b>K 线走势</b><span>日线 · 已收盘 · UTC</span></div><div class="periods chart-periods" aria-label="走势图周期"><button v-for="period in [30,60,90]" :key="period" :class="{active:days===period}" @click="days=period">{{period}} 天</button></div></div>
@@ -130,7 +133,7 @@ const emptyMessage=computed(()=>loading.value?'正在读取长期趋势…':data
   <section class="market-panel result-panel">
     <header class="market-title"><div><h2>全部传统金融合约</h2><p>最近 {{displayedDays}} 天 · {{data?.count||0}} 个标的 · 点击合约联动走势图</p></div><span class="source">Binance USDⓈ-M Futures · 已收盘日线</span></header>
     <div class="table-wrap"><table><thead><tr><th>合约</th><th>类别</th><th>合约现价</th><th>合约日收盘价</th><th :aria-sort="sort==='change'?(order==='asc'?'ascending':'descending'):'none'"><button class="sort-heading" @click="sortBy('change')">区间涨跌 {{sort==='change'?(order==='asc'?'↑':'↓'):'↕'}}</button></th><th>实际 / 目标天数</th><th :aria-sort="sort==='monthChange'?(order==='asc'?'ascending':'descending'):'none'"><button class="sort-heading" @click="sortBy('monthChange')">近 30 天 {{sort==='monthChange'?(order==='asc'?'↑':'↓'):'↕'}}</button></th><th>趋势分</th><th>趋势状态</th><th>统计截至（UTC）</th><th class="operation-cell">操作</th></tr></thead><tbody>
-      <tr v-for="row in rows" :key="row.symbol" :class="{chosen:selected?.symbol===row.symbol}" @click="selectRow(row)">
+      <tr v-for="row in rows" :key="row.symbol" :class="{chosen:selected?.symbol===row.symbol}" @click="selectListRow(row,$event)">
         <td><div class="contract-cell"><ContractLogo :symbol="row.symbol" /><span><button class="contract-link" :aria-label="`查看 ${row.symbol} 图表`" @click.stop="selectRow(row)">{{row.symbol.replace(/USDT$/,'')}}</button><small>{{row.name}}</small></span></div></td>
         <td><span class="type-label" :class="row.assetType==='TRADFI'?'type-tradfi':'type-crypto'">{{groupLabel(row)}}</span><small v-if="marketLabel(row)">{{marketLabel(row)}}</small></td><td class="price-cell">{{price(row.currentPrice)}}<small v-if="row.priceStale" class="error">{{row.currentPrice==null?'待更新':'缓存现价'}}</small></td><td class="price-cell">{{price(row.points?.at(-1)?.[1])}}</td><td :class="color(row.change)">{{pct(row.change)}}</td><td>{{row.days}} / {{displayedDays}} 天<small v-if="row.partial">历史较短</small></td><td :class="color(row.monthChange)">{{pct(row.monthChange)}}<small v-if="row.monthDays && row.monthDays<30">实际 {{row.monthDays}} 天</small></td><td>{{row.score??'—'}}</td><td><span class="trend-tag" :class="row.direction==='UP'||row.direction==='TURN_UP'?'positive':row.direction==='DOWN'||row.direction==='TURN_DOWN'?'negative':''">{{label(row)}}</span><small v-if="row.stale" class="error">{{row.error||'尚未更新'}}</small><small v-if="row.reason">{{row.reason}}</small></td><td>{{row.latestBarAt?date(row.latestBarAt):'—'}}</td><td class="operation-cell"><div class="contract-actions"><button class="follow-icon" :class="{active:watchedSymbols.includes(row.symbol)}" :aria-label="`${watchedSymbols.includes(row.symbol)?'取消关注':'关注'} ${row.symbol}`" @click.stop="toggleWatch(row.symbol)">★</button><ContractDetailLink :symbol="row.symbol" :asset-type="row.assetType" :name="row.name" icon-only /></div></td>
       </tr><tr v-if="!rows.length"><td colspan="11" class="empty-row">{{emptyMessage}}</td></tr>
