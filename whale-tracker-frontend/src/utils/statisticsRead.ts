@@ -1,14 +1,13 @@
 // Retry only transient read failures. Invalid queries and calculation errors
 // must remain visible; all callers of the same statistics key share one retry.
+import { formatRelativeAgo } from './format';
 export type StatisticsFreshness = {
   asOf: number | null; inputVersion: number | null; currentInputVersion: number;
   pendingUpdates: boolean; refreshing: boolean; stale: boolean; error: string | null;
 };
-export function statisticsFreshnessText(value?: StatisticsFreshness): string {
+export function statisticsFreshnessText(value?: StatisticsFreshness, now = Date.now()): string {
   if (!value?.asOf) return '';
-  const time = new Date(value.asOf).toLocaleTimeString('zh-CN', { hour12: false });
-  const state = value.error ? '暂未更新' : value.stale ? '结果已过期，更新中' : value.pendingUpdates ? '后续数据更新中' : '';
-  return `统计截至 ${time}${state ? ` · ${state}` : ''}`;
+  return formatRelativeAgo(value.asOf, now);
 }
 
 export function statisticsErrorText(error: unknown): string {
