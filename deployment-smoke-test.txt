@@ -1,0 +1,3 @@
+Deployment trigger test
+Date: 2026-10-08 (Asia/Shanghai)
+Purpose: Verify deployment after updating the GitHub Actions SERVER_HOST secret.
