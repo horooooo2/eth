@@ -134,10 +134,10 @@ export function writeResonanceWindowHours(windowHours: number) {
   localStorage.setItem(STORAGE_KEY, String(normalizeWindowHours(windowHours)));
 }
 
-function mergeOpens(rows: ResonanceOpenRow[], mergeMs: number) {
+function openMerger(mergeMs: number) {
   const merged: ResonanceOpenRow[] = [];
   const latest = new Map<string, ResonanceOpenRow>();
-  for (const row of [...rows].sort((a, b) => a.time - b.time)) {
+  function add(row: ResonanceOpenRow) {
     const key = `${row.whaleId}|${row.coin}|${row.side}`;
     const prev = latest.get(key);
     // Fixed span from the first execution, not an indefinitely sliding chain.
@@ -152,7 +152,13 @@ function mergeOpens(rows: ResonanceOpenRow[], mergeMs: number) {
       merged.push(next); latest.set(key, next);
     }
   }
-  return merged;
+  return { add, merged };
+}
+
+function mergeOpens(rows: ResonanceOpenRow[], mergeMs: number) {
+  const merger = openMerger(mergeMs);
+  for (const row of [...rows].sort((a, b) => a.time - b.time)) merger.add(row);
+  return merger.merged;
 }
 
 function buildClusterBannerText(signal: ResonanceSignal, windowHours: number) {
@@ -328,6 +334,7 @@ function collectOpenRows(input: {
   since: number;
   config: ResonanceConfig;
   watchedCoins?: string[];
+  sortedUniqueAlerts?: boolean;
 }) {
   const whaleMap = new Map(input.whales.map((item) => [item.id, item]));
   const watched = input.watchedCoins?.length ? input.watchedCoins : readWatchedCoins();
@@ -362,7 +369,7 @@ function collectOpenRows(input: {
       if (coinMatchesWatch(row.coin, watched) && row.winRate >= input.config.minWinRate) yield row;
     }
   }
-  return dedupeRows(eligible());
+  return input.sortedUniqueAlerts ? eligible() : dedupeRows(eligible());
 }
 
 function scanClusterSignals(rows: ResonanceOpenRow[], config: ResonanceConfig): ResonanceSignal[] {
@@ -491,6 +498,9 @@ export function scanResonanceSignals(input: {
   config?: ResonanceConfig;
   now?: number;
   watchedCoins?: string[];
+  // Only canonical execution projections may use this fast path. General UI
+  // alerts may be duplicated or unordered and retain the ordinary scanner.
+  sortedUniqueAlerts?: boolean;
 }): ResonanceScanResult {
   const config = input.config || readResonanceConfig();
   const now = input.now ?? Date.now();
@@ -507,14 +517,28 @@ export function scanResonanceSignals(input: {
     since: collectionSince,
     config,
     watchedCoins: watched,
+    sortedUniqueAlerts: input.sortedUniqueAlerts && input.activity.length === 0,
   });
 
-  const clusterRows = mergeOpens(
-    dedupedRows.filter((row) => row.time >= since),
-    mergeMs,
-  ).filter(row => row.action === "open" && row.notionalUsd >= config.minNotionalUsd);
-  const accumulationRows = mergeOpens(dedupedRows.filter(row => row.time >= now - config.accumulationWindowHours * 3_600_000), mergeMs)
-    .filter(row => row.notionalUsd >= config.minNotionalUsd);
+  let clusterMerged: ResonanceOpenRow[], accumulationMerged: ResonanceOpenRow[];
+  const accumulationSince = now - config.accumulationWindowHours * 3_600_000;
+  if (input.sortedUniqueAlerts && input.activity.length === 0) {
+    const cluster = openMerger(mergeMs), accumulation = openMerger(mergeMs);
+    let previousTime = -Infinity;
+    for (const row of dedupedRows) {
+      if (row.time < previousTime) throw new Error('Canonical resonance inputs are not time ordered');
+      previousTime = row.time;
+      if (row.time >= since) cluster.add(row);
+      if (row.time >= accumulationSince) accumulation.add(row);
+    }
+    clusterMerged = cluster.merged; accumulationMerged = accumulation.merged;
+  } else {
+    const rows = [...dedupedRows];
+    clusterMerged = mergeOpens(rows.filter(row => row.time >= since), mergeMs);
+    accumulationMerged = mergeOpens(rows.filter(row => row.time >= accumulationSince), mergeMs);
+  }
+  const clusterRows = clusterMerged.filter(row => row.action === 'open' && row.notionalUsd >= config.minNotionalUsd);
+  const accumulationRows = accumulationMerged.filter(row => row.notionalUsd >= config.minNotionalUsd);
 
   const signals = [
     ...scanAccumulationSignals(accumulationRows, config, now),

@@ -176,10 +176,10 @@ function readResonanceConfig() {
 function writeResonanceWindowHours(windowHours) {
     localStorage.setItem(STORAGE_KEY, String(normalizeWindowHours(windowHours)));
 }
-function mergeOpens(rows, mergeMs) {
+function openMerger(mergeMs) {
     const merged = [];
     const latest = new Map();
-    for (const row of [...rows].sort((a, b) => a.time - b.time)) {
+    function add(row) {
         const key = `${row.whaleId}|${row.coin}|${row.side}`;
         const prev = latest.get(key);
         // Fixed span from the first execution, not an indefinitely sliding chain.
@@ -197,7 +197,13 @@ function mergeOpens(rows, mergeMs) {
             latest.set(key, next);
         }
     }
-    return merged;
+    return { add, merged };
+}
+function mergeOpens(rows, mergeMs) {
+    const merger = openMerger(mergeMs);
+    for (const row of [...rows].sort((a, b) => a.time - b.time))
+        merger.add(row);
+    return merger.merged;
 }
 function buildClusterBannerText(signal, windowHours) {
     const sideText = signal.side === 'long' ? '开多' : '开空';
@@ -391,7 +397,7 @@ function collectOpenRows(input) {
                 yield row;
         }
     }
-    return dedupeRows(eligible());
+    return input.sortedUniqueAlerts ? eligible() : dedupeRows(eligible());
 }
 function scanClusterSignals(rows, config) {
     const groups = new Map();
@@ -521,10 +527,32 @@ function scanResonanceSignals(input) {
         since: collectionSince,
         config,
         watchedCoins: watched,
+        sortedUniqueAlerts: input.sortedUniqueAlerts && input.activity.length === 0,
     });
-    const clusterRows = mergeOpens(dedupedRows.filter((row) => row.time >= since), mergeMs).filter(row => row.action === "open" && row.notionalUsd >= config.minNotionalUsd);
-    const accumulationRows = mergeOpens(dedupedRows.filter(row => row.time >= now - config.accumulationWindowHours * 3600000), mergeMs)
-        .filter(row => row.notionalUsd >= config.minNotionalUsd);
+    let clusterMerged, accumulationMerged;
+    const accumulationSince = now - config.accumulationWindowHours * 3600000;
+    if (input.sortedUniqueAlerts && input.activity.length === 0) {
+        const cluster = openMerger(mergeMs), accumulation = openMerger(mergeMs);
+        let previousTime = -Infinity;
+        for (const row of dedupedRows) {
+            if (row.time < previousTime)
+                throw new Error('Canonical resonance inputs are not time ordered');
+            previousTime = row.time;
+            if (row.time >= since)
+                cluster.add(row);
+            if (row.time >= accumulationSince)
+                accumulation.add(row);
+        }
+        clusterMerged = cluster.merged;
+        accumulationMerged = accumulation.merged;
+    }
+    else {
+        const rows = [...dedupedRows];
+        clusterMerged = mergeOpens(rows.filter(row => row.time >= since), mergeMs);
+        accumulationMerged = mergeOpens(rows.filter(row => row.time >= accumulationSince), mergeMs);
+    }
+    const clusterRows = clusterMerged.filter(row => row.action === 'open' && row.notionalUsd >= config.minNotionalUsd);
+    const accumulationRows = accumulationMerged.filter(row => row.notionalUsd >= config.minNotionalUsd);
     const signals = [
         ...scanAccumulationSignals(accumulationRows, config, now),
         ...scanClusterSignals(clusterRows, config),

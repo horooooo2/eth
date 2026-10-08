@@ -14,6 +14,24 @@ function scan(alerts, roster = whales) {
   return scanResonanceSignals({ whales: roster, activity: [], alerts, now, config: DEFAULT_RESONANCE_CONFIG, watchedCoins: ['BTC'] });
 }
 
+test('canonical ordered streaming matches the ordinary scanner across all windows and merge boundaries', () => {
+  const alerts=[];
+  for(let i=0;i<3000;i++) {
+    const time=now-10*3600000+i*12000;
+    const row=alert('ordered-'+i,whales[i%3].id,time,{coin:i%5?'BTC':'ETH',
+      kind:i%7?'increase':'open',usd:5000+(i%11)*1000,price:50000+i});
+    alerts.push(row);
+  }
+  for(const windowHours of [2,4,6,12,24]) {
+    const input={whales,activity:[],now,watchedCoins:['BTC','ETH'],config:{...DEFAULT_RESONANCE_CONFIG,windowHours}};
+    const expected=scanResonanceSignals({...input,alerts});
+    function* stream(){yield* alerts;}
+    assert.deepEqual(scanResonanceSignals({...input,alerts:stream(),sortedUniqueAlerts:true}),expected);
+  }
+  assert.throws(()=>scanResonanceSignals({whales,activity:[],now,watchedCoins:['BTC'],config:DEFAULT_RESONANCE_CONFIG,
+    alerts:[alert('late','a',now-1000),alert('early','b',now-2000)],sortedUniqueAlerts:true}),/not time ordered/);
+});
+
 test('streamed resonance inputs match arrays and large input sets do not overflow argument stack', () => {
   const small = whales.map(w => alert('stream-' + w.id, w.id));
   function* events() { yield* small; }

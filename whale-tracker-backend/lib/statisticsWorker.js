@@ -1,5 +1,5 @@
 const {randomUUID}=require('node:crypto');
-const {createStatisticsRunner}=require('./statisticsCompute');
+const {createStatisticsRunner,DEFAULT_TIMEOUT_MS}=require('./statisticsCompute');
 const {selectResonanceSignals,DEFAULT_RESONANCE_CONFIG}=require('./resonanceEngine');
 const KEYS=['direction:15m','direction:1h','direction:4h','direction:24h',...['2','4','6','12','24'].map(w=>'resonance:'+w)];
 const yieldTurn=()=>new Promise(resolve=>setImmediate(resolve));
@@ -7,7 +7,7 @@ const yieldTurn=()=>new Promise(resolve=>setImmediate(resolve));
 function createStatisticsWorker({getDb=()=>require('./db').getDb(),getRoster=()=>require('./config').getActiveWhales().map(w=>String(w.id)),
   runner=createStatisticsRunner(),now=Date.now,minIntervalMs=5000,maxAgeMs=10000}={}) {
   let timer,running=false,generation=0,hydrated=false,frames=new Map(),meta=null;
-  let lastAttemptAt=null,lastDurationMs=null,error='',attempts=0;
+  let lastAttemptAt=null,lastDurationMs=null,error='',attempts=0,progress=null;
   function context() {
     const roster=[...new Set(getRoster())].sort();
     return {roster,rosterKey:JSON.stringify([1,DEFAULT_RESONANCE_CONFIG,roster])};
@@ -62,7 +62,9 @@ function createStatisticsWorker({getDb=()=>require('./db').getDb(),getRoster=()=
       if(lastAttemptAt!==null&&now()-lastAttemptAt<minIntervalMs)return;
       if(meta&&meta.version===inputVersion&&meta.rosterKey===ctx.rosterKey&&now()-meta.asOf<maxAgeMs&&!error)return;
       lastAttemptAt=now();attempts++;didRun=true;
-      const result=await runner.run({database:db.name,...ctx,now:now(),retentionMs:require('./db').FILL_RETENTION_MS});
+      progress={phase:'starting',at:now()};
+      const result=await runner.run({database:db.name,...ctx,now:now(),retentionMs:require('./db').FILL_RETENTION_MS},
+        value=>{if(isCurrent())progress={...value,at:now()};});
       if(!isCurrent()||context().rosterKey!==ctx.rosterKey)return;
       const {meta:nextMeta,rows}=result;
       if(nextMeta.rosterKey!==ctx.rosterKey||rows.length!==KEYS.length||!KEYS.every(key=>rows.some(row=>row.key===key)))throw Error('Incomplete statistics batch');
@@ -138,7 +140,7 @@ function createStatisticsWorker({getDb=()=>require('./db').getDb(),getRoster=()=
   }
   function stop(){generation++;clearTimeout(timer);timer=undefined;runner.stop();}
   function invalidate(){const restart=Boolean(timer);stop();frames=new Map();meta=null;hydrated=false;lastAttemptAt=null;error='';if(restart)start();}
-  return {tick,start,stop,invalidate,direction,resonance,getStatus:()=>({running,warming:!meta||meta.rosterKey!==context().rosterKey,lastAttemptAt,lastDurationMs,attempts,...freshness(),processHeapLimitMb:256,processTimeoutMs:60000})};
+  return {tick,start,stop,invalidate,direction,resonance,getStatus:()=>({running,warming:!meta||meta.rosterKey!==context().rosterKey,lastAttemptAt,lastDurationMs,attempts,progress,...freshness(),processHeapLimitMb:256,processTimeoutMs:DEFAULT_TIMEOUT_MS})};
 }
 const worker=createStatisticsWorker();
 module.exports={...worker,createStatisticsWorker};

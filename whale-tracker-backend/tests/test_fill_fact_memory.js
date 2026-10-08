@@ -47,6 +47,22 @@ test('corrections remove ineligible facts and reversal legs retain exact values'
   assert.equal([...p.read(now - day, now, true)].length, 0);
 });
 
+test('fixed batch clock retains both window boundaries and excludes old and future fills', async () => {
+  const db = getDb(); db.exec('DELETE FROM fills');
+  const batchNow = now - 3 * day;
+  for (const [id,time] of [['old',batchNow-day-1],['lower',batchNow-day],['upper',batchNow],['future',batchNow+1]]) {
+    save(trade(id,{time}));
+  }
+  const progress=[];
+  const p=createFillFactProjection({getDb,retentionMs:day,now:()=>batchNow,untilMs:batchNow,
+    classify:eventsFromTrade,canonicalId:canonicalTradeId,onProgress:value=>progress.push(value)});
+  await p.prepare();
+  assert.equal(progress.at(-1).scanned,2);
+  assert.equal(progress.at(-1).ready,true);
+  assert.deepEqual([...p.read(batchNow-day,batchNow,true)].map(row=>row.time),[batchNow-day,batchNow]);
+  assert.equal(aggregateDirectionFacts(p.read(batchNow-day,batchNow,true)).coins[0].addLong,200);
+});
+
 test('large raw payloads are not retained in JS heap and statistics have no display cap', async () => {
   const db = getDb(); db.exec('DELETE FROM fills');
   const count = Number(process.env.FILL_MEMORY_ROWS) || 3000;

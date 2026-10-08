@@ -1,10 +1,11 @@
 const {fork}=require('node:child_process');
 const fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path');
 const Database=require('better-sqlite3');
-function createStatisticsRunner({timeoutMs=60000,heapMb=256}={}) {
+const DEFAULT_TIMEOUT_MS=180000;
+function createStatisticsRunner({timeoutMs=DEFAULT_TIMEOUT_MS,heapMb=256}={}) {
   let active,busy=false,generation=0;
   return {
-    async run(request) {
+    async run(request,onProgress=()=>{}) {
       if(busy)throw Error('Statistics computation already running');
       busy=true;const current=generation;let directory,child;
       try {
@@ -13,9 +14,12 @@ function createStatisticsRunner({timeoutMs=60000,heapMb=256}={}) {
         const output=path.join(directory,'result.db');
         await new Promise((resolve,reject)=>{
           child=fork(path.join(__dirname,'statisticsComputeChild.js'),[],{execArgv:[`--max-old-space-size=${heapMb}`],stdio:['ignore','ignore','ignore','ipc'],windowsHide:true});
-          active=child;let message,timedOut=false;
+          active=child;let message,timedOut=false,phase='starting';
           const timer=setTimeout(()=>{timedOut=true;child.kill();},timeoutMs);
-          child.on('message',value=>{message=value;});
+          child.on('message',value=>{
+            if(value?.progress){phase=value.progress.phase;onProgress(value.progress);}
+            else message=value;
+          });
           child.once('error',error=>{
             // Failed spawn has no open output file. IPC failures after spawn
             // must wait for exit before Windows can remove the private DB.
@@ -24,7 +28,7 @@ function createStatisticsRunner({timeoutMs=60000,heapMb=256}={}) {
           });
           child.once('exit',(code,signal)=>{
             clearTimeout(timer);
-            if(timedOut)reject(Error('Statistics computation timed out'));
+            if(timedOut)reject(Error('Statistics computation timed out ('+phase+')'));
             else if(current!==generation)reject(Error('Statistics computation cancelled'));
             else if(code===0&&message?.ok)resolve();
             else reject(Error(message?.error||`Statistics process exited (${code??signal})`));
@@ -53,4 +57,4 @@ function createStatisticsRunner({timeoutMs=60000,heapMb=256}={}) {
     stop(){generation++;active?.kill();},
   };
 }
-module.exports={createStatisticsRunner};
+module.exports={createStatisticsRunner,DEFAULT_TIMEOUT_MS};
