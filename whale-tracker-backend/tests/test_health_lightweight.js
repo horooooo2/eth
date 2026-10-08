@@ -17,8 +17,9 @@ test('ordinary signed-in users can reset; anonymous requests remain rejected', a
     assert.equal((await fetch(url, { method: 'POST' })).status, 401);
     assert.equal(calls, 0);
     const response = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
-    assert.equal(response.status, 200);
+    assert.equal(response.status, 202);
     assert.equal((await response.json()).ok, true);
+    while (reset.isBusy()) await new Promise(resolve => setTimeout(resolve, 5));
     assert.equal(calls, 1);
   } finally {
     reset.resetSiteData = original;
@@ -133,7 +134,8 @@ test('reset returns partial refresh errors and progress endpoint never scans his
     const options = { headers: { Authorization: `Bearer ${token}` } };
     const response = await fetch(base+'/reset',{ ...options, method:'POST' });
     const data = await response.json();
-    assert.equal(data.whaleRefresh.status,'partial'); assert.equal(data.warning,'upstream unavailable');
+    assert.equal(response.status,202); assert.ok(data.job.id);
+    while (reset.isBusy()) await new Promise(resolve => setTimeout(resolve, 5));
     const status = await (await fetch(base+'/reset-status',options)).json();
     assert.equal(status.recovery.recovered,3); assert.equal(status.error,'upstream unavailable');
   } finally {

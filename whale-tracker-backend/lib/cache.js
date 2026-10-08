@@ -177,10 +177,15 @@ function readWhaleModeCache(mode) {
 function captureWhaleRevisions(mode = 'hf', ids) {
   const state = stateFor(mode);
   const selected = ids || state.data.whales.map((whale) => whale.id);
-  return Object.fromEntries(selected.map((id) => [id, state.whaleRevisions.get(String(id)) || 0]));
+  const result = Object.fromEntries(selected.map((id) => [id, state.whaleRevisions.get(String(id)) || 0]));
+  const maintenance = require('./marketMaintenance');
+  Object.defineProperty(result, maintenance.revision, { value: maintenance.generation() });
+  return result;
 }
 
 function commitWhaleState(mode = 'hf', patch = {}) {
+  const maintenance = require('./marketMaintenance');
+  maintenance.assertWritable(patch.expectedWhaleRevisions?.[maintenance.revision]);
   const state = stateFor(mode);
   const byId = new Map((state.data.whales || []).map((whale) => [String(whale.id), whale]));
   const roster = Array.isArray(patch.rosterIds) ? new Set(patch.rosterIds.map(String)) : null;

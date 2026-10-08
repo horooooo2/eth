@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
-import { addManualWhale, createAuthUser, deleteAuthUser, fetchManagementWhales, fetchAlertCount, listAuthUsers, renameWhale, resetSiteData, fetchResetStatus, type ResetRecovery, updateAuthUserPassword } from '@/api';
+import { addManualWhale, createAuthUser, deleteAuthUser, fetchManagementWhales, fetchAlertCount, listAuthUsers, renameWhale, resetSiteData, fetchResetStatus, type ResetRecovery, type ResetJob, updateAuthUserPassword } from '@/api';
 
 type AuthUser = { id: string; username: string; createdAt: number };
 type WhaleRow = {
@@ -39,16 +39,22 @@ const refreshing = ref(false);
 const alertTotal = ref<number | null>(null);
 const alertCountAt = ref(0);
 const alertCountError = ref('');
+const alertCountInitializing = ref(false);
+let countTimer: ReturnType<typeof setTimeout> | undefined;
 let alertCountPending: Promise<void> | null = null;
 function loadAlertCount() {
+  clearTimeout(countTimer);
   if (alertCountPending) return alertCountPending;
+  const generation = recoveryGeneration;
   alertCountPending = fetchAlertCount().then(data => {
-    if (disposed) return;
+    if (disposed || generation !== recoveryGeneration) return;
     alertTotal.value = data.total;
     alertCountAt.value = data.countedAt;
     alertCountError.value = '';
+    alertCountInitializing.value = data.status === 'initializing';
+    if (alertCountInitializing.value && !resetBusy.value) countTimer = setTimeout(() => void loadAlertCount(), 10000);
   }).catch(error => {
-    if (!disposed) alertCountError.value = error instanceof Error ? error.message : String(error);
+    if (!disposed && generation === recoveryGeneration) alertCountError.value = error instanceof Error ? error.message : String(error);
   }).finally(() => { alertCountPending = null; });
   return alertCountPending;
 }
@@ -235,17 +241,26 @@ function displayRecovery(recovery: ResetRecovery | null | undefined, warning?: s
     : recovery.status === 'complete' ? `最近 24 小时回补检查完成（${recovery.recovered}/${recovery.monitored} 个地址），以数据源可返回的成交为准${suffix}`
     : `历史回补中：${recovery.recovered}/${recovery.monitored} 个地址${recovery.errors ? `，${recovery.errors} 个待重试` : ''}${suffix}`;
 }
+function displayJob(job: ResetJob | null | undefined) {
+  resetBusy.value = job?.status === 'queued' || job?.status === 'clearing';
+  if (job?.status === 'queued') resetStatus.value = '后台重置已排队…';
+  else if (job?.status === 'clearing') resetStatus.value = `后台清理中：已删除 ${job.deletedRows.toLocaleString('zh-CN')} 条记录，采集暂时暂停`;
+  else if (job?.status === 'failed') resetStatus.value = `清理未完成：${job.error || '未知错误'}。采集已暂停，请重试重置`;
+}
 async function pollRecovery(generation = recoveryGeneration) {
   if (disposed || generation !== recoveryGeneration) return;
   let pending = true;
   try {
     const data = await fetchResetStatus();
     if (disposed || generation !== recoveryGeneration) return;
-    if (data.recovery) displayRecovery(data.recovery, data.error);
-    pending = data.recovery?.status === 'recovering';
-    if (data.recovery?.status === 'complete') void loadAlertCount();
-  } catch { if (!disposed && generation === recoveryGeneration) resetStatus.value = '回补进度读取失败，稍后重试'; }
-  if (pending && !disposed && generation === recoveryGeneration) recoveryTimer = setTimeout(() => void pollRecovery(generation), 10000);
+    const wasClearing = resetBusy.value;
+    displayJob(data.job);
+    if (!resetBusy.value && data.job?.status !== 'failed' && data.recovery) displayRecovery(data.recovery, data.error);
+    pending = resetBusy.value || data.recovery?.status === 'recovering';
+    if (wasClearing && !resetBusy.value) await Promise.all([loadWhales(), loadAlertCount()]);
+    else if (data.recovery) void loadAlertCount();
+  } catch { if (!disposed && generation === recoveryGeneration) resetStatus.value = '重置进度读取失败，稍后重试'; }
+  if (pending && !disposed && generation === recoveryGeneration) recoveryTimer = setTimeout(() => void pollRecovery(generation), resetBusy.value ? 2000 : 10000);
 }
 
 async function resetSite() {
@@ -259,22 +274,22 @@ async function resetSite() {
   clearTimeout(recoveryTimer);
   recoveryGeneration++;
   resetBusy.value = true;
-  resetStatus.value = '正在重置并重新拉取…';
+  resetStatus.value = '正在提交后台重置…';
+  clearTimeout(countTimer);
   try {
-    const data = await resetSiteData(3);
-    displayRecovery(data.recovery, data.warning);
-    clearTimeout(recoveryTimer);
-    if (!disposed && data.recovery?.status === 'recovering') recoveryTimer = setTimeout(() => void pollRecovery(), 10000);
-    await Promise.all([loadWhales(), loadAlertCount()]);
+    const data = await resetSiteData();
+    displayJob(data.job);
+    await pollRecovery();
   } catch (e) {
-    resetStatus.value = `失败：${e instanceof Error ? e.message : String(e)}`;
-  } finally {
-    resetBusy.value = false;
+    resetStatus.value = `提交失败：${e instanceof Error ? e.message : String(e)}，正在确认后台状态…`;
+    // A timed-out POST may already be accepted. Check before enabling another reset.
+    await pollRecovery();
   }
+
 }
 
 onMounted(() => { void refreshAll(); void pollRecovery(); });
-onUnmounted(() => { disposed = true; clearTimeout(recoveryTimer); });
+onUnmounted(() => { disposed = true; clearTimeout(recoveryTimer); clearTimeout(countTimer); });
 </script>
 
 <template>
@@ -288,7 +303,7 @@ onUnmounted(() => { disposed = true; clearTimeout(recoveryTimer); });
       </div>
     </header>
     <section class="data-overview" aria-label="数据库概览">
-      <div class="overview-item"><span>数据库异动记录</span><strong>{{ alertTotal == null ? '—' : alertTotal.toLocaleString('zh-CN') }}<small>条</small></strong><p v-if="alertCountError" class="count-error">{{ alertCountError }}{{ alertTotal == null ? '' : '（显示上次统计）' }}</p><p v-else>{{ alertCountAt ? `统计于 ${fmtTime(alertCountAt)}` : '正在读取…' }}</p></div>
+      <div class="overview-item"><span>数据库异动记录</span><strong>{{ alertTotal == null ? '—' : alertTotal.toLocaleString('zh-CN') }}<small>条</small></strong><p v-if="alertCountError" class="count-error">{{ alertCountError }}{{ alertTotal == null ? '' : '（显示上次统计）' }}</p><p v-else>{{ alertCountInitializing ? '正在分批建立计数…' : alertCountAt ? `统计于 ${fmtTime(alertCountAt)}` : '正在读取…' }}</p></div>
       <div class="overview-item"><span>已拉取巨鲸</span><strong>{{ whaleTotal ?? '—' }}<small>个</small></strong><p>当前数据库中的巨鲸</p></div>
       <div class="overview-item"><span>用户账号</span><strong>{{ users.length }}<small>个</small></strong><p>已创建的登录账号</p></div>
     </section>

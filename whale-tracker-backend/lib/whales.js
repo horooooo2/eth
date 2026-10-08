@@ -2552,3 +2552,14 @@ module.exports = {
   getActivitySince,
   ACTIVITY_WINDOW_MS,
 };
+
+// Preserve the originating generation across network awaits and nested collectors.
+for (const name of ['getWhales', 'getWhalesBatch', 'refreshWhales', 'refreshWhalesShard',
+  'refreshWhalesForMode', 'refreshWhalePositionFromSource', 'refreshSingleWhale',
+  'refreshAlertHistory', 'getWhalePosition', 'getWhaleTrades']) {
+  const original = module.exports[name];
+  module.exports[name] = (...args) => require('./marketMaintenance').runCollection(() => {
+    require('./marketMaintenance').assertWritable();
+    return original(...args);
+  });
+}

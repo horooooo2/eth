@@ -456,21 +456,35 @@ function migrate(database) {
     })();
   }
   database.exec('CREATE INDEX IF NOT EXISTS idx_alerts_visible_time ON alerts(is_visible, time DESC)');
-  // Transactional counter: inserts, corrections, deletes and rollbacks stay exact.
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS alert_totals (id INTEGER PRIMARY KEY CHECK(id=1), visible INTEGER NOT NULL);
-    INSERT INTO alert_totals SELECT 1, (SELECT COUNT(*) FROM alerts WHERE is_visible=1)
-      WHERE NOT EXISTS (SELECT 1 FROM alert_totals WHERE id=1);
-    CREATE TRIGGER IF NOT EXISTS alert_total_insert AFTER INSERT ON alerts BEGIN
-      UPDATE alert_totals SET visible=visible+(NEW.is_visible=1) WHERE id=1;
-    END;
-    CREATE TRIGGER IF NOT EXISTS alert_total_delete AFTER DELETE ON alerts BEGIN
-      UPDATE alert_totals SET visible=visible-(OLD.is_visible=1) WHERE id=1;
-    END;
-    CREATE TRIGGER IF NOT EXISTS alert_total_update AFTER UPDATE OF is_visible ON alerts BEGIN
-      UPDATE alert_totals SET visible=visible+(NEW.is_visible=1)-(OLD.is_visible=1) WHERE id=1;
-    END;
-  `);
+  // Visible counts keep their existing semantics; all-row counts are initialized
+  // asynchronously for old databases and maintained by the same transactions.
+  database.exec('CREATE TABLE IF NOT EXISTS alert_totals (id INTEGER PRIMARY KEY CHECK(id=1), visible INTEGER NOT NULL)');
+  const countColumns = database.prepare('PRAGMA table_info(alert_totals)').all();
+  const upgradeAllCount = !countColumns.some(column => column.name === 'total');
+  database.transaction(() => {
+    if (upgradeAllCount) {
+      database.exec('ALTER TABLE alert_totals ADD COLUMN total INTEGER');
+      database.exec('ALTER TABLE alert_totals ADD COLUMN all_delta INTEGER NOT NULL DEFAULT 0');
+    }
+    database.exec(`INSERT INTO alert_totals(id, visible)
+      SELECT 1, (SELECT COUNT(*) FROM alerts WHERE is_visible=1)
+      WHERE NOT EXISTS (SELECT 1 FROM alert_totals WHERE id=1)`);
+    if (!database.prepare('SELECT 1 FROM alerts LIMIT 1').get()) {
+      database.exec('UPDATE alert_totals SET total=0 WHERE id=1');
+    }
+    if (upgradeAllCount) database.exec('DROP TRIGGER IF EXISTS alert_total_insert; DROP TRIGGER IF EXISTS alert_total_delete');
+    database.exec(`
+      CREATE TRIGGER IF NOT EXISTS alert_total_insert AFTER INSERT ON alerts BEGIN
+        UPDATE alert_totals SET visible=visible+(NEW.is_visible=1), total=total+1, all_delta=all_delta+1 WHERE id=1;
+      END;
+      CREATE TRIGGER IF NOT EXISTS alert_total_delete AFTER DELETE ON alerts BEGIN
+        UPDATE alert_totals SET visible=visible-(OLD.is_visible=1), total=total-1, all_delta=all_delta-1 WHERE id=1;
+      END;
+      CREATE TRIGGER IF NOT EXISTS alert_total_update AFTER UPDATE OF is_visible ON alerts BEGIN
+        UPDATE alert_totals SET visible=visible+(NEW.is_visible=1)-(OLD.is_visible=1) WHERE id=1;
+      END;
+    `);
+  })();
   // Upgrade the brief development schema that stored only source_id.
   let alertSourcesUpgraded = false;
   try {

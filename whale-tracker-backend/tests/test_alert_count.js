@@ -2,22 +2,23 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 require('./helpers/isolateSqlite');
 
-test('alert count uses a read-only worker, shares concurrent requests and reflects deletions', async () => {
+test('alert count uses only a transactional counter and reflects deletes, replace and rollback', () => {
   const db = require('../lib/db').getDb();
   const count = require('../lib/alertCount').getAlertCount;
   const insert = db.prepare('INSERT INTO alerts(id,whale_id,time,kind,payload_json) VALUES(?,?,?,?,?)');
   db.transaction(() => { for (let i = 0; i < 121; i++) insert.run(`count-${i}`, 'count-whale', Date.now(), 'open', '{}'); })();
   const original = db.prepare;
-  db.prepare = () => { throw new Error('count must not query the main-thread connection'); };
-  try {
-    const first = count();
-    assert.equal(first, count());
-    const result = await first;
-    assert.equal(result.total, 121);
-    assert.ok(result.countedAt > 0);
-  } finally { db.prepare = original; }
+  db.prepare = function(sql) { assert.equal(sql, 'SELECT total FROM alert_totals WHERE id=1'); return original.call(this,sql); };
+  try { assert.equal(count().total, 121); assert.ok(count().countedAt > 0); }
+  finally { db.prepare = original; }
+  db.prepare('UPDATE alerts SET is_visible=0 WHERE id=?').run('count-0');
+  assert.equal(count().total,121);
+  db.prepare('INSERT OR REPLACE INTO alerts(id,whale_id,time,kind,payload_json) VALUES(?,?,?,?,?)').run('count-0','a',Date.now(),'open','{}');
+  assert.equal(count().total,121);
+  assert.throws(db.transaction(() => { insert.run('rollback','a',1,'open','{}'); throw new Error('rollback'); }));
+  assert.equal(count().total,121);
   db.prepare('DELETE FROM alerts WHERE id LIKE ?').run('count-%');
-  assert.equal((await count()).total, 0);
+  assert.equal(count().total,0);
 });
 
 test('alert count API requires login and returns only the count and observation time', async () => {
@@ -33,7 +34,7 @@ test('alert count API requires login and returns only the count and observation 
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('cache-control'), 'no-store');
     const result = await response.json();
-    assert.deepEqual(Object.keys(result).sort(), ['countedAt', 'total']);
+    assert.deepEqual(Object.keys(result).sort(), ['countedAt', 'status', 'total']);
     assert.equal(result.total, 0);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });

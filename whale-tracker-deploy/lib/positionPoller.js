@@ -4,6 +4,7 @@ let timer;
 const active = new Set();
 const attempted = new Map();
 function tick() {
+  if (require('./marketMaintenance').isPaused()) return;
   const now = Date.now();
   const { getActiveWhales } = require('./config');
   const byId = require('./cache').readPositionObservationTimes('hf');
@@ -21,5 +22,5 @@ function tick() {
       .finally(() => active.delete(whale.id));
   }
 }
-function start() { if (timer) return; timer = setInterval(tick, 5000); timer.unref(); }
-module.exports = { start, stop() { clearInterval(timer); timer = null; } };
+function start() { if (timer || require('./marketMaintenance').isPaused()) return; timer = setInterval(tick, 5000); timer.unref(); }
+module.exports = { start, restart() { attempted.clear(); start(); }, stop() { clearInterval(timer); timer = null; } };

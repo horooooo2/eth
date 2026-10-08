@@ -79,6 +79,7 @@ async function ingest(whale, fills, generation, restoreTiming = false) {
   return { committedAlerts };
 }
 async function runOneTick() {
+  if (require('./marketMaintenance').isPaused()) return;
   if (!ENABLED || active.size >= 2 || rateLimitedUntil > Date.now()) return;
   const marks = loadWatermarks(), now = Date.now();
   const roster = listWhales();
@@ -115,6 +116,7 @@ async function runOneTick() {
   } finally { active.delete(whale.address); }
 }
 async function runHistoryTick() {
+  if (require('./marketMaintenance').isPaused()) return;
   if (!ENABLED || historyRunning || rateLimitedUntil > Date.now()) return;
   const roster = listWhales(); if (!roster.length) return;
   const marks = loadWatermarks(), now = Date.now(), generation = resetGeneration;
@@ -200,7 +202,7 @@ function resetFillBackfill() {
   return getBackfillStatus();
 }
 function startFillBackfill() {
-  if (!ENABLED || timer) return;
+  if (!ENABLED || timer || require('./marketMaintenance').isPaused()) return;
   timer = setInterval(() => void runOneTick(), INTERVAL_MS); timer.unref?.();
   historyTimer = setInterval(() => void runHistoryTick(), 15000); historyTimer.unref?.();
 }

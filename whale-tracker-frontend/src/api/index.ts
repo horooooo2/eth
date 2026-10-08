@@ -932,20 +932,21 @@ export async function updateAuthUserPassword(id: string, password: string) {
 }
 
 export type ResetRecovery = { status: 'recovering' | 'complete' | 'disabled'; monitored: number; recovered: number; errors: number; startedAt: number; since: number };
+export type ResetJob = { id: string; status: 'queued' | 'clearing' | 'recovering' | 'complete' | 'failed'; deletedRows: number; table: string | null; error: string | null };
 export async function fetchAlertCount() {
-  const { data } = await http.get<{ total: number; countedAt: number }>('/data/alert-count');
+  const { data } = await http.get<{ total: number | null; countedAt: number; status: 'initializing' | 'ready' }>('/data/alert-count');
   return data;
 }
 export async function fetchResetStatus() {
-  const { data } = await http.get<{ recovery: ResetRecovery | null; error?: string | null }>('/data/reset-status');
+  const { data } = await http.get<{ job: ResetJob | null; recovery: ResetRecovery | null; error?: string | null }>('/data/reset-status');
   return data;
 }
 
-export async function resetSiteData(rounds = 3) {
-  const { data } = await http.post<{ keptManuals?: number; recovery?: ResetRecovery | null; warning?: string | null }>(
+export async function resetSiteData() {
+  const { data } = await http.post<{ ok: boolean; job: ResetJob }>(
     '/data/reset',
     {},
-    { params: { rounds }, timeout: 120_000 },
+    { timeout: 15_000 },
   );
   return data;
 }

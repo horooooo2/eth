@@ -83,6 +83,7 @@ function findUserByUsername(username) {
 }
 
 function createSession(userId) {
+  purgeExpiredSessions();
   const token = crypto.randomBytes(32).toString('hex');
   const now = Date.now();
   const expiresAt = now + SESSION_TTL_MS;
@@ -101,7 +102,6 @@ function purgeExpiredSessions() {
 function getSessionUser(token) {
   const t = String(token || '').trim();
   if (!t) return null;
-  purgeExpiredSessions();
   const row = getDb()
     .prepare(
       `SELECT s.token, s.expires_at AS expiresAt, u.id, u.username, u.created_at AS createdAt,
@@ -112,7 +112,6 @@ function getSessionUser(token) {
     .get(t);
   if (!row) return null;
   if (Number(row.expiresAt) < Date.now()) {
-    getDb().prepare('DELETE FROM sessions WHERE token = ?').run(t);
     return null;
   }
   return {

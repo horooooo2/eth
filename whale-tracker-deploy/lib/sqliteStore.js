@@ -377,6 +377,7 @@ function upsertAlertRows(database, alerts) {
 
 /** 前端同步异动历史 */
 function persistAlerts(alerts = []) {
+  require('./marketMaintenance').assertWritable();
   const list = Array.isArray(alerts) ? alerts : [];
   const database = getDb();
   const tx = database.transaction(() => {
@@ -831,6 +832,7 @@ function includeCorrectedAlerts(database, result, changedIds) {
 
 /** 增量写入成交（实时 WS），并派生 events/alerts */
 function persistTradesIncremental(trades = []) {
+  require('./marketMaintenance').assertWritable();
   const list = (Array.isArray(trades) ? trades : []).filter(isRawTrade);
   if (!list.length) return { fills: 0, events: 0, alerts: 0, committedAlerts: [], removedAlertIds: [] };
   const database = getDb();
@@ -934,6 +936,7 @@ function persistTradesIncremental(trades = []) {
 }
 
 function persistModePayload(data = {}, updatedAt = Date.now(), options = {}) {
+  require('./marketMaintenance').assertWritable();
   const whales = Array.isArray(data.whales) ? data.whales : [];
   const trades = (Array.isArray(data.trades) ? data.trades : []).filter(isRawTrade);
   const database = getDb();
@@ -1124,6 +1127,7 @@ function persistModePayload(data = {}, updatedAt = Date.now(), options = {}) {
 
 /** Commit only changed whales, raw fills and derived/snapshot alerts atomically. */
 function persistStatePatch(data = {}, updatedAt = Date.now()) {
+  require('./marketMaintenance').assertWritable();
   return persistModePayload({ ...data.metadata, ...data }, updatedAt, { patch: true });
 }
 

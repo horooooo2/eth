@@ -4,6 +4,7 @@ const path = require('node:path');
 const root = path.resolve(__dirname, '..');
 const files = [
   'test_reset_recovery.js',
+  'test_reset_jobs.js',
   'test_radar_stream.js',
   'test_health_lightweight.js',
   'test_alert_count.js',

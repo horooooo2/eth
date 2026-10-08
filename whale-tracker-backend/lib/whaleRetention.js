@@ -19,6 +19,7 @@ function scanCandidates(db, table, cutoff, limit) {
 
 // Bounded maintenance replaces the old full-table purge on every price tick.
 function runRetentionBatch(now = Date.now(), limit = 500) {
+  if (require('./marketMaintenance').isPaused()) return { paused: true, deletedRows: 0 };
   const db = getDb();
   const take = Math.max(1, Math.min(2000, Number(limit) || 500));
   if (scanDb !== db) { scanDb=db; cursors={}; }

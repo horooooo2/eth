@@ -117,6 +117,7 @@ if (fs.existsSync(publicDir)) {
 let refreshing = false;
 
 async function refreshAll(reason) {
+  if (require('./lib/marketMaintenance').isPaused()) return;
   if (refreshing) return;
   refreshing = true;
   const started = Date.now();
@@ -146,6 +147,7 @@ const server = http.createServer(app);
 attachRealtimeHub(server);
 
 server.listen(PORT, '0.0.0.0', () => {
+  require('./lib/siteReset').resumeInterruptedReset();
   require('./lib/whaleRetention').startRetention();
   if(require('./lib/featureFlags').observationsEnabled())require('./lib/whaleObservationWorker').start();
   else {require('./lib/db').setMeta('observation_paused','1');console.log('[whale-observations] disabled');}

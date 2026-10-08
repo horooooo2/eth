@@ -140,6 +140,7 @@ function rebuildWhaleIndex(whales) {
 }
 
 function syncFromCache() {
+  if (require('./marketMaintenance').isPaused()) return { whales: 0, fills: 0, webData: 0 };
   const cached = readWhaleModeCache(MODE);
   const activeIds = new Set(getActiveWhales().map(whale => whale.id));
   const whales = (Array.isArray(cached?.data?.whales) ? cached.data.whales : []).filter(whale => activeIds.has(whale.id));
@@ -500,6 +501,7 @@ function alertsFromPositionDiff(whale, prevPositions, nextPositions) {
 }
 
 function handleFills({ user, fills, isSnapshot }) {
+  if (require('./marketMaintenance').isPaused()) return;
   if (!user || !fills?.length) return;
   const whale = whalesByAddress.get(String(user).toLowerCase());
   if (!whale) return;
@@ -530,6 +532,7 @@ function handleFills({ user, fills, isSnapshot }) {
 }
 
 function handleWebData({ user, data }) {
+  if (require('./marketMaintenance').isPaused()) return;
   const state = data?.clearinghouseState || data;
   // A partial heartbeat/account message is not evidence that positions closed.
   if (!state || !Array.isArray(state.assetPositions)) return;
@@ -627,6 +630,7 @@ function getWhaleByAddress(address) {
 }
 
 module.exports = {
+  resetMarketMemory() { positionSnapByWhale.clear(); recentPositionFills.clear(); whalesByAddress.clear(); },
   startRealtimeBridge,
   syncFromCache,
   isRealtimeConnected,
