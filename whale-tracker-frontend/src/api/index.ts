@@ -155,7 +155,7 @@ export async function fetchPagedAlertHistory(query: AlertHistoryQuery = {}) {
     : String(query.coins || '').trim();
   const { data } = await http.get<{
     alerts: unknown[];
-    total: number;
+    total?: number;
     page: number;
     limit: number;
     retentionDays?: number;

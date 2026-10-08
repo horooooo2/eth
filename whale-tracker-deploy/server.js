@@ -181,9 +181,8 @@ server.listen(PORT, '0.0.0.0', () => {
   } catch (err) {
     console.warn('[defillama] 启动失败:', err.message);
   }
-  // Build derived execution facts in bounded batches, without blocking unrelated HTTP requests.
-  setImmediate(() => require('./lib/sqliteStore').prepareFillProjection()
-    .catch(err => console.warn('[execution-facts] warmup failed:', err.message)));
+  // No current page consumes the legacy flow summary. Its route prepares facts
+  // on demand; eager warmup otherwise scans history and maintains an unused TEMP table.
   refreshAll('启动预热');
   setInterval(() => refreshAll('定时刷新'), REFRESH_MS);
 });

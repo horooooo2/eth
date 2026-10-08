@@ -10,8 +10,8 @@ function tick() {
   const roster = getActiveWhales();
   const ids = new Set(roster.map(w => w.id));
   for (const id of attempted.keys()) if (!ids.has(id)) attempted.delete(id);
-  const due = roster.filter(w => !active.has(w.id) && now - (attempted.get(w.id) || 0) > 30000 &&
-    now - (Number(byId.get(w.id)) || 0) > 60000)
+  const due = roster.filter(w => !active.has(w.id) && now - (attempted.get(w.id) || 0) > 120000 &&
+    now - (Number(byId.get(w.id)) || 0) > 120000)
     .sort((a, b) => Math.max(attempted.get(a.id) || 0, Number(byId.get(a.id)) || 0) -
       Math.max(attempted.get(b.id) || 0, Number(byId.get(b.id)) || 0));
   for (const whale of due.slice(0, Math.max(0, 2 - active.size))) {
@@ -21,5 +21,5 @@ function tick() {
       .finally(() => active.delete(whale.id));
   }
 }
-function start() { if (timer) return; timer = setInterval(tick, 1000); timer.unref(); }
+function start() { if (timer) return; timer = setInterval(tick, 5000); timer.unref(); }
 module.exports = { start, stop() { clearInterval(timer); timer = null; } };

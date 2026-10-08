@@ -14,11 +14,8 @@ const {
 
 /** @deprecated 兼容旧调用；仓位事件改为「持仓中保留 / 平仓后 1 天」 */
 const RETENTION_MS = CLOSED_POSITION_RETENTION_MS;
-/** 原始成交保留至少 24 小时，默认 2 天；展示条数不得裁剪统计事实 */
-const FILL_RETENTION_MS = Math.max(
-  24 * 60 * 60 * 1000,
-  (Number(process.env.FILL_RETENTION_DAYS) || 2) * 24 * 60 * 60 * 1000,
-);
+/** 原始成交保留最近 24 小时；在持仓元数据中保留已知开仓信息。 */
+const FILL_RETENTION_MS = 24 * 60 * 60 * 1000;
 /** 已平仓事件窗口（与 CLOSED_POSITION_RETENTION_MS 对齐） */
 const ALERT_RETENTION_MS = CLOSED_POSITION_RETENTION_MS;
 

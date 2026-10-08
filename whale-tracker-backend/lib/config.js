@@ -30,11 +30,8 @@ const DEFAULT_CONFIG = {
   keywords: flattenKeywords(DEFAULT_KEYWORD_GROUPS),
 };
 
-/** 默认 200（priority 排名前 N）；可用环境变量 TOP_WHALE_LIMIT 覆盖（69–1000） */
-const TOP_WHALE_LIMIT = Math.max(
-  69,
-  Math.min(1000, Number(process.env.TOP_WHALE_LIMIT) || 200),
-);
+/** 股票优先：采集总量最多 50 个，手动账户优先。 */
+const TOP_WHALE_LIMIT = Math.max(1, Math.min(50, Number(process.env.TOP_WHALE_LIMIT) || 50));
 
 function normalizeMode(_value) {
   return 'hf';
@@ -89,7 +86,7 @@ function normalizeWhale(item = {}) {
     priority: Number(item.priority) || 0,
     style: item.style === 'hf' ? 'hf' : item.style === 'stable' ? 'stable' : undefined,
     enabled: item.enabled !== false,
-    /** 后台手动添加；不被 TopN 裁切 */
+    /** 后台手动添加；优先进入采集名单 */
     manual: item.manual === true,
     /** 人工命名，榜单扩容时保留 */
     customName: item.customName === true,
@@ -316,8 +313,8 @@ function getActiveWhales() {
   const manuals = whales.filter((w) => w.manual);
   const rest = whales.filter((w) => !w.manual);
   const ranked = sortWhalesHf(rest).slice(0, TOP_WHALE_LIMIT);
-  // 手动添加的永远保留，不被 TopN 裁切
-  return mergeWhalesByAddress(manuals, ranked);
+  // 超额名单保留在配置中，但不进入实时采集。
+  return mergeWhalesByAddress(manuals, ranked).slice(0, TOP_WHALE_LIMIT);
 }
 
 function setWhaleMode(_mode) {

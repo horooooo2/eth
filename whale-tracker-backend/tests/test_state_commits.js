@@ -17,7 +17,7 @@ function load(name, mocks, extra = {}) {
   let clock = Date.now();
   if (name === 'fillBackfill.js') context.Date = class extends Date { static now() { return clock; } };
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), context, { filename });
-  if (name === 'fillBackfill.js') { const tick = context.module.exports.runOneTick; context.module.exports.runOneTick = () => { clock += 31000; return tick(); }; }
+  if (name === 'fillBackfill.js') { const tick = context.module.exports.runOneTick; context.module.exports.runOneTick = () => { clock += 121000; return tick(); }; }
   return context.module.exports;
 }
 function stateFixture() {

@@ -19,7 +19,7 @@ const {
   getActivitySince,
 } = require('../lib/whales');
 const { readConfig, writeConfig, setWhaleMode, normalizeAddress, normalizeMode, addManualWhale, renameWhale } = require('../lib/config');
-const { loadRecentEvents, loadRecentAlerts, loadPagedAlerts, loadAlertFlowSummary, countStoredAlerts, persistAlerts } = require('../lib/sqliteStore');
+const { loadRecentEvents, loadRecentAlerts, loadPagedAlerts, countStoredAlerts, persistAlerts } = require('../lib/sqliteStore');
 
 const router = express.Router();
 const whaleSync = require('../lib/whaleSync');
@@ -64,19 +64,9 @@ router.get('/summary', (req, res) => {
 
 
 
-/** 净流入资金只查服务器异动库，时间窗口和币种由参数明确限定。 */
-router.get('/alert-history/summary', async (req, res) => {
-  try {
-    const windows = { '15m': 15 * 60_000, '1h': 60 * 60_000, '4h': 4 * 60 * 60_000, '24h': 24 * 60 * 60_000 };
-    const windowKey = String(req.query.window || '1h');
-    const duration = windows[windowKey];
-    if (!duration) return res.status(400).json({ error: '不支持的异动统计时间范围' });
-    await require('../lib/sqliteStore').prepareFillProjection();
-    res.json({ ...loadAlertFlowSummary({ sinceMs: Date.now() - duration, coin: req.query.coin }), executionCoverage: require("../lib/fillBackfill").getCoverageStatus() });
-  } catch (err) {
-    console.error('[GET /api/whales/alert-history/summary]', err);
-    res.status(500).json({ error: err.message || '读取异动汇总失败' });
-  }
+/** 旧客户端立即获知汇总已停用，不再执行聚合扫描。 */
+router.get('/alert-history/summary', (_req, res) => {
+  res.status(410).json({code:'ALERT_SUMMARY_RETIRED',error:'异动资金汇总已停用'});
 });
 
 /** GET /api/whales/cache-page — 前端只读缓存页，不触发上游采集。 */
@@ -154,13 +144,8 @@ router.get('/alert-history', (req, res) => {
   try {
     whaleSync.initialize();
     const cursor = whaleSync.stream.cursor();
-    // 兼容旧调用：无 page 时按 limit 拉最近 N 条
-    if (req.query.page == null && req.query.paged == null) {
-      const limit = Number(req.query.limit) || 500;
-      const alerts = compactAlertList(loadRecentAlerts(limit));
-      return res.json({ ...cursor, alerts, total: alerts.length, retentionDays: 7 });
-    }
-    const data = loadPagedAlerts(req.query);
+    // Latest records only: never scan history for totals or facets, even for old clients.
+    const data = loadPagedAlerts({ ...req.query, page: 1, limit: 50, rowsOnly: true });
     res.json({ ...data, ...cursor, alerts: compactAlertList(data.alerts) });
   } catch (err) {
     console.error('[GET /api/whales/alert-history]', err);

@@ -55,7 +55,8 @@ test('server summary endpoints are wired to cached whale and alert data', () => 
   assert.match(routes, /router\.get\('\/cache-query'/);
   assert.match(routes, /queryWhaleCache\(req\.query\)/);
   assert.match(routes, /router\.get\('\/alert-history\/summary'/);
-  assert.match(routes, /loadAlertFlowSummary\(/);
+  assert.match(routes, /ALERT_SUMMARY_RETIRED/);
+  assert.doesNotMatch(routes, /loadAlertFlowSummary\(/);
 
   const files = fs.readFileSync(path.join(backend, 'scripts', 'sync-deploy.js'), 'utf8');
   assert.doesNotMatch(files, /whaleSummary/);

@@ -65,7 +65,7 @@ const openOnly = ref(false);
 const alertCoinFilter = ref<'all' | string>('all');
 watch(() => props.linkedCoin, coin => { if (coin) alertCoinFilter.value = coin === 'ALL' ? 'all' : coin; }, { immediate: true });
 const alertMinUsd = ref(readAlertMinUsd());
-const ALERT_DISPLAY_LIMIT = 100;
+const ALERT_DISPLAY_LIMIT = 50;
 const activeAlertId = ref('');
 const activeAlert = computed(() => whaleStore.alertsById[activeAlertId.value] || null);
 const alertVisible = ref(false);
@@ -89,12 +89,6 @@ function animateLiveAlerts(rows: Array<{ id: string; isNew: boolean }>) {
   }
 }
 const alertFiltersReady = ref(false);
-const facets = ref<{ all: number; byCoin: Record<string, number>; long: number; short: number }>({
-  all: 0,
-  byCoin: {},
-  long: 0,
-  short: 0,
-});
 let alertReqSeq = 0;
 let suppressAutoAlertReload = false;
 
@@ -192,17 +186,6 @@ function installPendingPage() {
   if (!whaleStore.acceptAlertPage(list, { epoch: data.epoch, seq: data.seq })) return;
   pendingPage = null;
   pageAlertIds.value = list.map(alert => alert.id);
-    const byCoin: Record<string, number> = {};
-    for (const [rawCoin, count] of Object.entries(data.facets?.byCoin || {})) {
-      const key = String(rawCoin).toUpperCase().replace(/^[UK]/, '');
-      byCoin[key] = (byCoin[key] || 0) + (Number(count) || 0);
-    }
-    facets.value = {
-      all: Number(data.facets?.all) || 0,
-      byCoin,
-      long: Number(data.facets?.long) || 0,
-      short: Number(data.facets?.short) || 0,
-    };
 
 }
 watch(() => [whaleStore.epoch, whaleStore.revision], installPendingPage);
@@ -253,20 +236,6 @@ function isOpenPositionClosed(alert: WhaleAlert): boolean {
   );
   return !stillOpen;
 }
-
-const alertCoinCounts = computed(() => {
-  const counts: Record<string, number> = {
-    all: Number(facets.value.all) || 0,
-  };
-  for (const coin of preferredCoins.value) {
-    counts[coin] = facets.value.byCoin[coin] || 0;
-  }
-  // 若服务端 all 未带回，用偏好币种合计兜底
-  if (!counts.all) {
-    counts.all = preferredCoins.value.reduce((sum, coin) => sum + (counts[coin] || 0), 0);
-  }
-  return counts;
-});
 
 const alertRefreshing = ref(false);
 
@@ -453,7 +422,7 @@ function alertFundingWarn(row: {
               :class="{ on: alertCoinFilter === 'all' }"
               @click="alertCoinFilter = 'all'"
             >
-              全部 {{ alertCoinCounts.all }}
+              全部
             </button>
             <button
               v-for="coin in preferredCoins"
@@ -463,7 +432,7 @@ function alertFundingWarn(row: {
               :class="{ on: alertCoinFilter === coin }"
               @click="alertCoinFilter = coin"
             >
-              {{ coin }} {{ alertCoinCounts[coin] ?? 0 }}
+              {{ coin }}
             </button>
           </div>
           <div class="head-actions">

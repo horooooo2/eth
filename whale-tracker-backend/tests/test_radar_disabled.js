@@ -1,6 +1,8 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 require('./helpers/isolateSqlite');
 delete process.env.RADAR_ENABLED;
+assert.equal(require('../lib/featureFlags').radarEnabled(),true);
+process.env.RADAR_ENABLED='0';
 test('radar pause rejects all radar requests before collection and preserves management routes',async()=>{
   const service=require('../lib/radarLongTrend');
   await service.refresh();

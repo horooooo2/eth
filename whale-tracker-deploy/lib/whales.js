@@ -34,11 +34,8 @@ const {
 const { getHlInfoConfig, MAX_CONCURRENT } = require('./hlInfoClient');
 
 const WHALE_MODES = ['hf'];
-/** 活动流至少保留 24h，并按配置的成交保留窗口读取 */
-const ACTIVITY_WINDOW_MS = Math.max(
-  24 * 60 * 60 * 1000,
-  (Number(process.env.FILL_RETENTION_DAYS) || 1) * 24 * 60 * 60 * 1000,
-);
+/** 活动流仅保留最近 24h。 */
+const ACTIVITY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const ACTIVITY_MAX = 3000;
 /** 并发拉取 HL 仓位；GoldRush 下跟随 hlInfoClient 并发 */
 const WHALE_SNAPSHOT_CONCURRENCY = Math.max(
@@ -1593,7 +1590,7 @@ function loadLocalFillsForCoin(whaleId, coin, names = {}) {
   try {
     const { loadFillsByWhale } = require('./sqliteStore');
     const fromDb = loadFillsByWhale(whaleId, {
-      sinceMs: Date.now() - Math.max(FILL_LOOKBACK_MS, 21 * 24 * 60 * 60 * 1000),
+      sinceMs: Date.now() - FILL_LOOKBACK_MS,
       limit: Number(process.env.FILL_MAX_PER_WHALE) || 10000,
     });
     for (const trade of fromDb || []) push(trade);
@@ -1701,7 +1698,7 @@ async function getWhalePosition(id, coin, options = {}) {
   if (!cacheOnly && needCoinFetch && address) {
     try {
       const remote = await fetchUserFillsByCoin(address, pos?.coin || decoded, {
-        lookbackMs: 21 * 24 * 60 * 60 * 1000,
+        lookbackMs: FILL_LOOKBACK_MS,
         maxPages: 12,
         currentSize: pos?.size,
         side: pos?.side || wantSide || undefined,

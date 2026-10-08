@@ -11,7 +11,7 @@ function setup() {
   const calls=[];
   const remote = name => async () => { calls.push(name); return name==='fills' ? [] : {}; };
   const context = {
-    Date, console, findConfiguredWhale:()=>({id:'a',address:'0xa'}), normalizeAddress:x=>x,
+    Date, console, FILL_LOOKBACK_MS:86400000, findConfiguredWhale:()=>({id:'a',address:'0xa'}), normalizeAddress:x=>x,
     fetchCoinNameMap:remote('names'), fetchClearinghouseState:remote('state'), fetchUserFillsByCoin:remote('fills'), fetchAllMids:remote('mids'),
     readActiveWhaleCache:()=>({updatedAt:Date.now(),data:{whales:[{id:'a',positionObservedAt:observed,positions:[position]}]}}),
     captureWhaleRevisions:()=>({}), loadLocalFillsForCoin:()=>[], entryFillsThin:()=>true, fillsExplainEnough:()=>false,

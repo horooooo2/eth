@@ -158,11 +158,8 @@ async function fetchUserFills(address) {
   return fetchUserFillsByTime(address, Date.now() - FILL_LOOKBACK_MS, Date.now(), { priority: "history" });
 }
 
-/** 近 1 天成交回看窗口（资金动态）；可用 FILL_RETENTION_DAYS 对齐 */
-const FILL_LOOKBACK_MS = Math.max(
-  60 * 60 * 1000,
-  (Number(process.env.FILL_RETENTION_DAYS) || 1) * 24 * 60 * 60 * 1000,
-);
+/** 近 1 天成交回看窗口，与本地原始成交保留期一致。 */
+const FILL_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const FILL_PAGE_SIZE = 2000;
 const FILL_MAX_PAGES = 6;
 
@@ -251,7 +248,7 @@ async function fetchUserFillsByCoin(
   address,
   coin,
   {
-    lookbackMs = 21 * 24 * 3600 * 1000,
+    lookbackMs = FILL_LOOKBACK_MS,
     maxPages = 10,
     currentSize,
     side,
@@ -260,6 +257,7 @@ async function fetchUserFillsByCoin(
   const symbol = String(coin || '').toUpperCase();
   if (!symbol) return [];
   const user = address.toLowerCase();
+  lookbackMs = Math.min(FILL_LOOKBACK_MS, Math.max(1, Number(lookbackMs) || FILL_LOOKBACK_MS));
   const cacheKey = `fills-rev:${user}:${symbol}:${lookbackMs}:${maxPages}:${currentSize ?? ""}:${side || ""}`;
 
   return withCache(cacheKey, 20000, async () => {

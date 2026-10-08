@@ -6,8 +6,8 @@ const { normalizeAddress, getActiveWhales } = require('./config');
 const DAY_MS = 86400000;
 const META_KEY = 'fills_address_watermarks_v2';
 const ENABLED = process.env.WHALE_FILL_CAPTURE !== '0';
-const INTERVAL_MS = Math.max(1000, Number(process.env.FILL_BACKFILL_INTERVAL_MS) || 1000);
-const DAYS = Math.max(1, Math.min(7, Number(process.env.FILL_BACKFILL_DAYS) || 3));
+const INTERVAL_MS = Math.max(5000, Number(process.env.FILL_BACKFILL_INTERVAL_MS) || 5000);
+const DAYS = 1;
 const RATE_LIMIT_PAUSE_MS = Math.max(60000, Number(process.env.FILL_BACKFILL_RATE_LIMIT_MS) || 300000);
 const OVERLAP_MS = 60000;
 const LATEST_WINDOW_MS = 15 * 60000;
@@ -45,7 +45,7 @@ async function runOneTick() {
   const roster = listWhales();
   const ids = new Set(roster.map(w => w.address));
   for (const id of attempted.keys()) if (!ids.has(id)) attempted.delete(id);
-  const whale = roster.filter(w => !active.has(w.address) && now - (attempted.get(w.address) || 0) >= 30000)
+  const whale = roster.filter(w => !active.has(w.address) && now - (attempted.get(w.address) || 0) >= 120000)
     .sort((a, b) => Math.max(attempted.get(a.address) || 0, marks[a.address]?.latestObservedAt || 0) -
       Math.max(attempted.get(b.address) || 0, marks[b.address]?.latestObservedAt || 0))[0];
   if (!whale) return;
@@ -91,8 +91,9 @@ async function runHistoryTick() {
   const width = Math.max(1, Number(forward ? entry.windowMs : entry.historyWindowMs) || 3600000);
   const before = Number(entry.historyBefore);
   if (!forward && !(before > now - DAYS * DAY_MS)) return;
-  const start = forward ? Number(entry.through) : Math.max(now - DAYS * DAY_MS, before - width);
+  const start = Math.max(now - DAYS * DAY_MS, forward ? Number(entry.through) : before - width);
   const end = forward ? Math.min(start + width, entry.latestObservedAt) : before;
+  if (end <= start) return;
   historyRunning = true;
   try {
     const fills = await fetchUserFillsByTime(whale.address, start, end, { priority: 'history' });

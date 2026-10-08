@@ -40,7 +40,7 @@ function bootstrap() {
   const whales = active.map(w => ({ ...w, ...(byId.get(String(w.id)) || { positions: [], error: '等待采集' }),
     name: w.name, address: w.address, enabled: w.enabled }));
   return { protocolVersion: 1, ...cursor, updatedAt: snapshot?.updatedAt || 0,
-    whales: compactWhales(whales), alerts: require('./sqliteStore').loadPagedAlerts({ page: 1, limit: 100, excludeExotic: '1', rowsOnly: true }).alerts,
+    whales: compactWhales(whales), alerts: require('./sqliteStore').loadPagedAlerts({ page: 1, limit: 50, excludeExotic: '1', rowsOnly: true }).alerts,
     summary: { ...require('./whales').getWhaleSummary(), alertTotal: require('./sqliteStore').countStoredAlerts() } };
 }
 

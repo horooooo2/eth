@@ -6,7 +6,7 @@ const { broadcast, clientCount } = require('./realtimeHub');
 const { pushError } = require('./opsMonitor');
 const { mapFillToTrade, deriveDirection, isExoticAsset } = require('./hyperliquid');
 const { readWhaleModeCache, commitWhaleState } = require('./cache');
-const { normalizeAddress } = require('./config');
+const { normalizeAddress, getActiveWhales } = require('./config');
 const { OPEN_KINDS, fillSourceId } = require('./positionEventPolicy');
 
 const MODE = 'hf';
@@ -141,7 +141,8 @@ function rebuildWhaleIndex(whales) {
 
 function syncFromCache() {
   const cached = readWhaleModeCache(MODE);
-  const whales = Array.isArray(cached?.data?.whales) ? cached.data.whales : [];
+  const activeIds = new Set(getActiveWhales().map(whale => whale.id));
+  const whales = (Array.isArray(cached?.data?.whales) ? cached.data.whales : []).filter(whale => activeIds.has(whale.id));
   rebuildWhaleIndex(whales);
   // userFills + webData2 都属于 user-specific 订阅，使用同一组最多 10 个唯一地址。
   const liveAddresses = pickLiveAddresses(whales, cached?.data?.trades || []);

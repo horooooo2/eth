@@ -102,7 +102,7 @@ function whaleCacheName(mode) {
 const { randomUUID } = require('crypto');
 const { isRawTrade, canonicalTradeId } = require('./positionEventPolicy');
 const RAW_CACHE_MAX = 8000;
-const RAW_CACHE_RETENTION_MS = Math.max(86400000, (Number(process.env.FILL_RETENTION_DAYS) || 1) * 86400000);
+const RAW_CACHE_RETENTION_MS = 86400000;
 function rawTradeView(trades) {
   const cutoff = Date.now() - RAW_CACHE_RETENTION_MS;
   const byId = new Map();
@@ -121,6 +121,8 @@ const commitListeners = new Set();
 const mirrorTimers = new Map();
 const mirrorWriter = require('./asyncMirror').createMirrorWriter(cachePath);
 function scheduleMirror(mode, data) {
+  // SQLite is authoritative; full JSON mirrors are disabled in stock-focused mode.
+  if (process.env.WHALE_JSON_MIRROR !== '1') return;
   const pending = mirrorTimers.get(mode);
   if (pending) { pending.data = data; return; }
   const entry = { data };

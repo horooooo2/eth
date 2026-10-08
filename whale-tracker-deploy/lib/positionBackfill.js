@@ -1,6 +1,6 @@
 /**
  * 对「当前仍持仓」的币种慢速回补更久成交 → 写入仓位事件（开/加/减/平）
- * POSITION_BACKFILL=1 时启用（默认开）
+ * 股票优先模式下停止长期历史补齐
  */
 const { getDb } = require('./db');
 const { commitWhaleState } = require('./cache');
@@ -12,7 +12,7 @@ const {
 const { readConfig } = require('./config');
 const { isRateLimited } = require('./hlInfoClient');
 
-const ENABLED = process.env.POSITION_BACKFILL !== '0';
+const ENABLED = false; // Long-range position history is retired; preserve existing metadata.
 const INTERVAL_MS = Math.max(
   3000,
   Number(process.env.POSITION_BACKFILL_INTERVAL_MS) || 8000,
