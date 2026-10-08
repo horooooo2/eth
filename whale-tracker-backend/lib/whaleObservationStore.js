@@ -102,6 +102,19 @@ function latestPosition(whale,coin,side,eventAt,now) {
 function list(db, now = Date.now()) {
   const roster=new Map(require('./config').getActiveWhales().map(w=>[String(w.id),w.address]));
   const whales=new Map();
+  const calculations=new Map();
+  const calculation=(id,coin)=>{
+    const key=JSON.stringify([id,coin]);
+    if(!calculations.has(key)) {
+      const row=db.prepare(`SELECT c.version AS inputVersion,c.window_at AS windowAt,c.through_at AS throughAt,
+        v.version AS currentVersion FROM observation_committed_versions c
+        LEFT JOIN observation_versions v ON v.whale_id=c.whale_id AND v.coin=c.coin
+        WHERE c.whale_id=? AND c.coin=?`).get(id,coin);
+      calculations.set(key,row?{inputVersion:row.inputVersion,windowAt:row.windowAt,throughAt:row.throughAt,
+        pendingUpdates:(row.currentVersion||0)>row.inputVersion}:undefined);
+    }
+    return calculations.get(key);
+  };
   const current=(id,coin,side,lastAt)=>{
     if(!whales.has(id)) {
       const row=db.prepare('SELECT payload_json FROM whales WHERE id=?').get(id);
@@ -118,7 +131,8 @@ function list(db, now = Date.now()) {
       for(const member of members)counts[member.latestPosition.status]++;
       return {...summary,address,members,positionCounts:counts};
     }
-    return {...summary,address,latestPosition:current(summary.whaleId,summary.coin,summary.side,Math.max(summary.lastAt,summary.tracking?.asOf||0))};
+    return {...summary,address,calculation:calculation(summary.whaleId,summary.coin),
+      latestPosition:current(summary.whaleId,summary.coin,summary.side,Math.max(summary.lastAt,summary.tracking?.asOf||0))};
   });
 }
 function evidence(db, id, offset) {
@@ -131,12 +145,9 @@ function evidence(db, id, offset) {
 }
 function prune(db, now=Date.now()) {
   return db.transaction(()=>{
-    db.prepare('DELETE FROM observation_inputs WHERE time<?').run(now-KEEP);
-    const changed=db.prepare('DELETE FROM whale_observations WHERE last_at<?').run(now-KEEP).changes;
-    db.prepare('DELETE FROM observation_evidence WHERE event_id NOT IN (SELECT id FROM whale_observations)').run();
-    db.prepare('DELETE FROM observation_evidence_links WHERE event_id NOT IN (SELECT id FROM whale_observations)').run();
-    db.prepare(`DELETE FROM observation_evidence_rows WHERE hash IN (SELECT r.hash FROM observation_evidence_rows r
-      WHERE NOT EXISTS (SELECT 1 FROM observation_evidence_links l WHERE l.hash=r.hash) LIMIT 5000)`).run();
+    db.prepare('DELETE FROM observation_inputs WHERE id IN (SELECT id FROM observation_inputs WHERE time<? LIMIT 500)').run(now-KEEP);
+    const changed=db.prepare('DELETE FROM whale_observations WHERE id IN (SELECT id FROM whale_observations WHERE last_at<? LIMIT 500)').run(now-KEEP).changes;
+    // Evidence reference scans run in observationComputeChild (kind: prune).
     return changed;
   })();
 }

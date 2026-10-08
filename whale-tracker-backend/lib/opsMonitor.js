@@ -4,6 +4,9 @@
 const SOCKET_MAX = 100;
 const REQUEST_MAX = 200;
 const ERROR_MAX = 200;
+const { monitorEventLoopDelay } = require('node:perf_hooks');
+const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
+eventLoopDelay.enable();
 
 const socketLogs = [];
 const requestLogs = [];
@@ -47,6 +50,17 @@ function pushError(entry = {}) {
 function getMonitorSnapshot() {
   return {
     at: Date.now(),
+    runtime: {
+      memory: process.memoryUsage(),
+      uptimeSeconds: process.uptime(),
+      eventLoopDelay: {
+        sampleCount: eventLoopDelay.count,
+        p95Ms: eventLoopDelay.count ? eventLoopDelay.percentile(95) / 1e6 : null,
+        maxMs: eventLoopDelay.count ? eventLoopDelay.max / 1e6 : null,
+        scope: 'since-monitor-start',
+      },
+    },
+    observationCompute: require('./whaleObservationWorker').getStatus(),
     socket: [...socketLogs],
     requests: [...requestLogs],
     errors: [...errorLogs],

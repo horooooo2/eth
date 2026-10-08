@@ -3,6 +3,10 @@ const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const root = path.resolve(__dirname, '..');
 const files = [
+  'test_socket_send.js',
+  'test_observation_compute.js',
+  'test_observation_blocks.js',
+  'test_observation_failures.js',
   'test_performance_paths.js',
   'test_fill_fact_memory.js', 'test_direction_summary.js', 'test_whale_observations.js',
   'test_strategy_shadow.js',

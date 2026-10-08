@@ -6,6 +6,28 @@ const { eventsFromTrade, loadDirectionSummary, loadAlertFlowSummary, loadResonan
 const { aggregateDirectionFacts } = require('../lib/directionSummary');
 const now = Date.now();
 const trade = (id, start, side, amount, whaleId = 'a') => ({ id, whaleId, asset: 'BTC', startPosition: start, side, amount, amountUsd: amount * 100, time: now - 1000, price: 100 });
+test('large distinct-account sets preserve totals and concentration without argument overflow', () => {
+  function* facts() {
+    for (let i = 0; i < 150000; i++) yield { id: String(i), whaleId: String(i), coin: 'BTC',
+      usd: 1, time: now, side: 'long', kind: 'open' };
+  }
+  const result = aggregateDirectionFacts(facts(), { unique: true });
+  assert.equal(result.coins[0].addLong, 150000);
+  assert.equal(result.coins[0].longAccounts, 150000);
+  assert.equal(result.coins[0].concentration, 1 / 150000);
+  assert.equal(result.accounts.length, 150000);
+});
+test('freshness counts invalid and stale timestamps and handles a large roster', () => {
+  const { summarizeFreshness, MAX_POSITION_AGE_MS } = require('../lib/dataFreshness');
+  const result = summarizeFreshness([{ positionObservedAt: now },
+    { positionObservedAt: now - MAX_POSITION_AGE_MS - 1 }, {}, { positionObservedAt: now + 1 }], now);
+  assert.equal(result.freshness.freshCount, 1);
+  assert.equal(result.freshness.staleCount, 1);
+  assert.equal(result.freshness.unknownCount, 2);
+  assert.equal(result.freshness.oldestObservedAt, now - MAX_POSITION_AGE_MS - 1);
+  assert.equal(result.freshness.newestObservedAt, now);
+  assert.equal(summarizeFreshness(Array.from({ length: 150000 }, () => ({ positionObservedAt: now })), now).stale, false);
+});
 test('reversal splits exit and entry; exits never become new longs; duplicate legs counted once', () => {
   const facts = eventsFromTrade(trade('reverse', 2, 'sell', 3));
   const { coins, accounts } = aggregateDirectionFacts([...facts, ...facts]);

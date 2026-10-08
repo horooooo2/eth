@@ -236,7 +236,7 @@ function* rowsFromAlerts(alerts: Iterable<WhaleAlert>, whaleMap: Map<string, Wha
   }
 }
 
-function dedupeRows(rows: ResonanceOpenRow[]) {
+function dedupeRows(rows: Iterable<ResonanceOpenRow>) {
   const map = new Map<string, ResonanceOpenRow>();
   for (const row of rows) {
     const key = row.sourceId || `${row.whaleId}|${row.coin}|${row.side}|${row.action}|${row.time}|${row.notionalUsd}`;
@@ -328,19 +328,18 @@ function collectOpenRows(input: {
   watchedCoins?: string[];
 }) {
   const whaleMap = new Map(input.whales.map((item) => [item.id, item]));
-  const rawRows: ResonanceOpenRow[] = [];
+  const watched = input.watchedCoins?.length ? input.watchedCoins : readWatchedCoins();
+  function* candidates(): Generator<ResonanceOpenRow> {
+    for (const trade of input.activity) {
+      const action = classifyFillAction(trade);
+      if (!trade.whaleId || !action) continue;
+      if (trade.time < input.since) continue;
+      const whale = whaleMap.get(trade.whaleId);
+      if (!whale) continue;
+      const notionalUsd = Number(trade.amountUsd) || 0;
+      if (!(notionalUsd > 0)) continue;
 
-  for (const trade of input.activity) {
-    const action = classifyFillAction(trade);
-    if (!trade.whaleId || !action) continue;
-    if (trade.time < input.since) continue;
-    const whale = whaleMap.get(trade.whaleId);
-    if (!whale) continue;
-    const notionalUsd = Number(trade.amountUsd) || 0;
-    if (!(notionalUsd > 0)) continue;
-
-    rawRows.push(
-      buildOpenRow(whale, {
+      yield buildOpenRow(whale, {
         sourceId: `fill:${String(trade.id).startsWith(`${trade.whaleId}:`) ? trade.id : `${trade.whaleId}:${trade.id}`}`,
         whaleId: trade.whaleId,
         whaleName: trade.whaleName || whale.name,
@@ -352,17 +351,16 @@ function collectOpenRows(input: {
         notionalUsd,
         time: trade.time,
         winRate: Number(whale.winRate) || 0,
-      }),
-    );
+      });
+    }
+    yield* rowsFromAlerts(input.alerts || [], whaleMap, input.since);
   }
-
-  const watched = input.watchedCoins?.length ? input.watchedCoins : readWatchedCoins();
-  for (const row of rowsFromAlerts(input.alerts || [], whaleMap, input.since)) {
-    if (coinMatchesWatch(row.coin, watched) && row.winRate >= input.config.minWinRate) rawRows.push(row);
+  function* eligible(): Generator<ResonanceOpenRow> {
+    for (const row of candidates()) {
+      if (coinMatchesWatch(row.coin, watched) && row.winRate >= input.config.minWinRate) yield row;
+    }
   }
-  return dedupeRows(rawRows.filter((row) =>
-    coinMatchesWatch(row.coin, watched) && row.winRate >= input.config.minWinRate,
-  ));
+  return dedupeRows(eligible());
 }
 
 function scanClusterSignals(rows: ResonanceOpenRow[], config: ResonanceConfig): ResonanceSignal[] {

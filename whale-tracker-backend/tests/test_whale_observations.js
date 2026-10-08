@@ -153,19 +153,20 @@ test('durable summary excludes evidence payload; revisions remove superseded evi
   persistTradesIncremental(rows.map(t=>({...t,source:'onchain'})));
   store.processPair(db,job);assert.equal(store.evidence(db,first.id,0),null);
 });
-test('worker emits bounded deltas only when changed and snapshot survives restart reconstruction',()=>{
+test('worker emits bounded deltas only when changed and snapshot survives restart reconstruction',async()=>{
   const hub=require('../lib/realtimeHub'), messages=[], original=hub.broadcast;
   hub.broadcast=msg=>messages.push(msg);
   const worker=require('../lib/whaleObservationWorker');
   try {
     persistTradesIncremental(builds.map(t=>({...t,whaleId:'worker',from:'Hyperliquid',to:'0x'+'a'.repeat(40)})));
-    worker.tick();
+    // Drain older pair jobs before checking this job's publication.
+    for(let i=0;i<30&&!worker.snapshot().rows.some(r=>r.whaleId==='worker');i++)await worker.tick();
     const snapshot=worker.snapshot();assert.equal(snapshot.type,'observationSnapshot');
     const event=snapshot.rows.find(r=>r.whaleId==='worker');assert.ok(event);
     assert.equal(event.address,'0x'+'a'.repeat(40));
     const first=messages.at(-1);assert.equal(first.type,'observationCommit');assert.equal(first.seq,snapshot.seq);
     assert.ok(first.ids.includes(event.id));assert.equal(first.rows[0].evidence,undefined);
-    const count=messages.length;worker.tick();assert.equal(messages.length,count);
+    const count=messages.length;await worker.tick();assert.equal(messages.length,count);
     // HTTP and socket share the same complete revision, with no request-triggered work.
     assert.equal(worker.snapshot().seq,snapshot.seq);
   }finally{hub.broadcast=original;worker.stop();}

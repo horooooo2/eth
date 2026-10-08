@@ -12,13 +12,7 @@ const publicClients = new Set();
 /** @type {Map<string, Set<import('ws')>>} userId -> sockets */
 const privateByUser = new Map();
 const privateClients = new Set();
-const MAX_BUFFER = 4 * 1024 * 1024;
-function safeSend(socket, message) {
-  if (socket.readyState !== 1) return false;
-  if (socket.bufferedAmount > MAX_BUFFER) { socket.close(1013, 'Client must resume from cursor'); return false; }
-  try { socket.send(typeof message === 'string' ? message : JSON.stringify(message)); return true; }
-  catch { socket.terminate(); return false; }
-}
+const { safeSend } = require('./socketSend');
 
 function extractToken(req) {
   try {

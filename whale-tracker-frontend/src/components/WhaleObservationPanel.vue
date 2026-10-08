@@ -108,6 +108,8 @@ onUnmounted(()=>{disposed=true;request++;evidenceRequest++;for(const timer of hi
           <div v-if="row.tracking.interruption" class="notice">{{interruptionReason(row.tracking.interruption.reason)}}<br>{{time(row.tracking.interruption.at)}}<template v-if="row.tracking.interruption.actualSize!=null"><br>上一笔后 {{number(row.tracking.interruption.expectedSize)}} → 下一笔前 {{number(row.tracking.interruption.actualSize)}} {{row.coin}}</template></div>
         </section>
         <section v-if="row.timing" class="detail-section timing"><strong>数据时间</strong>
+          <div v-if="row.calculation?.throughAt">本批统计覆盖成交至：{{time(row.calculation.throughAt)}}</div>
+          <small v-if="row.calculation?.pendingUpdates">已有后续成交或修订待计算，当前显示最近完整结果。</small>
           <div v-if="row.timing.eventAt">最近依据成交：{{time(row.timing.eventAt)}}</div>
           <div v-if="row.timing.latestExecutionReceivedAt">该笔首次进入观察模块：{{time(row.timing.latestExecutionReceivedAt)}}</div>
           <div>本版摘要生成：{{time(row.timing.generatedAt)}}</div>

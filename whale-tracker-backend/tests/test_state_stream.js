@@ -2,6 +2,44 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createStateStream } = require('../lib/stateStream');
 
+test('decoration outage has bounded pending deltas and rotates the cursor on overflow', () => {
+  let failing = true;
+  const sent = [];
+  const stream = createStateStream({ epoch: 'old', maxPendingItems: 2,
+    decorate: () => { if (failing) throw Error('unavailable'); return {}; }, publish: e => sent.push(e) });
+  stream.enqueue({ alerts: [{ id: 'a' }] }); stream.flush();
+  stream.enqueue({ alerts: [{ id: 'b' }, { id: 'c' }] });
+  assert.equal(sent[0].type, 'resyncRequired'); assert.notEqual(sent[0].epoch, 'old');
+  failing = false;
+  assert.equal(stream.resume({ epoch: 'old', afterSeq: 0 }).type, 'resyncRequired');
+  stream.enqueue({ alerts: [{ id: 'new' }] });
+  assert.deepEqual(stream.flush().alerts, [{ id: 'new' }]);
+  stream.close();
+});
+
+test('pending bytes count replacements and removals without false growth', () => {
+  const sent = [];
+  const stream = createStateStream({ maxPendingBytes: 300, publish: e => sent.push(e) });
+  for (let i = 0; i < 100; i++) stream.enqueue({ alerts: [{ id: 'a', text: 'x'.repeat(80) }] });
+  stream.enqueue({ removedAlertIds: ['a'] });
+  stream.enqueue({ alerts: [{ id: 'a', text: 'replacement' }] });
+  const event = stream.flush(); assert.equal(event.alerts[0].text, 'replacement');
+  assert.deepEqual(event.removedAlertIds, []); assert.equal(sent.length, 1);
+  stream.enqueue({ alerts: [{ id: 'large', text: 'x'.repeat(500) }] });
+  assert.equal(sent.at(-1).type, 'resyncRequired');
+  stream.close();
+});
+
+test('oversize decorated event is never published as a commit or replayed', () => {
+  const sent = [];
+  const stream = createStateStream({ epoch: 'old', maxEventBytes: 300,
+    decorate: () => ({ text: 'x'.repeat(400) }), publish: e => sent.push(e) });
+  stream.enqueue({ whales: [{ id: 'a' }] }); assert.equal(stream.flush(), null);
+  assert.deepEqual(sent.map(e => e.type), ['resyncRequired']);
+  assert.equal(stream.resume({ epoch: 'old', afterSeq: 0 }).type, 'resyncRequired');
+  stream.close();
+});
+
 test('snapshot cursor flushes committed changes; replay bridges the HTTP/socket gap', () => {
   const sent = [];
   const stream = createStateStream({ epoch: 'test', publish: e => sent.push(e) });

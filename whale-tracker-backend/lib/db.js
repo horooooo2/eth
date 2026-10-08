@@ -106,6 +106,98 @@ function migrate(database) {
     CREATE INDEX IF NOT EXISTS observation_evidence_links_hash ON observation_evidence_links(hash);
     CREATE INDEX IF NOT EXISTS observations_pair ON whale_observations(whale_id, coin);
     CREATE INDEX IF NOT EXISTS observations_time ON whale_observations(last_at DESC, id);
+    CREATE TABLE IF NOT EXISTS observation_versions (
+      whale_id TEXT NOT NULL, coin TEXT NOT NULL, version INTEGER NOT NULL,
+      PRIMARY KEY(whale_id,coin)
+    );
+    CREATE TABLE IF NOT EXISTS observation_summary_version (id INTEGER PRIMARY KEY, version INTEGER NOT NULL);
+    INSERT OR IGNORE INTO observation_summary_version VALUES(1,0);
+    CREATE TABLE IF NOT EXISTS observation_calculations (token TEXT PRIMARY KEY, started_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS observation_staged_rows (token TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY(token,hash));
+    CREATE INDEX IF NOT EXISTS observation_staged_rows_hash ON observation_staged_rows(hash);
+    CREATE TABLE IF NOT EXISTS observation_evidence_versions (
+      event_id TEXT NOT NULL, token TEXT NOT NULL, ordinal INTEGER NOT NULL, hash TEXT NOT NULL,
+      PRIMARY KEY(token,event_id,ordinal)
+    );
+    CREATE INDEX IF NOT EXISTS observation_evidence_versions_hash ON observation_evidence_versions(hash);
+    CREATE TABLE IF NOT EXISTS observation_evidence_blocks (
+      hash TEXT PRIMARY KEY, hashes_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS observation_evidence_block_versions (
+      event_id TEXT NOT NULL, token TEXT NOT NULL, ordinal INTEGER NOT NULL, hash TEXT NOT NULL,
+      PRIMARY KEY(token,event_id,ordinal)
+    );
+    CREATE INDEX IF NOT EXISTS observation_evidence_block_versions_hash ON observation_evidence_block_versions(hash);
+    CREATE TABLE IF NOT EXISTS observation_staged_blocks (
+      token TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY(token,hash)
+    );
+    CREATE INDEX IF NOT EXISTS observation_staged_blocks_hash ON observation_staged_blocks(hash);
+    CREATE TABLE IF NOT EXISTS observation_input_guards (
+      whale_id TEXT NOT NULL, coin TEXT NOT NULL, invalidation INTEGER NOT NULL, max_time INTEGER NOT NULL,
+      PRIMARY KEY(whale_id,coin)
+    );
+    INSERT OR IGNORE INTO observation_input_guards
+      SELECT i.whale_id,i.coin,0,MAX(i.time) FROM observation_inputs i
+      WHERE NOT EXISTS (SELECT 1 FROM observation_input_guards g WHERE g.whale_id=i.whale_id AND g.coin=i.coin)
+      GROUP BY i.whale_id,i.coin;
+    CREATE TABLE IF NOT EXISTS observation_committed_versions (
+      whale_id TEXT NOT NULL, coin TEXT NOT NULL, version INTEGER NOT NULL,
+      window_at INTEGER NOT NULL, through_at INTEGER, PRIMARY KEY(whale_id,coin)
+    );
+    CREATE TABLE IF NOT EXISTS observation_gc_version (id INTEGER PRIMARY KEY, version INTEGER NOT NULL);
+    INSERT OR IGNORE INTO observation_gc_version VALUES(1,0);
+    ${['observation_evidence','observation_evidence_rows','observation_evidence_links','observation_evidence_versions',
+      'observation_evidence_blocks','observation_evidence_block_versions','observation_staged_rows','observation_staged_blocks',
+      'observation_calculations','whale_observations'].flatMap(table=>['INSERT','UPDATE','DELETE'].map(action=>
+      `CREATE TRIGGER IF NOT EXISTS gc_${table}_${action.toLowerCase()} AFTER ${action} ON ${table} BEGIN
+        UPDATE observation_gc_version SET version=version+1 WHERE id=1; END;`)).join('\n')}
+    CREATE TRIGGER IF NOT EXISTS observation_guard_insert AFTER INSERT ON observation_inputs BEGIN
+      INSERT INTO observation_input_guards VALUES(NEW.whale_id,NEW.coin,0,NEW.time)
+        ON CONFLICT(whale_id,coin) DO UPDATE SET
+          invalidation=invalidation+CASE WHEN NEW.time<=max_time THEN 1 ELSE 0 END,
+          max_time=MAX(max_time,NEW.time);
+    END;
+    CREATE TRIGGER IF NOT EXISTS observation_guard_delete AFTER DELETE ON observation_inputs BEGIN
+      INSERT INTO observation_input_guards VALUES(OLD.whale_id,OLD.coin,1,OLD.time)
+        ON CONFLICT(whale_id,coin) DO UPDATE SET invalidation=invalidation+1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS observation_guard_update AFTER UPDATE ON observation_inputs BEGIN
+      INSERT INTO observation_input_guards VALUES(OLD.whale_id,OLD.coin,1,OLD.time)
+        ON CONFLICT(whale_id,coin) DO UPDATE SET invalidation=invalidation+1;
+      INSERT INTO observation_input_guards VALUES(NEW.whale_id,NEW.coin,1,NEW.time)
+        ON CONFLICT(whale_id,coin) DO UPDATE SET invalidation=invalidation+1,max_time=MAX(max_time,NEW.time);
+    END;
+    CREATE TRIGGER IF NOT EXISTS observation_input_insert AFTER INSERT ON observation_inputs BEGIN
+      INSERT INTO observation_versions VALUES(NEW.whale_id,NEW.coin,1)
+        ON CONFLICT(whale_id,coin) DO UPDATE SET version=version+1;
+      INSERT INTO observation_jobs SELECT NEW.whale_id,NEW.coin WHERE NOT EXISTS
+        (SELECT 1 FROM observation_jobs WHERE whale_id=NEW.whale_id AND coin=NEW.coin);
+    END;
+    CREATE TRIGGER IF NOT EXISTS observation_input_delete AFTER DELETE ON observation_inputs BEGIN
+      INSERT INTO observation_versions VALUES(OLD.whale_id,OLD.coin,1)
+        ON CONFLICT(whale_id,coin) DO UPDATE SET version=version+1;
+      INSERT INTO observation_jobs SELECT OLD.whale_id,OLD.coin WHERE NOT EXISTS
+        (SELECT 1 FROM observation_jobs WHERE whale_id=OLD.whale_id AND coin=OLD.coin);
+    END;
+    CREATE TRIGGER IF NOT EXISTS observation_input_update AFTER UPDATE ON observation_inputs BEGIN
+      INSERT INTO observation_versions VALUES(OLD.whale_id,OLD.coin,1)
+        ON CONFLICT(whale_id,coin) DO UPDATE SET version=version+1;
+      INSERT INTO observation_versions VALUES(NEW.whale_id,NEW.coin,1)
+        ON CONFLICT(whale_id,coin) DO UPDATE SET version=version+1;
+      INSERT INTO observation_jobs SELECT OLD.whale_id,OLD.coin WHERE NOT EXISTS
+        (SELECT 1 FROM observation_jobs WHERE whale_id=OLD.whale_id AND coin=OLD.coin);
+      INSERT INTO observation_jobs SELECT NEW.whale_id,NEW.coin WHERE NOT EXISTS
+        (SELECT 1 FROM observation_jobs WHERE whale_id=NEW.whale_id AND coin=NEW.coin);
+    END;
+    CREATE TRIGGER IF NOT EXISTS observation_summary_insert AFTER INSERT ON whale_observations BEGIN
+      UPDATE observation_summary_version SET version=version+1 WHERE id=1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS observation_summary_update AFTER UPDATE ON whale_observations BEGIN
+      UPDATE observation_summary_version SET version=version+1 WHERE id=1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS observation_summary_delete AFTER DELETE ON whale_observations BEGIN
+      UPDATE observation_summary_version SET version=version+1 WHERE id=1;
+    END;
     CREATE TABLE IF NOT EXISTS whales (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL DEFAULT '',

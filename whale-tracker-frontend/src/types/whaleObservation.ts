@@ -1,6 +1,7 @@
 export type ObservationPosition = {status:'same'|'opposite'|'flat'|'unknown';reason?:string;asOf:number|null;side?:'long'|'short';size?:number};
 export type WhaleObservation = {
   latestPosition?:ObservationPosition;
+  calculation?:{inputVersion:number;windowAt:number;throughAt:number|null;pendingUpdates:boolean};
   positionCounts?:{same:number;opposite:number;flat:number;unknown:number};
   id: string; whaleId: string; address: string; coin: string;
   type: 'build' | 'reverse' | 'reduce' | 'collective'; side: 'long' | 'short';

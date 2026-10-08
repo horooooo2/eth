@@ -353,39 +353,43 @@ function mergeRowsByWhale(rows, whaleMap) {
 }
 function collectOpenRows(input) {
     const whaleMap = new Map(input.whales.map((item) => [item.id, item]));
-    const rawRows = [];
-    for (const trade of input.activity) {
-        const action = classifyFillAction(trade);
-        if (!trade.whaleId || !action)
-            continue;
-        if (trade.time < input.since)
-            continue;
-        const whale = whaleMap.get(trade.whaleId);
-        if (!whale)
-            continue;
-        const notionalUsd = Number(trade.amountUsd) || 0;
-        if (!(notionalUsd > 0))
-            continue;
-        rawRows.push(buildOpenRow(whale, {
-            sourceId: `fill:${String(trade.id).startsWith(`${trade.whaleId}:`) ? trade.id : `${trade.whaleId}:${trade.id}`}`,
-            whaleId: trade.whaleId,
-            whaleName: trade.whaleName || whale.name,
-            address: whale.address,
-            coin: coinLabel(trade),
-            action,
-            side: tradeFillSide(trade),
-            price: tradePrice(trade),
-            notionalUsd,
-            time: trade.time,
-            winRate: Number(whale.winRate) || 0,
-        }));
-    }
     const watched = input.watchedCoins?.length ? input.watchedCoins : readWatchedCoins();
-    for (const row of rowsFromAlerts(input.alerts || [], whaleMap, input.since)) {
-        if (coinMatchesWatch(row.coin, watched) && row.winRate >= input.config.minWinRate)
-            rawRows.push(row);
+    function* candidates() {
+        for (const trade of input.activity) {
+            const action = classifyFillAction(trade);
+            if (!trade.whaleId || !action)
+                continue;
+            if (trade.time < input.since)
+                continue;
+            const whale = whaleMap.get(trade.whaleId);
+            if (!whale)
+                continue;
+            const notionalUsd = Number(trade.amountUsd) || 0;
+            if (!(notionalUsd > 0))
+                continue;
+            yield buildOpenRow(whale, {
+                sourceId: `fill:${String(trade.id).startsWith(`${trade.whaleId}:`) ? trade.id : `${trade.whaleId}:${trade.id}`}`,
+                whaleId: trade.whaleId,
+                whaleName: trade.whaleName || whale.name,
+                address: whale.address,
+                coin: coinLabel(trade),
+                action,
+                side: tradeFillSide(trade),
+                price: tradePrice(trade),
+                notionalUsd,
+                time: trade.time,
+                winRate: Number(whale.winRate) || 0,
+            });
+        }
+        yield* rowsFromAlerts(input.alerts || [], whaleMap, input.since);
     }
-    return dedupeRows(rawRows.filter((row) => coinMatchesWatch(row.coin, watched) && row.winRate >= input.config.minWinRate));
+    function* eligible() {
+        for (const row of candidates()) {
+            if (coinMatchesWatch(row.coin, watched) && row.winRate >= input.config.minWinRate)
+                yield row;
+        }
+    }
+    return dedupeRows(eligible());
 }
 function scanClusterSignals(rows, config) {
     const groups = new Map();
