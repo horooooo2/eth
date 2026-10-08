@@ -2,7 +2,7 @@
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { http, fetchQuotes, fetchDirectionSummary, type DirectionSummary } from '@/api';
-import { statisticsErrorText } from '@/utils/statisticsRead';
+import { statisticsErrorText, statisticsFreshnessText } from '@/utils/statisticsRead';
 import CoinPreferences from '@/components/CoinPreferences.vue';
 import ApiSettings from '@/components/ApiSettings.vue';
 import NewsList from '@/components/NewsList.vue';
@@ -472,6 +472,7 @@ onUnmounted(() => {
             <strong>{{ whaleNetFlow.netUsd < 0 ? '−' : '+' }}{{ formatUsd(Math.abs(whaleNetFlow.netUsd)) }}</strong>
             <span>方向变化</span>
             <small>{{ whaleNetFlow.events }} 段成交 · 含减平仓</small>
+            <small v-if="directionData.statistics" role="status">{{ statisticsFreshnessText(directionData.statistics) }}</small>
           </div>
           <small v-else class="flow-empty">{{ directionError || '正在读取方向统计…' }}</small>
         </div>

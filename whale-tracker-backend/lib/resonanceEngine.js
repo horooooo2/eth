@@ -2,9 +2,11 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.DEFAULT_RESONANCE_CONFIG = exports.WINDOW_HOUR_OPTIONS = void 0;
+exports.coinKey = coinKey;
 exports.readResonanceConfig = readResonanceConfig;
 exports.writeResonanceWindowHours = writeResonanceWindowHours;
 exports.mergeRowsByWhale = mergeRowsByWhale;
+exports.selectResonanceSignals = selectResonanceSignals;
 exports.scanResonanceSignals = scanResonanceSignals;
 const WAN = 10000, YI = 100000000, MAINTENANCE_MARGIN_RATE = 0.004;
 function formatWanNumber(abs) {
@@ -492,6 +494,17 @@ function primaryBySignalSide(signals) {
                 ? (short.whales > long.whales ? 'short' : 'long')
                 : short.usd > long.usd ? 'short' : 'long';
     return [...signals].filter((signal) => signal.side === winningSide).sort(sortSignals)[0] || signals[0] || null;
+}
+// Filtering completed per-coin signals preserves the scanner's side selection
+// without re-reading executions when a user changes their watched coins.
+function selectResonanceSignals(signals, watched) {
+    const selected = signals.filter(signal => coinMatchesWatch(signal.coin, watched));
+    return {
+        hit: selected.length > 0,
+        primary: primaryBySignalSide(selected),
+        signals: selected,
+        emptyText: watched.length ? `暂无 ${watched.join(' / ')} 共振或持续加仓信号` : '暂无巨鲸共振或持续加仓信号',
+    };
 }
 function scanResonanceSignals(input) {
     const config = input.config || readResonanceConfig();

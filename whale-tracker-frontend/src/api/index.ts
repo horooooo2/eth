@@ -1,6 +1,6 @@
 import axios, { type AxiosError } from 'axios';
 import type { WhaleBootstrap } from '@/utils/whaleState';
-import { retryStatistics } from '@/utils/statisticsRead';
+import { retryStatistics, type StatisticsFreshness } from '@/utils/statisticsRead';
 import type {
   CalendarResponse,
   PagedTradesQuery,
@@ -217,7 +217,7 @@ export type DirectionRow = {
   coin: string; whaleId?: string; addLong: number; addShort: number; reduceLong: number; reduceShort: number;
   net: number; lastAt: number; legs: number; longAccounts: number; shortAccounts: number; concentration: number | null;
 };
-export type DirectionSummary = { coins: DirectionRow[]; accounts: DirectionRow[]; sinceMs: number; untilMs: number; asOf: number };
+export type DirectionSummary = { coins: DirectionRow[]; accounts: DirectionRow[]; sinceMs: number; untilMs: number; asOf: number; statistics?: StatisticsFreshness };
 const pendingStatistics = new Map<string, Promise<unknown>>();
 function shareStatistics<T>(key: string, request: () => Promise<T>): Promise<T> {
   const pending = pendingStatistics.get(key);

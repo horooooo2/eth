@@ -247,6 +247,14 @@ function migrate(database) {
     CREATE INDEX IF NOT EXISTS idx_fills_time ON fills(time);
     CREATE INDEX IF NOT EXISTS idx_fills_observation_scan ON fills(time,id);
     CREATE INDEX IF NOT EXISTS idx_fills_whale_time ON fills(whale_id, time);
+    CREATE TABLE IF NOT EXISTS statistics_input_version(id INTEGER PRIMARY KEY,version INTEGER NOT NULL);
+    INSERT OR IGNORE INTO statistics_input_version VALUES(1,0);
+    CREATE TABLE IF NOT EXISTS statistics_batches(id TEXT PRIMARY KEY,version INTEGER NOT NULL,as_of INTEGER NOT NULL,roster_key TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS statistics_results(batch_id TEXT NOT NULL,key TEXT NOT NULL,payload_json TEXT NOT NULL,PRIMARY KEY(batch_id,key));
+    CREATE TABLE IF NOT EXISTS statistics_current(id INTEGER PRIMARY KEY,batch_id TEXT NOT NULL);
+    ${['fills','whales'].flatMap(table=>['INSERT','UPDATE','DELETE'].map(action=>
+      `CREATE TRIGGER IF NOT EXISTS statistics_${table}_${action.toLowerCase()} AFTER ${action} ON ${table} BEGIN
+        UPDATE statistics_input_version SET version=version+1 WHERE id=1; END;`)).join('\n')}
 
     CREATE TABLE IF NOT EXISTS events (
       id TEXT PRIMARY KEY,

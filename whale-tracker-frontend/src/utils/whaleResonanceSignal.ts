@@ -3,6 +3,7 @@ import { formatUsd } from '@/utils/format';
 import { estimateLiquidationPx } from '@/utils/liquidationEstimate';
 import { alertEventTime, inferSide, tradeFillSide, type WhaleAlert, type WhaleAlertItem } from '@/utils/whaleAlerts';
 import { coinMatchesWatch, readWatchedCoins } from '@/utils/watchedCoins';
+import type { StatisticsFreshness } from '@/utils/statisticsRead';
 
 const STORAGE_KEY = 'whale-tracker-resonance-window-h';
 
@@ -76,13 +77,14 @@ export interface ResonanceSignal {
 }
 
 export interface ResonanceScanResult {
+  statistics?: StatisticsFreshness;
   hit: boolean;
   primary: ResonanceSignal | null;
   signals: ResonanceSignal[];
   emptyText: string;
 }
 
-function coinKey(coin: string) {
+export function coinKey(coin: string) {
   return String(coin || '').toUpperCase().replace(/^K/, '');
 }
 
@@ -468,6 +470,18 @@ function primaryBySignalSide(signals: ResonanceSignal[]) {
         ? (short.whales > long.whales ? 'short' : 'long')
         : short.usd > long.usd ? 'short' : 'long';
   return [...signals].filter((signal) => signal.side === winningSide).sort(sortSignals)[0] || signals[0] || null;
+}
+
+// Filtering completed per-coin signals preserves the scanner's side selection
+// without re-reading executions when a user changes their watched coins.
+export function selectResonanceSignals(signals: ResonanceSignal[], watched: string[]): ResonanceScanResult {
+  const selected = signals.filter(signal => coinMatchesWatch(signal.coin, watched));
+  return {
+    hit: selected.length > 0,
+    primary: primaryBySignalSide(selected),
+    signals: selected,
+    emptyText: watched.length ? `暂无 ${watched.join(' / ')} 共振或持续加仓信号` : '暂无巨鲸共振或持续加仓信号',
+  };
 }
 
 export function scanResonanceSignals(input: {

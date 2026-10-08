@@ -12,7 +12,7 @@ import {
 import type { RecoQuotes } from '@/utils/recommend';
 import { preferredCoinsState } from '@/utils/watchedCoins';
 import { fetchWhaleResonance } from '@/api';
-import { statisticsErrorText } from '@/utils/statisticsRead';
+import { statisticsErrorText, statisticsFreshnessText } from '@/utils/statisticsRead';
 import { resolveWhaleTitle } from '@/utils/whaleReference';
 import {
   readResonanceConfig,
@@ -128,6 +128,7 @@ function rowWhaleTitle(row: ResonanceOpenRow) {
   <div v-if="ready" class="resonance-wrap notice-wrap">
     <div class="resonance-banner">
       <div class="banner-toolbar">
+        <small v-if="scan.statistics" role="status">{{ statisticsFreshnessText(scan.statistics) }}</small>
         <el-button v-if="readFailed" size="small" @click.stop="loadSignals">重试</el-button>
         <div class="window-box" @click.stop>
           <el-select v-model="windowHours" class="window-select" placeholder="时间范围">

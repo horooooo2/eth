@@ -24,9 +24,11 @@ function aggregateDirectionFacts(facts, { unique = false } = {}) {
   const serialize = row => {
     const { longIds, shortIds, amounts, ...values } = row;
     const added = row.addLong + row.addShort;
+    let largest = 0;
+    for (const amount of amounts.values()) largest = Math.max(largest, amount);
     return { ...values, net: row.addLong - row.addShort - row.reduceLong + row.reduceShort,
       longAccounts: longIds.size, shortAccounts: shortIds.size,
-      concentration: added ? Math.max(0, ...amounts.values()) / added : null };
+      concentration: added ? largest / added : null };
   };
   return { coins: [...coins].map(([coin, row]) => ({ coin, ...serialize(row) })).sort((a, b) => Math.abs(b.net) - Math.abs(a.net)), accounts: [...accounts.values()].map(serialize) };
 }

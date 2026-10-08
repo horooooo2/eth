@@ -25,3 +25,11 @@ test('invalid requests, authentication, rate limits and calculation errors are n
   assert.equal(api.statisticsErrorText(Error('TIMEOUT')),'请求超时');
   assert.equal(api.statisticsErrorText(Error('GATEWAY_503')),'服务暂时繁忙');
 });
+test('completed-result freshness distinguishes pending facts, expired windows and failed refreshes',()=>{
+  const value={asOf:Date.now(),inputVersion:1,currentInputVersion:1,pendingUpdates:false,refreshing:false,stale:false,error:null};
+  assert.match(api.statisticsFreshnessText(value),/^统计截至/);
+  assert.match(api.statisticsFreshnessText({...value,pendingUpdates:true}),/后续数据更新中/);
+  assert.match(api.statisticsFreshnessText({...value,stale:true}),/已过期/);
+  assert.match(api.statisticsFreshnessText({...value,error:'failed'}),/暂未更新/);
+  assert.equal(api.statisticsFreshnessText(), '');
+});

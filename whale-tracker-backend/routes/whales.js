@@ -5,7 +5,6 @@ const {
   getWhaleCacheBatch,
   queryWhaleCache,
   getWhaleSummary,
-  getWhaleResonance,
   refreshSingleWhale,
   refreshAlertHistory,
   listTrades,
@@ -61,38 +60,29 @@ router.get('/summary', (req, res) => {
   }
 });
 
-const sharedStats = require('../lib/sharedQuery').createSharedQuery();
-router.get('/resonance', async (req, res) => {
+router.get('/resonance', (req, res) => {
   const windowHours = Number(req.query.windowHours || 6);
   if (![2, 4, 6, 12, 24].includes(windowHours)) return res.status(400).json({ error: '不支持的共振时间范围' });
   const watchedCoins = String(req.query.coins || 'BTC,ETH').split(',').map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 12);
-  try { res.json(await sharedStats(JSON.stringify(['resonance', windowHours, [...watchedCoins].sort()]), async () => {
-    await require('../lib/sqliteStore').prepareFillProjection();
-    return getWhaleResonance({ windowHours, watchedCoins });
-  })); }
+  try { res.set('Cache-Control','no-store').json(require('../lib/statisticsWorker').resonance(windowHours,watchedCoins)); }
   catch (err) {
-    console.error('[GET /api/whales/resonance]', err);
-    require('../lib/opsMonitor').pushError({source:'resonance',message:err.message});
-    res.status(500).json({ error: '读取共振信号失败' });
+    if(!err.status)console.error('[GET /api/whales/resonance]', err);
+    if(!err.status)require('../lib/opsMonitor').pushError({source:'resonance',message:err.message});
+    res.status(err.status||500).json({ error: err.status===503?err.message:'读取共振信号失败' });
   }
 });
 
-router.get('/direction-summary', async (req, res) => {
+router.get('/direction-summary', (req, res) => {
   const durations = { '15m': 900000, '1h': 3600000, '4h': 14400000, '24h': 86400000 };
   const windowKey = String(req.query.window || '1h');
-  if (!durations[windowKey]) return res.status(400).json({ error: '不支持的时间范围' });
+  if (!Object.hasOwn(durations,windowKey)) return res.status(400).json({ error: '不支持的时间范围' });
   try {
-    const result = await sharedStats('direction:' + windowKey, async () => {
-      await require('../lib/sqliteStore').prepareFillProjection();
-      const now = Date.now(), sinceMs = now - durations[windowKey];
-      return { ...require('../lib/sqliteStore').loadDirectionSummary(sinceMs, now), sinceMs, untilMs: now, asOf: now,
-        basis: 'stored-executions', coverage: 'locally-observed', executionCoverage: require('../lib/fillBackfill').getCoverageStatus() };
-    });
-    res.json(result);
+    const result=require('../lib/statisticsWorker').direction(windowKey);
+    res.set('Cache-Control','no-store').type('json').send(result);
   } catch (err) {
-    console.error('[direction-summary]', err);
-    require('../lib/opsMonitor').pushError({source:'direction-summary',message:err.message});
-    res.status(500).json({ error: '方向统计暂不可用' });
+    if(!err.status)console.error('[direction-summary]', err);
+    if(!err.status)require('../lib/opsMonitor').pushError({source:'direction-summary',message:err.message});
+    res.status(err.status||500).json({ error: err.status===503?err.message:'方向统计暂不可用' });
   }
 });
 

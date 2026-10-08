@@ -1,5 +1,16 @@
 // Retry only transient read failures. Invalid queries and calculation errors
 // must remain visible; all callers of the same statistics key share one retry.
+export type StatisticsFreshness = {
+  asOf: number | null; inputVersion: number | null; currentInputVersion: number;
+  pendingUpdates: boolean; refreshing: boolean; stale: boolean; error: string | null;
+};
+export function statisticsFreshnessText(value?: StatisticsFreshness): string {
+  if (!value?.asOf) return '';
+  const time = new Date(value.asOf).toLocaleTimeString('zh-CN', { hour12: false });
+  const state = value.error ? '暂未更新' : value.stale ? '结果已过期，更新中' : value.pendingUpdates ? '后续数据更新中' : '';
+  return `统计截至 ${time}${state ? ` · ${state}` : ''}`;
+}
+
 export function statisticsErrorText(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (/TIMEOUT|timed out|timeout/i.test(message)) return '请求超时';
