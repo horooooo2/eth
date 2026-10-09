@@ -66,6 +66,7 @@ const FILES = [
   'lib/strategyShadow.js',
   'lib/strategyShadowStore.js',
   'lib/tradfiIntel.js',
+  'lib/marketComments.js',
   'lib/tradfiWhales.js',
   'lib/binanceTradfiTrade.js',
   'lib/binanceAiLedger.js',

@@ -161,7 +161,7 @@ async function confirmPrefs() {
 
 <template>
   <div class="coin-prefs" :class="{ sidebar: props.variant === 'sidebar' }">
-    <button
+    <slot name="trigger" :open="openPrefs"><button
       type="button"
       class="prefs-trigger"
       :class="{ sidebar: props.variant === 'sidebar' }"
@@ -180,7 +180,7 @@ async function confirmPrefs() {
         />
       </svg>
       <span>{{ props.variant === 'sidebar' ? '设置' : '币种' }}</span>
-    </button>
+    </button></slot>
     <el-dialog
       v-model="prefsVisible"
       title="设置"

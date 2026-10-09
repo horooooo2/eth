@@ -94,9 +94,9 @@ export function createRadarClient(deps={
     return bootstrap;
   }
   return {state,charts,loading,error,connected,status,ensure,
-    setActive(value:boolean){active=value;clearTimeout(retry);if(value){if(!connected.value)status.value='connecting';void ensure();}else disconnect();},
-    setWatches(symbols:string[]){watches=[...new Set(symbols)].slice(0,30);if(connected.value)send({type:'watch',symbols:watches});},
-    selectChart(symbol:string,interval:'5m'|'1h'|'1d'){const chart={symbol,interval};chartSubscriptions.set(interval==='1d'?'long':'short',chart);if(connected.value)send({type:'chart',...chart});},
+    setActive(value:boolean){if(active===value)return;active=value;clearTimeout(retry);if(value){if(!connected.value)status.value='connecting';void ensure();}else disconnect();},
+    setWatches(symbols:string[]){const next=[...new Set(symbols)].slice(0,30);if(JSON.stringify(next)===JSON.stringify(watches))return;watches=next;if(connected.value)send({type:'watch',symbols:watches});},
+    selectChart(symbol:string,interval:'5m'|'1h'|'1d'){const key=interval==='1d'?'long':'short',previous=chartSubscriptions.get(key);if(previous?.symbol===symbol&&previous.interval===interval)return;const chart={symbol,interval};chartSubscriptions.set(key,chart);if(connected.value)send({type:'chart',...chart});},
   };
 }
 export const radarClient=createRadarClient();

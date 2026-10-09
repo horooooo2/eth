@@ -1,8 +1,10 @@
 :root {
-  --bg: #0a0d14;
+  --workspace-bg: #0a0d14;
+  --workspace-surface: #11161f;
+  --bg: var(--workspace-bg);
   --bg-2: #0e1219;
-  --card: #11161f;
-  --panel: #11161f;
+  --card: var(--workspace-surface);
+  --panel: var(--workspace-surface);
   --panel-2: #161c28;
   --panel-3: #1c2433;
   --text: #e6edf7;
@@ -32,10 +34,12 @@
 }
 
 html.light {
-  --bg: #f5f7fa;
+  --workspace-bg: #f5f7fa;
+  --workspace-surface: #ffffff;
+  --bg: var(--workspace-bg);
   --bg-2: #eef1f6;
-  --card: #ffffff;
-  --panel: #ffffff;
+  --card: var(--workspace-surface);
+  --panel: var(--workspace-surface);
   --panel-2: #f3f5f9;
   --panel-3: #e8ecf3;
   --text: #2c3e50;

@@ -51,3 +51,6 @@ export function writeTradFiWatch(symbols: string[]) {
   tradfiWatch.value = normalizeWatch(symbols);
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(tradfiWatch.value)); } catch { /* 当前会话仍可使用 */ }
 }
+
+const WATCH_KEY='whale-tracker-long-trend-watch-v1';
+export const longTrendWatch=ref<string[]>((()=>{try{const stored=JSON.parse(localStorage.getItem(WATCH_KEY)||'null');if(Array.isArray(stored))return [...new Set(stored.filter((s):s is string=>typeof s==='string'&&/^[A-Z0-9]{3,30}$/.test(s)))].slice(0,30);}catch{}return ['WDCUSDT','KUAISHOUUSDT','HK1810USDT'];})());

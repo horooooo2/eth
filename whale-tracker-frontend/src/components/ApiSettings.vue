@@ -30,9 +30,9 @@ async function save() {
 
 <template>
   <div class="api-settings" :class="{ sidebar: variant === 'sidebar' }">
-    <button type="button" class="api-trigger" :class="{ sidebar: variant === 'sidebar' }" title="AI 分析设置" @click="open">
+    <slot name="trigger" :open="open"><button type="button" class="api-trigger" :class="{ sidebar: variant === 'sidebar' }" title="AI 分析设置" @click="open">
       {{ variant === 'sidebar' ? 'AI' : 'AI 分析设置' }}
-    </button>
+    </button></slot>
     <el-dialog v-model="visible" title="AI 分析设置" width="420px" append-to-body destroy-on-close>
       <p class="intro">DeepSeek 密钥用于市场简报、宏观数据及巨鲸 AI 分析；交易所 API 配置已从网站移除。</p>
       <template v-if="isLoggedIn">

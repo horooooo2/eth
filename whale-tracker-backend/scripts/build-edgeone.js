@@ -185,6 +185,7 @@ const libFiles = [
   'lib/markets.js',
   'lib/tradfiMarkets.js',
   'lib/tradfiIntel.js',
+  'lib/marketComments.js',
   'lib/tradfiWhales.js',
   'lib/tradfiRangeStrategy.js',
   'lib/binanceTradfiTrade.js',

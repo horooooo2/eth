@@ -11,6 +11,27 @@ function setup(){
  }});
  return {client,sockets,requests:()=>requests,open(s){s.readyState=1;s.onopen();},message(s,msg){s.onmessage({data:JSON.stringify(msg)});}};
 }
+
+test('background radar stays synchronized and repeated activation reuses the socket and snapshot',async()=>{
+ const h=setup(),c=h.client;
+ try{
+  c.setActive(true);await c.ensure();const socket=h.sockets[0];h.open(socket);
+  h.message(socket,{type:'caughtUp',epoch:'epoch',seq:0});
+  c.setWatches(['A']);c.selectChart('A','1h');c.selectChart('WDC','1d');
+  const sent=socket.sent.length;
+  for(let i=0;i<5;i++){
+   // A preloaded page remains active as a transport while its view is hidden.
+   c.setActive(true);await c.ensure();c.setWatches(['A']);c.selectChart('A','1h');c.selectChart('WDC','1d');
+   h.message(socket,{type:'radarDelta',epoch:'epoch',seq:i+1,patch:{quotes:{upserts:[{symbol:'A',lastPrice:String(20+i)}],remove:[]}}});
+  }
+  assert.equal(c.connected.value,true);assert.equal(c.state.value.quotes[0].lastPrice,'24');
+  assert.equal(h.requests(),1);assert.equal(h.sockets.length,1);assert.equal(socket.sent.length,sent);
+  // The component must not bind transport activation to tab visibility again.
+  const component=fs.readFileSync(require.resolve('../src/components/TradFiBoard.vue'),'utf8');
+  assert.doesNotMatch(component,/watchVue\(\(\)=>props\.active,value=>radarClient\.setActive/);
+  assert.doesNotMatch(component,/radarClient\.setActive\(props\.active\)/);
+ }finally{c.setActive(false);assert.equal(c.connected.value,false);assert.equal(c.status.value,'idle');}
+});
 test('one bootstrap, replay before caughtUp, duplicates ignored and chart changes without HTTP',async()=>{
  const h=setup(),c=h.client;
  try{

@@ -1,5 +1,5 @@
 /* Shared radar appearance, matching the supplied dark TradFi layout. */
-.radar{--bg:#0b0e14;--surface:#131823;--surface2:#1a202c;--line:#2a2f3e;--line-soft:#2a2f3e;--text:#e2e8f0;--muted:#8f9bb3;--green:#00e676;--red:#ff4d4d;--gold:#f59e0b;--hover:#242c3d;--mono:Consolas,'SFMono-Regular',monospace;background:var(--bg)}
+.radar{--bg:var(--workspace-bg);--surface:var(--workspace-surface);--surface2:var(--panel-2);--line:#2a2f3e;--line-soft:#2a2f3e;--text:#e2e8f0;--muted:#8f9bb3;--green:#00e676;--red:#ff4d4d;--gold:#f59e0b;--hover:#242c3d;--mono:Consolas,'SFMono-Regular',monospace;background:var(--bg)}
 .radar-content{padding:0 24px 24px}
 .trend-tabs{gap:24px;min-height:56px;margin:0 -24px;padding:0 24px;background:var(--surface)}
 .trend-tabs button{min-height:56px;font-size:15px;padding:0 0 2px}
@@ -103,3 +103,20 @@
 @media(max-width:1200px){.watch-panel,.selected-panel{height:auto;max-height:none}.watch-panel .watch-cards{grid-template-rows:repeat(3,minmax(220px,1fr))}}
 @media(max-width:900px){.watch-panel .watch-cards{grid-template-rows:repeat(2,minmax(220px,1fr))}}
 @media(max-width:560px){.watch-panel .watch-cards{grid-template-rows:repeat(3,minmax(220px,1fr))}}
+
+/* Both trend views use the short-term panel height. Extra summary content
+   scrolls inside its existing container instead of stretching the chart. */
+@media(min-width:901px){
+  .watch-layout{--radar-panel-height:480px;--radar-card-rows:2}
+  .watch-panel,.selected-panel{height:var(--radar-panel-height);min-height:var(--radar-panel-height);max-height:var(--radar-panel-height)}
+  .watch-panel .watch-cards{grid-template-rows:repeat(var(--radar-card-rows),minmax(0,1fr))}
+  .watch-card{min-height:0}
+  .selected-summary{flex:1 1 0}
+  .chart-heading{height:26px;min-height:26px;flex-wrap:nowrap}
+  .chart-heading>div:first-child{min-width:0;overflow:hidden;white-space:nowrap;flex-wrap:nowrap}
+  .chart-heading>div:first-child span{overflow:hidden;text-overflow:ellipsis}
+}
+/* The existing two-column card layout needs three rows on narrower desktops. */
+@media(min-width:901px) and (max-width:1200px){
+  .watch-layout{--radar-panel-height:764px;--radar-card-rows:3}
+}

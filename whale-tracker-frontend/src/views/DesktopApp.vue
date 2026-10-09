@@ -2,8 +2,7 @@
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { http, fetchQuotes } from '@/api';
-import CoinPreferences from '@/components/CoinPreferences.vue';
-import ApiSettings from '@/components/ApiSettings.vue';
+import DesktopSettings from '@/components/DesktopSettings.vue';
 import NewsList from '@/components/NewsList.vue';
 import WhaleAlertDock from '@/components/WhaleAlertDock.vue';
 import WhaleList from '@/components/WhaleList.vue';
@@ -29,36 +28,31 @@ import {
 import { useRealtime } from '@/composables/useRealtime';
 import type { RecoQuotes } from '@/utils/recommend';
 import { preferredCoinsState } from '@/utils/watchedCoins';
-import { coinIconCandidates } from '@/utils/coinIcons';
 import { unlockAlertSound } from '@/utils/alertSound';
 import type { WhaleProfile } from '@/types';
 
 const StrategyWorkspace = defineAsyncComponent(() => import('@/components/strategy/StrategyWorkspace.vue'));
+const MarketNews = defineAsyncComponent(() => import('@/components/MarketNews.vue'));
+const newsVisited = ref(false);
 const strategyVisited = ref(false);
 const whaleStore = useWhaleStore();
 
-const brandIcons = coinIconCandidates('BTC');
-const brandIconIdx = ref(0);
-const brandIcon = computed(() => brandIcons[brandIconIdx.value] || '');
-
-function onBrandIconError() {
-  if (brandIconIdx.value < brandIcons.length - 1) brandIconIdx.value += 1;
-}
-
 const SIDE_TAB_STORAGE_KEY = 'whale-tracker:side-tab';
-function readSideTab(): 'virtual' | 'tradfi' | 'strategy' {
+function readSideTab(): 'virtual' | 'tradfi' | 'strategy' | 'news' {
   try {
     const saved = window.localStorage.getItem(SIDE_TAB_STORAGE_KEY);
     if (saved === 'strategy') return STRATEGY_WORKSPACE_ENABLED ? 'strategy' : 'tradfi';
-    return saved === 'tradfi' ? saved : 'virtual';
+    return saved === 'tradfi' || saved === 'news' ? saved : 'virtual';
   } catch { return 'virtual'; }
 }
-const sideTab = ref<'virtual' | 'tradfi' | 'strategy'>(readSideTab());
+const sideTab = ref<'virtual' | 'tradfi' | 'strategy' | 'news'>(readSideTab());
 watch(sideTab, (tab) => {
   if (tab === 'strategy') strategyVisited.value = true;
+  if (tab === 'news') newsVisited.value = true;
   try { window.localStorage.setItem(SIDE_TAB_STORAGE_KEY, tab); } catch { /* storage unavailable */ }
 });
 if (sideTab.value === 'strategy') strategyVisited.value = true;
+if (sideTab.value === 'news') newsVisited.value = true;
 const radarRef = ref<InstanceType<typeof TradFiBoard> | null>(null);
 const macroRef = ref<InstanceType<typeof DataModule> | null>(null);
 let pageLoader: ReturnType<typeof createPageLoadScheduler<'virtual' | 'tradfi'>> | null = null;
@@ -268,12 +262,12 @@ async function startAppSession() {
     },
     tradfi: async () => { await radarRef.value?.initialize(); },
   });
-  const primary = sideTab.value === 'strategy' ? 'virtual' : sideTab.value;
+  const primary = sideTab.value === 'tradfi' ? 'tradfi' : 'virtual';
   await pageLoader.start(primary, primary === 'virtual' ? 'tradfi' : 'virtual',
     () => sessionStarted && generation === sessionGeneration);
   if (!sessionStarted || generation !== sessionGeneration) return;
 }
-watch(sideTab, (tab) => { if (tab !== 'strategy' && sessionStarted && pageLoader) void pageLoader.load(tab); });
+watch(sideTab, (tab) => { if ((tab === 'virtual' || tab === 'tradfi') && sessionStarted && pageLoader) void pageLoader.load(tab); });
 
 function stopAppSession() {
   sessionStarted = false;
@@ -365,62 +359,12 @@ onUnmounted(() => {
     <WhaleAlertDock :dock-active="true" @open-alert="sideTab = 'virtual'" @focus-whale="onFocusWhaleCard" @focus-whale-trades="onFocusWhaleTrades" />
 
     <aside class="sidebar" aria-label="主导航">
-      <div
-        class="socket-dot"
-        :class="socketMonitor.status"
-        :title="socketMonitor.title"
-        :aria-label="socketMonitor.title"
-      >
-        <span class="socket-core" />
-      </div>
-      <button
-        type="button"
-        class="nav-item"
-        :class="{ active: sideTab === 'virtual' }"
-        title="Virtual"
-        @click="sideTab = 'virtual'"
-      >
-        <span class="nav-mark brand" aria-hidden="true">
-          <img class="brand-logo hl" :src="brandIcon" alt="" @error="onBrandIconError" />
-        </span>
-        <span>Virtual</span>
-      </button>
-      <button
-        type="button"
-        class="nav-item"
-        :class="{ active: sideTab === 'tradfi' }"
-        title="雷达"
-        @click="sideTab = 'tradfi'"
-      >
-        <span class="nav-mark radar" aria-hidden="true">
-          <svg class="radar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="9" />
-            <circle cx="12" cy="12" r="5" />
-            <path d="M12 12 18.4 5.6" />
-            <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
-            <circle cx="7" cy="16" r="1.5" fill="currentColor" stroke="none" />
-          </svg>
-        </span>
-        <span>雷达</span>
-      </button>
-
-      <button v-if="STRATEGY_WORKSPACE_ENABLED" type="button" class="nav-item" :class="{ active: sideTab === 'strategy' }" title="策略交易" @click="sideTab = 'strategy'">
-        <span class="nav-mark radar" aria-hidden="true"><svg class="radar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 19V5m0 14h16M7 15l4-5 4 3 5-8"/><path d="M16 5h4v4"/></svg></span><span>策略交易</span>
-      </button>
-      <div class="bottom-nav">
-        <CoinPreferences variant="sidebar" :active-market="sideTab === 'tradfi' ? 'tradfi' : 'virtual'" />
-        <ApiSettings variant="sidebar" />
-        <button
-          type="button"
-          class="nav-item account"
-          :title="authUser?.username || '账户'"
-          @click="onLogout"
-        >
-          <span class="nav-mark user">{{ (authUser?.username || 'U').slice(0, 1).toUpperCase() }}</span>
-          <span class="account-name">{{ authUser?.username || '账户' }}</span>
-        </button>
-      </div>
-
+      <div class="sidebar-connection"><div class="socket-dot" :class="socketMonitor.status" :title="socketMonitor.title" :aria-label="socketMonitor.title"><span class="socket-core" /></div><span :title="socketMonitor.title">{{ socketMonitor.status === 'connected' ? '数据连接正常' : socketMonitor.status === 'connecting' ? '正在连接数据' : '数据连接待恢复' }}</span></div>
+      <button type="button" class="nav-item" :class="{active:sideTab==='virtual'}" :aria-pressed="sideTab==='virtual'" title="虚拟币" @click="sideTab='virtual'"><span class="nav-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3 3v14h14M6 12l3-4 3 2 5-6"/></svg></span><span class="nav-label">虚拟币</span></button>
+      <button type="button" class="nav-item" :class="{active:sideTab==='tradfi'}" :aria-pressed="sideTab==='tradfi'" title="雷达" @click="sideTab='tradfi'"><span class="nav-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="8"/><circle cx="10" cy="10" r="4"/><path d="m10 10 6-6"/></svg></span><span class="nav-label">雷达</span></button>
+      <button v-if="STRATEGY_WORKSPACE_ENABLED" type="button" class="nav-item" :class="{active:sideTab==='strategy'}" title="策略交易" @click="sideTab='strategy'"><span class="nav-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3 3v14h14M6 13l4-5 4 2 3-6"/></svg></span><span class="nav-label">策略交易</span></button>
+      <button type="button" class="nav-item" :class="{active:sideTab==='news'}" :aria-pressed="sideTab==='news'" title="新闻" @click="sideTab='news'"><span class="nav-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><rect x="3" y="2" width="14" height="16" rx="2"/><path d="M6 6h8M6 10h8M6 14h5"/></svg></span><span class="nav-label">新闻</span></button>
+      <div class="bottom-nav"><DesktopSettings :username="authUser?.username" :active-market="sideTab==='tradfi'?'tradfi':'virtual'" @logout="onLogout" /></div>
     </aside>
 
     <div class="layout" :class="{ 'is-tradfi': sideTab !== 'virtual' }">
@@ -494,6 +438,7 @@ onUnmounted(() => {
         </div>
       </div>
       </div>
+      <MarketNews v-if="newsVisited" v-show="sideTab === 'news'" :active="sideTab === 'news'" class="tradfi-host" />
       <StrategyWorkspace v-if="STRATEGY_WORKSPACE_ENABLED && strategyVisited" v-show="sideTab === 'strategy'" :active="sideTab === 'strategy'" class="tradfi-host" />
       <TradFiBoard v-if="RADAR_ENABLED" :active="sideTab === 'tradfi'" ref="radarRef" v-show="sideTab === 'tradfi'" class="tradfi-host" />
       <div v-else v-show="sideTab === 'tradfi'" class="tradfi-host" role="status" style="padding: 24px">
@@ -555,23 +500,16 @@ onUnmounted(() => {
   border-radius: 12px !important;
 }
 
-.sidebar {
-  width: 72px;
-  background: var(--bg-2);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 20px 0 16px;
-  flex-shrink: 0;
-  z-index: 10;
-  overflow: hidden;
-}
+.sidebar{width:116px;background:var(--workspace-surface);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:stretch;padding:20px 8px 18px;flex-shrink:0;z-index:10;overflow-y:auto;overflow-x:hidden}
+.sidebar{box-sizing:border-box}
+.nav-mark svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.sidebar-connection{display:flex;align-items:center;gap:5px;margin-top:0;color:var(--muted);font-size:10px;white-space:nowrap}
+.sidebar-connection>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .sidebar .socket-dot {
   position: relative;
   width: 28px;
   height: 28px;
-  margin-bottom: 28px;
+  margin-bottom: 0;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -647,126 +585,13 @@ onUnmounted(() => {
     opacity: 0;
   }
 }
-.sidebar .nav-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  width: 56px;
-  min-height: 56px;
-  height: auto;
-  padding: 6px 2px;
-  border-radius: 14px;
-  color: var(--muted);
-  font-size: 8px;
-  font-weight: 600;
-  font-family: inherit;
-  line-height: 1.15;
-  letter-spacing: -0.02em;
-  text-align: center;
-  word-break: break-word;
-  gap: 2px;
-  margin-bottom: 4px;
-  cursor: pointer;
-  background: transparent;
-  border: none;
-  transition: background 0.15s, color 0.15s;
-  box-sizing: border-box;
-}
-.sidebar .nav-item .nav-mark {
-  width: 24px;
-  height: 24px;
-  border-radius: 7px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  background: var(--panel-2);
-  color: inherit;
-  overflow: hidden;
-}
-.sidebar .nav-item .nav-mark.brand {
-  background: transparent;
-  border-radius: 0;
-  position: relative;
-}
-.sidebar .nav-badge {
-  position: absolute;
-  top: -5px;
-  right: -6px;
-  z-index: 2;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 3px;
-  border-radius: 999px;
-  background: var(--red);
-  color: #fff;
-  font-size: 9px;
-  font-weight: 800;
-  line-height: 14px;
-  text-align: center;
-  box-sizing: border-box;
-  pointer-events: none;
-  box-shadow: 0 0 0 1px var(--bg-2);
-}
-.sidebar .nav-item .nav-mark .brand-logo {
-  width: 22px;
-  height: 22px;
-  display: block;
-}
-.sidebar .nav-item .nav-mark .brand-logo.hl {
-  border-radius: 50%;
-  object-fit: cover;
-}
-.sidebar .nav-item .nav-mark.radar {
-  background: transparent;
-  color: inherit;
-}
-.sidebar .nav-item .radar-icon {
-  width: 22px;
-  height: 22px;
-  display: block;
-}
-.sidebar .nav-item .nav-mark.user {
-  background: var(--panel-3);
-  border-radius: 50%;
-  font-size: 11px;
-}
-.sidebar .nav-item.active {
-  background: var(--panel-3);
-  color: var(--yellow);
-}
-.sidebar .nav-item.active .nav-mark.user {
-  background: color-mix(in srgb, var(--yellow) 18%, var(--panel-3));
-  color: var(--yellow);
-}
-.sidebar .nav-item:hover {
-  background: var(--panel-2);
-  color: var(--text);
-}
-.sidebar .bottom-nav {
-  margin-top: auto;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  border-top: 1px solid var(--border);
-  padding-top: 16px;
-  width: 100%;
-}
-.sidebar .bottom-nav .nav-item {
-  width: 56px;
-  height: 48px;
-  font-size: 10px;
-}
-.sidebar .bottom-nav .account-name {
-  max-width: 52px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+.sidebar .nav-item{display:flex;align-items:center;gap:8px;width:100%;min-height:44px;flex:none;margin-bottom:6px;padding:12px 8px;border:0;border-radius:8px;background:transparent;color:var(--muted);font:inherit;font-size:13px;text-align:left;white-space:nowrap;cursor:pointer;transition:background .15s,color .15s}
+.sidebar .nav-mark{display:grid;place-items:center;width:20px;height:20px;flex:none}
+.sidebar .nav-item.active{background:color-mix(in srgb,var(--yellow) 9%,transparent);color:var(--yellow)}
+.sidebar .nav-item:hover{background:var(--panel-2);color:var(--text)}
+.sidebar .nav-item:focus-visible{outline:2px solid var(--yellow);outline-offset:2px}
+.sidebar .bottom-nav{margin-top:auto;padding-top:16px;border-top:1px solid var(--border);width:100%}
+@media(max-width:1000px){.sidebar{width:70px;padding:22px 10px 16px}.sidebar-connection>span,.nav-label{display:none}.sidebar-connection{justify-content:center;margin-bottom:22px}.sidebar .nav-item{justify-content:center;padding:12px 0}}
 
 .layout {
   flex: 1;

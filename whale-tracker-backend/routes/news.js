@@ -4,6 +4,13 @@ const { getCalendar } = require('../lib/calendar');
 const { readConfig, writeConfig } = require('../lib/config');
 
 const router = express.Router();
+const { getComments } = require('../lib/marketComments');
+
+router.get('/comments', (req, res) => {
+  const symbol = String(req.query.symbol || '').trim().toUpperCase();
+  if (!/^[A-Z0-9]{1,26}USDT$/.test(symbol)) return res.status(400).json({ error: '请选择有效标的' });
+  res.json(getComments(symbol));
+});
 
 /** GET /api/news — 加密新闻 + 金十快讯，已做关键词匹配 */
 router.get('/', async (req, res) => {

@@ -1,0 +1,30 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const ts = require('typescript');
+const data = {};
+let reads = 0, writes = 0;
+const storage = { getItem: key => { reads++; return data[key] ?? null; }, setItem: (key, value) => { writes++; data[key] = value; }, removeItem: key => { delete data[key]; } };
+const localStorage = new Proxy(storage, { ownKeys: () => Object.keys(data), getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true }) });
+const output = ts.transpileModule(fs.readFileSync(path.join(__dirname, '../src/utils/newsChatHistory.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+const context = { exports: {}, localStorage, Date }; vm.runInNewContext(output, context);
+const api = context.exports;
+test('seven day boundary, invalid and future messages are excluded', () => {
+  const now = Date.now(), item = { role: 'user', content: 'hello', at: now };
+  const rows = api.cleanNewsChat([item, { ...item, at: now - api.NEWS_CHAT_TTL }, { ...item, at: now + 1 }, { ...item, role: 'system' }, { ...item, at: now - api.NEWS_CHAT_TTL + 1 }], now);
+  assert.equal(rows.length, 2);
+});
+test('account and article isolation, storage persistence and expired record cleanup', () => {
+  const a = api.chatKey('one', 'WDCUSDT', 'article'), b = api.chatKey('two', 'WDCUSDT', 'article');
+  assert.notEqual(a, b); assert.notEqual(a, api.chatKey('one', 'WDCUSDT', 'another'));
+  api.saveNewsChat(a, [{ role: 'user', content: 'question', at: Date.now() }]);
+  assert.equal(api.readNewsChat(a).length, 1); assert.equal(api.readNewsChat(b).length, 0);
+  data[b] = JSON.stringify([{ role: 'user', content: 'old', at: Date.now() - api.NEWS_CHAT_TTL }]);
+  const before = writes;
+  api.pruneNewsChats(); assert.equal(data[b], undefined); assert.equal(api.readNewsChat(a).length, 1);
+  assert.equal(writes, before, 'unchanged conversations must not be rewritten');
+  const readCount = reads;
+  api.pruneNewsChats(); assert.equal(reads, readCount, 'repeated cleanup must not scan storage');
+});

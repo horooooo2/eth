@@ -2,7 +2,7 @@
 import { computed, nextTick, onUnmounted, ref, watch as watchVue } from 'vue';
 import { radarClient, sortRadarRows } from '@/utils/radarRealtime';
 import { scrollRadarToTop } from '@/utils/radarScroll';
-import { contractLogo } from '@/utils/contractLogo';
+import ContractLogo from './ContractLogo.vue';
 import CandlestickChart from './CandlestickChart.vue';
 import ContractDetailLink from './ContractDetailLink.vue';
 import RadarLongTrend from '@/components/RadarLongTrend.vue';
@@ -53,7 +53,6 @@ const chartError = ref('');
 const selectedMarketCap = ref<string | null>(null);
 const marketCapSource = ref('');
 const marketCapLoading = ref(false);
-const failedLogos = ref(new Set<string>());
 const WATCH_PAGE_SIZE = 6;
 const MARKET_PAGE_SIZE = 10;
 let started = false;
@@ -247,12 +246,6 @@ function formatMarketCap(raw: string | null) {
   if (value >= 1e6) return `$${(value / 1e6).toFixed(1)}M`;
   return `$${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 }
-function logoUrl(symbol: string) {
-  const market=catalogBySymbol.value.get(symbol)||availableContracts.value.find(item=>item.symbol===symbol);
-  return contractLogo(symbol,assetType(symbol),market?.baseAsset);
-}
-function logoFailed(symbol: string) { return failedLogos.value.has(symbol); }
-function markLogoFailed(symbol: string) { failedLogos.value = new Set(failedLogos.value).add(symbol); }
 async function loadChart(_silent = false) {
   radarClient.selectChart(selected.value,chartInterval.value);
   applyChart();
@@ -462,10 +455,11 @@ watchVue(watch, (symbols) => {
 });
 watchVue(() => [selected.value, chartInterval.value] as const, () => { chartBars.value = []; if (started) void loadChart(); });
 watchVue(selected, (symbol) => { if (started) void loadMarketCap(symbol); });
-watchVue(()=>props.active,value=>radarClient.setActive(value),{immediate:true});
 function initialize() {
   return initialLoad ||= (async()=>{
-    radarClient.setActive(props.active);
+    // The page scheduler preloads both markets. Visibility must not close the
+    // transport: hidden radar state continues receiving deltas alongside crypto.
+    radarClient.setActive(true);
     await radarClient.ensure();syncSnapshot();
     if(!watch.value.includes(selected.value))selected.value=watch.value[0]||'BTCUSDT';
     started=true;
@@ -508,7 +502,7 @@ onUnmounted(()=>{
           <div class="watch-cards">
             <article v-for="row in pagedWatchRows" :key="row.symbol" class="watch-card" :class="{ chosen: selected === row.symbol }" @click="selectSymbol(row.symbol)">
               <button type="button" class="watch-select" :aria-label="`查看 ${row.symbol}`" @click="selectSymbol(row.symbol)">
-                <span class="watch-card-top"><span class="asset-logo"><img v-if="logoUrl(row.symbol) && !logoFailed(row.symbol)" :src="logoUrl(row.symbol)" :alt="`${assetLabel(row.symbol)} logo`" @error="markLogoFailed(row.symbol)"><span v-else>{{ row.symbol.replace(/USDT$/, '').slice(0, 2) }}</span></span><span class="watch-name" :title="`${assetLabel(row.symbol)} · ${row.symbol}`">{{ row.symbol.replace(/USDT$/, '') }}<small>{{ assetType(row.symbol) === 'TRADFI' ? assetLabel(row.symbol) : 'USDT 永续' }}</small></span></span>
+                <span class="watch-card-top"><ContractLogo :symbol="row.symbol" :asset-type="assetType(row.symbol)" :base-asset="catalogBySymbol.get(row.symbol)?.baseAsset" /><span class="watch-name" :title="`${assetLabel(row.symbol)} · ${row.symbol}`">{{ row.symbol.replace(/USDT$/, '') }}<small>{{ assetType(row.symbol) === 'TRADFI' ? assetLabel(row.symbol) : 'USDT 永续' }}</small></span></span>
                 <span class="watch-price"><span class="watch-price-value">{{ formatPrice(row.quote?.lastPrice) }}</span><small>USDT</small></span>
                 <b class="watch-change" :class="changeClass(row.change)">{{ formatChange(row.change) }}</b>
                 <span class="watch-card-bottom"><span>{{ intervals.find((item) => item.id === activeInterval)?.label }}涨跌</span><b v-if="isQuoteStale(row.quote)" class="neutral">缓存</b></span>
@@ -524,7 +518,7 @@ onUnmounted(()=>{
 
         <section class="market-panel selected-panel">
           <header class="selected-summary">
-            <div class="selected-name"><span class="asset-logo large"><img v-if="logoUrl(selected) && !logoFailed(selected)" :src="logoUrl(selected)" :alt="`${assetLabel(selected)} logo`" @error="markLogoFailed(selected)"><span v-else>{{ assetLabel(selected).slice(0, 2) }}</span></span><span><b>{{ assetLabel(selected) }}</b><small>{{ selected }} · {{ selectedAsset?.assetType === 'TRADFI' ? '传统金融' : '虚拟币' }}</small></span><button type="button" class="follow-icon" :class="{ active: isWatched(selected) }" :aria-label="isWatched(selected) ? '取消关注' : '添加关注'" :title="isWatched(selected) ? '取消关注' : '添加关注'" @click="toggleWatch(selected)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.5 2.6 5.3 5.9.9-4.25 4.15 1 5.85L12 16.9l-5.25 2.8 1-5.85L3.5 9.7l5.9-.9L12 3.5Z"/></svg></button></div>
+            <div class="selected-name"><ContractLogo :symbol="selected" :asset-type="assetType(selected)" :base-asset="selectedAsset?.baseAsset" large /><span><b>{{ assetLabel(selected) }}</b><small>{{ selected }} · {{ selectedAsset?.assetType === 'TRADFI' ? '传统金融' : '虚拟币' }}</small></span><button type="button" class="follow-icon" :class="{ active: isWatched(selected) }" :aria-label="isWatched(selected) ? '取消关注' : '添加关注'" :title="isWatched(selected) ? '取消关注' : '添加关注'" @click="toggleWatch(selected)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.5 2.6 5.3 5.9.9-4.25 4.15 1 5.85L12 16.9l-5.25 2.8 1-5.85L3.5 9.7l5.9-.9L12 3.5Z"/></svg></button></div>
             <div class="selected-metrics"><div><span>最新价格</span><b>{{ formatPrice(selectedQuote?.lastPrice || selectedMarketQuote?.lastPrice) }}</b></div><div><span>{{ intervals.find((item) => item.id === activeInterval)?.label }}涨跌</span><b :class="changeClass(changeValue(selectedQuote || undefined, activeInterval))">{{ formatChange(changeValue(selectedQuote || undefined, activeInterval)) }}</b></div><div><span>滚动 24 小时</span><b :class="changeClass(changeValue(selectedQuote || selectedMarketQuote || undefined, '24h'))">{{ formatChange(changeValue(selectedQuote || selectedMarketQuote || undefined, '24h')) }}</b></div><div><span>24h 合约成交额</span><b>{{ formatVolume((selectedQuote || selectedMarketQuote)?.quoteVolume24h || null) }} USDT</b></div><div><span>{{ intervals.find(item=>item.id===activeInterval)?.label }}最高价</span><b>{{formatPrice(selectedRange.high)}}</b><small v-if="selectedRange.stale && selectedRange.high">缓存区间</small></div><div><span>{{ intervals.find(item=>item.id===activeInterval)?.label }}最低价</span><b>{{formatPrice(selectedRange.low)}}</b></div><div><span>市值{{ marketCapSource ? ` · ${marketCapSource}` : '' }}</span><b>{{ marketCapLoading ? '加载中…' : formatMarketCap(selectedMarketCap) }}</b></div></div>
           </header>
           <div class="chart-heading"><div><b>K 线走势</b><span>{{ chartInterval }} · {{ chartBars.length }} 根 K 线</span></div><div class="periods chart-periods"><button v-for="item in [{id:'5m',label:'5分'},{id:'1h',label:'1小时'}] as const" :key="item.id" type="button" :class="{ active: chartInterval === item.id }" @click="chartInterval = item.id">{{ item.label }}</button></div></div>
@@ -546,7 +540,7 @@ onUnmounted(()=>{
             <thead><tr><th>合约</th><th>类别</th><th :aria-sort="marketSort==='price'?(marketOrder==='asc'?'ascending':'descending'):'none'"><button class="sort-heading" @click="sortMarket('price')">最新价格 {{marketSort==='price'?(marketOrder==='asc'?'↑':'↓'):'↕'}}</button></th><th :aria-sort="marketSort==='change'?(marketOrder==='asc'?'ascending':'descending'):'none'"><button class="sort-heading" @click="sortMarket('change')">{{ intervals.find((item) => item.id === activeInterval)?.label }}涨跌 {{marketSort==='change'?(marketOrder==='asc'?'↑':'↓'):'↕'}}</button></th><th>状态</th><th class="operation-cell">操作</th></tr></thead>
             <tbody>
               <tr v-for="row in pagedMarketRows" :key="row.symbol" :class="{ chosen: selected === row.symbol }" @click="selectListSymbol(row.symbol,$event)">
-                <td><div class="contract-cell"><span class="asset-logo"><img v-if="logoUrl(row.symbol) && !logoFailed(row.symbol)" :src="logoUrl(row.symbol)" :alt="`${assetLabel(row.symbol)} logo`" @error="markLogoFailed(row.symbol)"><span v-else>{{ assetLabel(row.symbol).slice(0, 2) }}</span></span><span><b>{{ assetLabel(row.symbol) }}</b><small>{{ row.symbol }}</small><small v-if="row.market.radarTier === 'VOLATILE'" class="tier-label">高波动观察</small></span></div></td>
+                <td><div class="contract-cell"><ContractLogo :symbol="row.symbol" :asset-type="assetType(row.symbol)" :base-asset="catalogBySymbol.get(row.symbol)?.baseAsset" /><span><b>{{ assetLabel(row.symbol) }}</b><small>{{ row.symbol }}</small><small v-if="row.market.radarTier === 'VOLATILE'" class="tier-label">高波动观察</small></span></div></td>
                 <td><span class="type-label" :class="assetType(row.symbol) === 'TRADFI' ? 'type-tradfi' : 'type-crypto'">{{ assetType(row.symbol) === 'TRADFI' ? '传统金融' : '虚拟币' }}</span></td>
                 <td class="price-cell">{{ formatPrice(row.quote?.lastPrice) }}</td>
                 <td :class="changeClass(row.change)">{{ formatChange(row.change) }}</td>
@@ -577,7 +571,7 @@ onUnmounted(()=>{
           <p v-else-if="availableError && !availableContracts.length" class="dialog-state error">{{ availableError }}</p>
           <p v-else-if="!availableMatches.length" class="dialog-state">没有匹配的可添加合约</p>
           <button v-for="contract in availableMatches" :key="contract.symbol" type="button" class="candidate-row" @click="addContract(contract)">
-            <span class="asset-logo"><img v-if="logoUrl(contract.symbol) && !logoFailed(contract.symbol)" :src="logoUrl(contract.symbol)" :alt="`${assetLabel(contract.symbol)} logo`" @error="markLogoFailed(contract.symbol)"><span v-else>{{ assetLabel(contract.symbol).slice(0, 2) }}</span></span>
+            <ContractLogo :symbol="contract.symbol" :asset-type="contract.assetType" :base-asset="contract.baseAsset" />
             <span class="candidate-name"><b>{{ assetLabel(contract.symbol) }}</b><small>{{ contract.symbol }} · {{ contract.assetType === 'TRADFI' ? '传统金融' : '虚拟币' }}</small></span>
             <span class="candidate-market"><b :class="changeClass(Number(contract.priceChangePercent))">{{ formatChange(contract.priceChangePercent == null ? null : Number(contract.priceChangePercent)) }}</b><small>24h · 成交额 {{ formatVolume(contract.quoteVolume24h) }} USDT</small></span>
             <span class="candidate-add">添加</span>

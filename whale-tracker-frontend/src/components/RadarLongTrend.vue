@@ -15,8 +15,8 @@ const assetGroups=[{id:'STOCK',label:'股票'},{id:'INDEX_ETF',label:'指数 / E
 function toggleAssetGroup(group:NonNullable<TrendRow['assetGroup']>){assetGroup.value=assetGroup.value===group?null:group;}
 function groupLabel(row:TrendRow){return assetGroups.find(group=>group.id===row.assetGroup)?.label||'待识别';}
 function marketLabel(row:TrendRow){return ({HK:'港股',CN:'中国个股',CHINA_ADR:'中概股',US:'美股',KR:'韩股'} as Record<string,string>)[row.stockMarket||'']||'';}
+import { longTrendWatch as watchedSymbols } from '@/utils/tradfiWatch';
 const WATCH_KEY='whale-tracker-long-trend-watch-v1';
-const watchedSymbols=ref<string[]>((()=>{try{const stored=JSON.parse(localStorage.getItem(WATCH_KEY)||'null');if(Array.isArray(stored))return [...new Set(stored.filter((s):s is string=>typeof s==='string'&&/^[A-Z0-9]{3,30}$/.test(s)))].slice(0,30);}catch{}return ['WDCUSDT','KUAISHOUUSDT','HK1810USDT'];})());
 function toggleWatch(symbol:string){
   if(watchedSymbols.value.includes(symbol))watchedSymbols.value=watchedSymbols.value.filter(item=>item!==symbol);
   else {if(watchedSymbols.value.length>=30){ElMessage.warning('最多关注 30 个合约');return;}watchedSymbols.value=[...watchedSymbols.value,symbol];}
