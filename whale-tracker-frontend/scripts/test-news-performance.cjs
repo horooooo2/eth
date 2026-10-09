@@ -20,6 +20,11 @@ test('news switches immediately; obsolete completion cannot overwrite loading or
     app.state.symbol.value='NVDAUSDT';await tick();assert.equal(requests.length,2);assert.equal(requests[0].config.signal.aborted,true);
     requests[0].resolve({data:{articles:[{title:'old',url:'https://example.com'}]}});await tick();assert.equal(app.state.pending.value,true);assert.equal(app.state.cache.value.all,undefined);
     requests[1].resolve({data:{items:[{title:'new',url:'https://example.com/new'}]}});await tick();assert.equal(app.state.rows.value[0].title,'new');
+    app.state.selectedUrl.value='https://example.com/new|new';app.state.readerOpen.value=true;await tick();
+    assert.equal(requests.length,2,'opening a mobile article reuses the loaded snapshot');
+    app.state.tab.value='comments';await tick();assert.equal(app.state.readerOpen.value,false);
+    app.state.tab.value='news';await tick();assert.equal(app.state.selectedUrl.value,'https://example.com/new|new');
+    assert.equal(requests.length,2,'returning to news keeps its fresh cache');
     app.props.active=false;await tick();assert.equal(app.timers.size,0);app.props.active=true;await tick();assert.equal(requests.length,2);
   }finally{app.close()}
 });
@@ -27,6 +32,14 @@ test('comments reuse fresh cache and stop timers while inactive',async()=>{
   let calls=0;
   const app=mount('MarketComments.vue',{active:true,symbol:'NVDAUSDT'},{'@/api':{http:{get:async()=>{calls++;return {data:{items:[],supported:true,pending:false,updatedAt:Date.now()}}}}}});
   try{await tick();app.props.active=false;await tick();assert.equal(app.timers.size,0);app.props.active=true;await tick();assert.equal(calls,1);assert.equal(app.timers.size,1);}finally{app.close()}
+});
+test('PC and H5 comment views reuse the parent cache when the layout changes',async()=>{
+  const cacheState=vue.reactive({entries:{}});let calls=0;
+  const modules={'@/api':{http:{get:async()=>{calls++;return {data:{items:[],supported:true,pending:false,updatedAt:Date.now()}}}}}};
+  const pc=mount('MarketComments.vue',{active:true,symbol:'NVDAUSDT',cacheState},modules);
+  await tick();pc.close();assert.equal(pc.timers.size,0);
+  const mobile=mount('MarketComments.vue',{active:true,symbol:'NVDAUSDT',cacheState},modules);
+  try{await tick();assert.equal(calls,1);assert.equal(mobile.timers.size,1);}finally{mobile.close()}
 });
 test('leaving news aborts AI, cancels timer and ignores late chunks',async()=>{
   let handlers,finish,prunes=0;

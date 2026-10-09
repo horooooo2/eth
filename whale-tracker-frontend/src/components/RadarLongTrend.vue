@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { reactive, computed, ref, watch } from 'vue';
+import MobileRadarLong from './mobile/MobileRadarLong.vue';
 import CandlestickChart from './CandlestickChart.vue';
 import ContractLogo from './ContractLogo.vue';
 import ContractDetailLink from './ContractDetailLink.vue';
@@ -7,8 +8,8 @@ import { ElMessage } from 'element-plus';
 import { scrollRadarToTop } from '@/utils/radarScroll';
 import { candlePriceRange } from '@/utils/candleSeries';
 import { radarClient, sortRadarRows, type TrendRow } from '@/utils/radarRealtime';
-type Snapshot={watched:TrendRow[];focused:TrendRow|null;catalog:{symbol:string;name:string}[];rows:TrendRow[];count:number;page:number;pages:number;days:number;running:boolean;done:number;total:number;coverage:{total:number;loaded:number;fresh:number;insufficient:number};error:string;source:string};
-const props=defineProps<{active:boolean}>();
+type Snapshot={allRows:TrendRow[];watched:TrendRow[];focused:TrendRow|null;catalog:{symbol:string;name:string}[];rows:TrendRow[];count:number;page:number;pages:number;days:number;running:boolean;done:number;total:number;coverage:{total:number;loaded:number;fresh:number;insufficient:number};error:string;source:string};
+const props=defineProps<{active:boolean;mobile?:boolean}>();
 const days=ref(90),direction=ref('ALL'),search=ref(''),page=ref(1);
 const assetGroup=ref<TrendRow['assetGroup']|null>(null);
 const assetGroups=[{id:'STOCK',label:'股票'},{id:'INDEX_ETF',label:'指数 / ETF'},{id:'METAL_ENERGY',label:'金属 / 能源'}] as const;
@@ -46,7 +47,7 @@ const data=computed<Snapshot|null>(()=>{
   const pages=Math.max(1,Math.ceil(sorted.length/20)),current=Math.min(page.value,pages);
   const bySymbol=new Map(allRows.value.map(row=>[row.symbol,row]));
   const watched=watchedSymbols.value.map(symbol=>bySymbol.get(symbol)||{symbol,name:symbol,assetType:'TRADFI',direction:'INSUFFICIENT',days:0,asOf:null,latestBarAt:null,stale:true,reason:'暂无可用日线',points:[]} as TrendRow);
-  return {watched,focused:bySymbol.get(selectedSymbol.value)||null,catalog:allRows.value.map(({symbol,name})=>({symbol,name})),
+  return {allRows:sorted,watched,focused:bySymbol.get(selectedSymbol.value)||null,catalog:allRows.value.map(({symbol,name})=>({symbol,name})),
     rows:sorted.slice((current-1)*20,current*20),count:sorted.length,page:current,pages,days:days.value,
     running:frame.long.running,done:0,total:allRows.value.length,coverage:{total:allRows.value.length,loaded:allRows.value.length,fresh:0,insufficient:0},error:frame.long.error,source:'Binance USDⓈ-M Futures'};
 });
@@ -78,9 +79,13 @@ watch(()=>[selected.value?.symbol,props.active,radarClient.state.value?.catalog.
   if(symbol&&active)radarClient.selectChart(symbol,'1d');
 },{immediate:true});
 const emptyMessage=computed(()=>loading.value?'正在读取长期趋势…':data.value?.running?'正在扫描日线，符合条件的合约会陆续出现。':error.value||data.value?.error?'数据暂未就绪，请稍后重试。':'当前筛选下没有符合条件的合约。');
+// Shared controller, independent PC and H5 views.
+const mobileModel = reactive({ days, direction, search, assetGroup, assetGroups, toggleAssetGroup, sort, order, page, cardPage, cardPages, cards, selected, selectedRange, dailyBars, dailyChart, rows, data, displayedDays, error, loading, emptyMessage, watchedSymbols, toggleWatch, selectRow, sortBy, pct, price, color, label, groupLabel });
+export type LongRadarModel = typeof mobileModel;
 </script>
 <template>
-<section class="long-trends">
+<MobileRadarLong v-if="mobile" :model="mobileModel" />
+<section v-else class="long-trends">
   <section class="toolbar" aria-label="长期趋势筛选">
     <span class="scope-label">传统金融 USDT 永续合约</span>
     <div class="periods asset-groups" role="group" aria-label="长期趋势资产分类"><button v-for="group in assetGroups" :key="group.id" type="button" :class="{active:assetGroup===group.id}" :aria-pressed="assetGroup===group.id" @click="toggleAssetGroup(group.id)">{{group.label}}</button></div>

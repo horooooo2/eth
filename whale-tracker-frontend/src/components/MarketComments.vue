@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue';
+import { computed, reactive, toRef, onUnmounted, ref, watch } from 'vue';
 import { http } from '@/api';
-const props = defineProps<{ symbol: string; active: boolean }>();
+const props = defineProps<{ symbol: string; active: boolean; cacheState?:{entries:CommentCache} }>();
 type Comment = { id: string; title: string; summary: string; source: string; author: string; publishedAt: number | null; url: string };
 type Result = { items: Comment[]; supported: boolean; pending: boolean; stale?: boolean; error?: string; updatedAt: number | null };
-const cache = ref<Record<string, Result & { nextFetchAt: number }>>({});
+export type CommentCache = Record<string, Result & {nextFetchAt:number}>;
+const cache = toRef(props.cacheState || reactive<{entries:CommentCache}>({entries:{}}), 'entries');
 const result = computed(() => cache.value[props.symbol]);
 const error = ref(''), loading = ref(false);
 let timer: ReturnType<typeof setTimeout> | undefined;
@@ -37,6 +38,8 @@ async function load() {
 }
 watch([() => props.active, () => props.symbol], load, { immediate: true });
 onUnmounted(() => { generation++; clearTimeout(timer); controller?.abort(); });
+async function refresh(){if(loading.value)return;if(result.value)result.value.nextFetchAt=0;await load();if(error.value)throw new Error(error.value);}
+defineExpose({refresh});
 </script>
 <template>
   <section class="market-comments" aria-label="相关评论">

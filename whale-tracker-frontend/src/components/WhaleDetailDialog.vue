@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import MobileScroll from './mobile/MobileScroll.vue';
 import { computed, ref, watch } from 'vue';
 import AiAnalyzeButton from '@/components/AiAnalyzeButton.vue';
 import { buildWhaleAiPayload } from '@/utils/whaleAiPayload';
@@ -17,7 +18,7 @@ import {
 import type { PagedTradesResponse, WhaleProfile, WhaleTrade } from '@/types';
 import { formatRelativeAgo, formatTimeShort, formatUsd } from '@/utils/format';
 
-const props = defineProps<{ modelValue: boolean; whale: WhaleProfile | null; snapshotUpdatedAt?: number }>();
+const props = defineProps<{ modelValue: boolean; whale: WhaleProfile | null; snapshotUpdatedAt?: number; mobile?:boolean; refreshSnapshot?:()=>Promise<unknown> }>();
 const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>();
 
 const activeTab = ref('contracts');
@@ -230,7 +231,9 @@ async function loadTrades() {
   tradeError.value = '';
   try {
     const result = await fetchWhaleTrades(whaleId, { page, limit: tradeLimit });
-    if (requestSeq === tradeRequestSeq) tradesResult.value = result;
+    if (requestSeq === tradeRequestSeq) tradesResult.value = props.mobile && page>1
+      ? {...result,trades:[...new Map([...(tradesResult.value?.trades||[]),...result.trades].map(row=>[row.id,row])).values()]}
+      : result;
   } catch (error) {
     if (requestSeq === tradeRequestSeq) tradeError.value = error instanceof Error ? error.message : '成交记录加载失败';
   } finally {
@@ -238,6 +241,21 @@ async function loadTrades() {
   }
 }
 
+async function moreMobileTrades(){
+  if(tradesLoading.value)return;
+  const whaleId=props.whale?.id;const previous=tradePage.value;tradePage.value++;
+  await loadTrades();
+  if(props.whale?.id!==whaleId)return;
+  if(tradeError.value){tradePage.value=previous;throw new Error(tradeError.value);}
+}
+async function refreshMobileDetail(){
+  if(tradesLoading.value||ordersLoading.value||transfersLoading.value||equityLoading.value)return;
+  if(activeTab.value==='trades'){const whaleId=props.whale?.id;const previous=tradePage.value;tradePage.value=1;await loadTrades();if(props.whale?.id!==whaleId)return;if(tradeError.value){tradePage.value=previous;throw new Error(tradeError.value);}}
+  else if(activeTab.value==='orders'){ordersLoadedFor.value='';await loadOrders();if(ordersError.value)throw new Error(ordersError.value);}
+  else if(activeTab.value==='transfers'){transfersLoadedFor.value='';await loadTransfers();if(transferError.value)throw new Error(transferError.value);}
+  else if(activeTab.value==='results'){await loadEquityHistory(true);if(equityError.value)throw new Error(equityError.value);}
+  else{await props.refreshSnapshot?.();pricesLoadedFor.value='';await loadPerpMarkPrices();}
+}
 async function loadTransfers() {
   if (!props.whale?.id || transfersLoadedFor.value === props.whale.id || transfersLoading.value) return;
   const requestSeq = ++transferRequestSeq;
@@ -273,17 +291,17 @@ async function loadPerpMarkPrices() {
   }
 }
 
-async function loadEquityHistory() {
+async function loadEquityHistory(force=false) {
   if (!props.whale?.id || !props.modelValue) return;
   const requestSeq = ++equityRequestSeq;
   const whaleId = props.whale.id;
   const range = equityRange.value;
   const cacheKey = `${whaleId}:${range}`;
   clearEquityHover();
-  equityPoints.value = equityCache.get(cacheKey) || [];
+  if(!force)equityPoints.value = equityCache.get(cacheKey) || [];
   equityLoading.value = false;
   equityError.value = '';
-  if (equityCache.has(cacheKey)) return;
+  if (!force && equityCache.has(cacheKey)) return;
   equityLoading.value = true;
   equityError.value = '';
   try {
@@ -294,7 +312,7 @@ async function loadEquityHistory() {
   } catch (error) {
     if (requestSeq !== equityRequestSeq) return;
     equityError.value = error instanceof Error ? error.message : '合约权益历史读取失败';
-    equityPoints.value = [];
+    if(!force)equityPoints.value = [];
   } finally {
     if (requestSeq === equityRequestSeq) equityLoading.value = false;
   }
@@ -393,7 +411,7 @@ async function copyAddress() {
 </script>
 
 <template>
-  <el-dialog v-model="visible" class="whale-detail-dialog" fullscreen destroy-on-close>
+  <el-dialog v-model="visible" class="whale-detail-dialog" :class="{'h5-whale-dialog':mobile}" fullscreen destroy-on-close>
     <template #header>
       <div class="dialog-header" v-if="whale">
         <div class="identity">
@@ -413,7 +431,7 @@ async function copyAddress() {
       </div>
     </template>
 
-    <template v-if="whale">
+    <component :is="mobile?MobileScroll:'div'" v-if="whale" class="detail-content" :reset-key="activeTab" :refresh="mobile?refreshMobileDetail:undefined" :more="mobile && activeTab==='trades'?moreMobileTrades:undefined" :has-more="mobile && activeTab==='trades' && !!tradesResult && tradePage*tradeLimit<tradesResult.total" :busy="tradesLoading||transfersLoading||ordersLoading||equityLoading">
       <nav class="detail-tabs" aria-label="巨鲸详情分类">
         <button v-for="tab in [{ id: 'contracts', label: `当前持仓 (${positions.length})` }, { id: 'results', label: '账户表现' }, { id: 'orders', label: `当前委托 (${ordersLoadedFor === whale.id ? openOrders.length : '—'})` }, { id: 'trades', label: '成交记录' }, { id: 'transfers', label: '资金流水' }]" :key="tab.id" :class="{ active: activeTab === tab.id }" @click="setTab(tab.id)">{{ tab.label }}</button>
       </nav>
@@ -520,23 +538,23 @@ async function copyAddress() {
 
       <section v-else-if="activeTab === 'trades'" class="tab-panel">
         <div class="panel-heading"><strong>成交记录</strong><span>本地已采集数据 · {{ tradesResult?.total ?? '—' }} 条</span></div>
-        <div v-if="tradesLoading" class="loading-state">正在读取成交记录…</div>
-        <el-alert v-else-if="tradeError" :title="tradeError" type="warning" :closable="false" />
+        <div v-if="tradesLoading && !tradesResult?.trades.length" class="loading-state">正在读取成交记录…</div>
+        <el-alert v-else-if="tradeError && !tradesResult?.trades.length" :title="tradeError" type="warning" :closable="false" />
         <div v-else-if="tradesResult?.trades.length" class="table-scroll">
           <table>
             <thead><tr><th>时间</th><th>币种</th><th>方向</th><th>成交价</th><th>数量</th><th>名义金额</th><th>已实现盈亏</th></tr></thead>
             <tbody>
               <tr v-for="trade in tradesResult.trades as WhaleTrade[]" :key="trade.id">
-                <td>{{ formatTimeShort(trade.time) }}</td><td>{{ trade.assetLabel || trade.asset }}</td>
-                <td :class="/long|buy|open long/i.test(`${trade.side} ${trade.dir}`) ? 'positive' : 'negative'">{{ trade.dir || trade.side || '—' }}</td>
-                <td>{{ formatPrice(trade.price) }}</td><td>{{ formatQty(trade.amount) }}</td>
-                <td>{{ formatMoney(trade.amountUsd) }}</td><td :class="signedClass(trade.closedPnl)">{{ formatMoney(trade.closedPnl) }}</td>
+                <td data-label="时间">{{ formatTimeShort(trade.time) }}</td><td data-label="币种">{{ trade.assetLabel || trade.asset }}</td>
+                <td data-label="方向" :class="/long|buy|open long/i.test(`${trade.side} ${trade.dir}`) ? 'positive' : 'negative'">{{ trade.dir || trade.side || '—' }}</td>
+                <td data-label="成交价">{{ formatPrice(trade.price) }}</td><td data-label="数量">{{ formatQty(trade.amount) }}</td>
+                <td data-label="名义金额">{{ formatMoney(trade.amountUsd) }}</td><td data-label="已实现盈亏" :class="signedClass(trade.closedPnl)">{{ formatMoney(trade.closedPnl) }}</td>
               </tr>
             </tbody>
           </table>
         </div>
         <el-empty v-else-if="!tradesLoading" description="当前保留范围内没有成交记录" :image-size="64" />
-        <div v-if="(tradesResult?.total || 0) > tradeLimit" class="pager">
+        <div v-if="!mobile && (tradesResult?.total || 0) > tradeLimit" class="pager">
           <el-pagination small layout="prev, pager, next" :current-page="tradePage" :page-size="tradeLimit" :total="tradesResult?.total || 0" @current-change="changeTradePage" />
         </div>
         <p class="footnote">成交历史读取本地缓存与数据库，不会因打开弹窗而无限回溯链上数据。</p>
@@ -549,7 +567,7 @@ async function copyAddress() {
         <div v-else-if="transfers.length" class="table-scroll">
           <table>
             <thead><tr><th>时间</th><th>类型</th><th>资产</th><th>金额</th><th>方向</th><th>对手地址</th></tr></thead>
-            <tbody><tr v-for="item in transfers" :key="item.id"><td>{{ formatTimeShort(item.time) }}</td><td>{{ item.typeLabel || item.type }}</td><td>{{ item.asset }}</td><td>{{ formatMoney(item.amountUsd) }}</td><td :class="item.direction === 'in' ? 'positive' : item.direction === 'out' ? 'negative' : ''">{{ item.direction === 'in' ? '转入' : item.direction === 'out' ? '转出' : '内部' }}</td><td class="mono">{{ item.peer || '—' }}</td></tr></tbody>
+            <tbody><tr v-for="item in transfers" :key="item.id"><td data-label="时间">{{ formatTimeShort(item.time) }}</td><td data-label="类型">{{ item.typeLabel || item.type }}</td><td data-label="资产">{{ item.asset }}</td><td data-label="金额">{{ formatMoney(item.amountUsd) }}</td><td data-label="方向" :class="item.direction === 'in' ? 'positive' : item.direction === 'out' ? 'negative' : ''">{{ item.direction === 'in' ? '转入' : item.direction === 'out' ? '转出' : '内部' }}</td><td data-label="对手地址" class="mono">{{ item.peer || '—' }}</td></tr></tbody>
           </table>
         </div>
         <el-empty v-else-if="!transfersLoading" description="最近30天没有可展示的资金记录" :image-size="64" />
@@ -563,14 +581,14 @@ async function copyAddress() {
         <div v-else-if="openOrders.length" class="table-scroll">
           <table>
             <thead><tr><th>币种</th><th>方向</th><th>订单类型</th><th>价格 / 触发价</th><th>数量</th><th>名义金额</th><th>标记</th></tr></thead>
-            <tbody><tr v-for="order in openOrders" :key="order.id"><td>{{ order.coinLabel }}</td><td :class="order.side === '买入' ? 'positive' : 'negative'">{{ order.side }}</td><td>{{ order.orderType }}</td><td>{{ formatPrice(order.price) }}</td><td>{{ formatQty(order.size) }}</td><td>{{ order.notionalUsd == null ? '—' : formatMoney(order.notionalUsd) }}</td><td>{{ order.reduceOnly ? '只减仓' : order.triggerCondition || '—' }}</td></tr></tbody>
+            <tbody><tr v-for="order in openOrders" :key="order.id"><td data-label="币种">{{ order.coinLabel }}</td><td data-label="方向" :class="order.side === '买入' ? 'positive' : 'negative'">{{ order.side }}</td><td data-label="订单类型">{{ order.orderType }}</td><td data-label="价格 / 触发价">{{ formatPrice(order.price) }}</td><td data-label="数量">{{ formatQty(order.size) }}</td><td data-label="名义金额">{{ order.notionalUsd == null ? '—' : formatMoney(order.notionalUsd) }}</td><td data-label="标记">{{ order.reduceOnly ? '只减仓' : order.triggerCondition || '—' }}</td></tr></tbody>
           </table>
         </div>
         <el-empty v-else-if="!ordersLoading" description="当前没有未完成订单" :image-size="64" />
         <p class="footnote">订单来自 frontendOpenOrders 接口，包含可能存在的止损/止盈条件单；此页面不会执行任何订单操作。</p>
       </section>
 
-    </template>
+    </component>
   </el-dialog>
 </template>
 

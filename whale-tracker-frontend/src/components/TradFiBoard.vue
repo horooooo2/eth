@@ -1,16 +1,17 @@
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref, watch as watchVue } from 'vue';
+import { reactive, computed, nextTick, onUnmounted, ref, watch as watchVue } from 'vue';
 import { radarClient, sortRadarRows } from '@/utils/radarRealtime';
 import { scrollRadarToTop } from '@/utils/radarScroll';
 import ContractLogo from './ContractLogo.vue';
 import CandlestickChart from './CandlestickChart.vue';
 import ContractDetailLink from './ContractDetailLink.vue';
+import MobileRadarShort from './mobile/MobileRadarShort.vue';
 import RadarLongTrend from '@/components/RadarLongTrend.vue';
 import { ElMessage } from 'element-plus';
 import { fetchRadarMarketCap, fetchRadarNews, streamChatMarketBrief, type MarketChatMessage, type RadarAvailableContract, type RadarKline, type RadarNewsItem, type TradFiMarketSymbol, type TradFiQuote } from '@/api';
 import { DEFAULT_RADAR_WATCH, isDefaultRadarWatch, tradfiWatch, writeTradFiWatch } from '@/utils/tradfiWatch';
 
-const props = withDefaults(defineProps<{ active?: boolean }>(), { active: true });
+const props = withDefaults(defineProps<{ active?: boolean; mobile?: boolean }>(), { active: true });
 type RadarInterval = '24h' | '1h' | '5m';
 type AssetFilter = 'ALL' | 'CRYPTO' | 'TRADFI';
 type DirectionFilter = 'ALL' | 'UP' | 'DOWN';
@@ -471,10 +472,13 @@ onUnmounted(()=>{
   radarClient.setActive(false);capRequestId++;started=false;
   aiRequestSeq++;aiAbort?.abort();
 });
+// Shared controller, independent PC and H5 views.
+const mobileModel = reactive({ activeInterval, assetFilter, directionFilter, searchText, intervals, categories, filteredMarketRows, pagedWatchRows, watchPage, watchPageCount, selected, selectedQuote, selectedRange, chartBars, chartInterval, chartError, chartLoading, pagedMarketRows, marketPage, marketPageCount, marketSort, marketOrder, marketError, marketLoading, quoteTimestamp, selectSymbol, toggleWatch, isWatched, assetLabel, assetType, formatPrice, formatChange, changeClass, changeValue, isQuoteStale, sortMarket, openAddContractDialog, openAiAnalysis });
+export type ShortRadarModel = typeof mobileModel;
 </script>
 
 <template>
-  <div class="radar">
+  <div class="radar" :class="{'h5-radar':mobile}">
     <main class="radar-content">
       <nav class="trend-tabs" role="tablist" aria-label="雷达趋势范围" @keydown="handleTrendTabKey">
         <button v-for="view in trendViews" :id="`radar-${view.id}-tab`" :key="view.id" type="button" role="tab"
@@ -483,6 +487,8 @@ onUnmounted(()=>{
           @click="trendView = view.id">{{ view.label }}</button>
       </nav>
       <div v-show="trendView === 'short'" id="radar-short-panel" role="tabpanel" aria-labelledby="radar-short-tab">
+      <MobileRadarShort v-if="mobile" :model="mobileModel" />
+      <template v-else>
       <section class="toolbar" aria-label="行情筛选和排序">
         <div class="filters">
           <button v-for="item in categories" :key="item.id" type="button" :class="{ active: assetFilter === item.id }" @click="assetFilter = item.id">{{ item.label }}</button>
@@ -554,10 +560,10 @@ onUnmounted(()=>{
         <div v-if="marketPageCount > 1" class="pagination list-pagination"><button type="button" :disabled="marketPage <= 1" @click="marketPage--">上一页</button><span>{{ marketPage }} / {{ marketPageCount }}</span><button type="button" :disabled="marketPage >= marketPageCount" @click="marketPage++">下一页</button></div>
         <footer class="market-foot"><span>{{ marketError || `行情更新于 ${quoteTimestamp}` }}</span><span>卡片与列表使用同一涨跌周期；短周期由服务器缓存计算，缺失时显示 —。</span></footer>
       </section>
-      </div>
+      </template></div>
       <section v-show="trendView === 'long'" id="radar-long-panel"
         role="tabpanel" aria-labelledby="radar-long-tab">
-        <RadarLongTrend :active="props.active" />
+        <RadarLongTrend :mobile="mobile" :active="props.active" />
       </section>
     </main>
 

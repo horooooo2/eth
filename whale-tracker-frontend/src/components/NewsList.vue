@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { reactive, computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Refresh } from '@element-plus/icons-vue';
 import type { WhaleProfile } from '@/types';
@@ -31,6 +31,7 @@ import {
 } from '@/utils/format';
 import { resolveWhaleTitle } from '@/utils/whaleReference';
 import { fundingFollowWarning, fundingOf } from '@/utils/fundingAlert';
+import MobileAlerts from './mobile/MobileAlerts.vue';
 import WhaleLocateLink from '@/components/WhaleLocateLink.vue';
 import { useWhaleStore } from '@/stores/whale';
 import { getAuthUiSettings, patchAuthUiSettings } from '@/stores/auth';
@@ -39,6 +40,7 @@ import { fetchPagedAlertHistory } from '@/api';
 const whaleStore = useWhaleStore();
 
 const props = defineProps<{
+  mobile?:boolean;
   /** @deprecated 列表已改服务端分页，保留仅兼容旧调用 */
   alerts?: WhaleAlert[];
   whales?: WhaleProfile[];
@@ -415,10 +417,15 @@ function alertFundingWarn(row: {
   if (row.view.actionType === 'close') return null;
   return fundingFollowWarning(row.view.side, fundingOf(props.fundingRates, row.view.coin));
 }
+// Shared controller, independent PC and H5 views.
+async function refreshMobile(){if(alertLoading.value)return;if(!await loadAlertPage(true))throw new Error('刷新失败，保留原异动记录');}
+const mobileModel = reactive({ refreshMobile, alertCoinFilter, alertMinUsd, alertSideFilter, openOnly, preferredCoins, ALERT_MIN_USD_OPTIONS, pagedAlerts, alertLoading, alertRefreshing, alertWindowLabel, alertEmptyText, openAlert, formatUsd, formatPrice, alertFundingWarn, onRefreshAlerts });
+export type AlertsModel = typeof mobileModel;
 </script>
 
 <template>
-  <el-card class="panel" :class="{ 'news-bottom-panel': bottomPanel }" shadow="never">
+  <MobileAlerts v-if="mobile" :model="mobileModel" />
+  <el-card v-else class="panel" :class="{ 'news-bottom-panel': bottomPanel }" shadow="never">
     <template #header>
       <div class="head">
         <div class="coin-filter-row">
@@ -552,6 +559,7 @@ function alertFundingWarn(row: {
       </div>
     </div>
 
+  </el-card>
     <el-dialog
       v-model="alertVisible"
       width="560px"
@@ -634,7 +642,6 @@ function alertFundingWarn(row: {
         </div>
       </template>
     </el-dialog>
-  </el-card>
 </template>
 
 <style scoped>

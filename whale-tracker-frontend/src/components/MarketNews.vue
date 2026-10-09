@@ -1,20 +1,23 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue';
+import { reactive, computed, onUnmounted, ref, watch } from 'vue';
 import { http } from '@/api';
 import { radarClient } from '@/utils/radarRealtime';
 import { newsWatch } from '@/utils/newsWatch';
 import { preferredCoinsState } from '@/utils/watchedCoins';
+import MobileNews from './mobile/MobileNews.vue';
 import NewsAiChat from './NewsAiChat.vue';
-import MarketComments from './MarketComments.vue';
+import MarketComments, {type CommentCache} from './MarketComments.vue';
 import ContractLogo from './ContractLogo.vue';
 
-const props = defineProps<{ active: boolean }>();
+const props = defineProps<{ active: boolean; mobile?:boolean }>();
 type Article = { title: string; summary: string; source: string; url: string; publishedAt: string | number | null; category?: string };
 type Snapshot = { rows: Article[]; updatedAt: string | number | null; stale: boolean; warning: string; fetchedAt: number };
+const commentsCache = reactive<{entries:CommentCache}>({entries:{}});
 const tab = ref<'news' | 'comments'>('news');
 const symbol = ref('');
 const search = ref('');
 const selectedUrl = ref('');
+const readerOpen = ref(false);
 const cache = ref<Record<string, Snapshot>>({});
 const pending = ref(false);
 const error = ref('');
@@ -76,15 +79,21 @@ async function load() {
     if (!disposed && version === generation) { pending.value = false; schedule(failed ? 60000 : 600000); }
   }
 }
-watch([symbol, search], () => { page.value = 1; selectedUrl.value = ''; error.value = ''; });
+watch(tab, () => { readerOpen.value = false; });
+watch([symbol, search], () => { readerOpen.value = false; page.value = 1; selectedUrl.value = ''; error.value = ''; });
 watch([() => props.active, symbol, tab], () => { generation++; controller?.abort(); pending.value = false; clearTimeout(timer); if (props.active && tab.value === 'news') void load(); }, { immediate: true });
 watch(assets, list => { if (symbol.value && !list.some(a => a.symbol === symbol.value)) symbol.value = ''; });
 watch(pages, total => { page.value = Math.min(page.value, total); });
 onUnmounted(() => { disposed = true; clearTimeout(timer); controller?.abort(); });
+// Shared controller, independent PC and H5 views.
+async function refreshMobile(){if(pending.value)return;const cached=snapshot.value;if(cached)cached.fetchedAt=0;await load();if(error.value)throw new Error(error.value);}
+const mobileModel = reactive({ refreshMobile, commentsCache, tab, symbol, search, assets, assetName, readerOpen, selectedUrl, identity, selected, rows, visible, page, pages, pending, error, snapshot, date, safeUrl, load });
+export type NewsModel = typeof mobileModel;
 </script>
 
 <template>
-  <section class="market-news" aria-label="新闻中心">
+  <MobileNews v-if="mobile" :model="mobileModel" :active="active" />
+  <section v-else class="market-news" aria-label="新闻中心">
     <div class="news-toolbar">
       <div class="content-tabs" aria-label="内容类型">
         <button :class="{ active: tab === 'news' }" :aria-pressed="tab === 'news'" @click="tab = 'news'">新闻</button>
@@ -99,14 +108,14 @@ onUnmounted(() => { disposed = true; clearTimeout(timer); controller?.abort(); }
       </button>
     </div>
     <div class="news-scroll-area" :class="{ 'split-news-scroll': tab === 'news' }">
-    <MarketComments v-show="tab === 'comments'" :symbol="symbol" :active="active && tab === 'comments'" />
+    <MarketComments :cache-state="commentsCache" v-show="tab === 'comments'" :symbol="symbol" :active="active && tab === 'comments'" />
     <template v-if="tab === 'news'">
       <div class="feed-status"><span>{{ assetName }} <b>{{ rows.length }}</b> 条{{ search ? '匹配新闻' : '新闻' }}</span><span>{{ pending ? '正在更新…' : snapshot?.updatedAt ? `更新于 ${date(snapshot.updatedAt)}` : '' }}{{ snapshot?.stale ? ' · 缓存数据' : '' }}</span></div>
       <div v-if="error || snapshot?.warning" class="news-warning" role="status">{{ error || snapshot?.warning }}<span v-if="snapshot?.rows.length"> · 保留上次内容</span><button v-if="error" :disabled="pending" @click="load">重试</button></div>
       <div v-if="!rows.length" class="empty-news" role="status">{{ pending ? '正在读取新闻…' : error ? '暂时无法加载新闻' : search ? '没有匹配的新闻，请调整关键词' : '暂时没有相关新闻' }}</div>
       <div v-else class="news-columns">
         <div class="news-feed">
-          <button v-for="item in visible" :key="identity(item)" class="news-item" :class="{ selected: selected === item }" @click="selectedUrl = identity(item)">
+          <button v-for="item in visible" :key="identity(item)" class="news-item" :class="{ selected: selected === item }" @click="selectedUrl = identity(item); readerOpen = true">
             <div class="article-meta"><span class="news-label">新闻</span><span>{{ item.source }}</span><time>{{ date(item.publishedAt) }}</time></div>
             <h2>{{ item.title }}</h2><p>{{ item.summary }}</p><span class="read-hint">阅读详情 ↗</span>
           </button>

@@ -26,6 +26,7 @@ const current=computed(()=>candles.value[hover.value??candles.value.length-1]);
 const ticks=computed(()=>Array.from({length:5},(_,i)=>({y:28+i*48,price:range.value.high-i*(range.value.high-range.value.low)/4})));
 function price(value:number|null|undefined){return value==null?'—':value.toLocaleString('en-US',{maximumFractionDigits:value>=1?3:8});}
 function date(time:number){return new Date(time).toLocaleString('zh-CN',{timeZone:props.interval==='1d'?'UTC':undefined,month:'2-digit',day:'2-digit',...(props.interval==='1d'?{}:{hour:'2-digit',minute:'2-digit'})});}
+function leave(event:PointerEvent){ if(event.pointerType !== 'touch') hover.value=null; }
 function move(event:PointerEvent){
   const bounds=(event.currentTarget as SVGSVGElement).getBoundingClientRect();
   const x=(event.clientX-bounds.left)/bounds.width*width.value;
@@ -34,7 +35,7 @@ function move(event:PointerEvent){
 </script>
 <template>
   <div ref="chartRoot" class="candle-chart">
-    <svg v-if="candles.length" :viewBox="`0 0 ${width} 250`" preserveAspectRatio="none" role="img" :aria-label="`${symbol} ${interval} 蜡烛 K 线`" @pointermove="move" @pointerleave="hover=null">
+    <svg v-if="candles.length" :viewBox="`0 0 ${width} 250`" preserveAspectRatio="none" role="img" :aria-label="`${symbol} ${interval} 蜡烛 K 线`" @pointerdown="move" @pointermove="move" @pointerleave="leave" @pointercancel="hover=null">
       <g v-for="tick in ticks" :key="tick.y"><line x1="8" :x2="right" :y1="tick.y" :y2="tick.y" class="grid"/><text :x="right+8" :y="tick.y+4" class="axis">{{price(tick.price)}}</text></g>
       <line v-for="x in Array.from({length:6},(_,i)=>8+i*(right-8)/5)" :key="x" :x1="x" :x2="x" y1="28" y2="220" class="grid"/>
       <g v-for="row in candles" :key="row.bar.openTime" :fill="row.up?'#0ecb81':'#f6465d'" :stroke="row.up?'#0ecb81':'#f6465d'">

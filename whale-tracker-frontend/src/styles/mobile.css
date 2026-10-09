@@ -1,0 +1,19 @@
+/* Home-shell sizing only. H5 views own their markup and styles in h5.css. */
+@media(max-width:767px){
+html:root body .app-shell:not(.login-only){height:100dvh;min-height:0;padding-top:calc(38px + env(safe-area-inset-top));padding-bottom:calc(66px + env(safe-area-inset-bottom));box-sizing:border-box}
+html:root body .app-shell .layout{height:100%;min-height:0;overflow:hidden}
+html:root body .app-shell.mobile-my-open .layout{display:none}
+html:root body .app-shell.mobile-my-open .mobile-my-view{display:block;width:100%;min-width:0;overflow:auto;padding:20px 16px;box-sizing:border-box}
+html:root body .app-shell .virtual-view{padding:0 14px 12px;min-width:0}
+html:root body .app-shell .mobile-crypto-tabs{display:flex;gap:22px;flex:none;margin-bottom:12px;border-bottom:1px solid var(--border)}
+html:root body .app-shell .mobile-crypto-tabs button{min-height:44px;padding:9px 0 12px;border:0;border-bottom:2px solid transparent;background:none;color:var(--muted);font:inherit;font-size:14px}
+html:root body .app-shell .mobile-crypto-tabs button.active{color:var(--yellow);border-color:var(--yellow)}
+html:root body .app-shell .whales-shell .grid{display:flex;flex:1;min-height:0;flex-direction:column;overflow:hidden}
+html:root body .app-shell .whales-shell .grid>*{display:none;flex:1;min-height:0;height:100%;overflow:hidden}
+html:root body .app-shell .mobile-panel-alerts .alerts-area,html:root body .app-shell .mobile-panel-whales .whale-area,html:root body .app-shell .mobile-panel-macro .side-info{display:flex;flex-direction:column}
+html:root body .app-shell .alerts-area{border:0;background:none}
+html:root body .app-shell .alerts-heading{display:none}
+html:root body .app-shell .side-info-pane{min-height:0;max-height:none;overflow:auto}
+html:root body .app-shell .side-info-pane>*{height:100%;min-height:0}
+body:has(.h5-shell) .el-dialog,body:has(.h5-shell) .el-message-box{max-width:calc(100vw - 24px);box-sizing:border-box}
+}

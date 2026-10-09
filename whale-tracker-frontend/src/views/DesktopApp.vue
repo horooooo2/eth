@@ -2,6 +2,9 @@
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { http, fetchQuotes } from '@/api';
+import MobileMy from '@/components/mobile/MobileMy.vue';
+import MobileNav from '@/components/mobile/MobileNav.vue';
+import MobileWhales from '@/components/mobile/MobileWhales.vue';
 import DesktopSettings from '@/components/DesktopSettings.vue';
 import NewsList from '@/components/NewsList.vue';
 import WhaleAlertDock from '@/components/WhaleAlertDock.vue';
@@ -45,8 +48,13 @@ function readSideTab(): 'virtual' | 'tradfi' | 'strategy' | 'news' {
     return saved === 'tradfi' || saved === 'news' ? saved : 'virtual';
   } catch { return 'virtual'; }
 }
+const isMobile = ref(window.matchMedia('(max-width: 767px)').matches);
+function selectMobileTab(tab:'virtual'|'tradfi'|'news'|'my'){if(tab==='my')myOpen.value=true;else{myOpen.value=false;sideTab.value=tab;}}
+const mobilePanel = ref<'alerts' | 'whales' | 'macro'>('alerts');
+const myOpen = ref(false);
 const sideTab = ref<'virtual' | 'tradfi' | 'strategy' | 'news'>(readSideTab());
 watch(sideTab, (tab) => {
+  myOpen.value = false;
   if (tab === 'strategy') strategyVisited.value = true;
   if (tab === 'news') newsVisited.value = true;
   try { window.localStorage.setItem(SIDE_TAB_STORAGE_KEY, tab); } catch { /* storage unavailable */ }
@@ -56,7 +64,7 @@ if (sideTab.value === 'news') newsVisited.value = true;
 const radarRef = ref<InstanceType<typeof TradFiBoard> | null>(null);
 const macroRef = ref<InstanceType<typeof DataModule> | null>(null);
 let pageLoader: ReturnType<typeof createPageLoadScheduler<'virtual' | 'tradfi'>> | null = null;
-const whaleListRef = ref<InstanceType<typeof WhaleList> | null>(null);
+const whaleListRef = ref<InstanceType<typeof WhaleList> | InstanceType<typeof MobileWhales> | null>(null);
 const whaleDetailOpen = ref(false);
 const whaleDetailId = ref('');
 const whaleDetailProfile = computed(() => whaleStore.whalesById[whaleDetailId.value] || null);
@@ -130,6 +138,7 @@ function onFocusWhale(whale: { id: string; name: string }) {
 }
 
 function onFocusWhaleCard(payload: { id: string; name: string; coin?: string }) {
+  myOpen.value = false; mobilePanel.value = 'whales';
   sideTab.value = 'virtual';
   nextTick(() => {
     void whaleListRef.value?.focusWhale({ id: payload.id, coin: payload.coin });
@@ -143,6 +152,7 @@ function onSelectWhale(whale: WhaleProfile) {
 }
 
 function onFocusWhaleTrades(payload: { id: string; name: string }) {
+  myOpen.value = false;
   sideTab.value = 'virtual';
   const whale = whaleStore.whalesById[payload.id];
   if (!whale) {
@@ -283,7 +293,10 @@ function stopAppSession() {
   stopRealtime();
 }
 
+const mobileMedia = window.matchMedia('(max-width: 767px)');
+function onViewportChange() { isMobile.value=mobileMedia.matches; if (!mobileMedia.matches) myOpen.value = false; }
 onMounted(async () => {
+  mobileMedia.addEventListener('change', onViewportChange);
   document.documentElement.classList.add('dark');
   document.documentElement.classList.remove('light');
   unlockAlertSound();
@@ -299,6 +312,7 @@ watch(isLoggedIn, (ok) => {
 });
 
 onUnmounted(() => {
+  mobileMedia.removeEventListener('change', onViewportChange);
   stopAppSession();
 });
 </script>
@@ -308,6 +322,8 @@ onUnmounted(() => {
     class="app-shell"
     :class="{
       'login-only': !authBootstrapped || !isLoggedIn,
+      'mobile-my-open': myOpen,
+      'h5-shell': isMobile,
     }"
     @pointerdown="unlockAlertSound"
   >
@@ -356,17 +372,19 @@ onUnmounted(() => {
     </div>
 
     <template v-else>
-    <WhaleAlertDock :dock-active="true" @open-alert="sideTab = 'virtual'" @focus-whale="onFocusWhaleCard" @focus-whale-trades="onFocusWhaleTrades" />
+    <WhaleAlertDock :dock-active="true" @open-alert="sideTab = 'virtual'; myOpen = false; mobilePanel = 'alerts'" @focus-whale="onFocusWhaleCard" @focus-whale-trades="onFocusWhaleTrades" />
 
-    <aside class="sidebar" aria-label="主导航">
+    <MobileNav v-if="isMobile" :tab="sideTab" :my-open="myOpen" :status="socketMonitor.status" :title="socketMonitor.title" @select="selectMobileTab"/>
+    <aside v-else class="sidebar" aria-label="主导航">
       <div class="sidebar-connection"><div class="socket-dot" :class="socketMonitor.status" :title="socketMonitor.title" :aria-label="socketMonitor.title"><span class="socket-core" /></div><span :title="socketMonitor.title">{{ socketMonitor.status === 'connected' ? '数据连接正常' : socketMonitor.status === 'connecting' ? '正在连接数据' : '数据连接待恢复' }}</span></div>
-      <button type="button" class="nav-item" :class="{active:sideTab==='virtual'}" :aria-pressed="sideTab==='virtual'" title="虚拟币" @click="sideTab='virtual'"><span class="nav-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3 3v14h14M6 12l3-4 3 2 5-6"/></svg></span><span class="nav-label">虚拟币</span></button>
-      <button type="button" class="nav-item" :class="{active:sideTab==='tradfi'}" :aria-pressed="sideTab==='tradfi'" title="雷达" @click="sideTab='tradfi'"><span class="nav-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="8"/><circle cx="10" cy="10" r="4"/><path d="m10 10 6-6"/></svg></span><span class="nav-label">雷达</span></button>
-      <button v-if="STRATEGY_WORKSPACE_ENABLED" type="button" class="nav-item" :class="{active:sideTab==='strategy'}" title="策略交易" @click="sideTab='strategy'"><span class="nav-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3 3v14h14M6 13l4-5 4 2 3-6"/></svg></span><span class="nav-label">策略交易</span></button>
-      <button type="button" class="nav-item" :class="{active:sideTab==='news'}" :aria-pressed="sideTab==='news'" title="新闻" @click="sideTab='news'"><span class="nav-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><rect x="3" y="2" width="14" height="16" rx="2"/><path d="M6 6h8M6 10h8M6 14h5"/></svg></span><span class="nav-label">新闻</span></button>
+      <button type="button" class="nav-item" :class="{active:!myOpen && sideTab==='virtual'}" :aria-pressed="!myOpen && sideTab==='virtual'" title="虚拟币" @click="myOpen=false; sideTab='virtual'"><span class="nav-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3 3v14h14M6 12l3-4 3 2 5-6"/></svg></span><span class="nav-label">虚拟币</span></button>
+      <button type="button" class="nav-item" :class="{active:!myOpen && sideTab==='tradfi'}" :aria-pressed="!myOpen && sideTab==='tradfi'" title="雷达" @click="myOpen=false; sideTab='tradfi'"><span class="nav-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="8"/><circle cx="10" cy="10" r="4"/><path d="m10 10 6-6"/></svg></span><span class="nav-label">雷达</span></button>
+      <button v-if="STRATEGY_WORKSPACE_ENABLED" type="button" class="nav-item" :class="{active:!myOpen && sideTab==='strategy'}" title="策略交易" @click="myOpen=false; sideTab='strategy'"><span class="nav-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3 3v14h14M6 13l4-5 4 2 3-6"/></svg></span><span class="nav-label">策略交易</span></button>
+      <button type="button" class="nav-item" :class="{active:!myOpen && sideTab==='news'}" :aria-pressed="!myOpen && sideTab==='news'" title="新闻" @click="myOpen=false; sideTab='news'"><span class="nav-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><rect x="3" y="2" width="14" height="16" rx="2"/><path d="M6 6h8M6 10h8M6 14h5"/></svg></span><span class="nav-label">新闻</span></button>
       <div class="bottom-nav"><DesktopSettings :username="authUser?.username" :active-market="sideTab==='tradfi'?'tradfi':'virtual'" @logout="onLogout" /></div>
     </aside>
 
+    <MobileMy v-if="myOpen" class="mobile-my-view" :username="authUser?.username" :active-market="sideTab==='tradfi'?'tradfi':'virtual'" @logout="onLogout" />
     <div class="layout" :class="{ 'is-tradfi': sideTab !== 'virtual' }">
       <div v-show="sideTab === 'virtual'" class="virtual-view">
       <el-alert
@@ -377,7 +395,8 @@ onUnmounted(() => {
         :title="whaleStore.error"
       />
 
-      <div class="whales-shell">
+      <nav class="mobile-crypto-tabs" aria-label="虚拟币模块"><button v-for="item in [{id:'alerts',label:'异动记录'},{id:'whales',label:'巨鲸账户'},{id:'macro',label:'宏观数据'}] as const" :key="item.id" :class="{active:mobilePanel===item.id}" :aria-pressed="mobilePanel===item.id" @click="mobilePanel=item.id">{{item.label}}</button></nav>
+      <div class="whales-shell" :class="'mobile-panel-'+mobilePanel">
         <div class="grid">
           <section class="side-info">
             <nav class="side-info-tabs" aria-label="市场观察">
@@ -403,7 +422,8 @@ onUnmounted(() => {
             </div>
           </section>
 
-          <WhaleList
+          <MobileWhales :refresh="recoverState" v-if="isMobile" ref="whaleListRef" class="whale-area" :whales="whaleStore.displayWhales" :loading="whaleStore.loading" @detail="onSelectWhale"/>
+          <WhaleList v-else
             class="whale-area"
             ref="whaleListRef"
             :whales="whaleStore.displayWhales"
@@ -420,7 +440,7 @@ onUnmounted(() => {
           <section class="alerts-area" aria-label="异动记录">
             <header class="alerts-heading">异动记录</header>
             <div class="side-info-pane">
-          <NewsList
+          <NewsList :mobile="isMobile"
             ref="newsListRef"
             linked-coin="ALL"
             :window-ms="86400000"
@@ -438,14 +458,14 @@ onUnmounted(() => {
         </div>
       </div>
       </div>
-      <MarketNews v-if="newsVisited" v-show="sideTab === 'news'" :active="sideTab === 'news'" class="tradfi-host" />
+      <MarketNews :mobile="isMobile" v-if="newsVisited" v-show="sideTab === 'news'" :active="sideTab === 'news' && !myOpen" class="tradfi-host" />
       <StrategyWorkspace v-if="STRATEGY_WORKSPACE_ENABLED && strategyVisited" v-show="sideTab === 'strategy'" :active="sideTab === 'strategy'" class="tradfi-host" />
-      <TradFiBoard v-if="RADAR_ENABLED" :active="sideTab === 'tradfi'" ref="radarRef" v-show="sideTab === 'tradfi'" class="tradfi-host" />
+      <TradFiBoard :mobile="isMobile" v-if="RADAR_ENABLED" :active="sideTab === 'tradfi'" ref="radarRef" v-show="sideTab === 'tradfi'" class="tradfi-host" />
       <div v-else v-show="sideTab === 'tradfi'" class="tradfi-host" role="status" style="padding: 24px">
         雷达已暂停，暂不请求行情数据。
       </div>
     </div>
-    <WhaleDetailDialog v-model="whaleDetailOpen" :whale="whaleDetailProfile" :snapshot-updated-at="whaleStore.updatedAt" />
+    <WhaleDetailDialog :mobile="isMobile" :refresh-snapshot="recoverState" v-model="whaleDetailOpen" :whale="whaleDetailProfile" :snapshot-updated-at="whaleStore.updatedAt" />
     </template>
   </div>
 </template>
@@ -503,7 +523,7 @@ onUnmounted(() => {
 .sidebar{width:116px;background:var(--workspace-surface);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:stretch;padding:20px 8px 18px;flex-shrink:0;z-index:10;overflow-y:auto;overflow-x:hidden}
 .sidebar{box-sizing:border-box}
 .nav-mark svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
-.sidebar-connection{display:flex;align-items:center;gap:5px;margin-top:0;color:var(--muted);font-size:10px;white-space:nowrap}
+.sidebar-connection{display:flex;align-items:center;gap:5px;margin-top:0;margin-bottom:10px;color:var(--muted);font-size:10px;white-space:nowrap}
 .sidebar-connection>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .sidebar .socket-dot {
   position: relative;
@@ -591,7 +611,7 @@ onUnmounted(() => {
 .sidebar .nav-item:hover{background:var(--panel-2);color:var(--text)}
 .sidebar .nav-item:focus-visible{outline:2px solid var(--yellow);outline-offset:2px}
 .sidebar .bottom-nav{margin-top:auto;padding-top:16px;border-top:1px solid var(--border);width:100%}
-@media(max-width:1000px){.sidebar{width:70px;padding:22px 10px 16px}.sidebar-connection>span,.nav-label{display:none}.sidebar-connection{justify-content:center;margin-bottom:22px}.sidebar .nav-item{justify-content:center;padding:12px 0}}
+@media(max-width:1000px){.sidebar{width:70px;padding:22px 10px 16px}.sidebar-connection>span,.nav-label{display:none}.sidebar-connection{justify-content:center}.sidebar .nav-item{justify-content:center;padding:12px 0}}
 
 .layout {
   flex: 1;
@@ -700,4 +720,7 @@ onUnmounted(() => {
   .side-info{grid-column:1;grid-row:1}.whale-area{grid-column:1;grid-row:2}.alerts-area{grid-column:1;grid-row:3}
   .side-info-pane{min-height:400px;max-height:750px;overflow:auto}
 }
+.mobile-my-view,.mobile-crypto-tabs{display:none}
 </style>
+<style src="../styles/mobile.css"></style>
+<style src="../styles/h5.css"></style>
