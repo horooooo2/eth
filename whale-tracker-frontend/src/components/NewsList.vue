@@ -66,6 +66,13 @@ const alertCoinFilter = ref<'all' | string>('all');
 watch(() => props.linkedCoin, coin => { if (coin) alertCoinFilter.value = coin === 'ALL' ? 'all' : coin; }, { immediate: true });
 const alertMinUsd = ref(readAlertMinUsd());
 const ALERT_DISPLAY_LIMIT = 50;
+const alertWindowLabel = computed(() => {
+  const ms = props.windowMs;
+  if (!ms) return '历史';
+  if (ms > 86400000 && ms % 86400000 === 0) return `近 ${ms / 86400000} 天`;
+  if (ms >= 3600000 && ms % 3600000 === 0) return `近 ${ms / 3600000} 小时`;
+  return `近 ${Math.ceil(ms / 60000)} 分钟`;
+});
 const activeAlertId = ref('');
 const activeAlert = computed(() => whaleStore.alertsById[activeAlertId.value] || null);
 const alertVisible = ref(false);
@@ -363,7 +370,7 @@ function pnlClass(value: number | null | undefined) {
 }
 
 function alertEmptyText() {
-  const base = '近 7 天暂无开仓 / 补仓记录';
+  const base = `${alertWindowLabel.value}暂无开仓 / 补仓记录`;
   const parts: string[] = [];
   if (props.filterWhaleId && filterWhaleName.value) parts.push(filterWhaleName.value);
   if (alertMinUsd.value > 0) parts.push(`≥${formatUsd(alertMinUsd.value)}`);
@@ -372,7 +379,7 @@ function alertEmptyText() {
   if (openOnly.value) parts.push('开仓');
   if (alertCoinFilter.value !== 'all') parts.push(alertCoinFilter.value);
   if (!parts.length) return base;
-  return `近 7 天暂无${parts.join(' · ')}的开仓 / 补仓记录`;
+  return `${alertWindowLabel.value}暂无${parts.join(' · ')}的开仓 / 补仓记录`;
 }
 
 function sideBadgeClass(view: { layer: AlertLayer; side: 'long' | 'short' | null; actionLabel: string }) {
@@ -459,6 +466,7 @@ function alertFundingWarn(row: {
 
     <div class="tab-panel">
       <div class="alert-toolbar">
+        <span class="alert-scope">{{ alertWindowLabel }} · 最新 {{ ALERT_DISPLAY_LIMIT }} 条开仓 / 加仓记录</span>
         <div v-if="filterWhaleName" class="whale-link-chip" :title="filterWhaleName">
           <span class="chip-label">联动</span>
           <span class="chip-name">{{ filterWhaleName }}</span>
@@ -680,6 +688,7 @@ function alertFundingWarn(row: {
   flex: 0 0 auto;
   margin-left: auto;
 }
+.alert-scope { color: var(--muted); font-size: 11px; line-height: 1.5; }
 .alert-toolbar {
   display: flex;
   flex-direction: column;

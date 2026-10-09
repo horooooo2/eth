@@ -303,7 +303,7 @@ onUnmounted(() => { disposed = true; clearTimeout(recoveryTimer); clearTimeout(c
       </div>
     </header>
     <section class="data-overview" aria-label="数据库概览">
-      <div class="overview-item"><span>数据库异动记录</span><strong>{{ alertTotal == null ? '—' : alertTotal.toLocaleString('zh-CN') }}<small>条</small></strong><p v-if="alertCountError" class="count-error">{{ alertCountError }}{{ alertTotal == null ? '' : '（显示上次统计）' }}</p><p v-else>{{ alertCountInitializing ? '正在分批建立计数…' : alertCountAt ? `统计于 ${fmtTime(alertCountAt)}` : '正在读取…' }}</p></div>
+      <div class="overview-item"><span title="全部存储记录，含未达展示门槛的记录；前台按时间和筛选条件展示最多 50 条">数据库异动记录（全部）</span><strong>{{ alertTotal == null ? '—' : alertTotal.toLocaleString('zh-CN') }}<small>条</small></strong><p v-if="alertCountError" class="count-error">{{ alertCountError }}{{ alertTotal == null ? '' : '（显示上次统计）' }}</p><p v-else>{{ alertCountInitializing ? '正在分批建立计数…' : alertCountAt ? `统计于 ${fmtTime(alertCountAt)}` : '正在读取…' }}</p></div>
       <div class="overview-item"><span>已拉取巨鲸</span><strong>{{ whaleTotal ?? '—' }}<small>个</small></strong><p>当前数据库中的巨鲸</p></div>
       <div class="overview-item"><span>用户账号</span><strong>{{ users.length }}<small>个</small></strong><p>已创建的登录账号</p></div>
     </section>

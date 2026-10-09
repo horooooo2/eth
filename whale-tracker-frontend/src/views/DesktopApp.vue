@@ -479,7 +479,7 @@ onUnmounted(() => {
           <NewsList
             ref="newsListRef"
             linked-coin="ALL"
-            :window-ms="3600000"
+            :window-ms="86400000"
             :alerts="whaleStore.alertHistory"
             :whales="whaleStore.enabledWhales"
             :funding-rates="fundingRates"
