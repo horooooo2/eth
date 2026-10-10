@@ -134,13 +134,16 @@ test('expired clearinghouse data is never returned as a fresh successful snapsho
   let failed = false;
   let invalid = false;
   require.cache[clientPath] = { id: clientPath, filename: clientPath, loaded: true, exports: {
-    hlPost: async () => { if (failed) throw new Error('upstream unavailable'); return invalid ? {} : { assetPositions: [] }; },
+    hlPost: async (body) => { if (body.type === 'perpDexs') return [null]; if (failed) throw new Error('upstream unavailable'); return invalid ? {} : { assetPositions: [] }; },
   } };
+  const marketsPath = require.resolve('../lib/hlMarkets');
+  const originalMarkets = require.cache[marketsPath];
+  delete require.cache[marketsPath];
   delete require.cache[modulePath];
   Date.now = () => clock;
   try {
     const { fetchClearinghouseState } = require('../lib/hyperliquid');
-    assert.deepEqual(await fetchClearinghouseState('0xtest'), { assetPositions: [], observedAt: clock });
+    assert.deepEqual(await fetchClearinghouseState('0xtest'), { assetPositions: [], positionScope: 'all-perp', observedAt: clock });
     clock += 21000;
     failed = true;
     await assert.rejects(fetchClearinghouseState('0xtest'), /upstream unavailable/);
@@ -149,6 +152,8 @@ test('expired clearinghouse data is never returned as a fresh successful snapsho
     await assert.rejects(fetchClearinghouseState('0xtest'), /Invalid clearinghouse state/);
   } finally {
     Date.now = originalNow;
+    if (originalMarkets) require.cache[marketsPath] = originalMarkets;
+    else delete require.cache[marketsPath];
     if (originalClient) require.cache[clientPath] = originalClient;
     else delete require.cache[clientPath];
     if (originalModule) require.cache[modulePath] = originalModule;

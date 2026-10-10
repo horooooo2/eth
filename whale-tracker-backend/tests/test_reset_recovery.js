@@ -8,6 +8,7 @@ function fixture(fetchFills = async () => [], meta = new Map(), cached = null, p
   const context = { module: { exports: {} }, process: { env: {} }, Date: { now: () => now },
     console: { warn() {} }, setImmediate, setInterval: () => ({ unref() {} }), clearInterval() {},
     require: key => ({
+      './whaleValidation': { validator: { isDeepRunning: () => false } },
       './marketMaintenance': { isPaused: () => false },
       './db': { getMeta: k => ({ value: meta.get(k) }), setMeta: (k,v) => meta.set(k,v) },
       './config': { normalizeAddress: x => x, getActiveWhales: () => [{id:'a',address:'0xa'}] },

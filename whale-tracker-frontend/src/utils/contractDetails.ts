@@ -62,3 +62,7 @@ export function contractDetails(symbol: string, assetType: string, name = '') {
   // the actual contract page instead of guessing an exchange or launching search.
   return { href: contractUrl, title: '查看币安合约详情与走势（标的详情页尚未确认）' };
 }
+
+export function isKnownTradfiUnderlying(ticker: string) {
+  return Boolean(underlyingSymbols[ticker.toUpperCase()]);
+}

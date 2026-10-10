@@ -15,7 +15,7 @@ const visible=ref(false);
     <el-dialog v-model="visible" title="设置" width="min(480px,94vw)" append-to-body destroy-on-close>
       <div class="settings-account"><span class="account-avatar">{{(username||'U').slice(0,1).toUpperCase()}}</span><div><strong>{{username||'当前账户'}}</strong><small>个人工作区</small></div></div>
       <div class="settings-group">
-        <CoinPreferences :active-market="activeMarket"><template #trigger="{open}"><button type="button" class="settings-row" @click="open"><span><b>币种与合约偏好</b><small>管理虚拟币和雷达关注标的</small></span><span aria-hidden="true">›</span></button></template></CoinPreferences>
+        <CoinPreferences :active-market="activeMarket"><template #trigger="{open}"><button type="button" class="settings-row" @click="open"><span><b>标的偏好</b><small>管理虚拟币和雷达关注标的</small></span><span aria-hidden="true">›</span></button></template></CoinPreferences>
         <NewsPreferences><template #default="{open}"><button type="button" class="settings-row" @click="open"><span><b>新闻标的管理</b><small>管理新闻与评论关注的标的</small></span><span aria-hidden="true">›</span></button></template></NewsPreferences>
         <ApiSettings><template #trigger="{open}"><button type="button" class="settings-row" @click="open"><span><b>AI 分析设置</b><small>配置个人 DeepSeek 密钥</small></span><span aria-hidden="true">›</span></button></template></ApiSettings>
       </div>

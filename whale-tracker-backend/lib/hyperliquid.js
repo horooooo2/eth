@@ -1,3 +1,4 @@
+const { fetchDexNames, mergeMarketStates, latestMarketSnapshot, fetchExtendedStates } = require('./hlMarkets');
 const { hlPost, hlPostOfficial, getHlInfoConfig, MAX_CONCURRENT, isRateLimited } = require('./hlInfoClient');
 const { canonicalTradeId, isRawTrade } = require('./positionEventPolicy');
 
@@ -56,12 +57,15 @@ async function withCache(key, ttlMs, loader, options = {}) {
  */
 async function fetchClearinghouseState(address) {
   const user = address.toLowerCase();
+  const live = latestMarketSnapshot(user);
+  if (live) return live;
   return withCache(`state:${user}`, 20000, async () => {
     const state = await hlPost({ type: 'clearinghouseState', user: address });
     if (!state || !Array.isArray(state.assetPositions)) {
       throw new Error('Invalid clearinghouse state: assetPositions must be an array');
     }
-    return { ...state, observedAt: Date.now() };
+    const extended = await fetchExtendedStates(user);
+    return latestMarketSnapshot(user) || mergeMarketStates([['', state], ...extended]);
   },
     { allowStale: false },
   );
@@ -103,7 +107,7 @@ async function fetchUserPortfolio(address) {
 }
 
 /**
- * GoldRush 批量仓位（最多 50 个）；非 GoldRush 或不支持时逐个回退。
+ * 最多 50 个监控地址；复用全市场 WS 缓存，REST 钱包并发限制为 2。
  */
 async function fetchBatchClearinghouseStates(addresses = []) {
   const users = [...new Set((addresses || []).map((item) => String(item || '').trim()).filter(Boolean))].slice(
@@ -112,41 +116,15 @@ async function fetchBatchClearinghouseStates(addresses = []) {
   );
   if (!users.length) return {};
 
-  const cfg = getHlInfoConfig();
-  if (cfg.usingGoldRush) {
-    try {
-      const data = await hlPost({ type: 'batchClearinghouseState', users });
-      if (Array.isArray(data)) {
-        const out = {};
-        for (let i = 0; i < users.length; i += 1) {
-          if (data[i] != null) out[users[i].toLowerCase()] = data[i];
-        }
-        return out;
-      }
-      if (data && typeof data === 'object') {
-        const out = {};
-        for (const user of users) {
-          const key = user.toLowerCase();
-          const hit = data[user] ?? data[key];
-          if (hit != null) out[key] = hit;
-        }
-        if (Object.keys(out).length) return out;
-      }
-    } catch (err) {
-      console.warn('[hl] batchClearinghouseState 失败，回退逐个查询:', err.message || err);
-    }
-  }
-
   const out = {};
-  await Promise.all(
-    users.map(async (user) => {
-      try {
-        out[user.toLowerCase()] = await fetchClearinghouseState(user);
-      } catch {
-        // 单个失败跳过
-      }
-    }),
-  );
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(2, users.length) }, async () => {
+    while (cursor < users.length) {
+      const user = users[cursor++];
+      try { out[user.toLowerCase()] = await fetchClearinghouseState(user); }
+      catch { /* Keep the previous complete wallet snapshot on failure. */ }
+    }
+  }));
   return out;
 }
 
@@ -359,7 +337,7 @@ async function resolveFillsForPosition(address, coin, currentSize, side, allFill
 
 function isExoticAsset(coin) {
   const value = String(coin || '');
-  return /^@\d+$/i.test(value) || value.includes(':');
+  return /^@\d+$/i.test(value) || value.includes('/');
 }
 
 function explorerUrl(address, coin = '') {
@@ -407,9 +385,9 @@ async function fetchCoinNameMap() {
   });
 }
 
-async function fetchAllMids() {
-  return withCache('allMids', 15000, async () => {
-    const data = await hlPost({ type: 'allMids' });
+async function fetchAllMids(dex = '') {
+  return withCache(`allMids:${dex}`, 15000, async () => {
+    const data = await hlPost({ type: 'allMids', dex });
     return data && typeof data === 'object' ? data : {};
   });
 }
@@ -420,10 +398,20 @@ async function fetchAllMids() {
  */
 async function fetchFrontendOpenOrders(address) {
   const user = address.toLowerCase();
-  return withCache(`openOrders:${user}`, 20000, async () => {
-    const data = await hlPost({ type: 'frontendOpenOrders', user: address });
-    return Array.isArray(data) ? data : [];
-  });
+  return withCache(`openOrders:${user}`, 60000, async () => {
+    const rows = [];
+    const dexes = ['', ...await fetchDexNames()];
+    let cursor = 0;
+    await Promise.all(Array.from({ length: Math.min(2, dexes.length) }, async () => {
+      while (cursor < dexes.length) {
+        const dex = dexes[cursor++];
+        const data = await hlPost({ type: 'frontendOpenOrders', user: address, dex }, 0, { priority: 'interactive' });
+        if (!Array.isArray(data)) throw new Error('Invalid frontendOpenOrders response');
+        rows.push(...data.map(row => ({ ...row, coin: dex && !String(row.coin).includes(':') ? `${dex}:${row.coin}` : row.coin })));
+      }
+    }));
+    return rows.sort((a, b) => Number(b.timestamp) - Number(a.timestamp));
+  }, { allowStale: false });
 }
 
 function isStopOrderType(orderType) {

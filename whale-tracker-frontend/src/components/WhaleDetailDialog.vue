@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { whaleAssetLabel } from '@/utils/whaleAssetLabel';
 import MobileScroll from './mobile/MobileScroll.vue';
 import { computed, ref, watch } from 'vue';
 import AiAnalyzeButton from '@/components/AiAnalyzeButton.vue';
@@ -425,7 +426,7 @@ async function copyAddress() {
         <div class="header-tools"><AiAnalyzeButton v-if="whaleAiPayload" :key="whale.id" source="whale" label="AI 分析巨鲸" :title="whaleAiPayload.title" :content="whaleAiPayload.content" :meta="whaleAiPayload.meta" /><div class="updated">列表快照 {{ snapshotUpdatedAt ? formatRelativeAgo(snapshotUpdatedAt) : '时间未知' }}{{ whale.error ? ' · 部分数据异常' : '' }}</div></div>
       </div>
       <div v-if="whale" class="account-summary">
-        <div><span>合约权益</span><strong>{{ formatMoney(whale.contractAccountValue) }}</strong></div>
+        <div><span title="默认永续市场权益，未累加扩展市场保证金">默认市场权益</span><strong>{{ formatMoney(whale.contractAccountValue) }}</strong></div>
         <div><span>持仓总价值</span><strong>{{ formatMoney(grossPositionUsd) }}</strong></div>
         <div><span>持仓浮盈亏</span><strong :class="signedClass(totalUnrealizedPnl)">{{ formatMoney(totalUnrealizedPnl) }}</strong></div>
       </div>
@@ -518,7 +519,7 @@ async function copyAddress() {
         <div v-if="displayedPositions.length" class="position-card-grid">
           <article v-for="pos in displayedPositions" :key="`${pos.coin}-${pos.side}`" class="position-card" :class="`position-${pos.side}`">
             <header class="position-card-header">
-              <div><h3>{{ pos.coinLabel || pos.coin }}</h3></div>
+              <div><h3>{{ whaleAssetLabel(pos.coin, pos.coinLabel) }}</h3></div>
               <div class="position-badges"><span :class="pos.side === 'long' ? 'positive' : 'negative'">{{ sideLabel(pos.side) }}</span><span>{{ formatLeverage(pos.leverage) }}</span></div>
             </header>
             <div class="position-pnl"><span>未实现盈亏 <small>USD</small></span><strong :class="signedClass(pos.unrealizedPnl)">{{ formatPositionMoney(pos.unrealizedPnl) }}</strong><span>保证金收益率 <b :class="signedClass(pos.unrealizedPnl)">{{ positionRoe(pos) }}</b></span></div>
@@ -529,7 +530,7 @@ async function copyAddress() {
               <div><dt>清算价格</dt><dd>{{ formatPrice(pos.liquidationPx) }}</dd></div>
               <div><dt>保证金</dt><dd>{{ formatPositionMoney(pos.marginUsed) }}</dd></div>
             </dl>
-            <el-popover trigger="click" placement="bottom" :width="240"><template #reference><button type="button" class="position-more">持仓明细</button></template><div>{{ pos.coin }} · 持仓数量 {{ formatQty(Math.abs(pos.size)) }}</div></el-popover>
+            <el-popover trigger="click" placement="bottom" :width="240"><template #reference><button type="button" class="position-more">持仓明细</button></template><div>{{ whaleAssetLabel(pos.coin) }} · 持仓数量 {{ formatQty(Math.abs(pos.size)) }}</div></el-popover>
           </article>
         </div>
         <el-empty v-else :description="positions.length ? '当前筛选下没有仓位' : '当前快照没有合约仓位'" :image-size="64" />
@@ -581,7 +582,7 @@ async function copyAddress() {
         <div v-else-if="openOrders.length" class="table-scroll">
           <table>
             <thead><tr><th>币种</th><th>方向</th><th>订单类型</th><th>价格 / 触发价</th><th>数量</th><th>名义金额</th><th>标记</th></tr></thead>
-            <tbody><tr v-for="order in openOrders" :key="order.id"><td data-label="币种">{{ order.coinLabel }}</td><td data-label="方向" :class="order.side === '买入' ? 'positive' : 'negative'">{{ order.side }}</td><td data-label="订单类型">{{ order.orderType }}</td><td data-label="价格 / 触发价">{{ formatPrice(order.price) }}</td><td data-label="数量">{{ formatQty(order.size) }}</td><td data-label="名义金额">{{ order.notionalUsd == null ? '—' : formatMoney(order.notionalUsd) }}</td><td data-label="标记">{{ order.reduceOnly ? '只减仓' : order.triggerCondition || '—' }}</td></tr></tbody>
+            <tbody><tr v-for="order in openOrders" :key="order.id"><td data-label="币种">{{ whaleAssetLabel(order.coin, order.coinLabel) }}</td><td data-label="方向" :class="order.side === '买入' ? 'positive' : 'negative'">{{ order.side }}</td><td data-label="订单类型">{{ order.orderType }}</td><td data-label="价格 / 触发价">{{ formatPrice(order.price) }}</td><td data-label="数量">{{ formatQty(order.size) }}</td><td data-label="名义金额">{{ order.notionalUsd == null ? '—' : formatMoney(order.notionalUsd) }}</td><td data-label="标记">{{ order.reduceOnly ? '只减仓' : order.triggerCondition || '—' }}</td></tr></tbody>
           </table>
         </div>
         <el-empty v-else-if="!ordersLoading" description="当前没有未完成订单" :image-size="64" />

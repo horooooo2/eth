@@ -131,6 +131,7 @@ function runQueue() {
     }
     const [job] = queue.splice(index, 1);
     clearTimeout(job.timer);
+    job.cleanup?.();
     active += 1;
     job
       .fn()
@@ -149,11 +150,20 @@ function runQueue() {
 
 function enqueue(fn, body = {}, scheduling = {}) {
   return new Promise((resolve, reject) => {
+    if (scheduling.signal?.aborted) return reject(Object.assign(new Error('请求已取消'), { code: 'ERR_CANCELED' }));
     if (queue.length >= 256) return reject(Object.assign(new Error('上游采集队列已满'), { code: 'HL_QUEUE_FULL' }));
-    const job = { fn, resolve, reject, body, scheduling, at: Date.now(), priority: scheduling.priority === 'history' ? -20 : body.type === 'clearinghouseState' ? 10 : body.type === 'userFillsByTime' ? (Number(body.endTime) < Date.now() - 120000 ? -10 : 0) : 5 };
+    const job = { fn, resolve, reject, body, scheduling, at: Date.now(), priority: scheduling.priority === 'interactive' ? 20 : scheduling.priority === 'history' ? -20 : body.type === 'clearinghouseState' ? 10 : body.type === 'userFillsByTime' ? (Number(body.endTime) < Date.now() - 120000 ? -10 : 0) : 5 };
+    const abort = () => {
+      const index = queue.indexOf(job);
+      if (index < 0) return;
+      queue.splice(index, 1); clearTimeout(job.timer); job.cleanup();
+      reject(Object.assign(new Error('请求已取消'), { code: 'ERR_CANCELED' }));
+    };
+    job.cleanup = () => scheduling.signal?.removeEventListener('abort', abort);
+    scheduling.signal?.addEventListener('abort', abort, { once: true });
     job.timer = setTimeout(() => {
       const index = queue.indexOf(job);
-      if (index >= 0) { queue.splice(index, 1); reject(Object.assign(new Error(scheduling.priority === 'history' ? '历史采集等待剩余预算' : '上游采集排队超时'), { code: scheduling.priority === 'history' ? 'HL_HISTORY_DEFERRED' : 'HL_QUEUE_TIMEOUT' })); }
+      if (index >= 0) { queue.splice(index, 1); job.cleanup(); reject(Object.assign(new Error(scheduling.priority === 'history' ? '历史采集等待剩余预算' : '上游采集排队超时'), { code: scheduling.priority === 'history' ? 'HL_HISTORY_DEFERRED' : 'HL_QUEUE_TIMEOUT' })); }
     }, scheduling.priority === "history" ? 5000 : 45000);
     queue.push(job);
     runQueue();
@@ -166,7 +176,7 @@ async function postOnce(url, body, scheduling) {
   if (wait > 0) await sleep(wait);
   return enqueue(async () => {
   try {
-    const { data } = await client.post(url, body, { headers: authHeaders(url) });
+    const { data } = await client.post(url, body, { headers: authHeaders(url), signal: scheduling?.signal });
     lastSuccessAt = Date.now(); lastError = ''; return data;
   } catch (error) { lastFailureAt = Date.now(); lastError = error.code || error.message; throw error; }
   }, body, scheduling);
@@ -178,6 +188,7 @@ async function postWithRetries(url, body, retries = 2, scheduling = {}) {
     try {
       return await postOnce(url, body, scheduling);
     } catch (err) {
+      if (scheduling.signal?.aborted || err.code === 'ERR_CANCELED') throw err;
       lastError = err;
       if (isAuthError(err) || ['ECONNREFUSED', 'HL_QUEUE_TIMEOUT', 'HL_QUEUE_FULL', 'HL_HISTORY_DEFERRED'].includes(err.code)) throw err;
       if (!isTransient(err) || attempt === retries) break;
@@ -199,7 +210,8 @@ async function hlPost(body, retries = 2, scheduling = {}) {
       try {
         return await postWithRetries(url, body, retries, scheduling);
       } catch (err) {
-        lastError = err;
+        if (scheduling.signal?.aborted || err.code === 'ERR_CANCELED') throw err;
+      lastError = err;
         const hasNext = i < endpoints.length - 1;
         const canSwitch = hasNext && (isAuthError(err) || isTransient(err) || isRateLimited(err));
         if (!canSwitch) throw wrapRateLimit(err);

@@ -124,11 +124,12 @@ http.interceptors.response.use(
     }
     const message =
       status === 429 || /429|过于频繁/.test(raw) ? '查询过于频繁，请稍后再试' : raw;
-    const enriched = new Error(message) as Error & { code?: string; details?: unknown };
+    const enriched = new Error(message) as Error & { code?: string; details?: unknown; status?: number };
     enriched.code = data?.code || (typeof data?.details === 'object' && data?.details
       ? (data.details as { code?: string }).code
       : undefined);
     enriched.details = data;
+    enriched.status = status;
     return Promise.reject(enriched);
   },
 );

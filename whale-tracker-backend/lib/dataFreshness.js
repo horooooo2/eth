@@ -11,7 +11,7 @@ function summarizeFreshness(whales = [], now = Date.now()) {
     if (now - time <= MAX_POSITION_AGE_MS) freshCount++;
   }
   return {
-    asOf: now, scope: 'native-perp', stale: freshCount !== whales.length || !whales.length,
+    asOf: now, scope: whales.length && whales.every(w => w.positionScope === 'all-perp') ? 'all-perp' : 'mixed-perp', stale: freshCount !== whales.length || !whales.length,
     freshness: { total: whales.length, freshCount, staleCount: knownCount - freshCount,
       unknownCount: whales.length - knownCount, maxAgeMs: MAX_POSITION_AGE_MS,
       oldestObservedAt: knownCount ? oldest : null,

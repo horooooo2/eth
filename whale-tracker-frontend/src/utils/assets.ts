@@ -9,7 +9,7 @@ const MAINSTREAM = new Set<string>(MAINSTREAM_ORDER);
 
 export function isExoticAsset(coin: string) {
   const value = String(coin || '');
-  return /^@\d+$/i.test(value) || value.includes(':');
+  return /^@\d+$/i.test(value) || value.includes('/');
 }
 
 export function isMainstreamAsset(coin: string) {
@@ -21,10 +21,10 @@ function normalizeAssetKey(coin: string) {
   return String(coin || '').toUpperCase().replace(/^K/, '');
 }
 
-/** 与转账列表一致：仅主流币进入筛选项（HIP-3 美股等不进） */
+/** 与转账列表一致：主流币及带市场前缀的 HIP-3 永续进入筛选项 */
 export function isSelectableAsset(coin: string) {
   if (isExoticAsset(coin)) return false;
-  return isMainstreamAsset(coin);
+  return coin.includes(':') || isMainstreamAsset(coin);
 }
 
 export function compareSelectableAssets(a: string, b: string) {

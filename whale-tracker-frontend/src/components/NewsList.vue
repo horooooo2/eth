@@ -12,7 +12,9 @@ import {
   type AlertLayer,
   type WhaleAlert,
 } from '@/utils/whaleAlerts';
-import { preferredCoinsState, coinMatchesWatch } from '@/utils/watchedCoins';
+import { coinMatchesWatch } from '@/utils/watchedCoins';
+import { useWhalePreferredAssets } from '@/utils/whalePreferredAssets';
+import { whaleAssetLabel, whaleAssetOptionLabel, isWhaleTradfi } from '@/utils/whaleAssetLabel';
 import { isExoticAsset } from '@/utils/assets';
 import {
   ALERT_MIN_USD_OPTIONS,
@@ -60,7 +62,7 @@ const emit = defineEmits<{
   locateWhale: [payload: { id: string; name: string; coin?: string }];
 }>();
 
-const preferredCoins = preferredCoinsState;
+const preferredCoins = useWhalePreferredAssets();
 
 const alertSideFilter = ref<'all' | 'long' | 'short'>('all');
 const openOnly = ref(false);
@@ -161,7 +163,7 @@ async function loadAlertPage(silent = false) {
       page: 1,
       limit: ALERT_DISPLAY_LIMIT,
       side: alertSideFilter.value,
-      coins: selectedCoin ? [...new Set([selectedCoin, `K${normalizedCoin}`, `U${normalizedCoin}`])] : undefined,
+      coins: selectedCoin ? (selectedCoin.includes(':') ? [selectedCoin] : [...new Set([selectedCoin, `K${normalizedCoin}`, `U${normalizedCoin}`])]) : undefined,
       excludeExotic: true,
       sinceMs: props.windowMs ? Date.now() - props.windowMs : undefined,
     });
@@ -306,7 +308,6 @@ watch(
     alertMinUsd,
     () => props.filterWhaleId,
     () => props.windowMs,
-    preferredCoins,
   ],
   () => {
     if (!started || !alertFiltersReady.value || suppressAutoAlertReload) return;
@@ -318,7 +319,7 @@ watch(alertMinUsd, (value) => {
   writeAlertMinUsd(value);
 });
 
-watch(preferredCoinsState, (coins) => {
+watch(preferredCoins, (coins) => {
   if (alertCoinFilter.value === 'all') return;
   if (!coins.includes(alertCoinFilter.value)) alertCoinFilter.value = 'all';
 });
@@ -446,7 +447,7 @@ export type AlertsModel = typeof mobileModel;
               :class="{ on: alertCoinFilter === coin }"
               @click="alertCoinFilter = coin"
             >
-              {{ coin }}
+              {{ whaleAssetOptionLabel(coin) }}
             </button>
           </div>
           <div class="head-actions">
@@ -516,7 +517,7 @@ export type AlertsModel = typeof mobileModel;
             </span>
           </div>
           <div class="alert-main">
-            <strong class="coin">{{ row.view.coin }}</strong>
+            <strong class="coin">{{ whaleAssetLabel(row.view.coin) }}</strong><el-tag v-if="isWhaleTradfi(row.view.coin)" size="small" type="info">TradFi</el-tag>
             <strong class="notional" :class="row.view.amountClass">
               名义 {{ row.view.notionalUsd != null ? formatUsd(row.view.notionalUsd) : '--' }}
             </strong>

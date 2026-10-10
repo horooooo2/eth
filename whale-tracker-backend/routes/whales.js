@@ -23,6 +23,7 @@ const { loadRecentEvents, loadRecentAlerts, loadPagedAlerts, countStoredAlerts, 
 
 const router = express.Router();
 const whaleSync = require('../lib/whaleSync');
+const { validator } = require('../lib/whaleValidation');
 const { requireAuthenticated, requireAdmin } = require('../lib/maintenanceAuth');
 
 router.use((req, res, next) => {
@@ -30,6 +31,22 @@ router.use((req, res, next) => {
   if (['/config', '/mode'].includes(req.path) && req.method !== 'GET') return requireAdmin(req, res, next);
   if (req.method !== 'GET' || /\/(?:alert-history|history)\/refresh$/.test(req.path)) return requireAuthenticated(req, res, next);
   next();
+});
+
+router.post('/validation', (req, res) => {
+  try { res.set('Cache-Control','no-store').json(validator.view(validator.start(req.body?.coin,req.body?.mode || 'normal',req.session.user.id,req.body?.restartId),req.session.user.id)); }
+  catch(err){res.status(err.status||500).json({error:err.message});}
+});
+router.get('/validation/current',requireAuthenticated,(req,res)=>{
+  res.set('Cache-Control','no-store').json(validator.view(validator.latest(req.session.user.id),req.session.user.id));
+});
+router.post('/validation/:id/stop',(req,res)=>{
+  try{const job=validator.stop(req.params.id,req.session.user.id);if(!job)return res.status(404).json({error:'任务已过期'});res.set('Cache-Control','no-store').json(validator.view(job,req.session.user.id,Number(req.body?.offset)||0));}
+  catch(err){res.status(err.status||500).json({error:err.message});}
+});
+router.get('/validation/:id',requireAuthenticated,(req,res)=>{
+  const job=validator.get(req.params.id);if(!job)return res.status(404).json({error:'验证任务已过期或服务已重启，请重新验证'});
+  res.set('Cache-Control','no-store').json(validator.view(job,req.session.user.id,Number(req.query.offset)||0));
 });
 
 router.get('/observations', (req, res) => {

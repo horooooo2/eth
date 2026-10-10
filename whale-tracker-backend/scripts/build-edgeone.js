@@ -192,6 +192,10 @@ const libFiles = [
   'lib/analysisResult.js',
   'lib/marketBrief.js',
   'lib/hyperliquid.js',
+  'lib/hlMarkets.js',
+  'lib/whaleRoster.js',
+  'lib/whaleValidation.js',
+  'lib/validationLeaderboardWorker.js',
   'lib/onchain.js',
   'lib/exchangeLabels.js',
   'lib/newsService.js',
@@ -214,7 +218,7 @@ for (const rel of libFiles) {
   const src = path.join(backendRoot, rel);
   if (fs.existsSync(src)) copyFile(src, path.join(deployRoot, rel));
 }
-for (const name of ['whales.json', 'whales-stable.json', 'whales-hf.json']) {
+for (const name of ['whales.json', 'whales-stable.json', 'whales-hf.json', 'whales-tradfi-selection.json']) {
   const src = path.join(backendRoot, 'config', name);
   if (fs.existsSync(src)) copyFile(src, path.join(deployRoot, 'config', name));
 }

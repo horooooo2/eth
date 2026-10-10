@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { whaleAssetLabel } from '@/utils/whaleAssetLabel';
 import { computed, ref, onUnmounted } from 'vue';
 import { fetchWhalePosition } from '@/api';
 import type { WhalePosition, WhalePositionDetail, WhaleProfile, WhaleTrade } from '@/types';
@@ -194,7 +195,7 @@ const title = computed(() => {
     ? whaleCardTitle(whale)
     : whaleCardTitle({ name: whaleName.value, address: whaleAddress.value });
   if (!detail.value) return name;
-  return `${name} · ${displayAsset(detail.value.coin, detail.value.coinLabel)}`;
+  return `${name} · ${whaleAssetLabel(detail.value.coin, detail.value.coinLabel)}`;
 });
 
 const markPx = computed(() => {
@@ -275,7 +276,7 @@ function locateWhaleCard() {
   >
     <template #header>
       <div class="dlg-header">
-        <div class="position-heading"><span class="position-eyebrow">合约仓位详情</span><span class="dlg-title">{{ detail ? displayAsset(detail.coin, detail.coinLabel) : '仓位详情' }} <small v-if="detail" :class="detail.side === 'long' ? 'pnl-up' : 'pnl-down'">{{ directionLabel(detail.side) }}</small><small v-if="detail && !isClosed">{{ detail.leverageLabel || '—' }}</small><el-tag v-if="isClosed" size="small" type="info">已平仓</el-tag></span><span class="position-owner" :title="title">{{ whaleAddress ? whaleAddress.slice(0, 10) + '…' + whaleAddress.slice(-8) : whaleName }}</span></div>
+        <div class="position-heading"><span class="position-eyebrow">合约仓位详情</span><span class="dlg-title">{{ detail ? whaleAssetLabel(detail.coin, detail.coinLabel) : '仓位详情' }} <small v-if="detail" :class="detail.side === 'long' ? 'pnl-up' : 'pnl-down'">{{ directionLabel(detail.side) }}</small><small v-if="detail && !isClosed">{{ detail.leverageLabel || '—' }}</small><el-tag v-if="isClosed" size="small" type="info">已平仓</el-tag></span><span class="position-owner" :title="title">{{ whaleAddress ? whaleAddress.slice(0, 10) + '…' + whaleAddress.slice(-8) : whaleName }}</span></div>
       </div>
     </template>
     <el-skeleton v-if="loading && !detail" :rows="5" animated />

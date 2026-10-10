@@ -1,3 +1,4 @@
+const { rememberMarketSnapshot } = require('./hlMarkets');
 /**
  * Hyperliquid 上游 WebSocket 客户端
  * 默认官方 wss://api.hyperliquid.xyz/ws
@@ -55,8 +56,8 @@ function createHlWsClient(handlers = {}) {
     return {
       connected,
       healthy: connected && subscriptionErrors.size === 0 && activeSubs.size === acknowledgedSubs.size &&
-        [...webDataUsers].every(user => Date.now() - (lastDataAt.get(subKey('clearinghouseState', user)) || 0) < 120000),
-      positionChannel: 'clearinghouseState',
+        [...webDataUsers].every(user => Date.now() - (lastDataAt.get(subKey('allDexsClearinghouseState', user)) || 0) < 120000),
+      positionChannel: 'allDexsClearinghouseState',
       lastDataAt: Object.fromEntries(lastDataAt),
       url: resolveWsUrl().replace(/key=[^&]+/i, 'key=***'),
       usingGoldRush: /goldrushdata\.com/i.test(resolveWsUrl()),
@@ -86,7 +87,7 @@ function createHlWsClient(handlers = {}) {
     if (
       send({
         method: 'subscribe',
-        subscription: { type, user: addr, ...(type === 'clearinghouseState' ? { dex: '' } : {}) },
+        subscription: { type, user: addr },
       })
     ) {
       activeSubs.add(key);
@@ -101,7 +102,7 @@ function createHlWsClient(handlers = {}) {
     const key = subKey(type, addr);
     send({
       method: 'unsubscribe',
-      subscription: { type, user: addr, ...(type === 'clearinghouseState' ? { dex: '' } : {}) },
+      subscription: { type, user: addr },
     });
     activeSubs.delete(key);
     sentAt.delete(key);
@@ -113,7 +114,7 @@ function createHlWsClient(handlers = {}) {
 
   function flushSubscriptions() {
     for (const user of fillUsers) subscribeOne('userFills', user);
-    for (const user of webDataUsers) subscribeOne('clearinghouseState', user);
+    for (const user of webDataUsers) subscribeOne('allDexsClearinghouseState', user);
   }
 
   /**
@@ -142,7 +143,7 @@ function createHlWsClient(handlers = {}) {
     for (const user of [...webDataUsers]) {
       if (!nextWeb.has(user)) {
         webDataUsers.delete(user);
-        unsubscribeOne('clearinghouseState', user);
+        unsubscribeOne('allDexsClearinghouseState', user);
       }
     }
     for (const user of nextWeb) webDataUsers.add(user);
@@ -238,25 +239,26 @@ function createHlWsClient(handlers = {}) {
       return;
     }
 
-    if (msg.channel === 'clearinghouseState' && msg.data) {
-      const user = String(msg.data.user || msg.data?.clearinghouseState?.user || '').toLowerCase();
-      if (!activeSubs.has(subKey('clearinghouseState', user)) || (msg.data.dex && msg.data.dex !== '')) return;
+    if (msg.channel === 'allDexsClearinghouseState' && msg.data) {
+      const user = String(msg.data.user || '').toLowerCase();
+      if (!activeSubs.has(subKey('allDexsClearinghouseState', user))) return;
+      let state;
+      try { state = rememberMarketSnapshot(user, msg.data.clearinghouseStates); }
+      catch (err) { pushError({ source: 'hl-ws', message: err.message }); return; }
       if (user) {
-        const key = subKey('clearinghouseState', user);
+        const key = subKey('allDexsClearinghouseState', user);
         lastDataAt.set(key, Date.now());
         acknowledgedSubs.add(key);
         subscriptionErrors.delete(key);
       }
       const short = user ? `${user.slice(0, 6)}…${user.slice(-4)}` : 'unknown';
-      const posN = Array.isArray(msg.data?.clearinghouseState?.assetPositions)
-        ? msg.data.clearinghouseState.assetPositions.length
-        : null;
+      const posN = state.assetPositions.length;
       pushSocket({
         kind: 'webData',
-        message: `clearinghouseState ${short}${posN != null ? ` · ${posN}仓` : ''}`,
+        message: `allDexsClearinghouseState ${short}${posN != null ? ` · ${posN}仓` : ''}`,
         detail: { user, positions: posN },
       });
-      onWebData({ user, data: msg.data });
+      onWebData({ user, data: { clearinghouseState: state } });
       onStatus(getStatus());
     }
   }
@@ -289,16 +291,16 @@ function createHlWsClient(handlers = {}) {
     socket.on('open', () => {
       if (connectionGeneration !== generation || stopped) return;
       connected = true; lastMessageAt = connectedAt = Date.now();
-      console.log(`[hl-ws] connected fills=${fillUsers.size} clearinghouseState=${webDataUsers.size}`);
+      console.log(`[hl-ws] connected fills=${fillUsers.size} allDexsClearinghouseState=${webDataUsers.size}`);
       pushSocket({
         kind: 'status',
-        message: `WS 已连接 · fills=${fillUsers.size} clearinghouseState=${webDataUsers.size}`,
+        message: `WS 已连接 · fills=${fillUsers.size} allDexsClearinghouseState=${webDataUsers.size}`,
       });
       flushSubscriptions();
       pingTimer = setInterval(() => {
         if (connectionGeneration !== generation || stopped) return;
         const now = Date.now();
-        const positionSilent = [...webDataUsers].some(user => now - (lastDataAt.get(subKey('clearinghouseState', user)) || sentAt.get(subKey('clearinghouseState', user)) || connectedAt) > 120000);
+        const positionSilent = [...webDataUsers].some(user => now - (lastDataAt.get(subKey('allDexsClearinghouseState', user)) || sentAt.get(subKey('allDexsClearinghouseState', user)) || connectedAt) > 120000);
         if (now - lastMessageAt > 60000 || positionSilent) { currentSocket.terminate(); return; }
         send({ method: 'ping' });
         for (const [key, at] of sentAt) {

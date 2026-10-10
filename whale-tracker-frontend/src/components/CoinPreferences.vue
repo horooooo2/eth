@@ -192,13 +192,13 @@ async function confirmPrefs() {
     >
       <div class="dialog-body">
         <div class="market-tabs" role="tablist" aria-label="币种类型">
-          <button type="button" role="tab" :aria-selected="activeTab === 'virtual'" :class="{ active: activeTab === 'virtual' }" @click="activeTab = 'virtual'">虚拟币币种</button>
+          <button type="button" role="tab" :aria-selected="activeTab === 'virtual'" :class="{ active: activeTab === 'virtual' }" @click="activeTab = 'virtual'">标的偏好</button>
           <button type="button" role="tab" :aria-selected="activeTab === 'tradfi'" :class="{ active: activeTab === 'tradfi' }" @click="activeTab = 'tradfi'">雷达合约</button>
         </div>
         <section v-if="activeTab === 'virtual'" class="setting-block" role="tabpanel">
-          <h4 class="block-title">虚拟币币种偏好</h4>
+          <h4 class="block-title">标的偏好</h4>
           <p class="intro">
-            全站分析与异动记录的币种筛选，均按此列表执行。至少保留 1 个币种。
+            巨鲸与异动记录的筛选仅使用此列表，至少保留 1 个标的。雷达合约偏好独立管理。
           </p>
 
           <div class="coin-grid">

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import WhaleValidation from "@/components/WhaleValidation.vue";
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { CopyDocument, View } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
@@ -33,7 +34,8 @@ import {
   whaleHasPositionCoin,
 } from '@/utils/whaleCardUtils';
 import { useWhaleStore } from '@/stores/whale';
-import { preferredCoinsState } from '@/utils/watchedCoins';
+import { whaleAssetLabel } from '@/utils/whaleAssetLabel';
+import { useWhalePreferredAssets } from '@/utils/whalePreferredAssets';
 import {
   isWhaleMonitored,
   toggleWhaleMonitor,
@@ -70,7 +72,10 @@ const positionDialog = ref<{
     pos: WhalePosition | { coin: string; side?: 'long' | 'short' },
   ) => void;
 } | null>(null);
-const preferredCoins = preferredCoinsState;
+const marketFilter = ref<'all' | 'native' | 'extended'>('all');
+const marketFilters = [{ value: 'all', label: '全部市场' }, { value: 'native', label: '默认合约' }, { value: 'extended', label: 'TradFi / 扩展市场' }] as const;
+const preferredCoins = useWhalePreferredAssets();
+watch(preferredCoins, coins => { if (coinFilter.value !== 'all' && !coins.includes(coinFilter.value)) coinFilter.value = 'all'; });
 const expandedEntryKeys = ref<Record<string, boolean>>({});
 const HIGHLIGHT_MS = 5000;
 const highlightedId = ref<string | null>(null);
@@ -83,15 +88,25 @@ const listHovered = ref(false);
 const dialogOpen = ref(false);
 // Freeze only ordering while interacting; position values remain live.
 const updatePaused = computed(() => listHovered.value || dialogOpen.value || Boolean(highlightedId.value));
-const sourceWhales = computed(() => whaleStore.displayWhales);
+function scopedWhale(whale: WhaleProfile): WhaleProfile {
+  if (marketFilter.value === 'all') return whale;
+  const positions = (whale.positions || []).filter(inMarket);
+  const net = positions.reduce((sum, p) => sum + (p.side === 'long' ? 1 : -1) * Math.abs(p.positionValue), 0);
+  return { ...whale, positions, direction: net > 1000 ? 'long' : net < -1000 ? 'short' : 'neutral' };
+}
+function inMarket(pos: WhalePosition) {
+  return marketFilter.value === 'all' || (pos.coin.includes(':') ? marketFilter.value === 'extended' : marketFilter.value === 'native');
+}
+const sourceWhales = computed(() => whaleStore.displayWhales.filter(w => marketFilter.value === 'all' || (w.positions || []).some(inMarket)));
+const summaryWhales = computed(() => whaleStore.enabledWhales.map(scopedWhale));
 
 const coinScopedWhales = computed(() => {
   const pool = sourceWhales.value;
   return coinFilter.value === 'all' ? pool : pool.filter(whale => whaleHasPositionCoin(whale, coinFilter.value));
 });
 
-const marketSummary = computed(() => buildWhaleMarketSummary(whaleStore.enabledWhales, coinFilter.value));
-const riskSummary = computed(() => buildWhaleRiskSummary(whaleStore.enabledWhales, coinFilter.value));
+const marketSummary = computed(() => buildWhaleMarketSummary(summaryWhales.value, coinFilter.value));
+const riskSummary = computed(() => buildWhaleRiskSummary(summaryWhales.value, coinFilter.value));
 
 const marketDonutStyle = computed(() => {
   const long = marketSummary.value.longPct;
@@ -113,7 +128,7 @@ const directionCounts = computed(() => {
     followed: coinScopedWhales.value.filter(whale => isWhaleMonitored(whale.id)).length,
   };
   for (const whale of coinScopedWhales.value) {
-    const direction = scopedWhaleDirection(whale, coinFilter.value);
+    const direction = scopedWhaleDirection(scopedWhale(whale), coinFilter.value);
     if (direction === 'long') counts.long += 1;
     else if (direction === 'short') counts.short += 1;
     else counts.neutral += 1;
@@ -140,7 +155,7 @@ const isFollowTab = computed(() => directionFilter.value === 'followed');
 function initialize() { return Promise.resolve(); }
 
 function displayDirection(whale: WhaleProfile) {
-  return scopedWhaleDirection(whale, coinFilter.value);
+  return scopedWhaleDirection(scopedWhale(whale), coinFilter.value);
 }
 
 const coinCounts = computed(() => {
@@ -152,17 +167,22 @@ const coinCounts = computed(() => {
   return counts;
 });
 
+const sortedCoins = computed(() => preferredCoins.value
+  .filter(coin => marketFilter.value === 'all' || (coin.includes(':') ? marketFilter.value === 'extended' : marketFilter.value === 'native'))
+  .slice().sort((a, b) => (coinCounts.value[b] || 0) - (coinCounts.value[a] || 0) || a.localeCompare(b)));
+
+
 function cardPositions(whale: WhaleProfile) {
-  // 币种筛选只决定哪些巨鲸入列，卡片内仍展示全部持仓
-  return sortedPositions(visibleWhalePositions(whale, 'all'));
+  // 卡片及排序使用同一个币种与市场范围。
+  return sortedPositions(visibleWhalePositions(whale, coinFilter.value).filter(inMarket));
 }
 
 const rankedWhales = computed(() => {
   const rows = coinScopedWhales.value.filter(whale => directionFilter.value === 'followed'
     ? isWhaleMonitored(whale.id)
-    : directionFilter.value === 'all' || scopedWhaleDirection(whale, coinFilter.value) === directionFilter.value);
+    : directionFilter.value === 'all' || scopedWhaleDirection(scopedWhale(whale), coinFilter.value) === directionFilter.value);
   const metric = (whale: WhaleProfile) => {
-    const positions = visibleWhalePositions(whale, 'all');
+    const positions = visibleWhalePositions(whale, coinFilter.value).filter(inMarket);
     if (sortMode.value === 'positionValue') return positions.reduce((sum, pos) => sum + Math.abs(Number(pos.positionValue) || 0), 0);
     if (sortMode.value === 'positionPnl') return positions.reduce((sum, pos) => sum + (Number(pos.unrealizedPnl) || 0), 0);
     if (sortMode.value === 'latest') return positions.reduce((max, pos) => Math.max(max, Number(pos.lastAddTime || pos.openTime) || 0), 0);
@@ -403,8 +423,12 @@ defineExpose({ focusWhale, initialize, setCoinFilter: (coin: string) => { clearL
         </div>
       </div>
       <div class="head">
+        <div class="coin-filter" aria-label="合约市场">
+          <button v-for="market in marketFilters" :key="market.value" type="button" class="coin-chip"
+            :class="{ on: marketFilter === market.value }" @click="marketFilter = market.value; coinFilter = 'all'">{{ market.label }}</button>
+        </div>
         <div class="coin-filter-row">
-          <div class="coin-filter">
+          <div class="coin-filter compact-coins">
             <button
               type="button"
               class="coin-chip"
@@ -414,20 +438,22 @@ defineExpose({ focusWhale, initialize, setCoinFilter: (coin: string) => { clearL
               全部 {{ coinCounts.all }}
             </button>
             <button
-              v-for="coin in preferredCoins"
+              v-for="coin in sortedCoins"
               :key="coin"
+              :title="coin"
               type="button"
               class="coin-chip"
               :class="{ on: coinFilter === coin }"
               @click="selectCoinFilter(coin)"
             >
-              {{ coin }} {{ coinCounts[coin] ?? 0 }}
+              {{ whaleAssetLabel(coin) }} {{ coinCounts[coin] ?? 0 }}
             </button>
           </div>
+          <WhaleValidation :coin="coinFilter" />
         </div>
         <div v-if="whales.length" class="insight-strip market-summary">
           <div class="summary-line value-line">
-            <span class="dim">{{ formatScopePositionTitle(marketSummary.scopeLabel) }}</span>
+            <span class="dim">{{ formatScopePositionTitle(whaleAssetLabel(marketSummary.scopeLabel)) }}</span>
             <span class="up">多 {{ formatUsd(marketSummary.longUsd) }}</span>
             <span class="dim">/</span>
             <span class="down">空 {{ formatUsd(marketSummary.shortUsd) }}</span>
@@ -573,7 +599,7 @@ defineExpose({ focusWhale, initialize, setCoinFilter: (coin: string) => { clearL
             @click="openPosition(whale, pos)"
           >
             <div class="pos-top">
-              <strong>{{ pos.coin }}</strong>
+              <strong>{{ whaleAssetLabel(pos.coin) }}</strong>
               <span :class="pos.side === 'long' ? 'pnl-up' : 'pnl-down'">
                 {{ pos.side === 'long' ? '多' : '空' }}
               </span>
@@ -644,7 +670,7 @@ defineExpose({ focusWhale, initialize, setCoinFilter: (coin: string) => { clearL
             :class="pos.side"
             @click="openPosition(whale, pos)"
           >
-            {{ pos.coin }} {{ pos.side === 'long' ? '多' : '空' }}
+            {{ whaleAssetLabel(pos.coin) }} {{ pos.side === 'long' ? '多' : '空' }}
             <span v-if="pos.leverage" class="pos-lev">{{ pos.leverage }}x</span>
             {{ formatUsd(pos.positionValue) }}
           </button>
@@ -823,6 +849,9 @@ defineExpose({ focusWhale, initialize, setCoinFilter: (coin: string) => { clearL
   gap: 8px;
   min-width: 0;
 }
+.compact-coins { flex-wrap: nowrap !important; overflow-x: auto; }
+.compact-coins .coin-chip { flex-shrink: 0; white-space: nowrap; }
+@media (max-width: 600px) { .coin-filter-row { flex-wrap: wrap; } }
 .coin-filter {
   display: flex;
   flex-wrap: wrap;

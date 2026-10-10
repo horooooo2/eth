@@ -113,6 +113,7 @@ export function preferredCoinFilterOptions() {
 }
 
 export function coinMatchesWatch(coin: string | undefined | null, watched: string[] = readWatchedCoins()) {
+  if (String(coin || '').includes(':')) return watched.some(item => item.toUpperCase() === String(coin).toUpperCase());
   const key = normalizeCoinId(String(coin || ''));
   if (!key || !watched.length) return false;
   return watched.some((item) => {

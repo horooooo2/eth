@@ -183,8 +183,8 @@ function alertFromLiveFill(whale, fill, trade) {
   const rawCoin = String(trade.asset || fill.coin || '').trim();
   const coin = String(trade.assetLabel || trade.asset || fill.coin || '').trim();
   if (!coin) return null;
-  // 跳过 HIP-3 美股等（xyz:SNDK）——与主仓位路径一致，不进异动/跟单
-  if (isExoticAsset(rawCoin) || isExoticAsset(coin) || Boolean(trade.exotic)) return null;
+  // 仅排除现货；HIP-3 保留完整市场前缀。
+  if (isExoticAsset(rawCoin) || isExoticAsset(coin) || trade.instrumentType === 'spot') return null;
 
   const dir = String(fill.dir || trade.dir || '');
   if (/>/.test(dir)) return null;
@@ -337,7 +337,7 @@ function mapAssetPositions(clearinghouseState) {
     if (!szi) continue;
     const coin = String(pos.coin || '').trim();
     if (!coin) continue;
-    // 与 deriveDirection 一致：排除 @index / xyz:美股 等 HIP-3
+    // 排除现货索引，保留 HIP-3 永续。
     if (isExoticAsset(coin)) continue;
     const side = szi > 0 ? 'long' : 'short';
     const size = Math.abs(szi);
@@ -356,6 +356,7 @@ function mapAssetPositions(clearinghouseState) {
       unrealizedPnl: Number(pos.unrealizedPnl) || 0,
       leverage,
       marginUsed: Number(pos.marginUsed) || null,
+      liquidationPx: pos.liquidationPx == null ? null : Number(pos.liquidationPx),
       openTime: null,
     });
   }
@@ -558,7 +559,7 @@ function handleWebData({ user, data }) {
   const patch = {
     positionObservedAt: Date.now(),
     positionSource: 'websocket',
-    positionScope: 'native-perp',
+    positionScope: state.positionScope || 'native-perp',
     positions,
     longUsd,
     shortUsd,

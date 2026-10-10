@@ -7,7 +7,8 @@ import type {
 import { normalizeCoinId } from '@/utils/watchedCoins';
 
 export function whaleCoinKey(coin: string | undefined | null) {
-  return normalizeCoinId(String(coin || '').replace(/^K/, ''));
+  const raw = String(coin || '');
+  return raw.includes(':') ? raw.toUpperCase() : normalizeCoinId(raw.replace(/^K/, ''));
 }
 
 export function whaleTopCoins(whale: WhaleProfile): string[] {
@@ -46,7 +47,6 @@ export function perpWhalePositions(whale: WhaleProfile) {
   return (whale.positions || []).filter((pos) => {
     const coin = String(pos.coin || pos.coinLabel || '');
     if (/^@\d+$/i.test(coin)) return false;
-    if (coin.includes(':')) return false;
     return Math.abs(Number(pos.size) || 0) > 0 || Math.abs(Number(pos.positionValue) || 0) > 0;
   });
 }
