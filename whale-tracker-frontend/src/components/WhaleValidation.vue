@@ -6,12 +6,13 @@ import { whaleAssetLabel } from '@/utils/whaleAssetLabel';
 import { formatUsd, formatPrice } from '@/utils/format';
 const props = defineProps<{ coin: string }>();
 type Position = {address:string;openTime?:number|null;name:string;side:string;size:number;usd:number;observedAt:number;entryPx:number|null;unrealizedPnl:number|null;liquidationPx:number|null;marginUsed:number|null;leverage:number|null;leverageType:string|null;returnOnEquity:number|null};
-type Job = { id:string; mode:'normal'|'deep'; canStop:boolean; eligible:number; phase:string; nextOffset:number; offset:number; positionTotal:number; coin:string; status:string; total:number; success:number; failed:number; longUsd:number; shortUsd:number; longCount:number; shortCount:number; startedAt:number; finishedAt:number|null; error?:string; positions:Position[] };
+type Job = { queuePosition?:number; id:string; mode:'normal'|'deep'; canStop:boolean; eligible:number; phase:string; nextOffset:number; offset:number; positionTotal:number; coin:string; status:string; total:number; success:number; failed:number; longUsd:number; shortUsd:number; longCount:number; shortCount:number; startedAt:number; finishedAt:number|null; error?:string; positions:Position[] };
 const visible=ref(false), busy=ref(false), error=ref(''), job=ref<Job|null>(null);
 let timer:ReturnType<typeof setTimeout>|undefined, generation=0;
 let pollingGeneration:number|null=null;
 const minimized=ref(false), stopping=ref(false);
-const statusLabel=computed(()=>job.value?.status==='running'?(job.value.phase==='leaderboard'?'正在筛选排行榜':'验证进行中'):job.value?.status==='complete'?'验证完成':job.value?.status==='stopped'?'已停止':'验证未完整完成');
+const queueRequest=ref<{mode:'normal'|'deep';coin:string}|null>(null);
+const statusLabel=computed(()=>job.value?.status==='queued'?`排队中 · 第 ${job.value.queuePosition||1} 位`:job.value?.status==='running'?(job.value.phase==='leaderboard'?'正在筛选排行榜':'验证进行中'):job.value?.status==='complete'?'验证完成':job.value?.status==='stopped'?'已停止':'验证未完整完成');
 function minimize(){minimized.value=true;visible.value=false;}
 function restore(){minimized.value=false;visible.value=true;}
 async function stop(){
@@ -33,7 +34,7 @@ function accept(data:Job){
   const previous=job.value?.id===data.id ? job.value.positions : [];
   job.value={...data,positions:[...previous.slice(0,data.offset),...data.positions]};
 }
-function choose(){if(job.value?.status==='running'){restore();return;}chooser.value=true;}
+function choose(){if(['running','queued'].includes(job.value?.status||'')){restore();return;}chooser.value=true;}
 const expanded=ref('');
 const timingState=ref<Record<string,string>>({});
 let disposed=false;
@@ -70,23 +71,23 @@ function message(e:unknown){
 async function poll(id:string, seq:number){
   if(seq!==generation || pollingGeneration===seq)return;
   clearTimeout(timer);pollingGeneration=seq;
-  try {const {data}=await http.get<Job>(`/whales/validation/${id}`,{params:{offset:job.value?.id===id?job.value.positions.length:0}});if(seq!==generation)return;accept(data);error.value='';if((data.status==='running'||data.nextOffset<data.positionTotal)&&(visible.value||minimized.value))timer=setTimeout(()=>void poll(id,seq),data.nextOffset<data.positionTotal?100:5000);}
+  try {const {data}=await http.get<Job>(`/whales/validation/${id}`,{params:{offset:job.value?.id===id?job.value.positions.length:0}});if(seq!==generation)return;accept(data);error.value='';if((['running','queued'].includes(data.status)||data.nextOffset<data.positionTotal)&&(visible.value||minimized.value))timer=setTimeout(()=>void poll(id,seq),data.nextOffset<data.positionTotal?100:5000);}
   catch(e){if(seq===generation){error.value=message(e);const err=e as {status?:number;response?:{status?:number}};const status=err.status||err.response?.status;if([401,403,404].includes(status||0)){if(job.value?.id===id)job.value={...job.value,status:'error',canStop:false};}else if(visible.value||minimized.value)timer=setTimeout(()=>void poll(id,seq),10000);}}
   finally{if(pollingGeneration===seq)pollingGeneration=null;}
 }
-async function start(mode:'normal'|'deep', coin=props.coin, restartId?:string){
+async function start(mode:'normal'|'deep', coin=props.coin, restartId?:string, enqueue=false){
   chooser.value=false;
   if(busy.value||coin==='all')return;
-  if(job.value?.status==='running'){restore();return;}
-  minimized.value=false;visible.value=true;busy.value=true;error.value='';clearTimeout(timer);const seq=++generation;if(!restartId)job.value=null;expanded.value='';timingState.value={};visibleCount.value=50;positionSide.value='all';
-  try {const {data}=await http.post<Job>('/whales/validation',{coin,mode,restartId});if(seq!==generation)return;accept(data);if(data.status==='running'||data.nextOffset<data.positionTotal)timer=setTimeout(()=>void poll(data.id,seq),data.nextOffset<data.positionTotal?100:5000);}
-  catch(e){if(seq===generation)error.value=message(e);}finally{busy.value=false;}
+  if(['running','queued'].includes(job.value?.status||'')){restore();return;}
+  minimized.value=false;visible.value=true;busy.value=true;error.value='';queueRequest.value=null;clearTimeout(timer);const seq=++generation;if(!restartId)job.value=null;expanded.value='';timingState.value={};visibleCount.value=50;positionSide.value='all';
+  try {const {data}=await http.post<Job>('/whales/validation',{coin,mode,restartId,enqueue});if(seq!==generation)return;accept(data);if(['running','queued'].includes(data.status)||data.nextOffset<data.positionTotal)timer=setTimeout(()=>void poll(data.id,seq),data.nextOffset<data.positionTotal?100:5000);}
+  catch(e){if(seq===generation){error.value=message(e);const err=e as {details?:{queueable?:boolean};response?:{data?:{queueable?:boolean}}};if(err.details?.queueable||err.response?.data?.queueable)queueRequest.value={coin,mode};}}finally{busy.value=false;}
 }
-watch(visible,value=>{if(!value){if(job.value?.status==='running'||busy.value)minimized.value=true;if(!minimized.value){clearTimeout(timer);generation++;}}});
+watch(visible,value=>{if(!value){if(['running','queued'].includes(job.value?.status||'')||busy.value)minimized.value=true;if(!minimized.value){clearTimeout(timer);generation++;}}});
 onMounted(async()=>{
   const seq=generation;
   try{const {data}=await http.get<Job|null>('/whales/validation/current');if(seq!==generation||!data)return;
-    if(data.status==='running'){accept(data);minimized.value=true;void poll(data.id,seq);}
+    if(['running','queued'].includes(data.status)){accept(data);minimized.value=true;void poll(data.id,seq);}
   }catch{/* A new session or restarted server has no recoverable task. */}
 });
 onUnmounted(()=>{disposed=true;clearTimeout(timer);generation++;});
@@ -101,7 +102,7 @@ onUnmounted(()=>{disposed=true;clearTimeout(timer);generation++;});
     <div class="validation-body">
       <div class="validation-status-pane">
       <div class="disclaimer-top">{{job?.mode==='deep'?'深度验证：动态筛选榜单账户价值 ≥100 万美元、周成交额 >0 的账户，按价值降序最多取 1,000 个。':'普通验证：扫描现有候选池内最多 200 个账户。'}} 仅统计所选合约市场，不代表全平台所有巨鲸；各账户采样时间不同。</div>
-      <p v-if="error" class="validation-error">{{error}} <button v-if="job" @click="poll(job.id,generation)">重新读取</button></p>
+      <p v-if="error" class="validation-error">{{error}} <button v-if="queueRequest" :disabled="busy" @click="start(queueRequest.mode,queueRequest.coin,undefined,true)">排队</button><button v-else-if="job" @click="poll(job.id,generation)">重新读取</button></p>
       <p v-if="busy">正在创建验证任务…</p>
       <template v-if="job">
         <p v-if="job.mode==='deep'">符合条件 {{job.eligible}} 个 · 本次扫描 {{job.total}} 个</p>
@@ -143,15 +144,15 @@ onUnmounted(()=>{disposed=true;clearTimeout(timer);generation++;});
           </div>
         </section>
     </div>
-    <template #footer><div class="validation-actions"><button v-if="job?.status==='stopped'" :disabled="busy||!job.canStop" @click="start(job.mode,job.coin,job.id)">{{busy?'启动中…':'启动'}}</button><button v-else class="validation-stop" :disabled="job?.status!=='running'||!job?.canStop||stopping" @click="stop">{{stopping?'停止中…':'停止'}}</button><button @click="minimize">最小化</button></div></template>
+    <template #footer><div class="validation-actions"><button v-if="job?.status==='stopped'" :disabled="busy||!job.canStop" @click="start(job.mode,job.coin,job.id)">{{busy?'启动中…':'启动'}}</button><button v-else class="validation-stop" :disabled="!['running','queued'].includes(job?.status||'')||!job?.canStop||stopping" @click="stop">{{stopping?'停止中…':job?.status==='queued'?'取消排队':'停止'}}</button><button @click="minimize">最小化</button></div></template>
   </el-dialog>
   <Teleport to="body"><aside v-if="minimized" class="validation-mini" aria-label="后台数据验证">
     <div><b>{{job?whaleAssetLabel(job.coin):'数据验证'}}</b><button @click="restore">展开 ↗</button></div>
     <p>{{busy?'正在创建任务…':statusLabel}} · {{job?job.success+job.failed:0}} / {{job?.total||0}}</p>
     <div class="progress-bar"><div :style="{width:progress+'%'}"></div></div>
     <p v-if="error" class="validation-error">{{error}}</p>
-    <button v-if="job?.status==='running' && job.canStop" :disabled="stopping" @click="stop">{{stopping?'停止中…':'停止任务'}}</button>
-    <button v-else-if="job?.status==='stopped' && job.canStop" :disabled="busy" @click="start(job.mode,job.coin,job.id)">{{busy?'启动中…':'启动'}}</button><button v-if="job?.status!=='running'&&!busy" @click="minimized=false">关闭</button>
+    <button v-if="job && ['running','queued'].includes(job.status) && job.canStop" :disabled="stopping" @click="stop">{{stopping?'停止中…':job?.status==='queued'?'取消排队':'停止任务'}}</button>
+    <button v-else-if="job?.status==='stopped' && job.canStop" :disabled="busy" @click="start(job.mode,job.coin,job.id)">{{busy?'启动中…':'启动'}}</button><button v-if="!['running','queued'].includes(job?.status||'')&&!busy" @click="minimized=false">关闭</button>
   </aside></Teleport>
 </template>
 <style scoped>

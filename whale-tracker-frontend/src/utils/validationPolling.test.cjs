@@ -1,9 +1,9 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),ts=require('typescript');
-function fixture(get){
+function fixture(get,post){
  const exports={};const timers=new Map();let timerId=0,mount;
  const ref=value=>({value});const computed=fn=>({get value(){return fn();}});
- const source=fs.readFileSync(__dirname+'/../components/WhaleValidation.vue','utf8').split('<script setup lang="ts">')[1].split('</script>')[0]+ '\nObject.assign(exports,{poll,accept,job,visible,minimized,chooser,choose,togglePosition,timingState});';
- vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,{exports,defineProps:()=>({coin:'BTC'}),require:name=>name==='vue'?{ref,computed,watch(){},onMounted(fn){mount=fn;},onUnmounted(){}}:name==='@/api'?{http:{get}}:{},setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id)});
+ const source=fs.readFileSync(__dirname+'/../components/WhaleValidation.vue','utf8').split('<script setup lang="ts">')[1].split('</script>')[0]+ '\nObject.assign(exports,{poll,accept,job,visible,minimized,chooser,choose,togglePosition,timingState,start,queueRequest});';
+ vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,{exports,defineProps:()=>({coin:'BTC'}),require:name=>name==='vue'?{ref,computed,watch(){},onMounted(fn){mount=fn;},onUnmounted(){}}:name==='@/api'?{http:{get,post}}:{},setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id)});
  exports.visible.value=true;exports.job.value={id:'a',status:'running',canStop:true,positions:[]};return {...exports,timers,mount};
 }
 test('expired and unauthorized tasks stop polling and allow mode chooser again',async()=>{
@@ -44,4 +44,15 @@ test('opening-time lookup is lazy, deduplicated and ignores another job response
  const other={address:'other',side:'short'};f.job.value.positions.push(other);
  const late=f.togglePosition(other);f.job.value={id:'new',positions:[]};resolve({data:{openTime:456}});await late;
  assert.equal(other.openTime,undefined);assert.equal(f.job.value.positions.length,0);
+});
+
+test('queue is explicit after a queueable error and retains requested symbol and mode',async()=>{
+ const requests=[];const f=fixture(undefined,async(url,body)=>{requests.push(body);if(!body.enqueue)throw Object.assign(new Error('busy'),{details:{queueable:true}});return {data:{id:'queued',status:'queued',offset:0,nextOffset:0,positionTotal:0,positions:[]}};});
+ f.job.value=null;await f.start('deep','xyz:SNDK');assert.equal(f.queueRequest.value.coin,'xyz:SNDK');assert.equal(requests.length,1);
+ await f.start(f.queueRequest.value.mode,f.queueRequest.value.coin,undefined,true);
+ assert.equal(f.job.value.status,'queued');assert.equal(requests[1].enqueue,true);assert.equal(f.timers.size,1);
+});
+test('refresh restores a queued task and continues status polling',async()=>{
+ let calls=0;const f=fixture(async()=>{calls++;return {data:{id:'q',status:'queued',queuePosition:2,positions:[],offset:0,nextOffset:0,positionTotal:0}};});
+ f.job.value=null;await f.mount();await Promise.resolve();assert.equal(f.minimized.value,true);assert.equal(f.job.value.status,'queued');assert.equal(calls,2);
 });
