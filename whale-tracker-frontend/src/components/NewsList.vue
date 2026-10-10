@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { groupNearbyAlerts } from '@/utils/alertGrouping';
 import { reactive, computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Refresh } from '@element-plus/icons-vue';
@@ -78,7 +79,7 @@ const alertWindowLabel = computed(() => {
   return `近 ${Math.ceil(ms / 60000)} 分钟`;
 });
 const activeAlertId = ref('');
-const activeAlert = computed(() => whaleStore.alertsById[activeAlertId.value] || null);
+const activeAlert = computed(() => filteredAlerts.value.find(row=>row.alert.id===activeAlertId.value)?.alert || whaleStore.alertsById[activeAlertId.value] || null);
 const alertVisible = ref(false);
 const pageAlertIds = ref<string[]>([]);
 const pageAlerts = computed(() => [...new Set([...pageAlertIds.value, ...whaleStore.alertHistory.map(alert => alert.id)])]
@@ -219,6 +220,7 @@ function locateFromAlert(alert: WhaleAlert) {
   emit('locateWhale', {
     id: alert.whaleId,
     name: alert.whaleName,
+    coin: alert.items?.[0]?.coin,
   });
 }
 
@@ -279,7 +281,7 @@ function alertItemKind(alert: WhaleAlert) {
 
 const filteredAlerts = computed(() => {
   const side = alertSideFilter.value;
-    return pageAlerts.value
+    return groupNearbyAlerts(pageAlerts.value)
     .map((alert) => {
       let scoped = { ...alert, items: eligibleItems(alert) };
       if (alertCoinFilter.value !== 'all') {
@@ -542,6 +544,7 @@ export type AlertsModel = typeof mobileModel;
               :id="row.alert.whaleId"
               :name="row.alert.whaleName"
               :address="row.alert.address"
+              :coin="row.view.coin"
               :whales="whales"
               class="whale-name"
               @locate="emit('locateWhale', $event)"

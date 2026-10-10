@@ -44,6 +44,18 @@ router.post('/validation/:id/stop',(req,res)=>{
   try{const job=validator.stop(req.params.id,req.session.user.id);if(!job)return res.status(404).json({error:'任务已过期'});res.set('Cache-Control','no-store').json(validator.view(job,req.session.user.id,Number(req.body?.offset)||0));}
   catch(err){res.status(err.status||500).json({error:err.message});}
 });
+router.get('/validation/:id/open-time',requireAuthenticated,async(req,res)=>{
+  res.set('Cache-Control','no-store');
+  const job=validator.get(req.params.id);
+  if(!job)return res.status(404).json({error:'验证任务已过期，请重新验证'});
+  const position=job.positions.find(p=>p.address.toLowerCase()===String(req.query.address||'').toLowerCase());
+  if(!position)return res.status(404).json({error:'未找到采样仓位'});
+  try {
+    const result=await require('../lib/validationOpenTime').readOpenTime(job.coin,position);
+    position.openTime=result.openTime;
+    res.json(result);
+  }catch(err){res.status(err.status||503).json({error:err.message||'开仓时间暂不可用'});}
+});
 router.get('/validation/:id',requireAuthenticated,(req,res)=>{
   const job=validator.get(req.params.id);if(!job)return res.status(404).json({error:'验证任务已过期或服务已重启，请重新验证'});
   res.set('Cache-Control','no-store').json(validator.view(job,req.session.user.id,Number(req.query.offset)||0));

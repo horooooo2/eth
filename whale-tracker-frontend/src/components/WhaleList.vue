@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { locatedCoinFilter } from '@/utils/alertGrouping';
 import WhaleValidation from "@/components/WhaleValidation.vue";
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { CopyDocument, View } from '@element-plus/icons-vue';
@@ -391,7 +392,8 @@ async function focusWhale(payload: { id: string; coin?: string }) {
   }
   dialogOpen.value = false;
   directionFilter.value = 'all';
-  coinFilter.value = 'all';
+  coinFilter.value = locatedCoinFilter(coinFilter.value,payload.coin,preferredCoins.value);
+  marketFilter.value = 'all';
   expandedIds.value = { ...expandedIds.value, [payload.id]: true };
   // Freeze ordering and materialize card heights before measuring the target.
   // content-visibility's estimated heights otherwise shift during a long scroll.

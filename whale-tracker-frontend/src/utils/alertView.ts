@@ -122,6 +122,11 @@ export function enrichAlertView(
   const kind = item?.kind || alert.kind;
   const layer = alertLayerOf(alert);
   const base = resolveAlertPos(alert, whale);
+  if(alert.items.length>1 && alert.items.every(i=>Number(i.price)>0&&Number(i.usd)>0)) {
+    const total=alert.items.reduce((n,i)=>n+Number(i.usd),0);
+    const quantity=alert.items.reduce((n,i)=>n+Number(i.usd)/Number(i.price),0);
+    base.price=total/quantity;
+  }
   const notionalUsd = base.usd;
   const leverage = base.leverage && base.leverage > 0 ? base.leverage : null;
   const marginUsd = base.marginUsed;
@@ -145,7 +150,7 @@ export function enrichAlertView(
     marginUsed: marginUsd,
     kind,
     layer,
-    actionLabel,
+    actionLabel: actionLabel + (alert.items.length>1 ? ` · ${alert.items.length}笔` : ''),
     actionType: alertActionType(kind),
     notionalUsd,
     marginUsd,

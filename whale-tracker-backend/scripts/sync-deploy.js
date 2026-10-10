@@ -76,6 +76,7 @@ const FILES = [
   'lib/hlMarkets.js',
   'lib/whaleRoster.js',
   'lib/whaleValidation.js',
+  'lib/validationOpenTime.js',
   'lib/validationLeaderboardWorker.js',
   'lib/onchain.js',
   'lib/exchangeLabels.js',

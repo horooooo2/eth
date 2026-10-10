@@ -25,14 +25,33 @@ const chooser=ref(false);
 const sortKey=ref<'usd'|'openTime'|'entryPx'|'unrealizedPnl'>('usd'), ascending=ref(false);
 const sortOptions=[{key:'usd',label:'仓位价值'},{key:'openTime',label:'开仓时间'},{key:'entryPx',label:'开仓均价'},{key:'unrealizedPnl',label:'开仓盈亏'}] as const;
 const visibleCount=ref(50);
-watch([sortKey,ascending],()=>{visibleCount.value=50;});
-const sortedPositions=computed(()=>sortValidationPositions(job.value?.positions||[],sortKey.value,ascending.value));
+const positionSide=ref<'all'|'long'|'short'>('all');
+function toggleSide(side:'long'|'short'){positionSide.value=positionSide.value===side?'all':side;}
+watch([sortKey,ascending,positionSide],()=>{visibleCount.value=50;});
+const sortedPositions=computed(()=>sortValidationPositions((job.value?.positions||[]).filter(row=>positionSide.value==='all'||row.side===positionSide.value),sortKey.value,ascending.value));
 function accept(data:Job){
   const previous=job.value?.id===data.id ? job.value.positions : [];
   job.value={...data,positions:[...previous.slice(0,data.offset),...data.positions]};
 }
 function choose(){if(job.value?.status==='running'){restore();return;}chooser.value=true;}
 const expanded=ref('');
+const timingState=ref<Record<string,string>>({});
+let disposed=false;
+async function togglePosition(row:Position){
+  const key=row.address+row.side;
+  expanded.value=expanded.value===key?'':key;
+  if(!expanded.value || !job.value || row.openTime!=null)return;
+  const id=job.value.id, requestKey=id+key;
+  if(['loading','done'].includes(timingState.value[requestKey]||''))return;
+  timingState.value[requestKey]='loading';
+  try{
+    const {data}=await http.get<{openTime:number|null}>(`/whales/validation/${id}/open-time`,{params:{address:row.address}});
+    if(disposed||job.value?.id!==id)return;
+    const current=job.value.positions.find(p=>p.address===row.address&&p.side===row.side);
+    if(current)current.openTime=data.openTime;
+    timingState.value[requestKey]='done';
+  }catch{if(!disposed&&job.value?.id===id)timingState.value[requestKey]='done';}
+}
 const progress=computed(()=>job.value?.total ? Math.round((job.value.success+job.value.failed)/job.value.total*100) : 0);
 const market=computed(()=>job.value?.coin.includes(':')?job.value.coin.split(':')[0]:'默认合约');
 const amount=(value:number|null|undefined)=>value==null?'—':formatUsd(value);
@@ -59,7 +78,7 @@ async function start(mode:'normal'|'deep', coin=props.coin, restartId?:string){
   chooser.value=false;
   if(busy.value||coin==='all')return;
   if(job.value?.status==='running'){restore();return;}
-  minimized.value=false;visible.value=true;busy.value=true;error.value='';clearTimeout(timer);const seq=++generation;if(!restartId)job.value=null;expanded.value='';visibleCount.value=50;
+  minimized.value=false;visible.value=true;busy.value=true;error.value='';clearTimeout(timer);const seq=++generation;if(!restartId)job.value=null;expanded.value='';timingState.value={};visibleCount.value=50;positionSide.value='all';
   try {const {data}=await http.post<Job>('/whales/validation',{coin,mode,restartId});if(seq!==generation)return;accept(data);if(data.status==='running'||data.nextOffset<data.positionTotal)timer=setTimeout(()=>void poll(data.id,seq),data.nextOffset<data.positionTotal?100:5000);}
   catch(e){if(seq===generation)error.value=message(e);}finally{busy.value=false;}
 }
@@ -67,10 +86,10 @@ watch(visible,value=>{if(!value){if(job.value?.status==='running'||busy.value)mi
 onMounted(async()=>{
   const seq=generation;
   try{const {data}=await http.get<Job|null>('/whales/validation/current');if(seq!==generation||!data)return;
-    accept(data);if(data.status==='running'||(data.finishedAt && Date.now()-data.finishedAt<600000)){minimized.value=true;if(data.status==='running'||data.nextOffset<data.positionTotal)void poll(data.id,seq);}
+    if(data.status==='running'){accept(data);minimized.value=true;void poll(data.id,seq);}
   }catch{/* A new session or restarted server has no recoverable task. */}
 });
-onUnmounted(()=>{clearTimeout(timer);generation++;});
+onUnmounted(()=>{disposed=true;clearTimeout(timer);generation++;});
 </script>
 <template>
   <button type="button" class="validation-trigger" :disabled="coin==='all'||busy" title="选择具体标的后验证最多 200 个候选账户" @click="choose">数据验证</button>
@@ -94,26 +113,27 @@ onUnmounted(()=>{clearTimeout(timer);generation++;});
           <p class="sample-time">采样区间：{{time(job.startedAt)}} — {{job.finishedAt?time(job.finishedAt):'进行中'}}<small>完成结果复用 10 分钟</small></p>
         </section>
         <p v-if="job.error" class="validation-error">{{job.error}}</p>
-        <div class="position-section"><section class="position-card long"><span>多仓价值</span><strong>{{formatUsd(job.longUsd)}}</strong><small>{{job.longCount}} 个账户</small></section><section class="position-card short"><span>空仓价值</span><strong>{{formatUsd(job.shortUsd)}}</strong><small>{{job.shortCount}} 个账户</small></section></div>
+        <div class="position-section"><button type="button" class="position-card long" :class="{selected:positionSide==='long'}" :aria-pressed="positionSide==='long'" @click="toggleSide('long')"><span>多仓价值</span><strong>{{formatUsd(job.longUsd)}}</strong><small>{{job.longCount}} 个账户</small></button><button type="button" class="position-card short" :class="{selected:positionSide==='short'}" :aria-pressed="positionSide==='short'" @click="toggleSide('short')"><span>空仓价值</span><strong>{{formatUsd(job.shortUsd)}}</strong><small>{{job.shortCount}} 个账户</small></button></div>
         <div class="result-status" :class="{incomplete:job.status!=='complete'}">{{direction}}<small v-if="job.status!=='complete'">当前成功样本 {{job.success}} 个，结果不完整</small></div>
       </template>
       <p v-if="job" class="disclaimer-bottom">按持仓名义金额比较，不是对价格涨跌的预测；失败及未扫描账户不计为零仓位。</p>
       </div>
         <section class="validation-rows">
           <div class="list-heading">
-            <b>匹配仓位 <span>{{job?.positions.length || 0}}</span></b>
+            <b>匹配仓位 <span>{{sortedPositions.length}}</span></b>
             <div class="position-sort" role="group" aria-label="排序字段"><button v-for="option in sortOptions" :key="option.key" type="button" :class="{active:sortKey===option.key}" :aria-pressed="sortKey===option.key" :title="option.key==='openTime'?'仅按可确认的开仓时间排序，未知时间排在最后':option.key==='unrealizedPnl'?'当前仓位浮动盈亏':''" @click="sortKey=option.key">{{option.label}}</button></div>
             <div class="position-sort sort-direction" role="group" aria-label="排序方向"><button type="button" :class="{active:ascending}" :aria-pressed="ascending" @click="ascending=true">升序 ↑</button><button type="button" :class="{active:!ascending}" :aria-pressed="!ascending" @click="ascending=false">降序 ↓</button></div>
           </div>
           <div class="position-scroll">
-          <p v-if="!job?.positions.length" class="position-empty">{{job?.status==='running'?'正在扫描，匹配到的仓位将在这里展示':'暂无匹配仓位'}}</p>
+          <p v-if="!sortedPositions.length" class="position-empty">{{job?.status==='running'?'正在扫描，匹配到的仓位将在这里展示':'暂无匹配仓位'}}</p>
           <template v-if="job">
           <article v-for="row in sortedPositions.slice(0,visibleCount)" :key="row.address+row.side" class="validation-position">
-            <button class="position-toggle" :aria-expanded="expanded===row.address+row.side" @click="expanded=expanded===row.address+row.side?'':row.address+row.side">
+            <button class="position-toggle" :aria-expanded="expanded===row.address+row.side" @click="togglePosition(row)">
               <div class="position-identity"><b>{{row.name}}</b><small>开仓时间 {{openTimeLabel(row.openTime)}}</small></div>
               <div class="position-amount"><div class="position-price-line"><b :class="row.side==='long'?'long-text':'short-text'">{{row.side==='long'?'做多':'做空'}} {{formatUsd(row.usd)}}</b><span>均价 {{price(row.entryPx)}}</span></div><small class="detail-toggle-label">{{expanded===row.address+row.side?'收起详情':'仓位详情'}}<svg viewBox="0 0 20 20" :class="{rotated:expanded===row.address+row.side}" aria-hidden="true"><path d="m5 7 5 5 5-5"/></svg></small></div>
             </button>
             <div v-if="expanded===row.address+row.side" class="position-detail">
+              <span v-if="timingState[job.id+row.address+row.side]==='loading'">开仓时间查询中…</span>
               <div class="detail-address">{{row.address}}</div>
               <dl><div><dt>合约</dt><dd>{{whaleAssetLabel(job.coin)}}</dd></div><div><dt>持仓数量</dt><dd>{{row.size.toLocaleString('en-US',{maximumFractionDigits:10})}}</dd></div><div><dt>开仓均价</dt><dd>{{price(row.entryPx)}}</dd></div><div><dt>名义仓位价值</dt><dd>{{formatUsd(row.usd)}}</dd></div><div><dt>浮动盈亏</dt><dd :class="row.unrealizedPnl==null?'':row.unrealizedPnl>=0?'long-text':'short-text'">{{amount(row.unrealizedPnl)}}</dd></div><div><dt>保证金收益率</dt><dd>{{row.returnOnEquity==null?'—':(row.returnOnEquity*100).toFixed(2)+'%'}}</dd></div><div><dt>杠杆 / 模式</dt><dd>{{row.leverage==null?'—':row.leverage+'×'}} · {{row.leverageType==='cross'?'全仓':row.leverageType==='isolated'?'逐仓':'未知'}}</dd></div><div><dt>占用保证金</dt><dd>{{amount(row.marginUsed)}}</dd></div><div><dt>强平价格</dt><dd>{{price(row.liquidationPx)}}</dd></div><div><dt>采样时间</dt><dd>{{time(row.observedAt)}}</dd></div></dl>
             </div>
@@ -135,6 +155,11 @@ onUnmounted(()=>{clearTimeout(timer);generation++;});
   </aside></Teleport>
 </template>
 <style scoped>
+.position-card{font:inherit;color:inherit;text-align:left;cursor:pointer;transition:background-color .15s,border-color .15s}
+.position-card.long.selected{background:#08251d;border-color:#00a86b}
+.position-card.short.selected{background:#301217;border-color:#d94853}
+.position-card:focus-visible{outline:2px solid #60a5fa;outline-offset:3px}
+
 .list-heading{flex-wrap:wrap;align-items:center}.list-heading>b{white-space:nowrap}.list-heading .position-sort{display:flex;flex-wrap:wrap;gap:5px;margin:0}.position-sort button{font:inherit;font-size:11px;white-space:nowrap}.position-sort button.active{color:#f5bd45;border-color:#a77b24;background:#f5bd4515}.position-sort button:focus-visible{outline:2px solid #f5bd45;outline-offset:2px}.sort-direction{margin-left:auto!important}
 
 .position-price-line{display:flex;align-items:baseline;justify-content:flex-end;gap:5px;flex-wrap:wrap}.position-price-line span{font-size:12px;color:#8f9bb3}.position-toggle .detail-toggle-label{display:flex;justify-content:flex-end;align-items:center;gap:5px}.detail-toggle-label svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;transition:transform .15s}.detail-toggle-label svg.rotated{transform:rotate(180deg)}
