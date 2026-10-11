@@ -83,7 +83,7 @@ function removeReplayedLegacyFill(database, trade, id) {
 /** 由成交派生开/补/减/平事件（结合 startPosition，避免买=多卖=空误判） */
 function eventsFromTrade(trade) {
   const asset = String(trade?.asset || trade?.assetLabel || '');
-  if (/^@/.test(asset) || asset.includes(':') || asset.includes('/') || trade?.exotic || trade?.instrumentType === 'spot') return [];
+  if (/^@/.test(asset) || asset.includes('/') || trade?.instrumentType === 'spot') return [];
   if (!['buy', 'sell', 'B', 'A', 'in', 'out'].includes(trade?.side)) return [];
   const start = trade.startPosition == null || trade.startPosition === '' ? NaN : Number(trade.startPosition);
   const size = Math.abs(Number(trade.amount));
@@ -225,7 +225,7 @@ function upsertAlertRows(database, alerts) {
   alertLoop: for (let alert of alerts) {
     if (!alert?.id) continue;
     // Snapshot differences are observations, never exact execution facts.
-    const eligibleItems = (alert.items || []).filter(item => item.evidenceSource !== 'snapshot' && !/^@/.test(item.coin || '') && !String(item.coin || '').includes(':'));
+    const eligibleItems = (alert.items || []).filter(item => item.evidenceSource !== 'snapshot' && !/^@/.test(item.coin || '') && !String(item.coin || '').includes('/'));
     if (!eligibleItems.length) continue;
     if (eligibleItems.length !== alert.items.length) alert = { ...alert, items: eligibleItems };
     const sourceId = String(alert.sourceId || alert.items?.[0]?.sourceId || alert.id);
@@ -440,7 +440,7 @@ function loadAlertFlowSummary({ sinceMs = 0, untilMs = Date.now(), coin = '' } =
   }
 
   const value = { longUsd, shortUsd, netUsd: longUsd - shortUsd, events, whales: whales.size,
-    sinceMs: from, untilMs: to, asOf: Date.now(), scope: 'native-perp',
+    sinceMs: from, untilMs: to, asOf: Date.now(), scope: 'all-perp',
     basis: 'stored-executions', coverage: 'locally-observed', includesDisplayFilteredFills: true };
   flowCache.clear(); flowCache.set(cacheKey, { at: Date.now(), value }); return value;
 }
@@ -503,7 +503,7 @@ function loadPagedAlerts(query = {}) {
       itemWhere.push('ABS(COALESCE(alert_item.usd, 0)) >= ?');
       itemParams.push(minUsd);
     }
-    if (excludeExotic) itemWhere.push(`alert_item.coin NOT LIKE '@%' AND instr(alert_item.coin, ':') = 0`);
+    if (excludeExotic) itemWhere.push(`alert_item.coin NOT LIKE '@%' AND instr(alert_item.coin, '/') = 0`);
     return {
       sql: `EXISTS (SELECT 1 FROM alert_items AS alert_item WHERE alert_item.alert_id = alerts.id${itemWhere.length ? ` AND ${itemWhere.join(' AND ')}` : ''})`,
       params: itemParams,
@@ -573,7 +573,7 @@ function loadPagedAlerts(query = {}) {
   const sideExists = direction => `EXISTS (SELECT 1 FROM alert_items AS alert_item
     WHERE alert_item.alert_id=alerts.id AND alert_item.side='${direction}'
       AND ABS(COALESCE(alert_item.usd,0)) >= ?
-      ${excludeExotic ? "AND alert_item.coin NOT LIKE '@%' AND instr(alert_item.coin, ':') = 0" : ''}
+      ${excludeExotic ? "AND alert_item.coin NOT LIKE '@%' AND instr(alert_item.coin, '/') = 0" : ''}
       ${coins.length ? `AND alert_item.coin IN (${coins.map(() => '?').join(', ')})` : ''})`;
   const counts = database.prepare(`SELECT COUNT(*) AS allCount,
     COALESCE(SUM(${sideExists('long')}),0) AS longCount,
@@ -588,7 +588,7 @@ function loadPagedAlerts(query = {}) {
        JOIN alert_items AS alert_item ON alert_item.alert_id = alerts.id
        WHERE ${facetSql}
          AND ABS(COALESCE(alert_item.usd, 0)) >= ?
-         ${excludeExotic ? `AND alert_item.coin NOT LIKE '@%' AND instr(alert_item.coin, ':') = 0` : ''}
+         ${excludeExotic ? `AND alert_item.coin NOT LIKE '@%' AND instr(alert_item.coin, '/') = 0` : ''}
          ${coins.length ? `AND alert_item.coin IN (${coins.map(() => '?').join(', ')})` : ''}
        GROUP BY coin`,
     )

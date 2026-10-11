@@ -603,7 +603,7 @@ async function finalizeSnapshotFromState(whale, address, state, names, { light, 
     ...derived,
     positionObservedAt: Number(state.observedAt) || Date.now(),
     positionSource: 'rest',
-    positionScope: 'native-perp',
+    positionScope: state.positionScope || 'native-perp',
     contractAccountValue: Number.isFinite(contractAccountValue) ? contractAccountValue : null,
     ...sideRates,
     topCoins,
@@ -613,7 +613,7 @@ async function finalizeSnapshotFromState(whale, address, state, names, { light, 
 }
 
 /**
- * 批量轻量拉取：优先 GoldRush batchClearinghouseState，一次最多 50 个。
+ * 批量轻量拉取：复用全市场缓存，并限制 REST 钱包并发。
  */
 async function loadWhaleSnapshotsBatch(whales, names = {}, fallbackById = new Map(), options = {}) {
   const light = options.light !== false;
@@ -822,6 +822,8 @@ async function refreshWhalesShard(options = {}) {
       freshSnapshotIds.add(snap.id);
       const previous = prevWhales.find((item) => item.id === snap.id);
       if (!previous || previous.error || isPendingPlaceholder(previous) || !Array.isArray(previous.positions)) continue;
+      // Switching from native-only coverage establishes a new baseline, not new trades.
+      if (snap.positionScope === 'all-perp' && previous.positionScope !== 'all-perp') continue;
       snapshotAlerts.push(...alertsFromPositionDiff(snap, previous.positions, snap.positions || []));
     }
     const monitorAlerts = snapshotAlerts.filter((item) => item && (item.kind === 'open' || item.kind === 'increase'));
@@ -979,7 +981,7 @@ function uniqueAssets(trades) {
     }
   }
   return [...map.values()]
-    .filter((item) => isMainstreamAsset(item.value) && !item.exotic)
+    .filter((item) => (isMainstreamAsset(item.value) || item.value.includes(':')) && !isExoticAsset(item.value))
     .sort((a, b) => {
       if (a.exotic !== b.exotic) return a.exotic ? 1 : -1;
       const ia = MAIN_ASSETS.indexOf(String(a.value).toUpperCase());
@@ -1825,9 +1827,9 @@ function queryWhaleCache(query = {}) {
   const followedIds = new Set(String(query.followedIds || '').split(',').map((id) => id.trim()).filter(Boolean));
   const visiblePositions = (whale, coinFilter = coin) => (whale.positions || []).filter((pos) => {
     const rawName = String(pos.coin || pos.coinLabel || '').toUpperCase();
-    if (/^@\d+$/.test(rawName) || rawName.includes(':')) return false;
-    const name = String(pos.coinLabel || pos.coin || '').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/^K(?=[A-Z])/, '');
-    const target = String(coinFilter || 'ALL').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/^K(?=[A-Z])/, '');
+    if (/^@\d+$/.test(rawName)) return false;
+    const name = String(pos.coinLabel || pos.coin || '').toUpperCase().replace(/[^A-Z0-9:]/g, '').replace(/^K(?=[A-Z])/, '');
+    const target = String(coinFilter || 'ALL').toUpperCase().replace(/[^A-Z0-9:]/g, '').replace(/^K(?=[A-Z])/, '');
     return target === 'ALL' || name === target;
   });
   const directionOf = (positions) => {
@@ -1883,7 +1885,7 @@ function queryWhaleCache(query = {}) {
 const whaleSummaryCache = new Map();
 function getWhaleSummary({ coin = 'all' } = {}) {
   const roster = getActiveWhales();
-  const normalizedCoin = String(coin || 'all').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/^K(?=[A-Z])/, '');
+  const normalizedCoin = String(coin || 'all').toUpperCase().replace(/[^A-Z0-9:]/g, '').replace(/^K(?=[A-Z])/, '');
   const cache = require('./cache'), version = cache.readSummaryVersion?.();
   const summaryKey = JSON.stringify([version?.version, normalizedCoin, roster.map(row => String(row.id))]);
   const hit = version && whaleSummaryCache.get(summaryKey);
@@ -1907,8 +1909,8 @@ function getWhaleSummary({ coin = 'all' } = {}) {
       if (Math.abs(Number(pos.positionValue) || 0) <= 0) return false;
       if (normalizedCoin === 'ALL') return true;
       const raw = String(pos.coin || pos.coinLabel || '').toUpperCase();
-      if (/^@\d+$/.test(raw) || raw.includes(':')) return false;
-      const name = String(pos.coinLabel || pos.coin || '').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/^K(?=[A-Z])/, '');
+      if (/^@\d+$/.test(raw)) return false;
+      const name = String(pos.coinLabel || pos.coin || '').toUpperCase().replace(/[^A-Z0-9:]/g, '').replace(/^K(?=[A-Z])/, '');
       return name === normalizedCoin;
     });
     if (normalizedCoin !== 'ALL' && !positions.length) continue;
@@ -1971,7 +1973,7 @@ function getWhaleSummary({ coin = 'all' } = {}) {
     updatedAt: Number(cached?.updatedAt) || 0,
 
   };
-  const times = roster.map(row => ({ positionObservedAt: byId.get(String(row.id))?.positionObservedAt }));
+  const times = roster.map(row => ({ positionObservedAt: byId.get(String(row.id))?.positionObservedAt, positionScope: byId.get(String(row.id))?.positionScope }));
   if (version) {
     if (whaleSummaryCache.size >= 32) whaleSummaryCache.clear();
     whaleSummaryCache.set(summaryKey, { value, times });
@@ -1984,7 +1986,9 @@ async function getWhalePerpMarkPrices(id) {
   const whale = findConfiguredWhale(id);
   if (!whale) throw Object.assign(new Error('未找到该巨鲸'), { status: 404 });
   const snapshotWhale = (readActiveWhaleCache()?.data?.whales || []).find((item) => item.id === whale.id);
-  const mids = await fetchAllMids();
+  const dexes = [...new Set(['', ...(snapshotWhale?.positions || []).map(p => p.coin.includes(':') ? p.coin.split(':')[0] : '')])];
+  const prices = await Promise.all(dexes.map(dex => fetchAllMids(dex)));
+  const mids = Object.assign({}, ...prices.map(data => data?.mids || data));
   const midMap = mids?.mids && typeof mids.mids === 'object' ? mids.mids : mids || {};
   const perpMarkPrices = Object.fromEntries((snapshotWhale?.positions || []).map((position) => {
     const coin = String(position.coin || '').trim();

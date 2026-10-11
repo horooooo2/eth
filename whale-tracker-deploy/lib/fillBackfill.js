@@ -13,6 +13,13 @@ const RATE_LIMIT_PAUSE_MS = Math.max(60000, Number(process.env.FILL_BACKFILL_RAT
 const OVERLAP_MS = 60000;
 const LATEST_WINDOW_MS = 15 * 60000;
 let timer, historyTimer;
+const deepTickAt = new Map();
+function deferForDeepValidation(kind, interval) {
+  if (!require('./whaleValidation').validator.isDeepRunning()) { deepTickAt.delete(kind); return false; }
+  const now=Date.now(), previous=deepTickAt.get(kind);
+  if(previous !== undefined && now-previous < interval*10)return true;
+  deepTickAt.set(kind,now);return false;
+}
 let historyRunning = false, cursor = 0, historyCursor = 0, rateLimitedUntil = 0, lastError = '', resetGeneration = 0;
 const active = new Set(), attempted = new Map();
 let lastWhaleTotal = null, rosterObservedAt = null;
@@ -79,6 +86,7 @@ async function ingest(whale, fills, generation, restoreTiming = false) {
   return { committedAlerts };
 }
 async function runOneTick() {
+  if (deferForDeepValidation('latest', INTERVAL_MS)) return;
   if (require('./marketMaintenance').isPaused()) return;
   if (!ENABLED || active.size >= 2 || rateLimitedUntil > Date.now()) return;
   const marks = loadWatermarks(), now = Date.now();
@@ -116,6 +124,7 @@ async function runOneTick() {
   } finally { active.delete(whale.address); }
 }
 async function runHistoryTick() {
+  if (deferForDeepValidation('history', 15000)) return;
   if (require('./marketMaintenance').isPaused()) return;
   if (!ENABLED || historyRunning || rateLimitedUntil > Date.now()) return;
   const roster = listWhales(); if (!roster.length) return;

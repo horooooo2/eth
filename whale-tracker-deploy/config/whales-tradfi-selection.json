@@ -1,0 +1,587 @@
+{
+  "checkedAt": 1791647771344,
+  "scope": "Existing candidate pool; xyz DEX; Binance-identified TradFi underlyings",
+  "minimumPositionUsd": 10000,
+  "note": "Current verified holdings, not a profitability ranking or complete trading history.",
+  "addresses": [
+    {
+      "address": "0xda3768e9299e1fd81708ec030dac5ea37125f7b5",
+      "name": "25f7b5",
+      "positionUsd": 28347041.436153,
+      "coins": [
+        "xyz:TSLA",
+        "xyz:NVDA",
+        "xyz:INTC",
+        "xyz:META",
+        "xyz:AAPL",
+        "xyz:MSFT",
+        "xyz:ORCL",
+        "xyz:GOOGL",
+        "xyz:AMD",
+        "xyz:MU",
+        "xyz:SNDK",
+        "xyz:MSTR",
+        "xyz:CRCL",
+        "xyz:MRVL",
+        "xyz:DRAM",
+        "xyz:CBRS",
+        "xyz:SPCX",
+        "xyz:DELL",
+        "xyz:AVGO",
+        "xyz:NBIS",
+        "xyz:WDC",
+        "xyz:SKHY",
+        "xyz:SOXL",
+        "xyz:IREN",
+        "xyz:CRWD",
+        "xyz:MRNA"
+      ],
+      "checkedAt": 1791647714951
+    },
+    {
+      "address": "0x519c721de735f7c9e6146d167852e60d60496a47",
+      "name": "496a47",
+      "positionUsd": 22849025.5504,
+      "coins": [
+        "xyz:DRAM",
+        "xyz:SPCX"
+      ],
+      "checkedAt": 1791647682618
+    },
+    {
+      "address": "0x72655b3926db3afbe914a53b0604905af7ce11a5",
+      "name": "ce11a5",
+      "positionUsd": 22370003.380612,
+      "coins": [
+        "xyz:CRCL"
+      ],
+      "checkedAt": 1791647697577
+    },
+    {
+      "address": "0xb07856ebcb6b37967eaf7c4b4e64dcce28c6de15",
+      "name": "榜单·月成$10.1亿·de15",
+      "positionUsd": 12763259.779585995,
+      "coins": [
+        "xyz:NVDA",
+        "xyz:GOLD",
+        "xyz:HOOD",
+        "xyz:INTC",
+        "xyz:PLTR",
+        "xyz:COIN",
+        "xyz:META",
+        "xyz:AAPL",
+        "xyz:MSFT",
+        "xyz:ORCL",
+        "xyz:GOOGL",
+        "xyz:AMZN",
+        "xyz:AMD",
+        "xyz:MU",
+        "xyz:MSTR",
+        "xyz:CRCL",
+        "xyz:NFLX",
+        "xyz:LLY",
+        "xyz:BABA",
+        "xyz:USAR",
+        "xyz:CRWV",
+        "xyz:GME",
+        "xyz:HIMS",
+        "xyz:LITE",
+        "xyz:MRVL",
+        "xyz:RKLB",
+        "xyz:DRAM",
+        "xyz:CBRS",
+        "xyz:ARM",
+        "xyz:DELL",
+        "xyz:IBM",
+        "xyz:AVGO",
+        "xyz:NBIS",
+        "xyz:WDC",
+        "xyz:BE",
+        "xyz:QCOM",
+        "xyz:AMAT",
+        "xyz:SKHY",
+        "xyz:KORU",
+        "xyz:SOXL",
+        "xyz:IREN",
+        "xyz:AAOI",
+        "xyz:MRNA",
+        "xyz:BMNR"
+      ],
+      "checkedAt": 1791647653799
+    },
+    {
+      "address": "0x1367df28c0681431b8a8f3d887576a1cad85560e",
+      "name": "we love u jeff·560e",
+      "positionUsd": 11846175,
+      "coins": [
+        "xyz:META",
+        "xyz:AAPL",
+        "xyz:ORCL"
+      ],
+      "checkedAt": 1791647638839
+    },
+    {
+      "address": "0x469e9a7f624b04c24f0e64edf8d8a277e6bf58a5",
+      "name": "榜单·月成$9.3亿·58a5",
+      "positionUsd": 11530376.9856,
+      "coins": [
+        "xyz:SNDK"
+      ],
+      "checkedAt": 1791647644630
+    },
+    {
+      "address": "0xf517639a8872e756ac98d3c65507d2ebc25cc032",
+      "name": "NMTD -Thank you Je·c032",
+      "positionUsd": 10505979.174442,
+      "coins": [
+        "xyz:SILVER",
+        "xyz:COPPER",
+        "xyz:URNM",
+        "xyz:SPCX",
+        "xyz:DELL",
+        "xyz:CXMT"
+      ],
+      "checkedAt": 1791647659520
+    },
+    {
+      "address": "0x4e23288cee4960f9f962195c22948e4bc7ae20c3",
+      "name": "榜单·月成$26.4亿·20c3",
+      "positionUsd": 10470129.244639998,
+      "coins": [
+        "xyz:AAPL",
+        "xyz:MU",
+        "xyz:SNDK",
+        "xyz:SILVER"
+      ],
+      "checkedAt": 1791647652634
+    },
+    {
+      "address": "0xb1ec7febea4f841d525785955b7fe0e812d6e86a",
+      "name": "d6e86a",
+      "positionUsd": 5949974.38862,
+      "coins": [
+        "xyz:TSLA",
+        "xyz:MSFT",
+        "xyz:SPCX",
+        "xyz:DELL"
+      ],
+      "checkedAt": 1791647654958
+    },
+    {
+      "address": "0x40f20b734d7d25ba0b6219e921382fa992a56a9e",
+      "name": "榜单·月成$8.0亿·6a9e",
+      "positionUsd": 5111134.705998,
+      "coins": [
+        "xyz:CL"
+      ],
+      "checkedAt": 1791647643488
+    },
+    {
+      "address": "0xbeccae9ffcb69e9d42a1d4e744abf8056149562d",
+      "name": "榜单·月成$13.1亿·562d",
+      "positionUsd": 4200291.137158001,
+      "coins": [
+        "xyz:TSLA",
+        "xyz:NVDA",
+        "xyz:GOLD",
+        "xyz:HOOD",
+        "xyz:INTC",
+        "xyz:PLTR",
+        "xyz:COIN",
+        "xyz:META",
+        "xyz:AAPL",
+        "xyz:MSFT",
+        "xyz:ORCL",
+        "xyz:GOOGL",
+        "xyz:AMZN",
+        "xyz:AMD",
+        "xyz:MU",
+        "xyz:SNDK",
+        "xyz:MSTR",
+        "xyz:CRCL",
+        "xyz:SILVER",
+        "xyz:BABA",
+        "xyz:CL",
+        "xyz:NATGAS",
+        "xyz:PLATINUM",
+        "xyz:CRWV",
+        "xyz:PALLADIUM",
+        "xyz:EWY",
+        "xyz:MRVL",
+        "xyz:DRAM",
+        "xyz:CBRS",
+        "xyz:SPCX",
+        "xyz:MINIMAX",
+        "xyz:NBIS",
+        "xyz:BE",
+        "xyz:ZHIPU",
+        "xyz:SKHY",
+        "xyz:UNITREE",
+        "xyz:SOXL"
+      ],
+      "checkedAt": 1791647648065
+    },
+    {
+      "address": "0xc8b527864ef2ad6dc49de7e99943a3a76ad48891",
+      "name": "d48891",
+      "positionUsd": 3307785.8958,
+      "coins": [
+        "xyz:SNDK"
+      ],
+      "checkedAt": 1791647673444
+    },
+    {
+      "address": "0xb5b3f3caf9d778b1293e5cd29f32e84b04c67a08",
+      "name": "高频62%·1044笔7a08",
+      "positionUsd": 3139100,
+      "coins": [
+        "xyz:INTC",
+        "xyz:MU"
+      ],
+      "checkedAt": 1791647586017
+    },
+    {
+      "address": "0x9c68cd0568eb47bad36ecd8090e6c1d1396a7783",
+      "name": "6a7783",
+      "positionUsd": 2829732.839226,
+      "coins": [
+        "xyz:NVDA",
+        "xyz:GOLD",
+        "xyz:COIN",
+        "xyz:META",
+        "xyz:GOOGL",
+        "xyz:AMZN",
+        "xyz:MU",
+        "xyz:MSTR",
+        "xyz:SILVER",
+        "xyz:CL",
+        "xyz:DRAM"
+      ],
+      "checkedAt": 1791647726360
+    },
+    {
+      "address": "0x64702807a1f0f9888ea22b858099d7f481227b55",
+      "name": "高频96%·469笔7b55",
+      "positionUsd": 2785071.36712,
+      "coins": [
+        "xyz:META",
+        "xyz:GOOGL",
+        "xyz:MU"
+      ],
+      "checkedAt": 1791647588304
+    },
+    {
+      "address": "0xa2ce501d9c0c5e23d34272f84402cfb7835b3126",
+      "name": "高频66%·2000笔3126",
+      "positionUsd": 2424920,
+      "coins": [
+        "xyz:SILVER"
+      ],
+      "checkedAt": 1791647579670
+    },
+    {
+      "address": "0xf7772737dd6e90bfbfd6b1f966a0021452cea894",
+      "name": "cea894",
+      "positionUsd": 2406246.341107,
+      "coins": [
+        "xyz:TSLA",
+        "xyz:NVDA",
+        "xyz:GOLD",
+        "xyz:HOOD",
+        "xyz:INTC",
+        "xyz:PLTR",
+        "xyz:COIN",
+        "xyz:META",
+        "xyz:AAPL",
+        "xyz:MSFT",
+        "xyz:ORCL",
+        "xyz:GOOGL",
+        "xyz:AMZN",
+        "xyz:AMD",
+        "xyz:MU",
+        "xyz:SNDK",
+        "xyz:MSTR",
+        "xyz:CRCL",
+        "xyz:NFLX",
+        "xyz:COST",
+        "xyz:LLY",
+        "xyz:TSM",
+        "xyz:SILVER",
+        "xyz:RIVN",
+        "xyz:CL",
+        "xyz:COPPER",
+        "xyz:NATGAS",
+        "xyz:PLATINUM",
+        "xyz:USAR",
+        "xyz:CRWV",
+        "xyz:URNM",
+        "xyz:PALLADIUM",
+        "xyz:GME",
+        "xyz:HYUNDAI",
+        "xyz:EWY",
+        "xyz:EWJ",
+        "xyz:HIMS",
+        "xyz:DKNG",
+        "xyz:LITE",
+        "xyz:XLE",
+        "xyz:BX",
+        "xyz:MRVL",
+        "xyz:RKLB",
+        "xyz:DRAM",
+        "xyz:CBRS",
+        "xyz:EWZ",
+        "xyz:ZM",
+        "xyz:ARM",
+        "xyz:EWT",
+        "xyz:SPCX",
+        "xyz:ASML",
+        "xyz:MINIMAX",
+        "xyz:DELL",
+        "xyz:IBM",
+        "xyz:AVGO",
+        "xyz:NOW",
+        "xyz:NBIS",
+        "xyz:WDC",
+        "xyz:NOK",
+        "xyz:SMH",
+        "xyz:BE",
+        "xyz:ZHIPU",
+        "xyz:QCOM",
+        "xyz:STRC",
+        "xyz:BOT",
+        "xyz:AMAT",
+        "xyz:SHAZ",
+        "xyz:SKHY",
+        "xyz:KSTR",
+        "xyz:CXMT",
+        "xyz:GEV",
+        "xyz:KORU",
+        "xyz:UNITREE",
+        "xyz:LYTE",
+        "xyz:SOXL",
+        "xyz:IREN",
+        "xyz:NET",
+        "xyz:CRWD",
+        "xyz:RDDT",
+        "xyz:AAOI",
+        "xyz:MRNA",
+        "xyz:XBI",
+        "xyz:BMNR",
+        "xyz:SNXX",
+        "xyz:OURA"
+      ],
+      "checkedAt": 1791647686125
+    },
+    {
+      "address": "0x736850ee773ac6170fcaeda596514269b863ee56",
+      "name": "高频100%·655笔ee56",
+      "positionUsd": 2283864.16413,
+      "coins": [
+        "xyz:GOOGL"
+      ],
+      "checkedAt": 1791647591744
+    },
+    {
+      "address": "0xec4a6f59960fb55a7fa49262e2628687b322cf62",
+      "name": "榜单·月成$7.4亿·cf62",
+      "positionUsd": 1763160,
+      "coins": [
+        "xyz:TSLA",
+        "xyz:HIMS"
+      ],
+      "checkedAt": 1791647649213
+    },
+    {
+      "address": "0xa19ed0ae46e89461e56063f1ed268a0dc225745f",
+      "name": "高频76%·620笔745f",
+      "positionUsd": 1576162.2304620002,
+      "coins": [
+        "xyz:TSLA",
+        "xyz:MSTR",
+        "xyz:LLY",
+        "xyz:SILVER",
+        "xyz:CL",
+        "xyz:COPPER",
+        "xyz:SPCX"
+      ],
+      "checkedAt": 1791647589459
+    },
+    {
+      "address": "0xbcd420d13362532756c968f663f96ba95e240dd2",
+      "name": "240dd2",
+      "positionUsd": 1465258.6044,
+      "coins": [
+        "xyz:TSLA",
+        "xyz:SPCX"
+      ],
+      "checkedAt": 1791647660664
+    },
+    {
+      "address": "0x734531e87f8c1643321355f7143fcc6169c4b404",
+      "name": "高频44%·1168笔b404",
+      "positionUsd": 1358182.60278,
+      "coins": [
+        "xyz:GOLD",
+        "xyz:SILVER",
+        "xyz:DRAM",
+        "xyz:NBIS",
+        "xyz:SOXL"
+      ],
+      "checkedAt": 1791647579670
+    },
+    {
+      "address": "0xe6781c6a6eda7821a2c17832e2e5edd8fa25c7ea",
+      "name": "25c7ea",
+      "positionUsd": 1295263.09728,
+      "coins": [
+        "xyz:MU",
+        "xyz:SNDK",
+        "xyz:EWY",
+        "xyz:DRAM",
+        "xyz:WDC",
+        "xyz:CXMT"
+      ],
+      "checkedAt": 1791647729812
+    },
+    {
+      "address": "0xe31501c472d557bfa145ce105d325fb2dd4cb867",
+      "name": "4cb867",
+      "positionUsd": 1268169.06376,
+      "coins": [
+        "xyz:GOLD",
+        "xyz:SILVER",
+        "xyz:CL",
+        "xyz:NATGAS",
+        "xyz:PLATINUM",
+        "xyz:EWZ",
+        "xyz:ZM",
+        "xyz:SPCX",
+        "xyz:NOW",
+        "xyz:SMH",
+        "xyz:SHAZ",
+        "xyz:RDDT",
+        "xyz:BMNR",
+        "xyz:SNXX",
+        "xyz:GLW"
+      ],
+      "checkedAt": 1791647712660
+    },
+    {
+      "address": "0x856c35038594767646266bc7fd68dc26480e910d",
+      "name": "榜单·月成$20.6亿·910d",
+      "positionUsd": 930780.5632740001,
+      "coins": [
+        "xyz:GOLD",
+        "xyz:CRCL",
+        "xyz:SILVER",
+        "xyz:CL",
+        "xyz:DRAM"
+      ],
+      "checkedAt": 1791647630796
+    },
+    {
+      "address": "0x266b5569ed3017e74dd48059c6db804e016eefcb",
+      "name": "高频45%·699笔efcb",
+      "positionUsd": 879195,
+      "coins": [
+        "xyz:SILVER",
+        "xyz:DRAM"
+      ],
+      "checkedAt": 1791647591744
+    },
+    {
+      "address": "0x9e2cbb5d800181c1ef21b25010dc4ea80eeb5508",
+      "name": "eb5508",
+      "positionUsd": 784086.5052,
+      "coins": [
+        "xyz:META"
+      ],
+      "checkedAt": 1791647656112
+    },
+    {
+      "address": "0xfc37faf026597474691dca71ed9dcae1a6633b84",
+      "name": "633b84",
+      "positionUsd": 743009.7372000001,
+      "coins": [
+        "xyz:TSLA",
+        "xyz:INTC",
+        "xyz:META"
+      ],
+      "checkedAt": 1791647758563
+    },
+    {
+      "address": "0x1081e214bd6f0137234b92432d9b6033b88965b7",
+      "name": "8965b7",
+      "positionUsd": 686095.1904049999,
+      "coins": [
+        "xyz:ORCL",
+        "xyz:NFLX",
+        "xyz:COST",
+        "xyz:LLY",
+        "xyz:TSM",
+        "xyz:RIVN",
+        "xyz:BABA",
+        "xyz:COPPER",
+        "xyz:PLATINUM",
+        "xyz:USAR",
+        "xyz:URNM",
+        "xyz:PALLADIUM",
+        "xyz:GME",
+        "xyz:HYUNDAI",
+        "xyz:EWJ",
+        "xyz:HIMS",
+        "xyz:DKNG",
+        "xyz:XLE",
+        "xyz:BX",
+        "xyz:EWZ",
+        "xyz:ZM",
+        "xyz:EBAY",
+        "xyz:EWT",
+        "xyz:ASML",
+        "xyz:MINIMAX",
+        "xyz:DELL",
+        "xyz:IBM",
+        "xyz:AVGO",
+        "xyz:NOW",
+        "xyz:WDC",
+        "xyz:NOK",
+        "xyz:SMH",
+        "xyz:BE",
+        "xyz:ZHIPU",
+        "xyz:QCOM",
+        "xyz:STRC",
+        "xyz:BOT",
+        "xyz:AMAT",
+        "xyz:GIGADEV",
+        "xyz:SHAZ",
+        "xyz:KSTR",
+        "xyz:CXMT",
+        "xyz:GEV",
+        "xyz:UNITREE",
+        "xyz:LYTE",
+        "xyz:IREN",
+        "xyz:NET",
+        "xyz:CRWD",
+        "xyz:RDDT",
+        "xyz:AAOI",
+        "xyz:MRNA",
+        "xyz:XBI",
+        "xyz:BMNR",
+        "xyz:SNXX",
+        "xyz:LRCX",
+        "xyz:TWST",
+        "xyz:GLW"
+      ],
+      "checkedAt": 1791647702227
+    },
+    {
+      "address": "0x97be9c7904f9c772a3efbf9e10286b91ba8a773e",
+      "name": "高频88%·908笔773e",
+      "positionUsd": 570116.4661,
+      "coins": [
+        "xyz:MRNA"
+      ],
+      "checkedAt": 1791647584876
+    }
+  ]
+}

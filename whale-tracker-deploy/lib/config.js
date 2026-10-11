@@ -4,6 +4,8 @@ const path = require('path');
 const bundledWhales = require('../config/whales.json');
 const bundledStable = require('../config/whales-stable.json');
 const bundledHf = require('../config/whales-hf.json');
+const bundledTradfiSelection = require('../config/whales-tradfi-selection.json');
+const { selectWhaleRoster } = require('./whaleRoster');
 
 const CONFIG_DIR = process.env.CONFIG_DIR || path.join(__dirname, '..', 'config');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'whales.json');
@@ -312,9 +314,10 @@ function getActiveWhales() {
 
   const manuals = whales.filter((w) => w.manual);
   const rest = whales.filter((w) => !w.manual);
-  const ranked = sortWhalesHf(rest).slice(0, TOP_WHALE_LIMIT);
+  const ranked = sortWhalesHf(rest);
   // 超额名单保留在配置中，但不进入实时采集。
-  return mergeWhalesByAddress(manuals, ranked).slice(0, TOP_WHALE_LIMIT);
+  const selection = readJsonFile(path.join(CONFIG_DIR, 'whales-tradfi-selection.json'), bundledTradfiSelection);
+  return selectWhaleRoster(manuals, ranked, selection, TOP_WHALE_LIMIT);
 }
 
 function setWhaleMode(_mode) {

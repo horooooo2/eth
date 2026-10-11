@@ -52,6 +52,7 @@ const FILES = [
   'lib/whales.js',
   'lib/news.js',
   'lib/newsService.js',
+  'lib/newsWebSearch.js',
   'lib/markets.js',
   'lib/tradfiMarkets.js',
   'lib/radarLongTrend.js',
