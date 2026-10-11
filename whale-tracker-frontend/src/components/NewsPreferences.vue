@@ -1,9 +1,14 @@
 <script setup lang="ts">
+import '@/styles/settings.css';
+import AdaptivePage from './mobile/AdaptivePage.vue';
 import { computed, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { fetchRadarCatalog, type TradFiMarketSymbol } from '@/api';
 import { radarClient } from '@/utils/radarRealtime';
 import { newsWatch, newsWatchFollowsRadar, saveNewsWatch, resetNewsWatch } from '@/utils/newsWatch';
+const props=defineProps<{mobile?:boolean}>();
+const pagePanel=ref<InstanceType<typeof AdaptivePage>|null>(null);
+const isDirty=computed(()=>JSON.stringify(draft.value)!==JSON.stringify(newsWatch.value));
 const visible = ref(false), loading = ref(false);
 const draft = ref<string[]>([]), query = ref(''), error = ref('');
 const catalog = ref<TradFiMarketSymbol[]>([]);
@@ -24,15 +29,15 @@ function reset() { try { resetNewsWatch(); visible.value = false; ElMessage.succ
 <template>
   <div class="news-prefs">
     <slot :open="open"><button @click="open">新闻标的管理</button></slot>
-    <el-dialog v-model="visible" title="新闻标的管理" width="min(620px,94vw)" append-to-body>
+    <AdaptivePage class="settings-surface" ref="pagePanel" :mobile="mobile" :dirty="isDirty" v-model="visible" title="新闻标的管理" width="min(620px,94vw)" append-to-body>
       <p class="hint">{{ newsWatchFollowsRadar ? '当前跟随雷达与虚拟币关注列表。保存后使用新闻独立列表。' : '当前为新闻独立列表，不影响雷达和虚拟币的关注设置。' }}</p>
       <div class="selected-label">已选择 {{ draft.length }} / 60 <small>可清空，仅查看综合资讯</small></div>
       <div class="chips"><el-tag v-for="symbol in draft" :key="symbol" closable @close="draft = draft.filter(s => s !== symbol)">{{ names.get(symbol) || symbol.replace(/USDT$/, '') }}</el-tag></div>
       <el-input v-model="query" placeholder="搜索公司名称或合约代码" clearable aria-label="搜索新闻标的" />
       <p v-if="error" class="hint" role="status">{{ error }}</p>
       <div class="options" aria-label="可添加新闻标的"><span v-if="loading">正在加载标的…</span><button v-for="a in options" :key="a.symbol" @click="add(a.symbol)"><span>{{ a.name }}<small>{{ a.symbol }}</small></span><span>＋</span></button><p v-if="!loading && !options.length">没有匹配的可添加标的</p></div>
-      <template #footer><div class="footer"><el-button text @click="reset">恢复跟随关注</el-button><span /><el-button @click="visible = false">取消</el-button><el-button type="primary" @click="save">保存</el-button></div></template>
-    </el-dialog>
+      <template #footer><div class="footer"><el-button text @click="reset">恢复跟随关注</el-button><span /><el-button @click="props.mobile ? pagePanel?.requestBack() : visible = false">取消</el-button><el-button type="primary" @click="save">保存</el-button></div></template>
+    </AdaptivePage>
   </div>
 </template>
 <style scoped>

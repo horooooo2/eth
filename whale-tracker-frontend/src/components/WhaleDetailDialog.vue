@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AdaptivePage from './mobile/AdaptivePage.vue';
 import { whaleAssetLabel } from '@/utils/whaleAssetLabel';
 import MobileScroll from './mobile/MobileScroll.vue';
 import { computed, ref, watch } from 'vue';
@@ -412,7 +413,7 @@ async function copyAddress() {
 </script>
 
 <template>
-  <el-dialog v-model="visible" class="whale-detail-dialog" :class="{'h5-whale-dialog':mobile}" fullscreen destroy-on-close>
+  <AdaptivePage :mobile="mobile" title="巨鲸详情" v-model="visible" class="whale-detail-dialog" :class="{'h5-whale-dialog':mobile}" fullscreen destroy-on-close>
     <template #header>
       <div class="dialog-header" v-if="whale">
         <div class="identity">
@@ -516,7 +517,15 @@ async function copyAddress() {
           <label class="position-sort">排序 <select v-model="positionSort" aria-label="持仓排序"><option value="value">仓位价值</option><option value="pnl">浮动盈亏</option></select></label>
           <el-tooltip content="仓位与盈亏来自服务器快照，标记价独立更新。收益率为浮动盈亏 ÷ 已用保证金。缺失数据显示 —。"><button type="button" class="data-info" aria-label="数据口径">ⓘ</button></el-tooltip>
         </div>
-        <div v-if="displayedPositions.length" class="position-card-grid">
+        <div v-if="mobile && displayedPositions.length" class="h5-position-detail-list">
+          <article v-for="pos in displayedPositions" :key="`${pos.coin}-${pos.side}`" class="h5-position-detail-card">
+            <header><b>{{whaleAssetLabel(pos.coin,pos.coinLabel)}}</b><span :class="signedClass(pos.side==='long'?1:-1)">{{sideLabel(pos.side)}} · {{formatLeverage(pos.leverage)}}</span></header>
+            <div class="h5-position-primary"><div><small>仓位价值</small><strong>{{formatPositionMoney(pos.positionValue)}}</strong></div><div><small>浮动盈亏</small><strong :class="signedClass(pos.unrealizedPnl)">{{formatPositionMoney(pos.unrealizedPnl)}}</strong></div></div>
+            <dl><div><dt>开仓均价</dt><dd>{{formatPrice(pos.entryPx)}}</dd></div><div><dt>标记价格</dt><dd>{{pricesLoading && perpMarkPrices[pos.coin]==null?'读取中…':formatPrice(perpMarkPrices[pos.coin])}}</dd></div><div><dt>强平价格</dt><dd>{{formatPrice(pos.liquidationPx)}}</dd></div><div><dt>收益率</dt><dd :class="signedClass(pos.unrealizedPnl)">{{positionRoe(pos)}}</dd></div></dl>
+            <details><summary>更多仓位信息</summary><dl><div><dt>持仓数量</dt><dd>{{formatQty(Math.abs(pos.size))}}</dd></div><div><dt>保证金</dt><dd>{{formatPositionMoney(pos.marginUsed)}}</dd></div></dl></details>
+          </article>
+        </div>
+        <div v-else-if="displayedPositions.length" class="position-card-grid">
           <article v-for="pos in displayedPositions" :key="`${pos.coin}-${pos.side}`" class="position-card" :class="`position-${pos.side}`">
             <header class="position-card-header">
               <div><h3>{{ whaleAssetLabel(pos.coin, pos.coinLabel) }}</h3></div>
@@ -590,7 +599,7 @@ async function copyAddress() {
       </section>
 
     </component>
-  </el-dialog>
+  </AdaptivePage>
 </template>
 
 <style>

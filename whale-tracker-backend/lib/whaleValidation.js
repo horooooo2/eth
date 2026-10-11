@@ -74,8 +74,12 @@ function createValidator({ request = hlPost, candidates = () => mergeWhalesByAdd
     queueTimer.unref?.();
   }
   const fail = (message,status) => Object.assign(new Error(message),{status});
-  function get(id) { return jobs.get(id); }
-  function latest(owner) { return [...jobs.values()].reverse().find(j=>j.owner===String(owner)); }
+  function prune(){
+    for(const [id,j] of jobs)if(!['running','queued'].includes(j.status)&&now()-j.finishedAt>=86400000)jobs.delete(id);
+  }
+  function history(){prune();return [...jobs.values()].filter(j=>['complete','partial'].includes(j.status)).sort((a,b)=>b.finishedAt-a.finishedAt);}
+  function get(id) { prune();return jobs.get(id); }
+  function latest(owner) { prune();return [...jobs.values()].reverse().find(j=>j.owner===String(owner)); }
   function isDeepRunning() { return active?.mode==='deep' && active.status==='running'; }
   function stop(id, owner = 'test') {
     const job = jobs.get(id);
@@ -105,7 +109,7 @@ function createValidator({ request = hlPost, candidates = () => mergeWhalesByAdd
       if(enqueue && (active || queue.length || now()-lastStarted<cooldownMs)){
         if(queue.length>=10)throw fail('验证队列已满，请稍后再试',429);
         const waiting={id:randomUUID(),owner,mode,coin,status:'queued',phase:'queued',startedAt:now(),finishedAt:null,total:0,eligible:0,success:0,failed:0,longUsd:0,shortUsd:0,longCount:0,shortCount:0,positions:[],failures:[]};
-        while(jobs.size>=20){const old=[...jobs.values()].find(j=>!['queued','running'].includes(j.status));if(!old)break;jobs.delete(old.id);}
+        prune();
         queue.push(waiting);jobs.set(waiting.id,waiting);scheduleQueue();return waiting;
       }
       if(queue.length)throw Object.assign(fail('有其他用户正在排队验证，请稍后再试',409),{queueable:true});
@@ -115,11 +119,11 @@ function createValidator({ request = hlPost, candidates = () => mergeWhalesByAdd
       if(active.owner===owner && active.status==='running')return active;
       throw Object.assign(fail(active.mode==='deep'?'有其他用户正在进行深度验证，请稍后再试。':'有其他验证任务正在运行，请稍后再试。',409),{queueable:true});
     }
-    if(!previous && !queuedJob)for(const job of [...jobs.values()].reverse()) if(job.mode===mode && job.coin.toUpperCase()===coin.toUpperCase() && job.status==='complete' && now()-job.finishedAt<600000)return job;
+    if(!previous && !queuedJob)for(const job of history()) if(job.mode===mode && job.coin.toUpperCase()===coin.toUpperCase() && job.status==='complete' && now()-job.finishedAt<600000)return job;
     if(!previous && now()-lastStarted<cooldownMs)throw Object.assign(fail('验证任务冷却中，请稍后再试',429),{queueable:true});
     const job=Object.assign(queuedJob||{},{id:queuedJob?.id||randomUUID(),owner,mode,coin,status:'running',phase:mode==='deep'?'leaderboard':'scanning',startedAt:now(),finishedAt:null,total:0,eligible:0,success:0,failed:0,longUsd:0,shortUsd:0,longCount:0,shortCount:0,positions:[],failures:[]});
     if(previous)previous.restarted=true;
-    active=job;lastStarted=now();while(jobs.size>=20){const old=[...jobs.values()].find(j=>!['queued','running'].includes(j.status));if(!old)break;jobs.delete(old.id);}jobs.set(job.id,job);
+    active=job;lastStarted=now();prune();jobs.set(job.id,job);
     const controller=new AbortController();controllers.set(job.id,controller);
     void run(job,controller);
     return job;
@@ -165,8 +169,9 @@ function createValidator({ request = hlPost, candidates = () => mergeWhalesByAdd
       }
       job.status=job.failed?'partial':'complete';
     }catch(err){if(!signal.aborted){job.status='error';job.error=err.message||'验证失败';}}
-    finally{clearTimeout(deadline);job.finishedAt??=now();controllers.delete(job.id);if(active===job)active=null;scheduleQueue();}
+    finally{clearTimeout(deadline);job.finishedAt??=now();controllers.delete(job.id);if(['complete','partial'].includes(job.status))for(const [id,old] of jobs)if(id!==job.id&&old.coin.toUpperCase()===job.coin.toUpperCase()&&['complete','partial'].includes(old.status))jobs.delete(id);
+      if(active===job)active=null;prune();scheduleQueue();}
   }
-  return { start,get,stop,latest,view,isDeepRunning };
+  return { start,get,stop,latest,history,view,isDeepRunning };
 }
 module.exports={createValidator,matchingPosition,selectDeepCandidates,loadLeaderboard,validator:createValidator()};

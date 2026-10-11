@@ -34,6 +34,7 @@ import {
 } from '@/utils/format';
 import { resolveWhaleTitle } from '@/utils/whaleReference';
 import { fundingFollowWarning, fundingOf } from '@/utils/fundingAlert';
+import MobileSheet from './mobile/MobileSheet.vue';
 import MobileAlerts from './mobile/MobileAlerts.vue';
 import WhaleLocateLink from '@/components/WhaleLocateLink.vue';
 import { useWhaleStore } from '@/stores/whale';
@@ -422,7 +423,7 @@ function alertFundingWarn(row: {
 }
 // Shared controller, independent PC and H5 views.
 async function refreshMobile(){if(alertLoading.value)return;if(!await loadAlertPage(true))throw new Error('刷新失败，保留原异动记录');}
-const mobileModel = reactive({ refreshMobile, alertCoinFilter, alertMinUsd, alertSideFilter, openOnly, preferredCoins, ALERT_MIN_USD_OPTIONS, pagedAlerts, alertLoading, alertRefreshing, alertWindowLabel, alertEmptyText, openAlert, formatUsd, formatPrice, alertFundingWarn, onRefreshAlerts });
+const mobileModel = reactive({ filterWhaleName, clearWhaleFilter: () => whaleStore.clearWhaleFilter(), refreshMobile, alertCoinFilter, alertMinUsd, alertSideFilter, openOnly, preferredCoins, ALERT_MIN_USD_OPTIONS, pagedAlerts, alertLoading, alertRefreshing, alertWindowLabel, alertEmptyText, openAlert, formatUsd, formatPrice, alertFundingWarn, onRefreshAlerts });
 export type AlertsModel = typeof mobileModel;
 </script>
 
@@ -564,11 +565,20 @@ export type AlertsModel = typeof mobileModel;
     </div>
 
   </el-card>
-    <el-dialog
+    <MobileSheet v-if="mobile" v-model="alertVisible" title="异动详情">
+      <template v-if="activeAlert && activeView">
+        <div class="h5-alert-detail-hero"><b>{{whaleAssetLabel(activeView.coin)}}</b><span :class="activeView.side==='short'?'down':'up'">{{activeView.sideBadgeLabel}} · {{activeView.actionLabel}}</span><strong>{{activeView.notionalUsd!=null?formatUsd(activeView.notionalUsd):'—'}}</strong><small>名义金额</small></div>
+        <dl class="h5-alert-detail-grid"><div><dt>成交价</dt><dd>{{formatPrice(activeView.price)}}</dd></div><div><dt>{{activeView.actionType==='close'?'已实现盈亏':'浮动盈亏'}}</dt><dd :class="pnlClass(activeView.pnl)">{{formatPnl(activeView.pnl)}}</dd></div><div v-if="activeView.showLeverage"><dt>杠杆</dt><dd>{{formatLeverage(activeView.leverage)}}</dd></div><div v-if="activeView.showMargin"><dt>保证金</dt><dd>{{formatUsd(activeView.marginUsd!)}}</dd></div><div class="wide"><dt>发生时间</dt><dd>{{formatTime(activeView.eventTime)}}</dd></div></dl>
+        <div class="h5-alert-detail-wallet"><span>巨鲸账户</span><b>{{activeAlert.whaleName}}</b><span>{{whaleOf(activeAlert)?.address || activeAlert.whaleId}}</span></div>
+        <p v-if="activeView.verifyText" class="h5-muted">{{activeView.verifyText}}</p><p v-if="activeAlert.qualityNote" class="h5-muted">{{activeAlert.qualityNote}}</p>
+      </template>
+      <template #footer><el-button type="primary" :disabled="!activeAlert" @click="activeAlert && locateFromAlert(activeAlert);alertVisible=false">定位该巨鲸</el-button></template>
+    </MobileSheet>
+    <el-dialog v-else
       v-model="alertVisible"
       width="560px"
       append-to-body
-      class="pos-dialog"
+      class="pos-dialog" :class="{'h5-alert-dialog':mobile}"
     >
       <template #header>
         <div v-if="activeAlert" class="alert-dialog-head">

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { locatedCoinFilter } from '@/utils/alertGrouping';
-import WhaleValidation from "@/components/WhaleValidation.vue";
+import WhaleValidation from "@/components/ValidationEntry.vue";
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { CopyDocument, View } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';

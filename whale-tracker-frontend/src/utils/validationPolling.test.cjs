@@ -1,10 +1,10 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),ts=require('typescript');
-function fixture(get,post){
- const exports={};const timers=new Map();let timerId=0,mount;
+function fixture(get,post,options={}){
+ const exports={};const messages=[];const timers=new Map();let timerId=0,mount;
  const ref=value=>({value});const computed=fn=>({get value(){return fn();}});
- const source=fs.readFileSync(__dirname+'/../components/WhaleValidation.vue','utf8').split('<script setup lang="ts">')[1].split('</script>')[0]+ '\nObject.assign(exports,{poll,accept,job,visible,minimized,chooser,choose,togglePosition,timingState,start,queueRequest});';
- vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,{exports,defineProps:()=>({coin:'BTC'}),require:name=>name==='vue'?{ref,computed,watch(){},onMounted(fn){mount=fn;},onUnmounted(){}}:name==='@/api'?{http:{get,post}}:{},setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id)});
- exports.visible.value=true;exports.job.value={id:'a',status:'running',canStop:true,positions:[]};return {...exports,timers,mount};
+ const source=fs.readFileSync(__dirname+'/../components/WhaleValidation.vue','utf8').split('<script setup lang="ts">')[1].split('</script>')[0]+ '\nObject.assign(exports,{poll,accept,job,visible,minimized,chooser,choose,togglePosition,timingState,start,queueRequest,showHistory,openRecord,history});';
+ vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,{exports,defineProps:()=>({mobile:!!options.mobile}),require:name=>name==='vue'?{ref,computed,watch(){},onMounted(fn){mount=fn;},onUnmounted(){}}:name==='element-plus'?{ElMessage:{info:text=>messages.push(text),error:text=>messages.push(text)}}:name==='@/api'?{http:{get,post}}:name==='@/stores/validationUi'?{validationCoin:ref(options.coin||'BTC'),validationStatus:ref(''),validationOpener:{open:null}}:{},setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id)});
+ exports.visible.value=true;exports.job.value={id:'a',status:'running',canStop:true,positions:[]};return {...exports,timers,mount,messages};
 }
 test('expired and unauthorized tasks stop polling and allow mode chooser again',async()=>{
  for(const status of [401,403,404]){
@@ -55,4 +55,23 @@ test('queue is explicit after a queueable error and retains requested symbol and
 test('refresh restores a queued task and continues status polling',async()=>{
  let calls=0;const f=fixture(async()=>{calls++;return {data:{id:'q',status:'queued',queuePosition:2,positions:[],offset:0,nextOffset:0,positionTotal:0}};});
  f.job.value=null;await f.mount();await Promise.resolve();assert.equal(f.minimized.value,true);assert.equal(f.job.value.status,'queued');assert.equal(calls,2);
+});
+
+test('completed history can be opened after refresh without starting another scan',async()=>{
+ const calls=[];const f=fixture(async url=>{calls.push(url);if(url.endsWith('/history'))return {data:[{id:'saved',coin:'BTC',status:'complete'}]};return {data:{id:'saved',coin:'BTC',status:'complete',offset:0,nextOffset:1,positionTotal:1,positions:[{address:'wallet'}]}};});
+ f.job.value=null;f.visible.value=false;await f.showHistory();assert.equal(f.history.value.length,1);assert.equal(f.visible.value,false);
+ await f.openRecord('saved');assert.equal(f.visible.value,true);assert.equal(f.job.value.positions.length,1);assert.equal(f.timers.size,0);assert.equal(calls.length,2);
+});
+
+test('mobile empty history uses toast without opening page; selected asset still offers validation',async()=>{
+ for(const coin of ['all','BTC']){
+  const f=fixture(async()=>({data:[]}),undefined,{mobile:true,coin});f.job.value=null;f.visible.value=false;
+  await f.showHistory();assert.equal(f.chooser.value,coin!=='all');assert.equal(f.messages.length,coin==='all'?1:0);
+ }
+});
+test('mobile active job restores directly and repeated history clicks share the request',async()=>{
+ let calls=0,release;const f=fixture(()=>{calls++;return new Promise(r=>release=r);},undefined,{mobile:true,coin:'all'});
+ f.visible.value=false;await f.showHistory();assert.equal(f.visible.value,true);assert.equal(calls,0);
+ f.job.value=null;const first=f.showHistory();await f.showHistory();assert.equal(calls,1);
+ release({data:[{id:'saved',coin:'BTC'}]});await first;assert.equal(f.chooser.value,true);
 });

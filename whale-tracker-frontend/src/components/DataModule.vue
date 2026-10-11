@@ -6,6 +6,7 @@ import type { RecoQuotes } from '@/utils/recommend';
 import AiAnalyzeButton from '@/components/AiAnalyzeButton.vue';
 
 const props = defineProps<{
+  mobile?: boolean;
   whales: WhaleProfile[];
   loading?: boolean;
   selectedId: string;
@@ -130,8 +131,8 @@ defineExpose({ initialize });
 </script>
 
 <template>
-  <el-card class="panel" shadow="never">
-    <template #header>
+  <el-card class="panel" :class="{'h5-macro-panel':mobile}" shadow="never">
+    <template v-if="!mobile" #header>
       <div class="head">
         <strong>宏观数据</strong>
       </div>
@@ -185,6 +186,8 @@ defineExpose({ initialize });
 </template>
 
 <style scoped>
+.panel.h5-macro-panel{border:0;background:transparent;border-radius:0}.h5-macro-panel .tab-panel{padding:0 0 12px}.h5-macro-panel .row{padding:12px 0}.h5-macro-panel .title{font-size:14px}.h5-macro-panel .note,.h5-macro-panel .meta{font-size:12px;line-height:1.6}.h5-macro-panel .row-time{font-size:11px}.h5-macro-panel .row-time strong{font-size:13px}
+
 .account-exchange-tabs { display: flex; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
 .account-exchange-tabs button { border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); border-radius: 6px; padding: 6px 18px; cursor: pointer; }
 .account-exchange-tabs button.selected { color: var(--text); border-color: var(--accent); }

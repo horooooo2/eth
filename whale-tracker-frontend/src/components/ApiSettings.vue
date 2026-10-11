@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import '@/styles/settings.css';
+import AdaptivePage from './mobile/AdaptivePage.vue';
+import { computed, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { isLoggedIn } from '@/stores/auth';
 import { aiKeyHint, bindAiKey, refreshAiKeyStatus } from '@/stores/aiKey';
 
-defineProps<{ variant?: 'default' | 'sidebar' }>();
+const props=defineProps<{ mobile?:boolean; variant?: 'default' | 'sidebar' }>();
+const pagePanel=ref<InstanceType<typeof AdaptivePage>|null>(null);
+const isDirty=computed(()=>!!apiKey.value.trim());
 const visible = ref(false);
 const saving = ref(false);
 const apiKey = ref('');
@@ -33,18 +37,19 @@ async function save() {
     <slot name="trigger" :open="open"><button type="button" class="api-trigger" :class="{ sidebar: variant === 'sidebar' }" title="AI 分析设置" @click="open">
       {{ variant === 'sidebar' ? 'AI' : 'AI 分析设置' }}
     </button></slot>
-    <el-dialog v-model="visible" title="AI 分析设置" width="420px" append-to-body destroy-on-close>
-      <p class="intro">DeepSeek 密钥用于市场简报、宏观数据及巨鲸 AI 分析；交易所 API 配置已从网站移除。</p>
-      <template v-if="isLoggedIn">
-        <el-input v-model="apiKey" type="password" show-password autocomplete="new-password" placeholder="DeepSeek API Key（留空则不修改）" />
-        <p class="intro">{{ aiKeyHint ? `当前密钥：${aiKeyHint}` : '尚未配置' }}</p>
-      </template>
+    <AdaptivePage class="settings-surface" ref="pagePanel" :mobile="mobile" :dirty="isDirty" :busy="saving" v-model="visible" title="AI 分析设置" width="min(520px,94vw)" append-to-body destroy-on-close>
+      <p class="intro">DeepSeek 密钥用于市场简报、宏观数据及巨鲸 AI 分析。</p>
+      <div v-if="isLoggedIn" class="settings-block">
+        <label class="settings-label" for="settings-ai-key">DeepSeek API Key</label>
+        <el-input id="settings-ai-key" v-model="apiKey" type="password" show-password autocomplete="new-password" placeholder="DeepSeek API Key（留空则不修改）" />
+        <p class="settings-status">{{ aiKeyHint ? `当前密钥：${aiKeyHint}` : '尚未配置' }}</p>
+      </div>
       <p v-else class="intro">登录后可配置 AI 分析密钥。</p>
-      <template #footer>
-        <button type="button" class="dlg-btn ghost" @click="visible = false">取消</button>
+      <template #footer><div class="settings-footer">
+        <button type="button" class="dlg-btn ghost" @click="props.mobile ? pagePanel?.requestBack() : visible = false">取消</button>
         <button type="button" class="dlg-btn primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
-      </template>
-    </el-dialog>
+      </div></template>
+    </AdaptivePage>
   </div>
 </template>
 
@@ -53,7 +58,4 @@ async function save() {
 .api-trigger { border: 0; border-radius: 999px; padding: 6px 14px; min-height: 32px; background: #1a222e; color: #b0c4de; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
 .api-trigger.sidebar { width: 56px; height: 48px; min-height: 48px; padding: 0; border-radius: 14px; background: transparent; color: #6a7e9c; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; }
 .intro { color: var(--muted); font-size: 13px; line-height: 1.6; }
-.dlg-btn { border: 1px solid var(--border); border-radius: 7px; padding: 8px 14px; cursor: pointer; }
-.dlg-btn.ghost { color: var(--text); background: transparent; }
-.dlg-btn.primary { color: var(--accent-contrast, #111); background: var(--accent); }
 </style>

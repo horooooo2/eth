@@ -2,6 +2,8 @@
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { http, fetchQuotes } from '@/api';
+import WhaleValidation from '@/components/WhaleValidation.vue';
+import ValidationEntry from '@/components/ValidationEntry.vue';
 import MobileMy from '@/components/mobile/MobileMy.vue';
 import MobileNav from '@/components/mobile/MobileNav.vue';
 import MobileWhales from '@/components/mobile/MobileWhales.vue';
@@ -372,19 +374,20 @@ onUnmounted(() => {
     </div>
 
     <template v-else>
+    <WhaleValidation :mobile="isMobile" />
     <WhaleAlertDock :dock-active="true" @open-alert="sideTab = 'virtual'; myOpen = false; mobilePanel = 'alerts'" @focus-whale="onFocusWhaleCard" @focus-whale-trades="onFocusWhaleTrades" />
 
-    <MobileNav v-if="isMobile" :tab="sideTab" :my-open="myOpen" :status="socketMonitor.status" :title="socketMonitor.title" @select="selectMobileTab"/>
+    <MobileNav v-if="isMobile" :tab="sideTab" :my-open="myOpen" @select="selectMobileTab"/>
     <aside v-else class="sidebar" aria-label="主导航">
-      <div class="sidebar-connection"><div class="socket-dot" :class="socketMonitor.status" :title="socketMonitor.title" :aria-label="socketMonitor.title"><span class="socket-core" /></div><span :title="socketMonitor.title">{{ socketMonitor.status === 'connected' ? '数据连接正常' : socketMonitor.status === 'connecting' ? '正在连接数据' : '数据连接待恢复' }}</span></div>
+      <div class="sidebar-connection"><div class="socket-dot" :class="socketMonitor.status" :title="socketMonitor.title" :aria-label="socketMonitor.title"><span class="socket-core" /></div></div>
       <button type="button" class="nav-item" :class="{active:!myOpen && sideTab==='virtual'}" :aria-pressed="!myOpen && sideTab==='virtual'" title="巨鲸" @click="myOpen=false; sideTab='virtual'"><span class="nav-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3 3v14h14M6 12l3-4 3 2 5-6"/></svg></span><span class="nav-label">巨鲸</span></button>
       <button type="button" class="nav-item" :class="{active:!myOpen && sideTab==='tradfi'}" :aria-pressed="!myOpen && sideTab==='tradfi'" title="雷达" @click="myOpen=false; sideTab='tradfi'"><span class="nav-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="8"/><circle cx="10" cy="10" r="4"/><path d="m10 10 6-6"/></svg></span><span class="nav-label">雷达</span></button>
       <button v-if="STRATEGY_WORKSPACE_ENABLED" type="button" class="nav-item" :class="{active:!myOpen && sideTab==='strategy'}" title="策略交易" @click="myOpen=false; sideTab='strategy'"><span class="nav-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3 3v14h14M6 13l4-5 4 2 3-6"/></svg></span><span class="nav-label">策略交易</span></button>
       <button type="button" class="nav-item" :class="{active:!myOpen && sideTab==='news'}" :aria-pressed="!myOpen && sideTab==='news'" title="新闻" @click="myOpen=false; sideTab='news'"><span class="nav-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><rect x="3" y="2" width="14" height="16" rx="2"/><path d="M6 6h8M6 10h8M6 14h5"/></svg></span><span class="nav-label">新闻</span></button>
-      <div class="bottom-nav"><DesktopSettings :username="authUser?.username" :active-market="sideTab==='tradfi'?'tradfi':'virtual'" @logout="onLogout" /></div>
+      <div class="sidebar-footer"><ValidationEntry navigation /><div class="bottom-nav"><DesktopSettings :username="authUser?.username" :active-market="sideTab==='tradfi'?'tradfi':'virtual'" @logout="onLogout" /></div></div>
     </aside>
 
-    <MobileMy v-if="myOpen" class="mobile-my-view" :username="authUser?.username" :active-market="sideTab==='tradfi'?'tradfi':'virtual'" @logout="onLogout" />
+    <MobileMy :status="socketMonitor.status" :status-title="socketMonitor.title" v-if="myOpen" class="mobile-my-view" :username="authUser?.username" :active-market="sideTab==='tradfi'?'tradfi':'virtual'" @logout="onLogout" />
     <div class="layout" :class="{ 'is-tradfi': sideTab !== 'virtual' }">
       <div v-show="sideTab === 'virtual'" class="virtual-view">
       <el-alert
@@ -399,16 +402,17 @@ onUnmounted(() => {
       <div class="whales-shell" :class="'mobile-panel-'+mobilePanel">
         <div class="grid">
           <section class="side-info">
-            <nav class="side-info-tabs" aria-label="市场观察">
+            <nav v-if="!isMobile" class="side-info-tabs" aria-label="市场观察">
               <button v-if="WHALE_OBSERVATIONS_ENABLED" :class="{ active: sideInfoTab === 'observations' }" @click="sideInfoTab = 'observations'">巨鲸观察</button>
               <button :class="{ active: sideInfoTab === 'macro' }" @click="sideInfoTab = 'macro'">宏观数据</button>
             </nav>
-            <div v-if="WHALE_OBSERVATIONS_ENABLED" v-show="sideInfoTab === 'observations'" class="side-info-pane">
+            <div v-if="WHALE_OBSERVATIONS_ENABLED" v-show="!isMobile && sideInfoTab === 'observations'" class="side-info-pane">
               <WhaleObservationPanel :snapshot="observationSnapshot" :active="sideInfoTab === 'observations' && sideTab === 'virtual'" :connected="realtimeStatus === 'connected'" linked-coin="ALL" @locate="onFocusWhaleCard" @detail="openObservationWhale" />
             </div>
-            <div v-show="sideInfoTab === 'macro'" class="side-info-pane">
+            <div v-show="isMobile || sideInfoTab === 'macro'" class="side-info-pane">
           <DataModule
             ref="macroRef"
+            :mobile="isMobile"
             :whales="whaleStore.displayWhales"
             :loading="whaleStore.loading"
             :selected-id="whaleStore.selectedWhaleId"
@@ -523,7 +527,7 @@ onUnmounted(() => {
 .sidebar{width:116px;background:var(--workspace-surface);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:stretch;padding:20px 8px 18px;flex-shrink:0;z-index:10;overflow-y:auto;overflow-x:hidden}
 .sidebar{box-sizing:border-box}
 .nav-mark svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
-.sidebar-connection{display:flex;align-items:center;gap:5px;margin-top:0;margin-bottom:10px;color:var(--muted);font-size:10px;white-space:nowrap}
+.sidebar-connection{display:flex;align-items:center;justify-content:center;gap:5px;margin-top:0;margin-bottom:10px;color:var(--muted);font-size:10px;white-space:nowrap}
 .sidebar-connection>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .sidebar .socket-dot {
   position: relative;
@@ -610,7 +614,8 @@ onUnmounted(() => {
 .sidebar .nav-item.active{background:color-mix(in srgb,var(--yellow) 9%,transparent);color:var(--yellow)}
 .sidebar .nav-item:hover{background:var(--panel-2);color:var(--text)}
 .sidebar .nav-item:focus-visible{outline:2px solid var(--yellow);outline-offset:2px}
-.sidebar .bottom-nav{margin-top:auto;padding-top:16px;border-top:1px solid var(--border);width:100%}
+.sidebar-footer{margin-top:auto;width:100%}
+.sidebar .bottom-nav{margin-top:0;padding-top:16px;border-top:1px solid var(--border);width:100%}
 @media(max-width:1000px){.sidebar{width:70px;padding:22px 10px 16px}.sidebar-connection>span,.nav-label{display:none}.sidebar-connection{justify-content:center}.sidebar .nav-item{justify-content:center;padding:12px 0}}
 
 .layout {

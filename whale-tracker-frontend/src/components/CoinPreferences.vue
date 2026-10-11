@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import '@/styles/settings.css';
+import AdaptivePage from './mobile/AdaptivePage.vue';
 import { computed, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Close } from '@element-plus/icons-vue';
@@ -11,6 +13,7 @@ import {
 } from '@/utils/watchedCoins';
 
 const props = defineProps<{
+  mobile?:boolean;
   variant?: 'default' | 'sidebar';
   activeMarket?: 'virtual' | 'tradfi';
 }>();
@@ -19,6 +22,8 @@ const emit = defineEmits<{
   change: [];
 }>();
 
+const pagePanel=ref<InstanceType<typeof AdaptivePage>|null>(null);
+const isDirty=computed(()=>JSON.stringify(draftCoins.value)!==JSON.stringify(readWatchedCoins())||JSON.stringify(draftTradfi.value)!==JSON.stringify(tradfiWatch.value)||!!prefAddSymbol.value||!!tradfiPick.value);
 const prefsVisible = ref(false);
 const saving = ref(false);
 const prefAddSymbol = ref('');
@@ -102,6 +107,7 @@ function removeTradfi(symbol: string) {
 }
 
 function closePrefs() {
+  if(props.mobile){pagePanel.value?.requestBack();return;}
   prefsVisible.value = false;
   resetDraft();
 }
@@ -165,7 +171,7 @@ async function confirmPrefs() {
       type="button"
       class="prefs-trigger"
       :class="{ sidebar: props.variant === 'sidebar' }"
-      title="设置"
+      :title="mobile ? '标的偏好' : '设置'"
       @click="openPrefs"
     >
       <svg
@@ -181,11 +187,11 @@ async function confirmPrefs() {
       </svg>
       <span>{{ props.variant === 'sidebar' ? '设置' : '币种' }}</span>
     </button></slot>
-    <el-dialog
+    <AdaptivePage ref="pagePanel" :mobile="mobile" :dirty="isDirty" :busy="saving"
       v-model="prefsVisible"
-      title="设置"
+      :title="mobile ? '标的偏好' : '设置'"
       width="min(520px, 94vw)"
-      class="coin-prefs-dialog"
+      class="coin-prefs-dialog settings-surface"
       append-to-body
       :show-close="false"
       @close="resetDraft"
@@ -260,7 +266,7 @@ async function confirmPrefs() {
           </button>
         </div>
       </template>
-    </el-dialog>
+    </AdaptivePage>
   </div>
 </template>
 
@@ -407,27 +413,6 @@ async function confirmPrefs() {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-}
-.dlg-btn {
-  border: 0;
-  border-radius: 10px;
-  padding: 8px 16px;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-}
-.dlg-btn.primary {
-  background: #3d7eff;
-  color: #fff;
-}
-.dlg-btn.primary:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-.dlg-btn.ghost {
-  background: #1a222e;
-  color: #b0c4de;
 }
 .dlg-btn.ghost:hover {
   background: #2a3a52;

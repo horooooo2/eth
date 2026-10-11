@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, toRef, onUnmounted, ref, watch } from 'vue';
 import { http } from '@/api';
-const props = defineProps<{ symbol: string; active: boolean; cacheState?:{entries:CommentCache} }>();
+const props = defineProps<{ symbol: string; active: boolean; embedded?: boolean; cacheState?:{entries:CommentCache} }>();
 type Comment = { id: string; title: string; summary: string; source: string; author: string; publishedAt: number | null; url: string };
 type Result = { items: Comment[]; supported: boolean; pending: boolean; stale?: boolean; error?: string; updatedAt: number | null };
 export type CommentCache = Record<string, Result & {nextFetchAt:number}>;
@@ -42,8 +42,8 @@ async function refresh(){if(loading.value)return;if(result.value)result.value.ne
 defineExpose({refresh});
 </script>
 <template>
-  <section class="market-comments" aria-label="相关评论">
-    <div class="comment-note"><span v-if="result?.updatedAt">更新于 {{ date(result.updatedAt) }}{{ result.stale ? ' · 缓存内容' : '' }}</span></div>
+  <section class="market-comments" :class="{embedded}" aria-label="相关评论">
+    <div v-if="result?.updatedAt" class="comment-note"><span v-if="result?.updatedAt">更新于 {{ date(result.updatedAt) }}{{ result.stale ? ' · 缓存内容' : '' }}</span></div>
     <p v-if="error || result?.error" class="error" role="status">{{ error || result?.error }}</p>
     <p v-if="result?.pending" role="status" class="pending">正在收集讨论，完成后自动更新…</p>
     <div v-if="!symbol" class="empty" role="status">请选择上方标的查看相关评论</div>
@@ -53,4 +53,5 @@ defineExpose({refresh});
 </template>
 <style scoped>
 .comment-note{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin:12px 0 20px}.comment-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.comment-card{border:1px solid var(--border);background:var(--workspace-surface);border-radius:10px;padding:19px;overflow-wrap:anywhere}.author{display:flex;align-items:center;gap:9px;font-size:12px}.avatar{width:30px;height:30px;border-radius:50%;background:#302a40;color:#c9b3eb;display:grid;place-items:center;flex-shrink:0}.author small{display:block;color:var(--muted);font-size:10px;margin-top:4px}.comment-card h3{font-size:15px;font-weight:500;line-height:1.8;margin:16px 0}.comment-card p{font-size:13px;line-height:1.9;white-space:pre-line}.comment-card a{font-size:11px;color:#c1a4df;text-decoration:none}.empty{text-align:center;border:1px dashed var(--border);border-radius:10px;padding:70px 20px;color:var(--muted)}.error{color:#d9ad70;font-size:12px}.pending{font-size:12px;color:var(--muted)}@media(max-width:900px){.comment-grid{grid-template-columns:1fr}}
+.embedded .comment-grid{grid-template-columns:minmax(0,1fr);gap:10px}.embedded .comment-card{padding:14px}.embedded .empty{padding:24px 12px;font-size:12px}.embedded .comment-card h3{font-size:13px;margin:10px 0;line-height:1.6}.embedded .comment-card p{font-size:12px}.embedded .comment-note{margin:0 0 12px}
 </style>

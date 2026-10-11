@@ -1,10 +1,16 @@
 <script setup lang="ts">
+import AdaptivePage from './mobile/AdaptivePage.vue';
+import MobileSheet from './mobile/MobileSheet.vue';
+import {ElMessage} from 'element-plus';
+import {validationCoin,validationStatus,validationOpener,validationRunning} from '@/stores/validationUi';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { sortValidationPositions } from '@/utils/validationSort';
 import { http } from '@/api';
 import { whaleAssetLabel } from '@/utils/whaleAssetLabel';
 import { formatUsd, formatPrice } from '@/utils/format';
-const props = defineProps<{ coin: string }>();
+const layoutProps=defineProps<{mobile?:boolean}>();
+const mobilePane=ref<'summary'|'positions'>('summary');
+const props = {get coin(){return validationCoin.value;}};
 type Position = {address:string;openTime?:number|null;name:string;side:string;size:number;usd:number;observedAt:number;entryPx:number|null;unrealizedPnl:number|null;liquidationPx:number|null;marginUsed:number|null;leverage:number|null;leverageType:string|null;returnOnEquity:number|null};
 type Job = { queuePosition?:number; id:string; mode:'normal'|'deep'; canStop:boolean; eligible:number; phase:string; nextOffset:number; offset:number; positionTotal:number; coin:string; status:string; total:number; success:number; failed:number; longUsd:number; shortUsd:number; longCount:number; shortCount:number; startedAt:number; finishedAt:number|null; error?:string; positions:Position[] };
 const visible=ref(false), busy=ref(false), error=ref(''), job=ref<Job|null>(null);
@@ -23,18 +29,43 @@ async function stop(){
   finally{stopping.value=false;}
 }
 const chooser=ref(false);
+const history=ref<Array<{id:string;coin:string;mode:string;status:string;finishedAt:number;positionTotal:number}>>([]);
+const historyLoading=ref(false);
+async function showHistory(){
+  if(historyLoading.value)return;
+  if(['running','queued'].includes(job.value?.status||'')){restore();return;}
+  historyLoading.value=true;error.value='';
+  const requestedCoin=props.coin;
+  if(!layoutProps.mobile)chooser.value=true;
+  try{
+    const {data}=await http.get('/whales/validation/history');
+    if(disposed)return;
+    history.value=data;
+    if(['running','queued'].includes(job.value?.status||'')){restore();return;}
+    if(layoutProps.mobile && requestedCoin==='all' && !data.length){ElMessage.info('暂无验证记录');return;}
+    chooser.value=true;
+  }catch(e){if(!disposed){if(layoutProps.mobile)ElMessage.error(message(e));else error.value=message(e);}}
+  finally{historyLoading.value=false;}
+}
+async function openRecord(id:string){
+  chooser.value=false;visible.value=true;minimized.value=false;error.value='';clearTimeout(timer);
+  const seq=++generation;job.value=null;positionSide.value='all';expanded.value='';
+  await poll(id,seq);
+}
+watch(()=>job.value?.status,status=>{validationRunning.value=status==='running';});
+watch(()=>[statusLabel.value,job.value?.coin],([label])=>{validationStatus.value=job.value?`${whaleAssetLabel(job.value.coin)} · ${label}`:'查看24小时记录';});
 const sortKey=ref<'usd'|'openTime'|'entryPx'|'unrealizedPnl'>('usd'), ascending=ref(false);
 const sortOptions=[{key:'usd',label:'仓位价值'},{key:'openTime',label:'开仓时间'},{key:'entryPx',label:'开仓均价'},{key:'unrealizedPnl',label:'开仓盈亏'}] as const;
 const visibleCount=ref(50);
 const positionSide=ref<'all'|'long'|'short'>('all');
-function toggleSide(side:'long'|'short'){positionSide.value=positionSide.value===side?'all':side;}
+function toggleSide(side:'long'|'short'){positionSide.value=positionSide.value===side?'all':side;if(layoutProps.mobile)mobilePane.value='positions';}
 watch([sortKey,ascending,positionSide],()=>{visibleCount.value=50;});
 const sortedPositions=computed(()=>sortValidationPositions((job.value?.positions||[]).filter(row=>positionSide.value==='all'||row.side===positionSide.value),sortKey.value,ascending.value));
 function accept(data:Job){
   const previous=job.value?.id===data.id ? job.value.positions : [];
   job.value={...data,positions:[...previous.slice(0,data.offset),...data.positions]};
 }
-function choose(){if(['running','queued'].includes(job.value?.status||'')){restore();return;}chooser.value=true;}
+function choose(){void showHistory();}
 const expanded=ref('');
 const timingState=ref<Record<string,string>>({});
 let disposed=false;
@@ -85,22 +116,25 @@ async function start(mode:'normal'|'deep', coin=props.coin, restartId?:string, e
 }
 watch(visible,value=>{if(!value){if(['running','queued'].includes(job.value?.status||'')||busy.value)minimized.value=true;if(!minimized.value){clearTimeout(timer);generation++;}}});
 onMounted(async()=>{
+  validationOpener.open=choose;
   const seq=generation;
   try{const {data}=await http.get<Job|null>('/whales/validation/current');if(seq!==generation||!data)return;
     if(['running','queued'].includes(data.status)){accept(data);minimized.value=true;void poll(data.id,seq);}
   }catch{/* A new session or restarted server has no recoverable task. */}
 });
-onUnmounted(()=>{disposed=true;clearTimeout(timer);generation++;});
+onUnmounted(()=>{validationRunning.value=false;validationOpener.open=null;validationStatus.value='查看24小时记录';disposed=true;clearTimeout(timer);generation++;});
 </script>
 <template>
-  <button type="button" class="validation-trigger" :disabled="coin==='all'||busy" title="选择具体标的后验证最多 200 个候选账户" @click="choose">数据验证</button>
-  <el-dialog v-model="chooser" title="选择验证方式" width="min(460px,94vw)" append-to-body>
-    <div class="mode-options"><button @click="start('normal')"><b>普通验证</b><span>现有候选地址，最多 200 个</span></button><button @click="start('deep')"><b>深度验证</b><span>榜单账户价值 ≥100 万美元且周成交额 >0，最多 1,000 个；可能耗时数十分钟</span></button></div>
-  </el-dialog>
-  <el-dialog v-model="visible" class="whale-validation-dialog" width="min(1060px,96vw)" append-to-body align-center>
-    <template #header><div class="validation-title">巨鲸仓位数据验证 <span>Snapshot Validation</span></div></template>
-    <div class="validation-body">
-      <div class="validation-status-pane">
+  <component :is="layoutProps.mobile && props.coin!=='all' ? MobileSheet : AdaptivePage" :mobile="layoutProps.mobile" v-model="chooser" title="数据验证与历史记录" width="min(460px,94vw)" append-to-body>
+    <p v-if="error" class="validation-error">{{error}}</p><p>验证结果保留24小时，同标的新结果会替换旧结果。</p>
+    <div v-if="props.coin!=='all'" class="mode-options"><button @click="start('normal')"><b>普通验证</b><span>现有候选地址，最多 200 个</span></button><button @click="start('deep')"><b>深度验证</b><span>榜单账户价值 ≥100 万美元且周成交额 >0，最多 1,000 个；可能耗时数十分钟</span></button></div>
+    <div class="validation-history"><button v-for="record in history" :key="record.id" type="button" @click="openRecord(record.id)"><b>{{whaleAssetLabel(record.coin)}}</b><span>{{record.mode==='deep'?'深度':'普通'}} · {{record.positionTotal}} 个仓位 · {{new Date(record.finishedAt).toLocaleString('zh-CN')}}</span></button><p v-if="!history.length">暂无24小时内的验证记录</p></div>
+  </component>
+  <AdaptivePage :mobile="layoutProps.mobile" title="数据验证" v-model="visible" class="whale-validation-dialog" :class="{'h5-validation-dialog':layoutProps.mobile}" width="min(1060px,96vw)" append-to-body align-center>
+    <template #header><div class="validation-title">巨鲸仓位数据验证 <span v-if="!layoutProps.mobile">Snapshot Validation</span></div></template>
+    <div class="validation-body" :class="{'h5-validation-body':layoutProps.mobile}">
+      <nav v-if="layoutProps.mobile" class="validation-mobile-tabs"><button :class="{active:mobilePane==='summary'}" @click="mobilePane='summary'">验证概况</button><button :class="{active:mobilePane==='positions'}" @click="mobilePane='positions'">仓位 {{job?.positions.length||0}}</button></nav>
+      <div v-show="!layoutProps.mobile||mobilePane==='summary'" class="validation-status-pane">
       <div class="disclaimer-top">{{job?.mode==='deep'?'深度验证：动态筛选榜单账户价值 ≥100 万美元、周成交额 >0 的账户，按价值降序最多取 1,000 个。':'普通验证：扫描现有候选池内最多 200 个账户。'}} 仅统计所选合约市场，不代表全平台所有巨鲸；各账户采样时间不同。</div>
       <p v-if="error" class="validation-error">{{error}} <button v-if="queueRequest" :disabled="busy" @click="start(queueRequest.mode,queueRequest.coin,undefined,true)">排队</button><button v-else-if="job" @click="poll(job.id,generation)">重新读取</button></p>
       <p v-if="busy">正在创建验证任务…</p>
@@ -111,7 +145,7 @@ onUnmounted(()=>{disposed=true;clearTimeout(timer);generation++;});
           <div class="progress-header"><span class="progress-status"><i :class="{running:job.status==='running'}"></i>{{statusLabel}}</span><span class="progress-total">{{job.success+job.failed}} / {{job.total}}</span></div>
           <div class="progress-stats"><span class="long-text">成功 {{job.success}}</span><span class="short-text">失败 {{job.failed}}</span><span>未扫描 {{job.total-job.success-job.failed}}</span></div>
           <div class="progress-bar" role="progressbar" :aria-valuenow="progress" :aria-valuemin="0" :aria-valuemax="100"><div :style="{width:progress+'%'}"></div></div>
-          <p class="sample-time">采样区间：{{time(job.startedAt)}} — {{job.finishedAt?time(job.finishedAt):'进行中'}}<small>完成结果复用 10 分钟</small></p>
+          <p class="sample-time">采样区间：{{time(job.startedAt)}} — {{job.finishedAt?time(job.finishedAt):'进行中'}}<small>结果保留24小时 · 10分钟内复用</small></p>
         </section>
         <p v-if="job.error" class="validation-error">{{job.error}}</p>
         <div class="position-section"><button type="button" class="position-card long" :class="{selected:positionSide==='long'}" :aria-pressed="positionSide==='long'" @click="toggleSide('long')"><span>多仓价值</span><strong>{{formatUsd(job.longUsd)}}</strong><small>{{job.longCount}} 个账户</small></button><button type="button" class="position-card short" :class="{selected:positionSide==='short'}" :aria-pressed="positionSide==='short'" @click="toggleSide('short')"><span>空仓价值</span><strong>{{formatUsd(job.shortUsd)}}</strong><small>{{job.shortCount}} 个账户</small></button></div>
@@ -119,7 +153,7 @@ onUnmounted(()=>{disposed=true;clearTimeout(timer);generation++;});
       </template>
       <p v-if="job" class="disclaimer-bottom">按持仓名义金额比较，不是对价格涨跌的预测；失败及未扫描账户不计为零仓位。</p>
       </div>
-        <section class="validation-rows">
+        <section v-show="!layoutProps.mobile||mobilePane==='positions'" class="validation-rows">
           <div class="list-heading">
             <b>匹配仓位 <span>{{sortedPositions.length}}</span></b>
             <div class="position-sort" role="group" aria-label="排序字段"><button v-for="option in sortOptions" :key="option.key" type="button" :class="{active:sortKey===option.key}" :aria-pressed="sortKey===option.key" :title="option.key==='openTime'?'仅按可确认的开仓时间排序，未知时间排在最后':option.key==='unrealizedPnl'?'当前仓位浮动盈亏':''" @click="sortKey=option.key">{{option.label}}</button></div>
@@ -144,18 +178,20 @@ onUnmounted(()=>{disposed=true;clearTimeout(timer);generation++;});
           </div>
         </section>
     </div>
-    <template #footer><div class="validation-actions"><button v-if="job?.status==='stopped'" :disabled="busy||!job.canStop" @click="start(job.mode,job.coin,job.id)">{{busy?'启动中…':'启动'}}</button><button v-else class="validation-stop" :disabled="!['running','queued'].includes(job?.status||'')||!job?.canStop||stopping" @click="stop">{{stopping?'停止中…':job?.status==='queued'?'取消排队':'停止'}}</button><button @click="minimize">最小化</button></div></template>
-  </el-dialog>
-  <Teleport to="body"><aside v-if="minimized" class="validation-mini" aria-label="后台数据验证">
-    <div><b>{{job?whaleAssetLabel(job.coin):'数据验证'}}</b><button @click="restore">展开 ↗</button></div>
-    <p>{{busy?'正在创建任务…':statusLabel}} · {{job?job.success+job.failed:0}} / {{job?.total||0}}</p>
-    <div class="progress-bar"><div :style="{width:progress+'%'}"></div></div>
-    <p v-if="error" class="validation-error">{{error}}</p>
-    <button v-if="job && ['running','queued'].includes(job.status) && job.canStop" :disabled="stopping" @click="stop">{{stopping?'停止中…':job?.status==='queued'?'取消排队':'停止任务'}}</button>
-    <button v-else-if="job?.status==='stopped' && job.canStop" :disabled="busy" @click="start(job.mode,job.coin,job.id)">{{busy?'启动中…':'启动'}}</button><button v-if="!['running','queued'].includes(job?.status||'')&&!busy" @click="minimized=false">关闭</button>
-  </aside></Teleport>
+    <template #footer><div class="validation-actions"><button v-if="job?.status==='stopped'" :disabled="busy||!job.canStop" @click="start(job.mode,job.coin,job.id)">{{busy?'启动中…':'启动'}}</button><button v-else class="validation-stop" :disabled="!['running','queued'].includes(job?.status||'')||!job?.canStop||stopping" @click="stop">{{stopping?'停止中…':job?.status==='queued'?'取消排队':'停止'}}</button><button @click="minimize">{{layoutProps.mobile?'返回':'最小化'}}</button></div></template>
+  </AdaptivePage>
+
 </template>
 <style scoped>
+.validation-mobile-tabs{display:flex;flex:none;gap:20px;border-bottom:1px solid #2a2f3e;padding:0 14px}.validation-mobile-tabs button{min-height:44px;font:inherit;font-size:13px;border:0;border-bottom:2px solid transparent;background:none;color:#8f9bb3}.validation-mobile-tabs button.active{color:#f5bd45;border-color:#f5bd45}
+.validation-body.h5-validation-body{display:flex;flex-direction:column;height:100%;min-height:0;gap:0;padding:0;overflow:hidden;font-size:12px}
+.h5-validation-body .validation-status-pane,.h5-validation-body .validation-rows{flex:1;min-height:0;padding:12px;border:0;gap:12px}
+.h5-validation-body .validation-rows{overflow:hidden}.h5-validation-body .position-scroll{flex:1;min-height:0}
+.h5-validation-body .position-card{padding:12px;gap:6px}.h5-validation-body .position-card strong{font-size:18px}.h5-validation-body .list-heading{position:static;padding:0 0 8px;gap:8px}.h5-validation-body .position-sort{gap:4px}.h5-validation-body .position-sort button{font-size:11px;padding:6px;min-height:36px}
+.h5-validation-body .position-toggle{padding:12px;gap:8px}.h5-validation-body .position-identity b{max-width:110px;font-size:12px}.h5-validation-body .position-amount{font-size:12px;flex-shrink:1;min-width:0}.h5-validation-body .position-price-line span{font-size:11px}.h5-validation-body .position-detail dl{gap:12px;margin:12px 0;font-size:12px}.h5-validation-body .progress-section{padding:12px;gap:10px}.h5-validation-body .disclaimer-top{font-size:11px;padding:10px;line-height:1.6}
+
+.validation-history{display:grid;gap:10px;margin-top:16px}.validation-history button{display:grid;gap:6px;text-align:left;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--panel-2);color:var(--text);cursor:pointer}.validation-history span{font-size:12px;color:var(--muted)}
+
 .position-card{font:inherit;color:inherit;text-align:left;cursor:pointer;transition:background-color .15s,border-color .15s}
 .position-card.long.selected{background:#08251d;border-color:#00a86b}
 .position-card.short.selected{background:#301217;border-color:#d94853}
