@@ -15,7 +15,7 @@ import {
 } from '@/utils/whaleAlerts';
 import { coinMatchesWatch } from '@/utils/watchedCoins';
 import { useWhalePreferredAssets } from '@/utils/whalePreferredAssets';
-import { whaleAssetLabel, whaleAssetOptionLabel, isWhaleTradfi } from '@/utils/whaleAssetLabel';
+import { whaleAssetLabel, isWhaleTradfi } from '@/utils/whaleAssetLabel';
 import { isExoticAsset } from '@/utils/assets';
 import {
   ALERT_MIN_USD_OPTIONS,
@@ -450,7 +450,7 @@ export type AlertsModel = typeof mobileModel;
               :class="{ on: alertCoinFilter === coin }"
               @click="alertCoinFilter = coin"
             >
-              {{ whaleAssetOptionLabel(coin) }}
+              {{ whaleAssetLabel(coin) }}
             </button>
           </div>
           <div class="head-actions">
