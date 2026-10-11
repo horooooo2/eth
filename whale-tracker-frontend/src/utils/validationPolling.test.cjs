@@ -69,9 +69,26 @@ test('mobile empty history uses toast without opening page; selected asset still
   await f.showHistory();assert.equal(f.chooser.value,coin!=='all');assert.equal(f.messages.length,coin==='all'?1:0);
  }
 });
-test('mobile active job restores directly and repeated history clicks share the request',async()=>{
+test('mobile active job reconciles status and repeated history clicks share the request',async()=>{
  let calls=0,release;const f=fixture(()=>{calls++;return new Promise(r=>release=r);},undefined,{mobile:true,coin:'all'});
- f.visible.value=false;await f.showHistory();assert.equal(f.visible.value,true);assert.equal(calls,0);
- f.job.value=null;const first=f.showHistory();await f.showHistory();assert.equal(calls,1);
- release({data:[{id:'saved',coin:'BTC'}]});await first;assert.equal(f.chooser.value,true);
+ f.visible.value=false;const first=f.showHistory();await f.showHistory();assert.equal(calls,1);
+ release({data:{id:'a',status:'running',positions:[],offset:0,nextOffset:0,positionTotal:0}});await first;
+ assert.equal(f.visible.value,true);assert.equal(f.chooser.value,false);
+});
+
+test('completion updates history immediately and replaces the same symbol',()=>{
+ const f=fixture(),now=Date.now();
+ f.history.value=[{id:'old',coin:'BTC',finishedAt:now-10},{id:'other',coin:'ETH',finishedAt:now-20}];
+ const data={id:'a',coin:'BTC',mode:'deep',status:'complete',finishedAt:now,offset:0,positionTotal:250,positions:[]};
+ f.accept(data);f.accept(data);
+ assert.equal(f.history.value.length,2);assert.equal(f.history.value[0].id,'a');assert.equal(f.history.value[0].positionTotal,250);
+});
+
+test('opening history reconciles completed minimized task without refresh or stale response losing it',async()=>{
+ for(const mobile of [false,true]){
+  const calls=[],done={id:'a',coin:'BTC',mode:'deep',status:'complete',finishedAt:Date.now(),offset:0,nextOffset:1,positionTotal:1,positions:[{address:'wallet'}]};
+  const f=fixture(async url=>{calls.push(url);return {data:url.endsWith('/history')?[]:done};},undefined,{mobile,coin:'all'});
+  f.visible.value=false;f.minimized.value=true;await f.showHistory();
+  assert.equal(f.job.value.status,'complete');assert.equal(f.chooser.value,true);assert.equal(f.visible.value,false);assert.equal(f.history.value[0].id,'a');assert.equal(f.messages.length,0);assert.equal(calls.length,2);
+ }
 });

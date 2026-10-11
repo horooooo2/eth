@@ -3,9 +3,27 @@ const assert = require('node:assert/strict');
 const { createValidator, matchingPosition } = require('../lib/whaleValidation');
 const wallet = n => ({ address: '0x' + n.toString(16).padStart(40, '0'), name: `wallet${n}` });
 const flush = async job => { for (let i=0; i<100 && job.status==='running'; i++) await new Promise(setImmediate); };
+
+test('monthly PNL is taken from month window and reaches both validation modes without replacing position PNL',async()=>{
+ const {selectDeepCandidates}=require('../lib/whaleValidation');
+ const board=selectDeepCandidates([{ethAddress:wallet(1).address,accountValue:'2000000',windowPerformances:[['week',{vlm:'1',pnl:'999'}],['month',{pnl:'-123'}]]},{ethAddress:wallet(2).address,accountValue:'100',windowPerformances:[['month',{pnl:'0'}]]}]);
+ assert.equal(board.monthPnlByAddress[wallet(1).address],-123);
+ assert.equal(board.monthPnlByAddress[wallet(2).address],0);
+ assert.equal(board.pool.length,1);
+ for(const mode of ['normal','deep']){
+  const v=createValidator({leaderboard:async()=>board,candidates:()=>[wallet(1)],pause:async()=>{},request:async body=>body.type==='meta'?{universe:[{name:'BTC'}]}:{assetPositions:[{position:{coin:'BTC',szi:'1',positionValue:'100',unrealizedPnl:'25'}}]}});
+  const job=v.start('BTC',mode);await flush(job);
+  assert.equal(v.view(job,'test').positions[0].monthPnl,-123);assert.equal(job.positions[0].unrealizedPnl,25);
+ }
+});
+
+test('normal validation continues with unknown rank when leaderboard fails',async()=>{
+ const v=createValidator({leaderboard:async()=>{throw Error('offline');},candidates:()=>[wallet(1)],pause:async()=>{},request:async body=>body.type==='meta'?{universe:[{name:'BTC'}]}:{assetPositions:[{position:{coin:'BTC',szi:'1',positionValue:'100'}}]}});
+ const job=v.start('BTC');await flush(job);assert.equal(job.status,'complete');assert.equal(job.positions[0].monthPnl,null);
+});
 test('stop aborts an in-flight request and prevents later rows and requests', async () => {
   let signal, resolveRead, calls=0;
-  const v=createValidator({candidates:()=>[wallet(1),wallet(2)],pause:async()=>{},request:async(body,_retry,scheduling)=>{
+  const v=createValidator({leaderboard:async()=>({monthPnlByAddress:{}}),candidates:()=>[wallet(1),wallet(2)],pause:async()=>{},request:async(body,_retry,scheduling)=>{
     calls++;
     if(body.type==='meta')return {universe:[{name:'BTC'}]};
     signal=scheduling.signal;
@@ -22,7 +40,7 @@ test('stop aborts an in-flight request and prevents later rows and requests', as
 test('stop during delay prevents the next network call', async()=>{
   let release;
   let calls=0;
-  const v=createValidator({candidates:()=>[wallet(1)],pause:()=>new Promise(resolve=>{release=resolve;}),request:async()=>{calls++;return {universe:[{name:'BTC'}]};}});
+  const v=createValidator({leaderboard:async()=>({monthPnlByAddress:{}}),candidates:()=>[wallet(1)],pause:()=>new Promise(resolve=>{release=resolve;}),request:async()=>{calls++;return {universe:[{name:'BTC'}]};}});
   const job=v.start('BTC');while(!release)await new Promise(setImmediate);
   v.stop(job.id);release();await new Promise(setImmediate);
   assert.equal(calls,1);assert.equal(job.status,'stopped');
@@ -36,7 +54,7 @@ test('details preserve snapshot values and unknown fields instead of inventing z
 });
 test('200 candidate cap, duplicate-task reuse, exact market scope, failed reads remain unknown', async () => {
   const calls=[];
-  const validator = createValidator({ candidates:()=>[wallet(1),wallet(1),...Array.from({length:205},(_,i)=>wallet(i+2))], pause:async()=>{}, request:async body=>{
+  const validator = createValidator({leaderboard:async()=>({monthPnlByAddress:{}}), candidates:()=>[wallet(1),wallet(1),...Array.from({length:205},(_,i)=>wallet(i+2))], pause:async()=>{}, request:async body=>{
     calls.push(body);
     if(body.type==='meta')return {universe:[{name:'xyz:SNDK'}]};
     if(body.user===wallet(2).address)throw new Error('unavailable');
@@ -54,12 +72,12 @@ test('200 candidate cap, duplicate-task reuse, exact market scope, failed reads 
 test('unknown market or malformed responses never become successful zero holdings', async()=>{
   assert.throws(()=>matchingPosition({},'BTC'));
   assert.throws(()=>matchingPosition({assetPositions:[{position:{coin:'BTC',szi:'bad',positionValue:'2'}}]},'BTC'));
-  const v=createValidator({candidates:()=>[wallet(1)],pause:async()=>{},request:async()=>({universe:[]})});
+  const v=createValidator({leaderboard:async()=>({monthPnlByAddress:{}}),candidates:()=>[wallet(1)],pause:async()=>{},request:async()=>({universe:[]})});
   const job=v.start('SNDK');await flush(job);assert.equal(job.status,'error');assert.equal(job.success,0);
 });
 test('successful snapshots reuse cache and correctly report a zero-position account', async()=>{
   let count=0;
-  const v=createValidator({candidates:()=>[wallet(1)],pause:async()=>{},request:async body=>{count++;return body.type==='meta'?{universe:[{name:'BTC'}]}:{assetPositions:[]};}});
+  const v=createValidator({leaderboard:async()=>({monthPnlByAddress:{}}),candidates:()=>[wallet(1)],pause:async()=>{},request:async body=>{count++;return body.type==='meta'?{universe:[{name:'BTC'}]}:{assetPositions:[]};}});
   const job=v.start('BTC');await flush(job);assert.equal(job.status,'complete');assert.equal(job.success,1);assert.equal(job.positions.length,0);
   assert.equal(v.start('BTC'),job);assert.equal(count,2);
 });
@@ -88,12 +106,12 @@ test('deep results paginate and normal/deep caches cannot substitute each other'
  let clock=100000,boards=0;
  const v=createValidator({now:()=>clock,pause:async()=>{},candidates:()=>[wallet(1)],leaderboard:async()=>{boards++;return {eligible:150,pool:Array.from({length:150},(_,i)=>wallet(i+1)),at:clock};},request:async body=>body.type==='meta'?{universe:[{name:'BTC'}]}:{assetPositions:[{position:{coin:'BTC',szi:'1',positionValue:'2'}}]}});
  const normal=v.start('BTC','normal','a');await flush(normal);clock+=61000;
- const deep=v.start('BTC','deep','a');await flush(deep);assert.equal(deep.success,150);assert.equal(boards,1);assert.notEqual(deep.id,normal.id);
+ const deep=v.start('BTC','deep','a');await flush(deep);assert.equal(deep.success,150);assert.equal(boards,2);assert.notEqual(deep.id,normal.id);
  const first=v.view(deep,'b',0),second=v.view(deep,'b',100);assert.equal(first.positions.length,100);assert.equal(second.positions.length,50);assert.equal(first.canStop,false);assert.equal(first.owner,undefined);assert.equal(v.start('BTC','deep','b'),deep);
 });
 test('stopping during backoff releases the global slot without waiting for the sleep',async()=>{
  let clock=100000,entered=false;
- const v=createValidator({now:()=>clock,candidates:()=>[wallet(1)],pause:()=>{entered=true;return new Promise(()=>{});},request:async()=>({universe:[{name:'BTC'}]})});
+ const v=createValidator({leaderboard:async()=>({monthPnlByAddress:{}}),now:()=>clock,candidates:()=>[wallet(1)],pause:()=>{entered=true;return new Promise(()=>{});},request:async()=>({universe:[{name:'BTC'}]})});
  const first=v.start('BTC','normal','a');while(!entered)await new Promise(setImmediate);
  v.stop(first.id,'a');await new Promise(setImmediate);clock+=61000;
  const next=v.start('BTC','normal','b');assert.notEqual(next.id,first.id);v.stop(next.id,'b');

@@ -49,8 +49,8 @@ test('validation sorting keeps unknown values last in either direction and leave
  assert.equal(ids(sorting.sortValidationPositions(rows,'usd',false)),'b,a,c');assert.equal(ids(rows),'a,b,c');
 });
 
-test('opening-time sort puts unavailable times last without substituting observation times',()=>{
- const rows=[{address:'a',usd:1,entryPx:1,unrealizedPnl:0,openTime:null,observedAt:1},{address:'b',usd:1,entryPx:1,unrealizedPnl:0,openTime:200},{address:'c',usd:1,entryPx:1,unrealizedPnl:0,openTime:100}];
- assert.equal(Array.from(sorting.sortValidationPositions(rows,'openTime',true),r=>r.address).join(','),'c,b,a');
- assert.equal(Array.from(sorting.sortValidationPositions(rows,'openTime',false),r=>r.address).join(','),'b,c,a');
+test('default sort uses monthly account PNL descending regardless of direction',()=>{
+ const rows=[{address:'a',usd:1,entryPx:1,unrealizedPnl:0,monthPnl:null,observedAt:1},{address:'b',usd:1,entryPx:1,unrealizedPnl:0,monthPnl:-200},{address:'c',usd:1,entryPx:1,unrealizedPnl:0,monthPnl:100}];
+ assert.equal(Array.from(sorting.sortValidationPositions(rows,'default',true),r=>r.address).join(','),'c,b,a');
+ assert.equal(Array.from(sorting.sortValidationPositions(rows,'default',false),r=>r.address).join(','),'c,b,a');
 });

@@ -11,7 +11,7 @@ import { formatUsd, formatPrice } from '@/utils/format';
 const layoutProps=defineProps<{mobile?:boolean}>();
 const mobilePane=ref<'summary'|'positions'>('summary');
 const props = {get coin(){return validationCoin.value;}};
-type Position = {address:string;openTime?:number|null;name:string;side:string;size:number;usd:number;observedAt:number;entryPx:number|null;unrealizedPnl:number|null;liquidationPx:number|null;marginUsed:number|null;leverage:number|null;leverageType:string|null;returnOnEquity:number|null};
+type Position = {address:string;monthPnl?:number|null;openTime?:number|null;name:string;side:string;size:number;usd:number;observedAt:number;entryPx:number|null;unrealizedPnl:number|null;liquidationPx:number|null;marginUsed:number|null;leverage:number|null;leverageType:string|null;returnOnEquity:number|null};
 type Job = { queuePosition?:number; id:string; mode:'normal'|'deep'; canStop:boolean; eligible:number; phase:string; nextOffset:number; offset:number; positionTotal:number; coin:string; status:string; total:number; success:number; failed:number; longUsd:number; shortUsd:number; longCount:number; shortCount:number; startedAt:number; finishedAt:number|null; error?:string; positions:Position[] };
 const visible=ref(false), busy=ref(false), error=ref(''), job=ref<Job|null>(null);
 let timer:ReturnType<typeof setTimeout>|undefined, generation=0;
@@ -20,7 +20,7 @@ const minimized=ref(false), stopping=ref(false);
 const queueRequest=ref<{mode:'normal'|'deep';coin:string}|null>(null);
 const statusLabel=computed(()=>job.value?.status==='queued'?`排队中 · 第 ${job.value.queuePosition||1} 位`:job.value?.status==='running'?(job.value.phase==='leaderboard'?'正在筛选排行榜':'验证进行中'):job.value?.status==='complete'?'验证完成':job.value?.status==='stopped'?'已停止':'验证未完整完成');
 function minimize(){minimized.value=true;visible.value=false;}
-function restore(){minimized.value=false;visible.value=true;}
+function restore(){chooser.value=false;minimized.value=false;visible.value=true;}
 async function stop(){
   if(!job.value || stopping.value)return;
   stopping.value=true;clearTimeout(timer);const seq=++generation;
@@ -33,16 +33,23 @@ const history=ref<Array<{id:string;coin:string;mode:string;status:string;finishe
 const historyLoading=ref(false);
 async function showHistory(){
   if(historyLoading.value)return;
-  if(['running','queued'].includes(job.value?.status||'')){restore();return;}
   historyLoading.value=true;error.value='';
   const requestedCoin=props.coin;
-  if(!layoutProps.mobile)chooser.value=true;
   try{
+    // Reconcile a minimized task before deciding whether to show progress or history.
+    if(job.value && ['running','queued'].includes(job.value.status)){
+      await poll(job.value.id,generation);
+      if(disposed)return;
+      if(['running','queued'].includes(job.value?.status||'')){restore();return;}
+    }
+    visible.value=false;
+    if(!layoutProps.mobile)chooser.value=true;
     const {data}=await http.get('/whales/validation/history');
     if(disposed)return;
     history.value=data;
+    updateCompletedHistory();
     if(['running','queued'].includes(job.value?.status||'')){restore();return;}
-    if(layoutProps.mobile && requestedCoin==='all' && !data.length){ElMessage.info('暂无验证记录');return;}
+    if(layoutProps.mobile && requestedCoin==='all' && !history.value.length){ElMessage.info('暂无验证记录');return;}
     chooser.value=true;
   }catch(e){if(!disposed){if(layoutProps.mobile)ElMessage.error(message(e));else error.value=message(e);}}
   finally{historyLoading.value=false;}
@@ -54,16 +61,25 @@ async function openRecord(id:string){
 }
 watch(()=>job.value?.status,status=>{validationRunning.value=status==='running';});
 watch(()=>[statusLabel.value,job.value?.coin],([label])=>{validationStatus.value=job.value?`${whaleAssetLabel(job.value.coin)} · ${label}`:'查看24小时记录';});
-const sortKey=ref<'usd'|'openTime'|'entryPx'|'unrealizedPnl'>('usd'), ascending=ref(false);
-const sortOptions=[{key:'usd',label:'仓位价值'},{key:'openTime',label:'开仓时间'},{key:'entryPx',label:'开仓均价'},{key:'unrealizedPnl',label:'开仓盈亏'}] as const;
+const sortKey=ref<'default'|'usd'|'entryPx'|'unrealizedPnl'>('default'), ascending=ref(false);
+const sortOptions=[{key:'default',label:'默认'},{key:'usd',label:'仓位价值'},{key:'entryPx',label:'开仓均价'},{key:'unrealizedPnl',label:'仓位盈亏'}] as const;
 const visibleCount=ref(50);
 const positionSide=ref<'all'|'long'|'short'>('all');
 function toggleSide(side:'long'|'short'){positionSide.value=positionSide.value===side?'all':side;if(layoutProps.mobile)mobilePane.value='positions';}
 watch([sortKey,ascending,positionSide],()=>{visibleCount.value=50;});
 const sortedPositions=computed(()=>sortValidationPositions((job.value?.positions||[]).filter(row=>positionSide.value==='all'||row.side===positionSide.value),sortKey.value,ascending.value));
+function updateCompletedHistory(){
+  const done=job.value;
+  if(!done || !['complete','partial'].includes(done.status) || !done.finishedAt || Date.now()-done.finishedAt>=86400000)return;
+  const latest=history.value.find(row=>row.coin.toUpperCase()===done.coin.toUpperCase());
+  if(latest && latest.finishedAt>done.finishedAt)return;
+  history.value=[{id:done.id,coin:done.coin,mode:done.mode,status:done.status,finishedAt:done.finishedAt,positionTotal:done.positionTotal},...history.value.filter(row=>row.coin.toUpperCase()!==done.coin.toUpperCase())].sort((a,b)=>b.finishedAt-a.finishedAt);
+}
 function accept(data:Job){
+  if(job.value?.id!==data.id){sortKey.value='default';ascending.value=false;visibleCount.value=50;}
   const previous=job.value?.id===data.id ? job.value.positions : [];
   job.value={...data,positions:[...previous.slice(0,data.offset),...data.positions]};
+  updateCompletedHistory();
 }
 function choose(){void showHistory();}
 const expanded=ref('');
@@ -128,7 +144,7 @@ onUnmounted(()=>{validationRunning.value=false;validationOpener.open=null;valida
   <component :is="layoutProps.mobile && props.coin!=='all' ? MobileSheet : AdaptivePage" :mobile="layoutProps.mobile" v-model="chooser" title="数据验证与历史记录" width="min(460px,94vw)" append-to-body>
     <p v-if="error" class="validation-error">{{error}}</p><p>验证结果保留24小时，同标的新结果会替换旧结果。</p>
     <div v-if="props.coin!=='all'" class="mode-options"><button @click="start('normal')"><b>普通验证</b><span>现有候选地址，最多 200 个</span></button><button @click="start('deep')"><b>深度验证</b><span>榜单账户价值 ≥100 万美元且周成交额 >0，最多 1,000 个；可能耗时数十分钟</span></button></div>
-    <div class="validation-history"><button v-for="record in history" :key="record.id" type="button" @click="openRecord(record.id)"><b>{{whaleAssetLabel(record.coin)}}</b><span>{{record.mode==='deep'?'深度':'普通'}} · {{record.positionTotal}} 个仓位 · {{new Date(record.finishedAt).toLocaleString('zh-CN')}}</span></button><p v-if="!history.length">暂无24小时内的验证记录</p></div>
+    <div class="validation-history"><button v-for="record in history" :key="record.id" type="button" @click="openRecord(record.id)"><b>{{whaleAssetLabel(record.coin)}}</b><span>{{record.mode==='deep'?'深度':'普通'}} · {{record.positionTotal}} 个仓位 · {{new Date(record.finishedAt).toLocaleString('zh-CN')}}</span></button><p v-if="historyLoading&&!history.length">正在读取验证记录…</p><p v-else-if="!history.length">暂无24小时内的验证记录</p></div>
   </component>
   <AdaptivePage :mobile="layoutProps.mobile" title="数据验证" v-model="visible" class="whale-validation-dialog" :class="{'h5-validation-dialog':layoutProps.mobile}" width="min(1060px,96vw)" append-to-body align-center>
     <template #header><div class="validation-title">巨鲸仓位数据验证 <span v-if="!layoutProps.mobile">Snapshot Validation</span></div></template>
@@ -156,21 +172,21 @@ onUnmounted(()=>{validationRunning.value=false;validationOpener.open=null;valida
         <section v-show="!layoutProps.mobile||mobilePane==='positions'" class="validation-rows">
           <div class="list-heading">
             <b>匹配仓位 <span>{{sortedPositions.length}}</span></b>
-            <div class="position-sort" role="group" aria-label="排序字段"><button v-for="option in sortOptions" :key="option.key" type="button" :class="{active:sortKey===option.key}" :aria-pressed="sortKey===option.key" :title="option.key==='openTime'?'仅按可确认的开仓时间排序，未知时间排在最后':option.key==='unrealizedPnl'?'当前仓位浮动盈亏':''" @click="sortKey=option.key">{{option.label}}</button></div>
-            <div class="position-sort sort-direction" role="group" aria-label="排序方向"><button type="button" :class="{active:ascending}" :aria-pressed="ascending" @click="ascending=true">升序 ↑</button><button type="button" :class="{active:!ascending}" :aria-pressed="!ascending" @click="ascending=false">降序 ↓</button></div>
+            <div class="position-sort" role="group" aria-label="排序字段"><button v-for="option in sortOptions" :key="option.key" type="button" :class="{active:sortKey===option.key}" :aria-pressed="sortKey===option.key" :title="option.key==='default'?'账户近30天PNL降序，未取得榜单数据的账户排在最后':option.key==='unrealizedPnl'?'当前仓位浮动盈亏':''" @click="sortKey=option.key">{{option.label}}</button></div>
+            <div v-if="sortKey!=='default'" class="position-sort sort-direction" role="group" aria-label="排序方向"><button type="button" :class="{active:ascending}" :aria-pressed="ascending" @click="ascending=true">升序 ↑</button><button type="button" :class="{active:!ascending}" :aria-pressed="!ascending" @click="ascending=false">降序 ↓</button></div>
           </div>
           <div class="position-scroll">
           <p v-if="!sortedPositions.length" class="position-empty">{{job?.status==='running'?'正在扫描，匹配到的仓位将在这里展示':'暂无匹配仓位'}}</p>
           <template v-if="job">
           <article v-for="row in sortedPositions.slice(0,visibleCount)" :key="row.address+row.side" class="validation-position">
             <button class="position-toggle" :aria-expanded="expanded===row.address+row.side" @click="togglePosition(row)">
-              <div class="position-identity"><b>{{row.name}}</b><small>开仓时间 {{openTimeLabel(row.openTime)}}</small></div>
-              <div class="position-amount"><div class="position-price-line"><b :class="row.side==='long'?'long-text':'short-text'">{{row.side==='long'?'做多':'做空'}} {{formatUsd(row.usd)}}</b><span>均价 {{price(row.entryPx)}}</span></div><small class="detail-toggle-label">{{expanded===row.address+row.side?'收起详情':'仓位详情'}}<svg viewBox="0 0 20 20" :class="{rotated:expanded===row.address+row.side}" aria-hidden="true"><path d="m5 7 5 5 5-5"/></svg></small></div>
+              <div class="position-identity"><b>{{row.name}}</b><small>仓位价值 {{formatUsd(row.usd)}}</small></div>
+              <div class="position-amount"><div class="position-price-line"><b :class="row.side==='long'?'long-text':'short-text'">{{row.side==='long'?'做多':'做空'}}</b><b :class="row.unrealizedPnl==null?'':row.unrealizedPnl>=0?'long-text':'short-text'">{{row.unrealizedPnl!=null&&row.unrealizedPnl>0?'+':''}}{{amount(row.unrealizedPnl)}}</b><span>均价 {{price(row.entryPx)}}</span></div><small class="detail-toggle-label">{{expanded===row.address+row.side?'收起详情':'仓位详情'}}<svg viewBox="0 0 20 20" :class="{rotated:expanded===row.address+row.side}" aria-hidden="true"><path d="m5 7 5 5 5-5"/></svg></small></div>
             </button>
             <div v-if="expanded===row.address+row.side" class="position-detail">
               <span v-if="timingState[job.id+row.address+row.side]==='loading'">开仓时间查询中…</span>
               <div class="detail-address">{{row.address}}</div>
-              <dl><div><dt>合约</dt><dd>{{whaleAssetLabel(job.coin)}}</dd></div><div><dt>持仓数量</dt><dd>{{row.size.toLocaleString('en-US',{maximumFractionDigits:10})}}</dd></div><div><dt>开仓均价</dt><dd>{{price(row.entryPx)}}</dd></div><div><dt>名义仓位价值</dt><dd>{{formatUsd(row.usd)}}</dd></div><div><dt>浮动盈亏</dt><dd :class="row.unrealizedPnl==null?'':row.unrealizedPnl>=0?'long-text':'short-text'">{{amount(row.unrealizedPnl)}}</dd></div><div><dt>保证金收益率</dt><dd>{{row.returnOnEquity==null?'—':(row.returnOnEquity*100).toFixed(2)+'%'}}</dd></div><div><dt>杠杆 / 模式</dt><dd>{{row.leverage==null?'—':row.leverage+'×'}} · {{row.leverageType==='cross'?'全仓':row.leverageType==='isolated'?'逐仓':'未知'}}</dd></div><div><dt>占用保证金</dt><dd>{{amount(row.marginUsed)}}</dd></div><div><dt>强平价格</dt><dd>{{price(row.liquidationPx)}}</dd></div><div><dt>采样时间</dt><dd>{{time(row.observedAt)}}</dd></div></dl>
+              <dl><div><dt>开仓时间</dt><dd>{{openTimeLabel(row.openTime)}}</dd></div><div><dt>账户近30天盈亏</dt><dd>{{amount(row.monthPnl)}}</dd></div><div><dt>合约</dt><dd>{{whaleAssetLabel(job.coin)}}</dd></div><div><dt>持仓数量</dt><dd>{{row.size.toLocaleString('en-US',{maximumFractionDigits:10})}}</dd></div><div><dt>开仓均价</dt><dd>{{price(row.entryPx)}}</dd></div><div><dt>名义仓位价值</dt><dd>{{formatUsd(row.usd)}}</dd></div><div><dt>浮动盈亏</dt><dd :class="row.unrealizedPnl==null?'':row.unrealizedPnl>=0?'long-text':'short-text'">{{amount(row.unrealizedPnl)}}</dd></div><div><dt>保证金收益率</dt><dd>{{row.returnOnEquity==null?'—':(row.returnOnEquity*100).toFixed(2)+'%'}}</dd></div><div><dt>杠杆 / 模式</dt><dd>{{row.leverage==null?'—':row.leverage+'×'}} · {{row.leverageType==='cross'?'全仓':row.leverageType==='isolated'?'逐仓':'未知'}}</dd></div><div><dt>占用保证金</dt><dd>{{amount(row.marginUsed)}}</dd></div><div><dt>强平价格</dt><dd>{{price(row.liquidationPx)}}</dd></div><div><dt>采样时间</dt><dd>{{time(row.observedAt)}}</dd></div></dl>
             </div>
           </article>
           <button v-if="sortedPositions.length>visibleCount" type="button" class="validation-trigger" @click="visibleCount+=50">显示更多（已显示 {{visibleCount}} / {{sortedPositions.length}}）</button>

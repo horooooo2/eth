@@ -25,16 +25,19 @@ function matchingPosition(state, coin) {
 function selectDeepCandidates(rows) {
   if (!Array.isArray(rows)) throw new Error('排行榜响应格式异常');
   const unique = new Map();
+  const monthPnlByAddress = Object.create(null);
   for (const row of rows) {
     if (!row || typeof row !== 'object') continue;
     const address = String(row.ethAddress || '').toLowerCase();
     const value = Number(row.accountValue);
+    const rawPnl = Array.isArray(row.windowPerformances) ? row.windowPerformances.find(p => Array.isArray(p) && p[0] === 'month')?.[1]?.pnl : null;
+    if (/^0x[0-9a-f]{40}$/.test(address) && rawPnl != null && rawPnl !== '' && Number.isFinite(Number(rawPnl))) monthPnlByAddress[address] = Number(rawPnl);
     const volume = Number(Array.isArray(row.windowPerformances) ? row.windowPerformances.find(p => Array.isArray(p) && p[0] === 'week')?.[1]?.vlm : NaN);
     if (!/^0x[0-9a-f]{40}$/.test(address) || !Number.isFinite(value) || value < 1000000 || !Number.isFinite(volume) || volume <= 0) continue;
     if (!unique.has(address) || unique.get(address).accountValue < value) unique.set(address, { address, name: row.displayName || address, accountValue: value });
   }
   const ranked = [...unique.values()].sort((a,b) => b.accountValue-a.accountValue || a.address.localeCompare(b.address));
-  return { eligible: ranked.length, pool: ranked.slice(0,1000) };
+  return { eligible: ranked.length, pool: ranked.slice(0,1000), monthPnlByAddress };
 }
 let leaderboardCache;
 async function loadLeaderboard(signal) {
@@ -140,13 +143,17 @@ function createValidator({ request = hlPost, candidates = () => mergeWhalesByAdd
     });
     const scheduling={priority:job.mode==='deep'?'interactive':'history',signal};
     try{
-      let pool;
+      let pool, ranking;
       if(job.mode==='deep'){
         const result=await leaderboard(signal);if(signal.aborted)return;
+        ranking=result;
         pool=result.pool;job.eligible=result.eligible;job.leaderboardAt=result.at;
       }else{
         const seen=new Set();pool=candidates().filter(w=>{const address=String(w.address||'').toLowerCase();if(w.enabled===false||!/^0x[0-9a-f]{40}$/.test(address)||seen.has(address))return false;seen.add(address);return true;}).slice(0,200);job.eligible=pool.length;
+        try { ranking=await leaderboard(signal);job.leaderboardAt=ranking.at; }
+        catch { job.rankingUnavailable=true; }
       }
+      if(signal.aborted)return;
       job.total=pool.length;job.phase='scanning';
       if(!pool.length)throw new Error('没有符合条件的候选账户');
       const meta=await request({type:'meta',...(dex?{dex}:{})},0,scheduling);if(signal.aborted)return;
@@ -163,7 +170,7 @@ function createValidator({ request = hlPost, candidates = () => mergeWhalesByAdd
           }
           if(signal.aborted)return;
           const rows=matchingPosition(state,job.coin);job.success++;
-          for(const row of rows){job.positions.push({address:whale.address,name:whale.name||whale.address,...row,observedAt:now()});job[row.side+'Usd']+=row.usd;}
+          for(const row of rows){job.positions.push({address:whale.address,name:whale.name||whale.address,monthPnl:ranking?.monthPnlByAddress?.[whale.address.toLowerCase()]??null,...row,observedAt:now()});job[row.side+'Usd']+=row.usd;}
           if(rows.some(p=>p.side==='long'))job.longCount++;if(rows.some(p=>p.side==='short'))job.shortCount++;
         }catch(err){if(signal.aborted)return;job.failed++;job.failures.push({address:whale.address,error:err.message||'读取失败'});}
       }
