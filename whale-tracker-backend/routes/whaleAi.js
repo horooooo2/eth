@@ -1,4 +1,5 @@
 const express = require('express');
+const {searchNewsWeb}=require('../lib/newsWebSearch');
 const { requireUser } = require('../lib/authStore');
 const {
   DEFAULT_PROVIDER,
@@ -8,6 +9,7 @@ const {
   getRawAiKey,
 } = require('../lib/userAiKeys');
 const {
+  deepseekHttpFetch,
   verifyDeepseekKey,
   analyzeWithDeepseek,
   streamAnalyzeWithDeepseek,
@@ -842,11 +844,27 @@ router.post('/market-chat-stream', async (req, res) => {
   sseWrite(res, 'status', { stage: 'chat', message: 'DeepSeek 正在回复…' });
 
   try {
+    let externalContext;
+    if(body.webSearch===true){
+      sseWrite(res,'status',{stage:'search',message:'正在检索站外资料…'});
+      try{
+        const previous=Array.isArray(body.messages)?body.messages.filter(m=>m?.role==='user').slice(-1).map(m=>String(m.content||'')).join(''):'';
+        const research=await searchNewsWeb({apiKey:cred.apiKey,userId:req.user.user.id,coin,message,previous,signal:abort.signal,fetchImpl:deepseekHttpFetch});
+        externalContext=JSON.stringify(research);
+        sseWrite(res,'status',{stage:'search_done',message:`已检索 ${research.sources.length} 个站外来源`,sources:research.sources});
+      }catch{
+        if(abort.signal.aborted)return;
+        externalContext='站外检索本次失败，未取得可核实资料。必须明确告知用户检索不可用，不能假装已联网核实。';
+        sseWrite(res,'status',{stage:'search_failed',message:'站外检索暂不可用，将基于现有资料回答'});
+      }
+    }
+    if(abort.signal.aborted)return;
     const result = await streamChatMarketBrief(
       cred.apiKey,
       {
         coin,
         contextText: body.contextText,
+        externalContext,
         analysis: body.analysis,
         messages: body.messages,
         message,

@@ -818,7 +818,7 @@ export async function streamMarketBrief(
 export type MarketChatMessage = { role: 'user' | 'assistant'; content: string };
 
 export type MarketChatStreamHandlers = {
-  onStatus?: (payload: { stage?: string; message?: string }) => void;
+  onStatus?: (payload: { stage?: string; message?: string; sources?: {title:string;url:string}[] }) => void;
   onDelta?: (text: string) => void;
   onDone?: (payload: { ok?: boolean; coin?: string; reply?: string; model?: string }) => void;
   onError?: (message: string) => void;
@@ -828,6 +828,7 @@ export type MarketChatStreamHandlers = {
 /** POST SSE 流式诊币追问 */
 export async function streamChatMarketBrief(
   body: {
+    webSearch?: boolean;
     coin: string;
     message: string;
     analysis?: string;
