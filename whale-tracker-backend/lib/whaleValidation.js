@@ -13,6 +13,7 @@ function matchingPosition(state, coin) {
     if (p.szi == null || p.positionValue == null || !Number.isFinite(size) || !Number.isFinite(usd) || usd < 0) throw new Error('仓位数值异常');
     const numberOrNull = value => value == null || value === '' || !Number.isFinite(Number(value)) ? null : Number(value);
     if (size) rows.push({ side: size > 0 ? 'long' : 'short', size: Math.abs(size), usd,
+      currentPx: numberOrNull(usd / Math.abs(size)),
       entryPx: numberOrNull(p.entryPx), unrealizedPnl: numberOrNull(p.unrealizedPnl),
       liquidationPx: numberOrNull(p.liquidationPx), marginUsed: numberOrNull(p.marginUsed),
       leverage: numberOrNull(p.leverage?.value), leverageType: p.leverage?.type === 'cross' ? 'cross' : p.leverage?.type === 'isolated' ? 'isolated' : null,
@@ -60,8 +61,9 @@ async function loadLeaderboard(signal) {
 }
 function createValidator({ request = hlPost, candidates = () => mergeWhalesByAddress(readConfig().whales, loadPresetWhales('hf')),
   leaderboard = loadLeaderboard, now = Date.now, pause = ms => new Promise(resolve => setTimeout(resolve, ms)),
-  timeoutMs = 3600000, cooldownMs = 60000 } = {}) {
+  timeoutMs = 3600000, cooldownMs = 60000, store = null } = {}) {
   const jobs = new Map(), controllers = new Map();
+  const ready = store ? store.load().then(saved=>{for(const job of saved)jobs.set(job.id,job);}).catch(err=>console.error('[validation-store] load failed:',err.message)) : Promise.resolve();
   let active, lastStarted = -Infinity, queueTimer;
   const queue=[];
   function scheduleQueue(){
@@ -174,11 +176,18 @@ function createValidator({ request = hlPost, candidates = () => mergeWhalesByAdd
           if(rows.some(p=>p.side==='long'))job.longCount++;if(rows.some(p=>p.side==='short'))job.shortCount++;
         }catch(err){if(signal.aborted)return;job.failed++;job.failures.push({address:whale.address,error:err.message||'读取失败'});}
       }
-      job.status=job.failed?'partial':'complete';
+      const status=job.failed?'partial':'complete';
+      const finishedAt=now();
+      job.finishedAt=finishedAt;job.status=status;
+      if(store){
+        try { await store.save({...job,status,finishedAt}); }
+        catch(err){job.persistenceError='验证记录保存失败，重启后可能丢失';console.error('[validation-store] save failed:',err.message);}
+      }
     }catch(err){if(!signal.aborted){job.status='error';job.error=err.message||'验证失败';}}
     finally{clearTimeout(deadline);job.finishedAt??=now();controllers.delete(job.id);if(['complete','partial'].includes(job.status))for(const [id,old] of jobs)if(id!==job.id&&old.coin.toUpperCase()===job.coin.toUpperCase()&&['complete','partial'].includes(old.status))jobs.delete(id);
       if(active===job)active=null;prune();scheduleQueue();}
   }
-  return { start,get,stop,latest,history,view,isDeepRunning };
+  return { start,get,stop,latest,history,view,isDeepRunning,ready };
 }
-module.exports={createValidator,matchingPosition,selectDeepCandidates,loadLeaderboard,validator:createValidator()};
+const store=require('worker_threads').isMainThread ? require('./validationStore').createValidationStore(require('path').join(process.env.CACHE_DIR || require('path').join(__dirname,'..','cache'),'validation-history')) : null;
+module.exports={createValidator,matchingPosition,selectDeepCandidates,loadLeaderboard,validator:createValidator({store})};

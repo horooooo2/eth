@@ -2,7 +2,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 function fixture(get,post,options={}){
  const exports={};const messages=[];const timers=new Map();let timerId=0,mount;
  const ref=value=>({value});const computed=fn=>({get value(){return fn();}});
- const source=fs.readFileSync(__dirname+'/../components/WhaleValidation.vue','utf8').split('<script setup lang="ts">')[1].split('</script>')[0]+ '\nObject.assign(exports,{poll,accept,job,visible,minimized,chooser,choose,togglePosition,timingState,start,queueRequest,showHistory,openRecord,history});';
+ const source=fs.readFileSync(__dirname+'/../components/WhaleValidation.vue','utf8').split('<script setup lang="ts">')[1].split('</script>')[0]+ '\nObject.assign(exports,{poll,accept,job,visible,minimized,chooser,choose,togglePosition,timingState,start,queueRequest,showHistory,openRecord,history,currentPrice,priceDifference});';
  vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,{exports,defineProps:()=>({mobile:!!options.mobile}),require:name=>name==='vue'?{ref,computed,watch(){},onMounted(fn){mount=fn;},onUnmounted(){}}:name==='element-plus'?{ElMessage:{info:text=>messages.push(text),error:text=>messages.push(text)}}:name==='@/api'?{http:{get,post}}:name==='@/stores/validationUi'?{validationCoin:ref(options.coin||'BTC'),validationStatus:ref(''),validationOpener:{open:null}}:{},setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id)});
  exports.visible.value=true;exports.job.value={id:'a',status:'running',canStop:true,positions:[]};return {...exports,timers,mount,messages};
 }
@@ -91,4 +91,16 @@ test('opening history reconciles completed minimized task without refresh or sta
   f.visible.value=false;f.minimized.value=true;await f.showHistory();
   assert.equal(f.job.value.status,'complete');assert.equal(f.chooser.value,true);assert.equal(f.visible.value,false);assert.equal(f.history.value[0].id,'a');assert.equal(f.messages.length,0);assert.equal(calls.length,2);
  }
+});
+
+
+test('price difference is current minus entry independent of position direction',()=>{
+ const f=fixture();
+ for(const side of ['long','short']){
+  assert.equal(f.currentPrice({side,size:2,usd:200}),100);
+  assert.equal(f.priceDifference({side,size:2,usd:200,entryPx:120}),-20);
+  assert.equal(f.priceDifference({side,size:2,usd:200,entryPx:80}),20);
+ }
+ assert.equal(f.priceDifference({size:2,usd:200,entryPx:null}),null);
+ assert.equal(f.currentPrice({size:0,usd:0}),null);
 });

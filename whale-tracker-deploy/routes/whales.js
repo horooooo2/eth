@@ -25,6 +25,7 @@ const router = express.Router();
 const whaleSync = require('../lib/whaleSync');
 const { validator } = require('../lib/whaleValidation');
 const { requireAuthenticated, requireAdmin } = require('../lib/maintenanceAuth');
+router.use('/validation', async (req,res,next)=>{try{await validator.ready;next();}catch(err){next(err);}});
 
 router.use((req, res, next) => {
   if (req.method === 'POST' && req.path === '/alert-history') return next(); // retired below
