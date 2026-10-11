@@ -77,9 +77,9 @@ test('unknown market or malformed responses never become successful zero holding
 });
 test('successful snapshots reuse cache and correctly report a zero-position account', async()=>{
   let count=0;
-  const v=createValidator({leaderboard:async()=>({monthPnlByAddress:{}}),candidates:()=>[wallet(1)],pause:async()=>{},request:async body=>{count++;return body.type==='meta'?{universe:[{name:'BTC'}]}:{assetPositions:[]};}});
+  const v=createValidator({cooldownMs:0,leaderboard:async()=>({monthPnlByAddress:{}}),candidates:()=>[wallet(1)],pause:async()=>{},request:async body=>{count++;return body.type==='meta'?{universe:[{name:'BTC'}]}:{assetPositions:[]};}});
   const job=v.start('BTC');await flush(job);assert.equal(job.status,'complete');assert.equal(job.success,1);assert.equal(job.positions.length,0);
-  assert.equal(v.start('BTC'),job);assert.equal(count,2);
+  const cached=v.start('BTC','normal','test',undefined,false,null,true);await flush(cached);assert.notEqual(cached.id,job.id);assert.equal(cached.cacheHits,1);assert.equal(cached.success,1);assert.equal(count,3);
 });
 
 test('deep selection validates, deduplicates and caps by account value',()=>{
@@ -107,7 +107,7 @@ test('deep results paginate and normal/deep caches cannot substitute each other'
  const v=createValidator({now:()=>clock,pause:async()=>{},candidates:()=>[wallet(1)],leaderboard:async()=>{boards++;return {eligible:150,pool:Array.from({length:150},(_,i)=>wallet(i+1)),at:clock};},request:async body=>body.type==='meta'?{universe:[{name:'BTC'}]}:{assetPositions:[{position:{coin:'BTC',szi:'1',positionValue:'2'}}]}});
  const normal=v.start('BTC','normal','a');await flush(normal);clock+=61000;
  const deep=v.start('BTC','deep','a');await flush(deep);assert.equal(deep.success,150);assert.equal(boards,2);assert.notEqual(deep.id,normal.id);
- const first=v.view(deep,'b',0),second=v.view(deep,'b',100);assert.equal(first.positions.length,100);assert.equal(second.positions.length,50);assert.equal(first.canStop,false);assert.equal(first.owner,undefined);assert.equal(v.start('BTC','deep','b'),deep);
+ const first=v.view(deep,'b',0),second=v.view(deep,'b',100);assert.equal(first.positions.length,100);assert.equal(second.positions.length,50);assert.equal(first.canStop,false);assert.equal(first.owner,undefined);assert.throws(()=>v.start('BTC','deep','b'),e=>e.status===429);
 });
 test('stopping during backoff releases the global slot without waiting for the sleep',async()=>{
  let clock=100000,entered=false;

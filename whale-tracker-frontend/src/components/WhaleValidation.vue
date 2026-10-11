@@ -2,7 +2,7 @@
 import AdaptivePage from './mobile/AdaptivePage.vue';
 import MobileSheet from './mobile/MobileSheet.vue';
 import {ElMessage} from 'element-plus';
-import {validationCoin,validationStatus,validationOpener,validationRunning} from '@/stores/validationUi';
+import {validationCoin,validationStatus,validationOpener,validationRunning,validationState} from '@/stores/validationUi';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { sortValidationPositions } from '@/utils/validationSort';
 import { http } from '@/api';
@@ -12,12 +12,13 @@ const layoutProps=defineProps<{mobile?:boolean}>();
 const mobilePane=ref<'summary'|'positions'>('summary');
 const props = {get coin(){return validationCoin.value;}};
 type Position = {address:string;currentPx?:number|null;monthPnl?:number|null;openTime?:number|null;name:string;side:string;size:number;usd:number;observedAt:number;entryPx:number|null;unrealizedPnl:number|null;liquidationPx:number|null;marginUsed:number|null;leverage:number|null;leverageType:string|null;returnOnEquity:number|null};
-type Job = { queuePosition?:number; id:string; mode:'normal'|'deep'; canStop:boolean; eligible:number; phase:string; nextOffset:number; offset:number; positionTotal:number; coin:string; status:string; total:number; success:number; failed:number; longUsd:number; shortUsd:number; longCount:number; shortCount:number; startedAt:number; finishedAt:number|null; error?:string; persistenceError?:string; positions:Position[] };
+type Job = { useCache?:boolean;cacheHits?:number;freshReads?:number;oldestObservedAt?:number|null;newestObservedAt?:number|null;longEntryPx?:number|null;shortEntryPx?:number|null;queuePosition?:number; id:string; mode:'normal'|'deep'; canStop:boolean; eligible:number; phase:string; nextOffset:number; offset:number; positionTotal:number; coin:string; status:string; total:number; success:number; failed:number; longUsd:number; shortUsd:number; longCount:number; shortCount:number; startedAt:number; finishedAt:number|null; error?:string; persistenceError?:string; positions:Position[] };
 const visible=ref(false), busy=ref(false), error=ref(''), job=ref<Job|null>(null);
 let timer:ReturnType<typeof setTimeout>|undefined, generation=0;
 let pollingGeneration:number|null=null;
 const minimized=ref(false), stopping=ref(false);
-const queueRequest=ref<{mode:'normal'|'deep';coin:string}|null>(null);
+const useCache=ref(false);
+const queueRequest=ref<{mode:'normal'|'deep';coin:string;useCache:boolean}|null>(null);
 const statusLabel=computed(()=>job.value?.status==='queued'?`排队中 · 第 ${job.value.queuePosition||1} 位`:job.value?.status==='running'?(job.value.phase==='leaderboard'?'正在筛选排行榜':'验证进行中'):job.value?.status==='complete'?'验证完成':job.value?.status==='stopped'?'已停止':'验证未完整完成');
 function minimize(){minimized.value=true;visible.value=false;}
 function restore(){chooser.value=false;minimized.value=false;visible.value=true;}
@@ -59,7 +60,7 @@ async function openRecord(id:string){
   const seq=++generation;job.value=null;positionSide.value='all';expanded.value='';
   await poll(id,seq);
 }
-watch(()=>job.value?.status,status=>{validationRunning.value=status==='running';});
+watch(()=>job.value?.status,status=>{validationRunning.value=status==='running';validationState.value=status||'idle';});
 watch(()=>[statusLabel.value,job.value?.coin],([label])=>{validationStatus.value=job.value?`${whaleAssetLabel(job.value.coin)} · ${label}`:'查看24小时记录';});
 const sortKey=ref<'default'|'usd'|'entryPx'|'unrealizedPnl'>('default'), ascending=ref(false);
 const sortOptions=[{key:'default',label:'默认'},{key:'usd',label:'仓位价值'},{key:'entryPx',label:'开仓均价'},{key:'unrealizedPnl',label:'仓位盈亏'}] as const;
@@ -126,26 +127,29 @@ async function poll(id:string, seq:number){
   catch(e){if(seq===generation){error.value=message(e);const err=e as {status?:number;response?:{status?:number}};const status=err.status||err.response?.status;if([401,403,404].includes(status||0)){if(job.value?.id===id)job.value={...job.value,status:'error',canStop:false};}else if(visible.value||minimized.value)timer=setTimeout(()=>void poll(id,seq),10000);}}
   finally{if(pollingGeneration===seq)pollingGeneration=null;}
 }
-async function start(mode:'normal'|'deep', coin=props.coin, restartId?:string, enqueue=false){
+async function start(mode:'normal'|'deep', coin=props.coin, restartId?:string, enqueue=false, cached=useCache.value){
   chooser.value=false;
   if(busy.value||coin==='all')return;
   if(['running','queued'].includes(job.value?.status||'')){restore();return;}
   minimized.value=false;visible.value=true;busy.value=true;error.value='';queueRequest.value=null;clearTimeout(timer);const seq=++generation;if(!restartId)job.value=null;expanded.value='';timingState.value={};visibleCount.value=50;positionSide.value='all';
-  try {const {data}=await http.post<Job>('/whales/validation',{coin,mode,restartId,enqueue});if(seq!==generation)return;accept(data);if(['running','queued'].includes(data.status)||data.nextOffset<data.positionTotal)timer=setTimeout(()=>void poll(data.id,seq),data.nextOffset<data.positionTotal?100:5000);}
-  catch(e){if(seq===generation){error.value=message(e);const err=e as {details?:{queueable?:boolean};response?:{data?:{queueable?:boolean}}};if(err.details?.queueable||err.response?.data?.queueable)queueRequest.value={coin,mode};}}finally{busy.value=false;}
+  try {const {data}=await http.post<Job>('/whales/validation',{coin,mode,restartId,enqueue,useCache:cached});if(seq!==generation)return;accept(data);if(['running','queued'].includes(data.status)||data.nextOffset<data.positionTotal)timer=setTimeout(()=>void poll(data.id,seq),data.nextOffset<data.positionTotal?100:5000);}
+  catch(e){if(seq===generation){error.value=message(e);const err=e as {details?:{queueable?:boolean};response?:{data?:{queueable?:boolean}}};if(err.details?.queueable||err.response?.data?.queueable)queueRequest.value={coin,mode,useCache:cached};}}finally{busy.value=false;}
 }
 watch(visible,value=>{if(!value){if(['running','queued'].includes(job.value?.status||'')||busy.value)minimized.value=true;if(!minimized.value){clearTimeout(timer);generation++;}}});
 onMounted(async()=>{
   validationOpener.open=choose;
   const seq=generation;
   try{const {data}=await http.get<Job|null>('/whales/validation/current');if(seq!==generation||!data)return;
+    validationState.value=data.status;
     if(['running','queued'].includes(data.status)){accept(data);minimized.value=true;void poll(data.id,seq);}
   }catch{/* A new session or restarted server has no recoverable task. */}
 });
-onUnmounted(()=>{validationRunning.value=false;validationOpener.open=null;validationStatus.value='查看24小时记录';disposed=true;clearTimeout(timer);generation++;});
+onUnmounted(()=>{validationRunning.value=false;validationState.value='idle';validationOpener.open=null;validationStatus.value='查看24小时记录';disposed=true;clearTimeout(timer);generation++;});
 </script>
 <template>
   <component :is="layoutProps.mobile && props.coin!=='all' ? MobileSheet : AdaptivePage" :mobile="layoutProps.mobile" v-model="chooser" title="数据验证与历史记录" width="min(460px,94vw)" append-to-body>
+    <div v-if="props.coin!=='all'" class="cache-choice"><button type="button" role="switch" :aria-checked="useCache" :class="{active:useCache}" @click="useCache=!useCache">使用缓存 <i aria-hidden="true" /></button></div>
+    <p v-if="props.coin!=='all'" class="cache-hint">{{useCache?'读取一小时内同市场仓位快照，缺失或过期的账户重新拉取。':'重新拉取仓位并更新缓存。'}} 不同市场缓存独立。</p>
     <p v-if="error" class="validation-error">{{error}}</p><p>验证结果保留24小时，同标的新结果会替换旧结果。</p>
     <div v-if="props.coin!=='all'" class="mode-options"><button @click="start('normal')"><b>普通验证</b><span>现有候选地址，最多 200 个</span></button><button @click="start('deep')"><b>深度验证</b><span>榜单账户价值 ≥100 万美元且周成交额 >0，最多 1,000 个；可能耗时数十分钟</span></button></div>
     <div class="validation-history"><button v-for="record in history" :key="record.id" type="button" @click="openRecord(record.id)"><b>{{whaleAssetLabel(record.coin)}}</b><span>{{record.mode==='deep'?'深度':'普通'}} · {{record.positionTotal}} 个仓位 · {{new Date(record.finishedAt).toLocaleString('zh-CN')}}</span></button><p v-if="historyLoading&&!history.length">正在读取验证记录…</p><p v-else-if="!history.length">暂无24小时内的验证记录</p></div>
@@ -156,19 +160,19 @@ onUnmounted(()=>{validationRunning.value=false;validationOpener.open=null;valida
       <nav v-if="layoutProps.mobile" class="validation-mobile-tabs"><button :class="{active:mobilePane==='summary'}" @click="mobilePane='summary'">验证概况</button><button :class="{active:mobilePane==='positions'}" @click="mobilePane='positions'">仓位 {{job?.positions.length||0}}</button></nav>
       <div v-show="!layoutProps.mobile||mobilePane==='summary'" class="validation-status-pane">
       <div class="disclaimer-top">{{job?.mode==='deep'?'深度验证：动态筛选榜单账户价值 ≥100 万美元、周成交额 >0 的账户，按价值降序最多取 1,000 个。':'普通验证：扫描现有候选池内最多 200 个账户。'}} 仅统计所选合约市场，不代表全平台所有巨鲸；各账户采样时间不同。</div>
-      <p v-if="error" class="validation-error">{{error}} <button v-if="queueRequest" :disabled="busy" @click="start(queueRequest.mode,queueRequest.coin,undefined,true)">排队</button><button v-else-if="job" @click="poll(job.id,generation)">重新读取</button></p>
+      <p v-if="error" class="validation-error">{{error}} <button v-if="queueRequest" :disabled="busy" @click="start(queueRequest.mode,queueRequest.coin,undefined,true,queueRequest.useCache)">排队</button><button v-else-if="job" @click="poll(job.id,generation)">重新读取</button></p>
       <p v-if="busy">正在创建验证任务…</p>
       <template v-if="job">
         <p v-if="job.mode==='deep'">符合条件 {{job.eligible}} 个 · 本次扫描 {{job.total}} 个</p>
         <div class="contract-info"><b>{{whaleAssetLabel(job.coin)}}</b><span>{{market}}</span></div>
         <section class="progress-section" aria-label="验证进度">
-          <div class="progress-header"><span class="progress-status"><i :class="{running:job.status==='running'}"></i>{{statusLabel}}</span><span class="progress-total">{{job.success+job.failed}} / {{job.total}}</span></div>
+          <div class="progress-header"><span class="progress-status" :class="job.status"><i :class="{running:job.status==='running'}"></i>{{statusLabel}}</span><span class="progress-total">{{job.success+job.failed}} / {{job.total}}</span></div>
           <div class="progress-stats"><span class="long-text">成功 {{job.success}}</span><span class="short-text">失败 {{job.failed}}</span><span>未扫描 {{job.total-job.success-job.failed}}</span></div>
-          <div class="progress-bar" role="progressbar" :aria-valuenow="progress" :aria-valuemin="0" :aria-valuemax="100"><div :style="{width:progress+'%'}"></div></div>
-          <p class="sample-time">采样区间：{{time(job.startedAt)}} — {{job.finishedAt?time(job.finishedAt):'进行中'}}<small>结果保留24小时 · 10分钟内复用</small></p>
+          <div class="progress-bar" :class="job.status" role="progressbar" :aria-valuenow="progress" :aria-valuemin="0" :aria-valuemax="100"><div :style="{width:progress+'%'}"></div></div>
+          <p class="sample-time">采样区间：{{time(job.startedAt)}} — {{job.finishedAt?time(job.finishedAt):'进行中'}}<small>缓存命中 {{job.cacheHits||0}} 个 · 新拉取 {{job.freshReads??job.success}} 个 · 快照保留1小时</small><small v-if="job.oldestObservedAt">仓位数据时间：{{openTimeLabel(job.oldestObservedAt)}} — {{openTimeLabel(job.newestObservedAt)}}</small></p>
         </section>
         <p v-if="job.error" class="validation-error">{{job.error}}</p><p v-if="job.persistenceError" class="validation-error">{{job.persistenceError}}</p>
-        <div class="position-section"><button type="button" class="position-card long" :class="{selected:positionSide==='long'}" :aria-pressed="positionSide==='long'" @click="toggleSide('long')"><span>多仓价值</span><strong>{{formatUsd(job.longUsd)}}</strong><small>{{job.longCount}} 个账户</small></button><button type="button" class="position-card short" :class="{selected:positionSide==='short'}" :aria-pressed="positionSide==='short'" @click="toggleSide('short')"><span>空仓价值</span><strong>{{formatUsd(job.shortUsd)}}</strong><small>{{job.shortCount}} 个账户</small></button></div>
+        <div class="position-section"><button type="button" class="position-card long" :class="{selected:positionSide==='long'}" :aria-pressed="positionSide==='long'" @click="toggleSide('long')"><span>多仓价值</span><div class="summary-price"><strong>{{formatUsd(job.longUsd)}}</strong><span title="按已取得开仓价格的持仓数量加权">均价 {{price(job.longEntryPx)}}</span></div><small>{{job.longCount}} 个账户</small></button><button type="button" class="position-card short" :class="{selected:positionSide==='short'}" :aria-pressed="positionSide==='short'" @click="toggleSide('short')"><span>空仓价值</span><div class="summary-price"><strong>{{formatUsd(job.shortUsd)}}</strong><span title="按已取得开仓价格的持仓数量加权">均价 {{price(job.shortEntryPx)}}</span></div><small>{{job.shortCount}} 个账户</small></button></div>
         <div class="result-status" :class="{incomplete:job.status!=='complete'}">{{direction}}<small v-if="job.status!=='complete'">当前成功样本 {{job.success}} 个，结果不完整</small></div>
       </template>
       <p v-if="job" class="disclaimer-bottom">按持仓名义金额比较，不是对价格涨跌的预测；失败及未扫描账户不计为零仓位。</p>
@@ -198,7 +202,7 @@ onUnmounted(()=>{validationRunning.value=false;validationOpener.open=null;valida
           </div>
         </section>
     </div>
-    <template #footer><div class="validation-actions"><button v-if="job?.status==='stopped'" :disabled="busy||!job.canStop" @click="start(job.mode,job.coin,job.id)">{{busy?'启动中…':'启动'}}</button><button v-else class="validation-stop" :disabled="!['running','queued'].includes(job?.status||'')||!job?.canStop||stopping" @click="stop">{{stopping?'停止中…':job?.status==='queued'?'取消排队':'停止'}}</button><button @click="minimize">{{layoutProps.mobile?'返回':'最小化'}}</button></div></template>
+    <template #footer><div class="validation-actions"><button v-if="job?.status==='stopped'" :disabled="busy||!job.canStop" @click="start(job.mode,job.coin,job.id,false,job.useCache===true)">{{busy?'启动中…':'启动'}}</button><button v-else class="validation-stop" :disabled="!['running','queued'].includes(job?.status||'')||!job?.canStop||stopping" @click="stop">{{stopping?'停止中…':job?.status==='queued'?'取消排队':'停止'}}</button><button @click="minimize">{{layoutProps.mobile?'返回':'最小化'}}</button></div></template>
   </AdaptivePage>
 
 </template>
@@ -231,7 +235,9 @@ onUnmounted(()=>{validationRunning.value=false;validationOpener.open=null;valida
 .validation-rows{display:flex;flex-direction:column;gap:10px}.list-heading{display:flex;justify-content:flex-start;gap:8px}.list-heading b{color:#e2e8f0}.list-heading span{color:#748097;margin-left:6px}.validation-position{border:1px solid #2a2f3e;border-radius:8px;overflow:hidden;background:#1a202c}.position-toggle{display:flex;justify-content:space-between;gap:10px;width:100%;padding:14px;border:0;background:transparent;color:#e2e8f0;cursor:pointer;text-align:left;font:inherit}.position-toggle:hover{background:#242c3d}.position-toggle:focus-visible{outline:2px solid #60a5fa;outline-offset:-2px}.position-identity{min-width:0}.position-identity b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px}.position-toggle small{display:block;margin-top:5px;color:#8f9bb3;font-size:11px}.position-amount{text-align:right;flex-shrink:0}.position-detail{padding:0 14px 14px;border-top:1px solid #2a2f3e}.detail-address{font:11px Consolas,monospace;overflow-wrap:anywhere;padding-top:12px}.position-detail dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin:16px 0}.position-detail dt{font-size:11px;margin-bottom:5px}.position-detail dd{margin:0;color:#e2e8f0;overflow-wrap:anywhere}.position-detail p{font-size:11px;color:#748097}.validation-body::-webkit-scrollbar{width:6px}.validation-body::-webkit-scrollbar-thumb{background:#2a2f3e;border-radius:4px}@keyframes validation-pulse{50%{opacity:.4}}@media(prefers-reduced-motion:reduce){.progress-status i.running{animation:none}.progress-bar>div{transition:none}}@media(max-width:600px){.validation-body{padding:16px;gap:16px}.validation-title{font-size:16px}.validation-title span{display:none}.position-card{padding:12px}.position-card strong{font-size:18px}.position-identity b{max-width:140px}.position-toggle{padding:12px}.position-amount{font-size:12px}}
 .validation-body{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.12fr);height:min(660px,calc(90dvh - 150px));max-height:none;overflow:hidden;padding:0;gap:0}.validation-status-pane{display:flex;flex-direction:column;gap:18px;overflow-y:auto;padding:22px;min-height:0}.validation-rows{min-height:0;overflow-y:auto;padding:22px;border-left:1px solid #2a2f3e}.validation-position{flex-shrink:0}.position-empty{margin:auto!important;text-align:center;color:#748097}.list-heading{position:sticky;top:-22px;background:#131823;padding:12px 0;z-index:1}.validation-actions{display:flex;justify-content:flex-end;gap:10px}.validation-actions button,.validation-mini button{border:1px solid #334155;border-radius:7px;padding:8px 16px;color:#e2e8f0;background:#242c3d;cursor:pointer}.validation-actions button:disabled,.validation-mini button:disabled{opacity:.45;cursor:default}.validation-actions .validation-stop{color:#ff7878}.validation-mini{position:fixed;right:20px;top:20px;z-index:3000;width:min(300px,calc(100vw - 32px));padding:16px;border:1px solid #334155;border-radius:12px;background:#131823;color:#e2e8f0;box-shadow:0 12px 40px #0008;font-size:13px}.validation-mini>div:first-child{display:flex;align-items:center;justify-content:space-between;gap:8px}.validation-mini p{color:#8f9bb3;font-size:12px}.validation-mini button{padding:5px 10px}.validation-mini>.progress-bar{margin-bottom:12px}@media(max-width:700px){.validation-body{grid-template-columns:1fr;grid-template-rows:45% 55%;height:calc(90dvh - 140px)}.validation-status-pane,.validation-rows{padding:16px}.validation-rows{border-left:0;border-top:1px solid #2a2f3e}.list-heading{top:-16px}}
 .validation-rows{overflow:hidden;gap:12px}.validation-rows .list-heading{position:static;flex-shrink:0;padding:0 0 12px;border-bottom:1px solid #2a2f3e}.position-scroll{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:10px}.position-scroll>.position-empty{padding:24px 8px}
+.cache-choice{display:flex;justify-content:flex-end;margin-bottom:8px}.cache-choice button{display:flex;align-items:center;gap:8px;border:1px solid #334155;border-radius:7px;padding:8px 10px;background:#1a202c;color:#8f9bb3;font:inherit;font-size:12px;cursor:pointer;min-height:36px}.cache-choice button.active{color:#f5bd45;border-color:#a77b24}.cache-choice i{width:26px;height:14px;border-radius:12px;background:#384253;position:relative}.cache-choice i::after{content:'';position:absolute;left:2px;top:2px;width:10px;height:10px;background:#e2e8f0;border-radius:50%;transition:transform .15s}.cache-choice .active i{background:#a77b24}.cache-choice .active i::after{transform:translateX(12px)}.cache-hint{font-size:12px;color:#8f9bb3;line-height:1.6}.summary-price{display:flex;align-items:baseline;gap:5px;flex-wrap:wrap}.summary-price span{font-size:12px;color:#8f9bb3;overflow-wrap:anywhere}.progress-status.running,.progress-status.queued,.progress-status.partial{color:#f5bd45}.progress-status.complete{color:#34d399}.progress-status.error{color:#ff7878}.progress-bar.running>div,.progress-bar.queued>div{background:#f5bd45}.progress-bar.complete>div{background:#34d399}
 </style>
 <style>
 .el-dialog.whale-validation-dialog{padding:0;background:#131823;border:1px solid #2a2f3e;border-radius:12px;overflow:hidden;box-shadow:0 20px 50px #0008}.whale-validation-dialog .el-dialog__header{padding:20px 44px 20px 24px;margin:0;border-bottom:1px solid #2a2f3e}.whale-validation-dialog .el-dialog__headerbtn{top:10px}.whale-validation-dialog .el-dialog__body{padding:0}.whale-validation-dialog .el-dialog__footer{padding:14px 22px;border-top:1px solid #2a2f3e}
+.cache-choice{display:flex;justify-content:flex-end;margin-bottom:8px}.cache-choice button{display:flex;align-items:center;gap:8px;border:1px solid #334155;border-radius:7px;padding:8px 10px;background:#1a202c;color:#8f9bb3;font:inherit;font-size:12px;cursor:pointer;min-height:36px}.cache-choice button.active{color:#f5bd45;border-color:#a77b24}.cache-choice i{width:26px;height:14px;border-radius:12px;background:#384253;position:relative}.cache-choice i::after{content:'';position:absolute;left:2px;top:2px;width:10px;height:10px;background:#e2e8f0;border-radius:50%;transition:transform .15s}.cache-choice .active i{background:#a77b24}.cache-choice .active i::after{transform:translateX(12px)}.cache-hint{font-size:12px;color:#8f9bb3;line-height:1.6}.summary-price{display:flex;align-items:baseline;gap:5px;flex-wrap:wrap}.summary-price span{font-size:12px;color:#8f9bb3;overflow-wrap:anywhere}.progress-status.running,.progress-status.queued,.progress-status.partial{color:#f5bd45}.progress-status.complete{color:#34d399}.progress-status.error{color:#ff7878}.progress-bar.running>div,.progress-bar.queued>div{background:#f5bd45}.progress-bar.complete>div{background:#34d399}
 </style>

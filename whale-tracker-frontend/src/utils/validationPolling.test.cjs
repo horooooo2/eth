@@ -2,8 +2,8 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 function fixture(get,post,options={}){
  const exports={};const messages=[];const timers=new Map();let timerId=0,mount;
  const ref=value=>({value});const computed=fn=>({get value(){return fn();}});
- const source=fs.readFileSync(__dirname+'/../components/WhaleValidation.vue','utf8').split('<script setup lang="ts">')[1].split('</script>')[0]+ '\nObject.assign(exports,{poll,accept,job,visible,minimized,chooser,choose,togglePosition,timingState,start,queueRequest,showHistory,openRecord,history,currentPrice,priceDifference});';
- vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,{exports,defineProps:()=>({mobile:!!options.mobile}),require:name=>name==='vue'?{ref,computed,watch(){},onMounted(fn){mount=fn;},onUnmounted(){}}:name==='element-plus'?{ElMessage:{info:text=>messages.push(text),error:text=>messages.push(text)}}:name==='@/api'?{http:{get,post}}:name==='@/stores/validationUi'?{validationCoin:ref(options.coin||'BTC'),validationStatus:ref(''),validationOpener:{open:null}}:{},setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id)});
+ const source=fs.readFileSync(__dirname+'/../components/WhaleValidation.vue','utf8').split('<script setup lang="ts">')[1].split('</script>')[0]+ '\nObject.assign(exports,{poll,accept,job,visible,minimized,chooser,choose,togglePosition,timingState,start,queueRequest,showHistory,openRecord,history,currentPrice,priceDifference,useCache});';
+ vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,{exports,defineProps:()=>({mobile:!!options.mobile}),require:name=>name==='vue'?{ref,computed,watch(){},onMounted(fn){mount=fn;},onUnmounted(){}}:name==='element-plus'?{ElMessage:{info:text=>messages.push(text),error:text=>messages.push(text)}}:name==='@/api'?{http:{get,post}}:name==='@/stores/validationUi'?{validationCoin:ref(options.coin||'BTC'),validationStatus:ref(''),validationState:ref('idle'),validationRunning:ref(false),validationOpener:{open:null}}:{},setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id)});
  exports.visible.value=true;exports.job.value={id:'a',status:'running',canStop:true,positions:[]};return {...exports,timers,mount,messages};
 }
 test('expired and unauthorized tasks stop polling and allow mode chooser again',async()=>{
@@ -103,4 +103,11 @@ test('price difference is current minus entry independent of position direction'
  }
  assert.equal(f.priceDifference({size:2,usd:200,entryPx:null}),null);
  assert.equal(f.currentPrice({size:0,usd:0}),null);
+});
+
+test('cache switch is sent explicitly and a queue retry retains the original choice',async()=>{
+ const requests=[];const f=fixture(undefined,async(url,body)=>{requests.push(body);if(!body.enqueue)throw Object.assign(new Error('busy'),{details:{queueable:true}});return {data:{id:'q',status:'queued',offset:0,nextOffset:0,positionTotal:0,positions:[]}};});
+ f.job.value=null;f.useCache.value=true;await f.start('deep','xyz:SNDK');assert.equal(requests[0].useCache,true);
+ f.useCache.value=false;await f.start(f.queueRequest.value.mode,f.queueRequest.value.coin,undefined,true,f.queueRequest.value.useCache);assert.equal(requests[1].useCache,true);
+ f.job.value=null;await f.start('normal','ETH');assert.equal(requests[2].useCache,false);
 });

@@ -61,7 +61,7 @@ async function loadLeaderboard(signal) {
 }
 function createValidator({ request = hlPost, candidates = () => mergeWhalesByAddress(readConfig().whales, loadPresetWhales('hf')),
   leaderboard = loadLeaderboard, now = Date.now, pause = ms => new Promise(resolve => setTimeout(resolve, ms)),
-  timeoutMs = 3600000, cooldownMs = 60000, store = null } = {}) {
+  timeoutMs = 3600000, cooldownMs = 60000, store = null, positionCache = require('./validationPositionCache').createPositionCache({now}) } = {}) {
   const jobs = new Map(), controllers = new Map();
   const ready = store ? store.load().then(saved=>{for(const job of saved)jobs.set(job.id,job);}).catch(err=>console.error('[validation-store] load failed:',err.message)) : Promise.resolve();
   let active, lastStarted = -Infinity, queueTimer;
@@ -73,7 +73,7 @@ function createValidator({ request = hlPost, candidates = () => mergeWhalesByAdd
       if(now()-lastStarted<cooldownMs){scheduleQueue();return;}
       const queued=queue.shift();
       if(!queued)return;
-      try{start(queued.coin,queued.mode,queued.owner,undefined,false,queued);}
+      try{start(queued.coin,queued.mode,queued.owner,undefined,false,queued,queued.useCache);}
       catch(err){queued.status='error';queued.error=err.message;queued.finishedAt=now();scheduleQueue();}
     },Math.max(0,cooldownMs-(now()-lastStarted)));
     queueTimer.unref?.();
@@ -96,11 +96,11 @@ function createValidator({ request = hlPost, candidates = () => mergeWhalesByAdd
   }
   function view(job, owner, offset=0) {
     if(!job)return null;
-    const {owner: _owner, positions, failures, ...summary}=job;
+    const {owner: _owner, positions, failures, entryTotals: _entryTotals, ...summary}=job;
     const start=Number.isSafeInteger(offset)&&offset>=0 ? Math.min(offset,positions.length) : 0;
     return {...summary,queuePosition:job.status==='queued'?queue.indexOf(job)+1:0,canStop:job.owner===String(owner),positions:positions.slice(start,start+100),offset:start,nextOffset:Math.min(start+100,positions.length),positionTotal:positions.length};
   }
-  function start(input, mode='normal', owner='test', restartId, enqueue=false, queuedJob=null) {
+  function start(input, mode='normal', owner='test', restartId, enqueue=false, queuedJob=null, useCache=false) {
     owner=String(owner);
     if(!['normal','deep'].includes(mode))throw fail('验证模式无效',400);
     const coin=String(input||'').trim();
@@ -113,7 +113,7 @@ function createValidator({ request = hlPost, candidates = () => mergeWhalesByAdd
       if(enqueue && active?.owner===owner && active.status==='running')return active;
       if(enqueue && (active || queue.length || now()-lastStarted<cooldownMs)){
         if(queue.length>=10)throw fail('验证队列已满，请稍后再试',429);
-        const waiting={id:randomUUID(),owner,mode,coin,status:'queued',phase:'queued',startedAt:now(),finishedAt:null,total:0,eligible:0,success:0,failed:0,longUsd:0,shortUsd:0,longCount:0,shortCount:0,positions:[],failures:[]};
+        const waiting={id:randomUUID(),owner,mode,coin,useCache:useCache===true,status:'queued',phase:'queued',startedAt:now(),finishedAt:null,total:0,eligible:0,success:0,failed:0,longUsd:0,shortUsd:0,longCount:0,shortCount:0,positions:[],failures:[]};
         prune();
         queue.push(waiting);jobs.set(waiting.id,waiting);scheduleQueue();return waiting;
       }
@@ -124,9 +124,8 @@ function createValidator({ request = hlPost, candidates = () => mergeWhalesByAdd
       if(active.owner===owner && active.status==='running')return active;
       throw Object.assign(fail(active.mode==='deep'?'有其他用户正在进行深度验证，请稍后再试。':'有其他验证任务正在运行，请稍后再试。',409),{queueable:true});
     }
-    if(!previous && !queuedJob)for(const job of history()) if(job.mode===mode && job.coin.toUpperCase()===coin.toUpperCase() && job.status==='complete' && now()-job.finishedAt<600000)return job;
     if(!previous && now()-lastStarted<cooldownMs)throw Object.assign(fail('验证任务冷却中，请稍后再试',429),{queueable:true});
-    const job=Object.assign(queuedJob||{},{id:queuedJob?.id||randomUUID(),owner,mode,coin,status:'running',phase:mode==='deep'?'leaderboard':'scanning',startedAt:now(),finishedAt:null,total:0,eligible:0,success:0,failed:0,longUsd:0,shortUsd:0,longCount:0,shortCount:0,positions:[],failures:[]});
+    const job=Object.assign(queuedJob||{},{id:queuedJob?.id||randomUUID(),owner,mode,coin,useCache:useCache===true,cacheHits:0,freshReads:0,oldestObservedAt:null,newestObservedAt:null,longEntryPx:null,shortEntryPx:null,entryTotals:{long:{size:0,cost:0},short:{size:0,cost:0}},status:'running',phase:mode==='deep'?'leaderboard':'scanning',startedAt:now(),finishedAt:null,total:0,eligible:0,success:0,failed:0,longUsd:0,shortUsd:0,longCount:0,shortCount:0,positions:[],failures:[]});
     if(previous)previous.restarted=true;
     active=job;lastStarted=now();prune();jobs.set(job.id,job);
     const controller=new AbortController();controllers.set(job.id,controller);
@@ -161,18 +160,29 @@ function createValidator({ request = hlPost, candidates = () => mergeWhalesByAdd
       const meta=await request({type:'meta',...(dex?{dex}:{})},0,scheduling);if(signal.aborted)return;
       const symbol=meta?.universe?.find(p=>String(p.name).toUpperCase()===job.coin.toUpperCase());
       if(!symbol)throw new Error('该市场未找到此合约，请选择带市场前缀的合约');job.coin=symbol.name;
-      for(const whale of pool){
+      for(const [index,whale] of pool.entries()){
         if(signal.aborted)return;
-        await wait(1000);if(signal.aborted)return;
         try{
-          let state;
+          const cached=job.useCache ? positionCache.get(whale.address,dex) : null;
+          let state=cached?.state, observedAt=cached?.observedAt;
+          if(cached){if(index%20===0)await new Promise(setImmediate);}
+          else {
+          await wait(1000);if(signal.aborted)return;
           for(let attempt=0;;attempt++){
             try{state=await request({type:'clearinghouseState',user:whale.address,...(dex?{dex}:{})},0,scheduling);break;}
             catch(err){if(signal.aborted) return;if(attempt>=2 || !(err.status===429 || err.response?.status===429 || /429|过于频繁/.test(err.message) || ['HL_HISTORY_DEFERRED','HL_QUEUE_TIMEOUT'].includes(err.code)))throw err;await wait(10000*(attempt+1));if(signal.aborted)return;}
           }
+          observedAt=now();
+          }
           if(signal.aborted)return;
           const rows=matchingPosition(state,job.coin);job.success++;
-          for(const row of rows){job.positions.push({address:whale.address,name:whale.name||whale.address,monthPnl:ranking?.monthPnlByAddress?.[whale.address.toLowerCase()]??null,...row,observedAt:now()});job[row.side+'Usd']+=row.usd;}
+          if(!cached){try{positionCache.put(whale.address,dex,state,observedAt);}catch{ /* Invalid full snapshots are never cached. */ }job.freshReads++;}else job.cacheHits++;
+          job.oldestObservedAt=job.oldestObservedAt==null?observedAt:Math.min(job.oldestObservedAt,observedAt);
+          job.newestObservedAt=job.newestObservedAt==null?observedAt:Math.max(job.newestObservedAt,observedAt);
+          for(const row of rows){
+            job.positions.push({address:whale.address,name:whale.name||whale.address,monthPnl:ranking?.monthPnlByAddress?.[whale.address.toLowerCase()]??null,...row,observedAt});job[row.side+'Usd']+=row.usd;
+            if(row.entryPx!=null&&row.entryPx>0){const total=job.entryTotals[row.side];total.size+=row.size;total.cost+=row.size*row.entryPx;job[row.side+'EntryPx']=total.cost/total.size;}
+          }
           if(rows.some(p=>p.side==='long'))job.longCount++;if(rows.some(p=>p.side==='short'))job.shortCount++;
         }catch(err){if(signal.aborted)return;job.failed++;job.failures.push({address:whale.address,error:err.message||'读取失败'});}
       }

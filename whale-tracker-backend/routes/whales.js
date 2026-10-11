@@ -35,7 +35,7 @@ router.use((req, res, next) => {
 });
 
 router.post('/validation', (req, res) => {
-  try { res.set('Cache-Control','no-store').json(validator.view(validator.start(req.body?.coin,req.body?.mode || 'normal',req.session.user.id,req.body?.restartId,req.body?.enqueue===true),req.session.user.id)); }
+  try { res.set('Cache-Control','no-store').json(validator.view(validator.start(req.body?.coin,req.body?.mode || 'normal',req.session.user.id,req.body?.restartId,req.body?.enqueue===true,null,req.body?.useCache===true),req.session.user.id)); }
   catch(err){res.status(err.status||500).json({error:err.message,queueable:err.queueable===true});}
 });
 router.get('/validation/history',requireAuthenticated,(req,res)=>{
