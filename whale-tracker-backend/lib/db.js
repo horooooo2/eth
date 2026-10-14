@@ -525,6 +525,12 @@ function migrate(database) {
   // 旧策略表（v41_* / whale_ai_runtime_logs）不再创建；user_ai_keys / user_exchange_keys 继续使用。
 
   // soft migrations
+  // Existing fills keep NULL: their first arrival cannot be reconstructed.
+  for (const column of ['received_at', 'fact_updated_at', 'fact_signature']) {
+    if (!database.prepare('PRAGMA table_info(fills)').all().some(row => row.name === column)) {
+      database.exec(`ALTER TABLE fills ADD COLUMN ${column} ${column === 'fact_signature' ? 'TEXT' : 'INTEGER'}`);
+    }
+  }
   try {
     database.exec(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'`);
   } catch {

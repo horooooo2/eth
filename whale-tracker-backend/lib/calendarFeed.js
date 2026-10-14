@@ -1,5 +1,6 @@
 const axios = require('axios');
 const { readCache, writeCache } = require('./cache');
+const { cpiIdentity, enrichCpiActuals } = require('./cpiActuals');
 
 const FF_URL = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json';
 const CACHE_KEY = 'calendar-ff';
@@ -55,6 +56,9 @@ function shanghaiParts(ts) {
 }
 
 function translateFfTitle(title) {
+  const cpi = cpiIdentity(title);
+  if (cpi) return `${cpi.startsWith('core:') ? '核心 ' : ''}CPI${cpi.endsWith(':mom') ? '（环比）' : cpi.endsWith(':yoy') ? '（同比）' : ''}`;
+  if (/\bPCE\b/i.test(title)) return `${/Core|核心/i.test(title) ? '核心 ' : ''}PCE${/m\/m|MoM|环比/i.test(title) ? '（环比）' : /y\/y|YoY|同比/i.test(title) ? '（同比）' : ''}`;
   for (const [pattern, label] of FF_TITLE_MAP) {
     if (pattern.test(title)) return label;
   }
@@ -165,6 +169,9 @@ function eventsRoughlyMatch(a, b) {
   const left = String(a.title || '');
   const right = String(b.title || '');
   if (!left || !right) return false;
+  const leftCpi = cpiIdentity(left), rightCpi = cpiIdentity(right);
+  if (leftCpi || rightCpi) return leftCpi === rightCpi;
+  if (/PCE/i.test(left) || /PCE/i.test(right)) return translateFfTitle(left) === translateFfTitle(right);
   if (left.includes(right) || right.includes(left)) return true;
   return left.slice(0, 4) === right.slice(0, 4);
 }
@@ -192,7 +199,17 @@ function readFfCache() {
   };
 }
 
-async function fetchFfRows(force = false) {
+let ffInFlight = null, ffRetryAt = 0;
+function fetchFfRows(force = false) {
+  if (ffInFlight) return ffInFlight;
+  if (Date.now() < ffRetryAt) {
+    const cached = readFfCache();
+    return Promise.resolve(cached ? { ...cached, stale: true } : { rows: [], fresh: false, stale: true, source: 'ForexFactory' });
+  }
+  ffInFlight = fetchFfRowsOnce(force).finally(() => { ffInFlight = null; });
+  return ffInFlight;
+}
+async function fetchFfRowsOnce(force = false) {
   if (!force) {
     const cached = readFfCache();
     if (cached?.fresh) return cached;
@@ -201,6 +218,7 @@ async function fetchFfRows(force = false) {
   try {
     const { data, status } = await client.get(FF_URL);
     if (status === 200 && Array.isArray(data)) {
+      ffRetryAt = 0;
       writeCache(CACHE_KEY, { rows: data, source: 'ForexFactory' });
       return { rows: data, fresh: true, source: 'ForexFactory' };
     }
@@ -211,6 +229,7 @@ async function fetchFfRows(force = false) {
     console.warn('[calendar] ForexFactory 拉取失败:', err.message);
   }
 
+  ffRetryAt = Date.now() + CACHE_MS_STALE_ACTUAL;
   const cached = readFfCache();
   if (cached?.rows?.length) {
     return { ...cached, stale: true };
@@ -433,7 +452,7 @@ async function fetchClaimsActualFromNews() {
  * ForexFactory NFS 常滞后不填 actual；公布后从新闻标题补齐关键数据。
  */
 async function enrichMissingActuals(events) {
-  const list = Array.isArray(events) ? events : [];
+  const list = await enrichCpiActuals(Array.isArray(events) ? events : []);
   const needClaims = list.some(
     (e) =>
       e &&
@@ -445,7 +464,9 @@ async function enrichMissingActuals(events) {
   if (needClaims) claimsActual = await fetchClaimsActualFromNews();
 
   return list.map((e) => {
-    if (!e || String(e.actual || '').trim()) return e;
+    if (!e) return e;
+    if (e.actualSource === 'BLS') return { ...e, note: buildFfNote(e, e.title) };
+    if (String(e.actual || '').trim()) return e;
     if (!eventReleasedShanghai(e)) return e;
     if (claimsActual && /初请|Claims|Jobless/i.test(String(e.title || ''))) {
       const next = { ...e, actual: claimsActual, actualSource: 'news' };

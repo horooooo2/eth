@@ -29,6 +29,11 @@ const {
 const PAGED_ALERT_CACHE_TTL_MS = 10_000;
 const pagedAlertCache = new Map();
 let alertCommitObserver = null;
+let macroComparisonObserver = null;
+function setMacroComparisonObserver(observer) { macroComparisonObserver = observer; }
+function notifyMacroComparison(trades) {
+  try { macroComparisonObserver?.(trades); } catch (error) { console.warn('[macro-comparison] input notification failed:',error.message); }
+}
 const flowCache = new Map();
 const ALERT_VISIBLE_SQL = 'alerts.is_visible = 1';
 function presentAlert(alert) {
@@ -80,110 +85,7 @@ function removeReplayedLegacyFill(database, trade, id) {
     .run(String(rawId), trade.whaleId ? String(trade.whaleId) : null);
 }
 
-/** 由成交派生开/补/减/平事件（结合 startPosition，避免买=多卖=空误判） */
-function eventsFromTrade(trade) {
-  const asset = String(trade?.asset || trade?.assetLabel || '');
-  if (/^@/.test(asset) || asset.includes('/') || trade?.instrumentType === 'spot') return [];
-  if (!['buy', 'sell', 'B', 'A', 'in', 'out'].includes(trade?.side)) return [];
-  const start = trade.startPosition == null || trade.startPosition === '' ? NaN : Number(trade.startPosition);
-  const size = Math.abs(Number(trade.amount));
-  const buy = ['buy', 'B', 'in'].includes(trade.side);
-  if (Number.isFinite(start) && size > Math.abs(start) && start !== 0 && (start > 0) !== buy) {
-    const oldSize = Math.abs(start);
-    return [['close', oldSize, start], ['open', size - oldSize, 0]].flatMap(([leg, amount, position]) =>
-      classifyTrade({ ...trade, amount, startPosition: position, amountUsd: Math.abs(Number(trade.amountUsd)) * amount / size })
-        .map(event => ({ ...event, id: event.id + ':' + leg, sourceId: event.sourceId + ':' + leg })));
-  }
-  return classifyTrade(trade);
-}
-function classifyTrade(trade) {
-  if (!isRawTrade(trade) || trade.source === 'onchain') return [];
-  const coin = coinOfTrade(trade);
-  if (!coin) return [];
-  const usd = Math.abs(Number(trade.amountUsd) || 0);
-  const ts = Number(trade.time) || 0;
-  const buy = trade.side === 'buy' || trade.side === 'B' || trade.side === 'in';
-  const dir = String(trade.dir || '');
-  const startValue = trade.startPosition;
-  const start = startValue == null || startValue === '' ? NaN : Number(startValue);
-  const sz = Math.abs(Number(trade.amount) || 0);
-  const eps = 1e-8;
-
-  let side = null;
-  let isClose = false;
-  let isOpen = false;
-
-  if (Number.isFinite(start)) {
-    if (Math.abs(start) < eps) {
-      isOpen = true;
-      side = buy ? 'long' : 'short';
-    } else if (start > 0) {
-      side = 'long';
-      isClose = !buy;
-    } else {
-      side = 'short';
-      isClose = buy;
-    }
-  } else if (/close|reduce/i.test(dir)) {
-    isClose = true;
-    side = /short/i.test(dir) ? 'short' : 'long';
-  } else {
-    // HL 的 Open Long/Short 也可能是补仓。缺少 startPosition 时不再把 dir
-    // 当作新开仓证据，以免加仓误入开仓/共振记录。
-    return [];
-  }
-
-  if (!side) return [];
-
-  let openKind;
-  if (isClose) {
-    const remaining =
-      Number.isFinite(start) && sz > 0 ? Math.abs(start) - sz : null;
-    openKind =
-      remaining != null && remaining <= Math.max(eps, Math.abs(start) * 1e-6)
-        ? 'close'
-        : 'decrease';
-  } else if (isOpen || Number(trade._asOpen)) {
-    openKind = 'open';
-  } else {
-    openKind = 'increase';
-  }
-
-  if (!(usd > 0) || !(ts > 0)) return [];
-
-  const title =
-    openKind === 'close'
-      ? side === 'long'
-        ? `平多 ${coin}`
-        : `平空 ${coin}`
-      : openKind === 'decrease'
-        ? side === 'long'
-          ? `减多 ${coin}`
-          : `减空 ${coin}`
-        : openKind === 'open'
-          ? side === 'long'
-            ? `开多 ${coin}`
-            : `开空 ${coin}`
-          : side === 'long'
-            ? `加多 ${coin}`
-            : `加空 ${coin}`;
-
-  return [
-    {
-      id: `evt-${openKind}-${canonicalTradeId(trade) || `${trade.whaleId}-${ts}-${coin}`}`,
-      sourceId: fillSourceId(trade),
-      whaleId: trade.whaleId || null,
-      time: ts,
-      kind: openKind,
-      coin,
-      side,
-      usd,
-      title,
-      payload: trade,
-      mergedCount: 1,
-    },
-  ];
-}
+const { eventsFromTrade, tradeSignature } = require('./executionClassification');
 
 function upsertAlertRows(database, alerts) {
   if (!alerts?.length) return { written: 0, added: 0, committedAlerts: [], removedAlertIds: [] };
@@ -838,9 +740,9 @@ function persistTradesIncremental(trades = []) {
   const database = getDb();
   const upsertFill = database.prepare(`
     INSERT INTO fills (
-      id, whale_id, time, asset, side, amount, amount_usd, price, closed_pnl, hash, source, payload_json
+      id, whale_id, time, asset, side, amount, amount_usd, price, closed_pnl, hash, source, received_at, fact_updated_at, fact_signature, payload_json
     ) VALUES (
-      @id, @whale_id, @time, @asset, @side, @amount, @amount_usd, @price, @closed_pnl, @hash, @source, @payload_json
+      @id, @whale_id, @time, @asset, @side, @amount, @amount_usd, @price, @closed_pnl, @hash, @source, @received_at, @fact_updated_at, @fact_signature, @payload_json
     )
     ON CONFLICT(id) DO UPDATE SET
       whale_id = excluded.whale_id,
@@ -853,6 +755,7 @@ function persistTradesIncremental(trades = []) {
       closed_pnl = excluded.closed_pnl,
       hash = excluded.hash,
       source = excluded.source,
+      fact_updated_at = CASE WHEN fills.fact_signature IS NOT excluded.fact_signature THEN excluded.fact_updated_at ELSE fills.fact_updated_at END, fact_signature = excluded.fact_signature,
       payload_json = excluded.payload_json
   `);
   const upsertEvent = database.prepare(`
@@ -878,7 +781,8 @@ function persistTradesIncremental(trades = []) {
   const derivedAlerts = [];
   let alertResult;
   const correctedAlertIds = new Set();
-  const existsFill = database.prepare('SELECT 1 AS x FROM fills WHERE id = ?');
+  const changedTrades = [];
+  const existsFill = database.prepare('SELECT fact_signature,time,asset FROM fills WHERE id = ?');
   const existsEvent = database.prepare('SELECT 1 AS x FROM events WHERE id = ?');
   const tx = database.transaction(() => {
     for (const input of list) {
@@ -887,7 +791,12 @@ function persistTradesIncremental(trades = []) {
       const trade = { ...input, id };
       retractCorrectedTrade(database, trade, correctedAlertIds);
       removeReplayedLegacyFill(database, input, id);
-      if (!existsFill.get(id)) added += 1;
+      const previousFill = existsFill.get(id), signature = tradeSignature(trade);
+      if (!previousFill) added += 1;
+      if (previousFill?.fact_signature !== signature) {
+        changedTrades.push(trade);
+        if (previousFill && (previousFill.time !== Number(trade.time) || previousFill.asset !== coinOfTrade(trade))) changedTrades.push({time:previousFill.time,asset:previousFill.asset});
+      }
       upsertFill.run({
         id,
         whale_id: trade.whaleId ? String(trade.whaleId) : null,
@@ -900,6 +809,7 @@ function persistTradesIncremental(trades = []) {
         closed_pnl: Number(trade.closedPnl) || 0,
         hash: trade.hash ? String(trade.hash) : null,
         source: trade.source ? String(trade.source) : 'hyperliquid',
+        received_at: Date.now(), fact_updated_at: Date.now(), fact_signature: signature,
         payload_json: safeJson(trade),
       });
       fills += 1;
@@ -931,6 +841,7 @@ function persistTradesIncremental(trades = []) {
   updateFillProjection(list);
   flowCache.clear();
   notifyAlertCommit(alertResult);
+  notifyMacroComparison(changedTrades);
   return { fills, events, alerts: alertResult.written, added,
     committedAlerts: alertResult.committedAlerts, removedAlertIds: alertResult.removedAlertIds };
 }
@@ -978,9 +889,9 @@ function persistModePayload(data = {}, updatedAt = Date.now(), options = {}) {
 
   const upsertFill = database.prepare(`
     INSERT INTO fills (
-      id, whale_id, time, asset, side, amount, amount_usd, price, closed_pnl, hash, source, payload_json
+      id, whale_id, time, asset, side, amount, amount_usd, price, closed_pnl, hash, source, received_at, fact_updated_at, fact_signature, payload_json
     ) VALUES (
-      @id, @whale_id, @time, @asset, @side, @amount, @amount_usd, @price, @closed_pnl, @hash, @source, @payload_json
+      @id, @whale_id, @time, @asset, @side, @amount, @amount_usd, @price, @closed_pnl, @hash, @source, @received_at, @fact_updated_at, @fact_signature, @payload_json
     )
     ON CONFLICT(id) DO UPDATE SET
       whale_id = excluded.whale_id,
@@ -993,6 +904,7 @@ function persistModePayload(data = {}, updatedAt = Date.now(), options = {}) {
       closed_pnl = excluded.closed_pnl,
       hash = excluded.hash,
       source = excluded.source,
+      fact_updated_at = CASE WHEN fills.fact_signature IS NOT excluded.fact_signature THEN excluded.fact_updated_at ELSE fills.fact_updated_at END, fact_signature = excluded.fact_signature,
       payload_json = excluded.payload_json
   `);
 
@@ -1013,11 +925,12 @@ function persistModePayload(data = {}, updatedAt = Date.now(), options = {}) {
       payload_json = excluded.payload_json
   `);
 
-  const existsFill = database.prepare('SELECT 1 AS x FROM fills WHERE id = ?');
+  const existsFill = database.prepare('SELECT fact_signature,time,asset FROM fills WHERE id = ?');
   const existsEvent = database.prepare('SELECT 1 AS x FROM events WHERE id = ?');
   let added = 0;
   let alertResult;
   const correctedAlertIds = new Set();
+  const changedTrades = [];
 
   const tx = database.transaction(() => {
     for (const id of (Array.isArray(data.removedWhaleIds) ? data.removedWhaleIds : [])) {
@@ -1068,7 +981,12 @@ function persistModePayload(data = {}, updatedAt = Date.now(), options = {}) {
       const trade = { ...input, id };
       retractCorrectedTrade(database, trade, correctedAlertIds);
       removeReplayedLegacyFill(database, input, id);
-      if (!existsFill.get(id)) added += 1;
+      const previousFill = existsFill.get(id), signature = tradeSignature(trade);
+      if (!previousFill) added += 1;
+      if (previousFill?.fact_signature !== signature) {
+        changedTrades.push(trade);
+        if (previousFill && (previousFill.time !== Number(trade.time) || previousFill.asset !== coinOfTrade(trade))) changedTrades.push({time:previousFill.time,asset:previousFill.asset});
+      }
       upsertFill.run({
         id,
         whale_id: trade.whaleId ? String(trade.whaleId) : null,
@@ -1081,6 +999,7 @@ function persistModePayload(data = {}, updatedAt = Date.now(), options = {}) {
         closed_pnl: Number(trade.closedPnl) || 0,
         hash: trade.hash ? String(trade.hash) : null,
         source: trade.source ? String(trade.source) : 'hyperliquid',
+        received_at: Date.now(), fact_updated_at: Date.now(), fact_signature: signature,
         payload_json: safeJson(trade),
       });
       if(require('./featureFlags').observationsEnabled())require('./whaleObservationStore').recordInput(database, trade);
@@ -1121,6 +1040,7 @@ function persistModePayload(data = {}, updatedAt = Date.now(), options = {}) {
   flowCache.clear();
   const purged = options.patch ? null : purgeOlderThan(RETENTION_MS);
   notifyAlertCommit(alertResult);
+  notifyMacroComparison(changedTrades);
   return { whales: whales.length, trades: trades.length, added, purged,
     committedAlerts: alertResult.committedAlerts, removedAlertIds: alertResult.removedAlertIds };
 }
@@ -1200,6 +1120,7 @@ function loadRecentEvents(limit = 200) {
 }
 
 module.exports = {
+  setMacroComparisonObserver,
   invalidateFillProjection,
   prepareFillProjection: () => fillProjection.prepare(),
   invalidateAlertQueries: () => pagedAlertCache.clear(),

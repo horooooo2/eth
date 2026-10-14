@@ -10,9 +10,14 @@ function createCollector({ now = Date.now, catalog = () => require('./tradfiMark
   })).data, openSocket = url => new WebSocket(url, { maxPayload: 256 * 1024 }), enabled = () => process.env.MARKET_MOVEMENTS_ENABLED !== '0' } = {}) {
   const engine = createEngine({ now }), pending = new Map();
   let contracts = [], socket = null, timer = null, discovery = null, seeding = false;
-  let connected = false, error = '', lastMessageAt = 0, nextConnect = 0, nextCatalog = 0, nextSeed = 0, stopped = true, generation = 0, connectedAt = 0;
+  let connected = false, error = '', lastMessageAt = 0, nextConnect = 0, nextCatalog = 0, nextSeed = 0, stopped = true, generation = 0, connectedAt = 0, subscriptionId = 0;
   function requestSeed(symbol) { if (!pending.has(symbol)) pending.set(symbol, now()); }
   function disconnect() { const old = socket; socket = null; connected = false; old?.terminate(); }
+  function subscribe(symbols, method = 'SUBSCRIBE') {
+    if (!symbols.length) return true;
+    try { socket.send(JSON.stringify({ method, params: symbols.map(symbol => `${symbol.toLowerCase()}@kline_1m`), id: ++subscriptionId })); return true; }
+    catch { error = '币安订阅发送失败，正在重连'; disconnect(); nextConnect = now() + 10000; return false; }
+  }
   function connect() {
     if (!contracts.length || socket || now() < nextConnect || stopped) return;
     nextConnect = now() + 10000;
@@ -20,7 +25,7 @@ function createCollector({ now = Date.now, catalog = () => require('./tradfiMark
     current.on('open', () => {
       if (socket !== current || stopped) return;
       connected = true; error = ''; lastMessageAt = connectedAt = now();
-      current.send(JSON.stringify({ method: 'SUBSCRIBE', params: contracts.map(row => `${row.symbol.toLowerCase()}@kline_1m`), id: 'market-movements' }));
+      if (!subscribe(contracts.map(row => row.symbol))) return;
       for (const row of contracts) if (engine.latest(row.symbol) == null || engine.latest(row.symbol) < now() - 2 * MINUTE) requestSeed(row.symbol);
     });
     current.on('message', raw => {
@@ -44,19 +49,24 @@ function createCollector({ now = Date.now, catalog = () => require('./tradfiMark
     });
   }
   async function discover() {
-    if (discovery || now() < nextCatalog) return;
+    if (discovery) return discovery;
+    if (now() < nextCatalog) return;
     nextCatalog = now() + 60000; const version = generation;
     discovery = (async () => {
       const result = await catalog();
       if (stopped || version !== generation) return;
       if (result.stale) throw new Error('合约清单已过期');
-      const selected = result.contracts.filter(row => /^[A-Z0-9]{3,30}USDT$/.test(row.symbol) && Number(row.quoteVolume24h) > 0)
+      const selected = result.contracts.filter(row => /^[A-Z0-9]{1,30}USDT$/.test(row.symbol) && Number(row.quoteVolume24h) > 0)
         .sort((a, b) => Number(b.quoteVolume24h) - Number(a.quoteVolume24h) || a.symbol.localeCompare(b.symbol)).slice(0, 100);
       if (!selected.length) throw new Error('没有可监控的合约');
-      const changed = selected.map(row => row.symbol).sort().join(',') !== contracts.map(row => row.symbol).sort().join(',');
+      const before = new Set(contracts.map(row => row.symbol)), after = new Set(selected.map(row => row.symbol));
+      const added = selected.filter(row => !before.has(row.symbol)).map(row => row.symbol);
+      const removed = contracts.filter(row => !after.has(row.symbol)).map(row => row.symbol);
       contracts = selected; engine.configure(contracts);
       for (const symbol of pending.keys()) if (!selected.some(row => row.symbol === symbol)) pending.delete(symbol);
-      if (changed) { disconnect(); nextConnect = 0; for (const row of contracts) requestSeed(row.symbol); }
+      // Retained contracts keep both their live subscription and complete windows.
+      for (const symbol of added) requestSeed(symbol);
+      if (connected && socket) { if (subscribe(removed, 'UNSUBSCRIBE')) subscribe(added); }
       nextCatalog = now() + 3600000; error = ''; connect();
     })().catch(() => { if (version === generation) error = '币安合约清单暂不可用，稍后重试'; }).finally(() => { discovery = null; });
     return discovery;

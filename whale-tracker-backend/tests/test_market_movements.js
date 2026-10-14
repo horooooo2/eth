@@ -99,3 +99,33 @@ test('429 pauses the shared backfill queue and late results after stop are disca
   resolve(history.map(row => [row.time, row.open, row.high, row.low, row.close, 1, row.time + M - 1])); await task;
   assert.equal(late.engine.buffered(), 0);
 });
+
+test('one top-100 replacement keeps 99 ready windows and updates subscriptions without reconnecting or reseeding them',async()=>{
+  let clock=end+M, changed=false, socket, connections=0, fetched=[];
+  const contracts=Array.from({length:100},(_,i)=>({...contract,symbol:`SYM${String(i).padStart(3,'0')}USDT`,quoteVolume24h:String(1000-i)}));
+  const fresh=()=>Array.from({length:121},(_,i)=>bar(Math.floor(clock/M)*M-(121-i)*M));
+  const collector=createCollector({now:()=>clock,catalog:async()=>({contracts:changed?[...contracts.slice(0,99),{...contract,symbol:'NEWUSDT',quoteVolume24h:'1'}]:contracts}),
+    openSocket:()=>{connections++;return socket=fakeSocket();},fetchBars:async symbol=>{fetched.push(symbol);return fresh().map(b=>[b.time,b.open,b.high,b.low,b.close,1,b.time+M-1]);}});
+  collector.start();
+  try {
+    await collector.discover();socket.emit('open');
+    for(let i=0;i<100;i++){await collector.seedNext();clock+=2000;}
+    assert.equal(collector.snapshot().warming,0);assert.equal(fetched.length,100);
+    clock+=3600000;for(const row of contracts)collector.engine.seed(row.symbol,fresh());
+    assert.equal(collector.snapshot().ready2h,100);
+    changed=true;await collector.discover();
+    assert.equal(connections,1);assert.equal(collector.snapshot().warming,1);assert.equal(collector.snapshot().ready2h,99);
+    assert.deepEqual(socket.sent.at(-2),{method:'UNSUBSCRIBE',params:['sym099usdt@kline_1m'],id:2});
+    assert.deepEqual(socket.sent.at(-1),{method:'SUBSCRIBE',params:['newusdt@kline_1m'],id:3});
+    await collector.seedNext();assert.equal(fetched.at(-1),'NEWUSDT');assert.equal(fetched.length,101);
+    assert.equal(collector.snapshot().ready2h,100);
+  } finally {collector.stop();}
+});
+
+test('short base symbols such as OP and AR are included in the volume-ranked universe',async()=>{
+  const collector=createCollector({now:()=>end+M,catalog:async()=>({contracts:[{...contract,symbol:'OPUSDT'},{...contract,symbol:'ARUSDT'}]}),openSocket:fakeSocket,
+    fetchBars:async()=>[]});
+  collector.start();
+  try {await collector.discover();assert.equal(collector.snapshot().monitored,2);}
+  finally {collector.stop();}
+});

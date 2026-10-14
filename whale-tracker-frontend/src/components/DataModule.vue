@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { onMounted, onUnmounted, ref, watch } from 'vue';
 import { fetchCalendar } from '@/api';
 import type { CalendarEvent, WhaleProfile } from '@/types';
 import type { RecoQuotes } from '@/utils/recommend';
@@ -7,6 +7,7 @@ import AiAnalyzeButton from '@/components/AiAnalyzeButton.vue';
 
 const props = defineProps<{
   mobile?: boolean;
+  active?: boolean;
   whales: WhaleProfile[];
   loading?: boolean;
   selectedId: string;
@@ -37,9 +38,7 @@ function starText(n: number) {
 }
 
 function macroAiContent(item: CalendarEvent) {
-  const released =
-    typeof item.daysUntil === 'number' &&
-    (item.daysUntil < 0 || (item.daysUntil === 0 && Boolean(item.time)));
+  const released = eventReleased(item);
   const actualLine = item.actual
     ? `实际：${item.actual}`
     : released
@@ -107,12 +106,18 @@ function secondaryDateLabel(item: CalendarEvent) {
   return `${item.weekday} · ${countdownLabel(item)}`;
 }
 
+function eventReleased(item: CalendarEvent) {
+  if (!item.time || !/^\d{2}:\d{2}$/.test(item.time)) return item.daysUntil < 0;
+  return Date.now() >= Date.parse(`${item.date}T${item.time}:00+08:00`);
+}
 async function loadMacro(force = false) {
+  if (macroLoading.value) return;
   if (macroLoaded.value && !force) return;
   macroLoading.value = true;
   macroError.value = '';
   try {
-    const data = await fetchCalendar(force);
+    // Display refresh respects the shared server cache; each viewer does not force upstream fetches.
+    const data = await fetchCalendar(false);
     macroEvents.value = (data.events || [])
       .filter((item) => item.daysUntil >= -7 && item.daysUntil <= 7)
       .filter((item) => item.importance === 'high' || item.importance === 'mid')
@@ -127,6 +132,18 @@ async function loadMacro(force = false) {
 
 let initialLoad: Promise<void> | null = null;
 function initialize() { return initialLoad ||= loadMacro(false); }
+let refreshTimer: ReturnType<typeof setInterval> | undefined;
+function refreshVisible() {
+  if (initialLoad && props.active !== false && !document.hidden) void loadMacro(true);
+}
+watch(() => props.active, active => { if (active) refreshVisible(); });
+onMounted(() => {
+  refreshTimer = setInterval(refreshVisible, 120000);
+  document.addEventListener('visibilitychange', refreshVisible);
+});
+onUnmounted(() => {
+  clearInterval(refreshTimer); document.removeEventListener('visibilitychange', refreshVisible);
+});
 defineExpose({ initialize });
 </script>
 
@@ -168,7 +185,8 @@ defineExpose({ initialize });
                 <span v-if="item.previous" v-html="`前值 ` + highlightCore(item.previous)" />
                 <span v-if="item.forecast" v-html="`预测 ` + highlightCore(item.forecast)" />
                 <span v-if="item.actual" v-html="`实际 ` + highlightCore(item.actual)" />
-                <span v-else-if="item.daysUntil < 0 || item.isToday" class="muted">实际待回填</span>
+                <span v-else class="muted">{{ eventReleased(item) ? '实际待回填' : '实际待公布' }}</span>
+                <span v-if="item.actualSource === 'BLS'" title="根据 BLS 官方 CPI 指数计算，保留一位小数">来源 BLS</span>
               </div>
             </div>
           </article>

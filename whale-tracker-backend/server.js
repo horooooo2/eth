@@ -148,6 +148,7 @@ attachRealtimeHub(server);
 
 server.listen(PORT, '0.0.0.0', () => {
   require('./lib/marketMovements').start();
+  require('./lib/macroComparison').start();
   require('./lib/siteReset').resumeInterruptedReset();
   require('./lib/whaleRetention').startRetention();
   if(require('./lib/featureFlags').observationsEnabled())require('./lib/whaleObservationWorker').start();

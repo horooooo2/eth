@@ -282,6 +282,7 @@ export interface CalendarEvent {
   previous?: string;
   actual?: string;
   previousDate?: string;
+  actualSource?: string;
   source?: string;
 }
 

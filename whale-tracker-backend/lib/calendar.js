@@ -100,6 +100,8 @@ async function getCalendar(force = false) {
 
   const merged = mergeCalendarEvents(localEvents, apiEvents);
   const events = await enrichMissingActuals(enrichEvents(merged, today, until, since));
+  // Archive metadata independently of the calendar's display horizon. Raw-flow work stays in a child process.
+  require('./macroComparison').observe(events);
   return {
     today,
     until,

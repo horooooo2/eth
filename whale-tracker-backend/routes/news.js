@@ -4,6 +4,10 @@ const { getCalendar } = require('../lib/calendar');
 const { readConfig, writeConfig } = require('../lib/config');
 
 const router = express.Router();
+router.get('/macro-comparison', (req,res) => {
+  try { res.set('Cache-Control','no-store').json(require('../lib/macroComparison').snapshot(req.query)); }
+  catch (error) { res.status(error.status || 503).json({error:error.message || '宏观对照暂不可用'}); }
+});
 const { getComments } = require('../lib/marketComments');
 
 router.get('/comments', (req, res) => {
