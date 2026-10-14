@@ -54,6 +54,8 @@ const FILES = [
   'lib/newsService.js',
   'lib/newsWebSearch.js',
   'lib/markets.js',
+  'lib/marketMovementEngine.js',
+  'lib/marketMovements.js',
   'lib/tradfiMarkets.js',
   'lib/radarLongTrend.js',
   'lib/tradfiUniverse.js',

@@ -38,6 +38,7 @@ import type { WhaleProfile } from '@/types';
 
 const StrategyWorkspace = defineAsyncComponent(() => import('@/components/strategy/StrategyWorkspace.vue'));
 const MarketNews = defineAsyncComponent(() => import('@/components/MarketNews.vue'));
+const MarketMovements = defineAsyncComponent(() => import('@/components/MarketMovements.vue'));
 const newsVisited = ref(false);
 const strategyVisited = ref(false);
 const whaleStore = useWhaleStore();
@@ -96,7 +97,10 @@ function recoverObservations() {
     }
   });
 }
-const sideInfoTab = ref<'observations' | 'macro'>(WHALE_OBSERVATIONS_ENABLED ? 'observations' : 'macro');
+const sideInfoTab = ref<'observations' | 'macro' | 'movements'>(WHALE_OBSERVATIONS_ENABLED && !isMobile.value ? 'observations' : 'macro');
+const movementsVisited = ref(false);
+watch(sideInfoTab, tab => { if (tab === 'movements') movementsVisited.value = true; });
+watch(isMobile, mobile => { if (mobile && sideInfoTab.value === 'observations') sideInfoTab.value = 'macro'; });
 function openObservationWhale(id: string) {
   const whale = whaleStore.whalesById[id];
   if (whale) onSelectWhale(whale);
@@ -402,14 +406,15 @@ onUnmounted(() => {
       <div class="whales-shell" :class="'mobile-panel-'+mobilePanel">
         <div class="grid">
           <section class="side-info">
-            <nav v-if="!isMobile" class="side-info-tabs" aria-label="市场观察">
-              <button v-if="WHALE_OBSERVATIONS_ENABLED" :class="{ active: sideInfoTab === 'observations' }" @click="sideInfoTab = 'observations'">巨鲸观察</button>
-              <button :class="{ active: sideInfoTab === 'macro' }" @click="sideInfoTab = 'macro'">宏观数据</button>
+            <nav class="side-info-tabs" aria-label="市场观察">
+              <button v-if="WHALE_OBSERVATIONS_ENABLED && !isMobile" :class="{ active: sideInfoTab === 'observations' }" :aria-pressed="sideInfoTab === 'observations'" @click="sideInfoTab = 'observations'">巨鲸观察</button>
+              <button :class="{ active: sideInfoTab === 'macro' }" :aria-pressed="sideInfoTab === 'macro'" @click="sideInfoTab = 'macro'">宏观数据</button>
+              <button :class="{ active: sideInfoTab === 'movements' }" :aria-pressed="sideInfoTab === 'movements'" @click="sideInfoTab = 'movements'">市场异动</button>
             </nav>
             <div v-if="WHALE_OBSERVATIONS_ENABLED" v-show="!isMobile && sideInfoTab === 'observations'" class="side-info-pane">
               <WhaleObservationPanel :snapshot="observationSnapshot" :active="sideInfoTab === 'observations' && sideTab === 'virtual'" :connected="realtimeStatus === 'connected'" linked-coin="ALL" @locate="onFocusWhaleCard" @detail="openObservationWhale" />
             </div>
-            <div v-show="isMobile || sideInfoTab === 'macro'" class="side-info-pane">
+            <div v-show="sideInfoTab === 'macro'" class="side-info-pane">
           <DataModule
             ref="macroRef"
             :mobile="isMobile"
@@ -423,6 +428,9 @@ onUnmounted(() => {
             @focus-whale="onFocusWhaleCard"
           />
 
+            </div>
+            <div v-if="movementsVisited" v-show="sideInfoTab === 'movements'" class="side-info-pane">
+              <MarketMovements :mobile="isMobile" :active="sideInfoTab === 'movements' && sideTab === 'virtual' && !myOpen && (!isMobile || mobilePanel === 'macro')" />
             </div>
           </section>
 

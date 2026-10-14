@@ -4,6 +4,11 @@ const { fetchWhaleAlerts } = require('../lib/onchain');
 
 const router = express.Router();
 
+// Cached read only: viewing the pane never starts per-user upstream requests.
+router.get('/movements', (_req, res) => {
+  res.set('Cache-Control', 'no-store').json(require('../lib/marketMovements').snapshot());
+});
+
 function parseCoins(query) {
   const raw = query.coins;
   if (!raw) return [];

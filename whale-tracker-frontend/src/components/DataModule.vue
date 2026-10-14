@@ -132,12 +132,6 @@ defineExpose({ initialize });
 
 <template>
   <el-card class="panel" :class="{'h5-macro-panel':mobile}" shadow="never">
-    <template v-if="!mobile" #header>
-      <div class="head">
-        <strong>宏观数据</strong>
-      </div>
-    </template>
-
     <div class="tab-stack">
       <div class="tab-panel">
         <el-skeleton v-if="macroLoading && !macroEvents.length" :rows="8" animated />
