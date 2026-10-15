@@ -520,7 +520,7 @@ export type AlertsModel = typeof mobileModel;
             </span>
           </div>
           <div class="alert-main">
-            <strong class="coin">{{ whaleAssetLabel(row.view.coin) }}</strong><el-tag v-if="isWhaleTradfi(row.view.coin)" size="small" type="info">TradFi</el-tag>
+            <span class="alert-asset"><strong class="coin">{{ whaleAssetLabel(row.view.coin) }}</strong><el-tag v-if="isWhaleTradfi(row.view.coin)" size="small" type="info">TradFi</el-tag></span>
             <strong class="notional" :class="row.view.amountClass">
               名义 {{ row.view.notionalUsd != null ? formatUsd(row.view.notionalUsd) : '--' }}
             </strong>
@@ -1018,8 +1018,20 @@ export type AlertsModel = typeof mobileModel;
 .alert-main .coin {
   font-size: 16px;
 }
+.alert-asset {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 5px;
+  min-width: 0;
+}
+.alert-asset .coin { min-width: 0; overflow-wrap: anywhere; }
+.alert-asset :deep(.el-tag) { flex: none; }
 .alert-main .notional {
   font-size: 15px;
+  margin-left: auto;
+  text-align: right;
+  flex: none;
 }
 .amount-lg .notional,
 .alert-item.amount-lg {

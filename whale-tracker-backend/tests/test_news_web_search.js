@@ -4,3 +4,19 @@ const result={content:[{type:'web_search_tool_result',content:[{type:'web_search
 test('only real structured HTTP sources count; prose alone is not proof of search',()=>{assert.equal(parseSearch(result).sources.length,1);assert.throws(()=>parseSearch({content:[{type:'text',text:'I searched'}]}));});
 test('search is bounded, cached per account and never sends site context or chat history',async()=>{let calls=0;const fetchImpl=async(url,options)=>{calls++;assert.equal(url,'https://api.deepseek.com/anthropic/v1/messages');assert.equal(options.redirect,'error');const body=JSON.parse(options.body);assert.equal(body.tools[0].max_uses,2);return {ok:true,json:async()=>result};};const args={apiKey:'test-only',userId:'one',coin:'SNDK',message:'company relationship',fetchImpl};await searchNewsWeb(args);await searchNewsWeb(args);assert.equal(calls,1);await searchNewsWeb({...args,userId:'two'});assert.equal(calls,2);});
 test('upstream errors release user concurrency slot',async()=>{const args={apiKey:'test-only',userId:'error-case',coin:'ETH',message:'question'};await assert.rejects(searchNewsWeb({...args,fetchImpl:async()=>({ok:false})}));assert.equal((await searchNewsWeb({...args,fetchImpl:async()=>({ok:true,json:async()=>result})})).sources.length,1);});
+test('source-specific snippets and citations are retained without treating generated prose as original text',()=>{
+ const data={content:[{type:'web_search_tool_result',content:[{type:'web_search_result',title:'Bank report',url:'https://example.com/report',snippet:'Buy, target $200',page_age:'2026-10-14'}]},{type:'text',text:'A generated interpretation',citations:[{url:'https://example.com/report',cited_text:'Original attributed excerpt'}]}]};
+ const parsed=parseSearch(data);assert.match(parsed.sources[0].snippet,/Buy, target/);assert.match(parsed.sources[0].snippet,/Original attributed excerpt/);assert.doesNotMatch(parsed.sources[0].snippet,/generated interpretation/);assert.equal(parsed.sources[0].publishedAt,'2026-10-14');
+});
+test('research search resumes a paused server-tool turn within a bounded number of requests',async()=>{
+ let count=0;const parsed=await searchNewsWeb({apiKey:'test-only',userId:'paused-case',coin:'SNDK',message:'analyst ratings',research:true,fetchImpl:async(_url,options)=>{
+  count++;const body=JSON.parse(options.body);if(count===2)assert.equal(body.messages[1].role,'assistant');
+  return {ok:true,json:async()=>count===1?{...result,stop_reason:'pause_turn'}:{content:[{type:'text',text:'Completed research summary'}],stop_reason:'end_turn'}};
+ }});assert.equal(count,2);assert.match(parsed.summary,/Completed research/);assert.equal(parsed.sources.length,1);
+});
+test('a failed continuation retains real search sources instead of replacing them with an empty result',async()=>{
+ let count=0;const parsed=await searchNewsWeb({apiKey:'test-only',userId:'partial-case',coin:'SNDK',message:'holders',research:true,fetchImpl:async()=>{
+  if(++count===2)throw Error('upstream timeout');
+  return {ok:true,json:async()=>({...result,stop_reason:'pause_turn'})};
+ }});assert.equal(parsed.partial,true);assert.equal(parsed.sources.length,1);
+});

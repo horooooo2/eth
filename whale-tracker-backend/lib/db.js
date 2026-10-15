@@ -429,6 +429,14 @@ function migrate(database) {
     );
     CREATE INDEX IF NOT EXISTS idx_tradfi_manual_closures_user ON tradfi_manual_strategy_closures(user_id, created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS contract_research_history (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL, symbol TEXT NOT NULL, horizon INTEGER NOT NULL,
+      snapshot_id TEXT NOT NULL, status TEXT NOT NULL, payload_json TEXT NOT NULL,
+      error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_contract_research_user ON contract_research_history(user_id,symbol,created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_contract_research_snapshot ON contract_research_history(user_id,snapshot_id,status);
+
     CREATE TABLE IF NOT EXISTS tradfi_ai_analyses (
       analysis_id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,

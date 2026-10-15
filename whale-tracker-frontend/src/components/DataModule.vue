@@ -37,6 +37,14 @@ function starText(n: number) {
   return '★'.repeat(n) + '☆'.repeat(Math.max(0, 3 - n));
 }
 
+/** 日历注释可能含旧读数；统一使用独立字段，注释仅保留影响逻辑。 */
+function macroNote(item: CalendarEvent) {
+  return String(item.note || '').replace(
+    /^(?:(?:预期|预测|前值|实际(?:值)?)\s*[:：]?\s*(?:[+\-−]?\d|待公布|待回填|未公布|暂无|—|--)[^·；;\n]*(?:[·；;]\s*|$))+/u,
+    '',
+  ).trim();
+}
+
 function macroAiContent(item: CalendarEvent) {
   const released = eventReleased(item);
   const actualLine = item.actual
@@ -45,7 +53,7 @@ function macroAiContent(item: CalendarEvent) {
       ? '实际：公布窗口已过，源站尚未回填（系统将尝试新闻补齐）'
       : '实际：待公布';
   const lines = [
-    item.note || item.title,
+    macroNote(item) || item.title,
     '',
     '【数据读数】',
     item.previous ? `前值：${item.previous}` : '',
@@ -59,6 +67,10 @@ function macroAiContent(item: CalendarEvent) {
 
 function macroAiMeta(item: CalendarEvent) {
   return {
+    note: macroNote(item),
+    date: item.date,
+    released: eventReleased(item),
+    actualSource: item.actualSource || item.source,
     dateLabel: item.dateLabel,
     weekday: item.weekday,
     time: item.time || item.timeNote || '',
@@ -68,16 +80,6 @@ function macroAiMeta(item: CalendarEvent) {
     actual: item.actual,
     coin: 'BTC',
   };
-}
-
-function escapeHtml(s: string) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-/** 把「核心...」数据用黄色粗体高亮 */
-function highlightCore(input: string) {
-  const safe = escapeHtml(input || '');
-  return safe.replace(/(核心[^，。；<>]*(?:[，；][^，。；<>]*)*)/g, '<span class="core">$1</span>');
 }
 
 function countdownLabel(event: CalendarEvent) {
@@ -175,19 +177,19 @@ defineExpose({ initialize });
                 <strong class="title">{{ item.title }}</strong>
                 <AiAnalyzeButton
                   source="macro"
+                  :mobile="mobile"
                   :title="item.title"
                   :content="macroAiContent(item)"
                   :meta="macroAiMeta(item)"
                 />
               </div>
-              <p v-if="item.note" class="note" v-html="highlightCore(item.note)" />
-              <div class="meta">
-                <span v-if="item.previous" v-html="`前值 ` + highlightCore(item.previous)" />
-                <span v-if="item.forecast" v-html="`预测 ` + highlightCore(item.forecast)" />
-                <span v-if="item.actual" v-html="`实际 ` + highlightCore(item.actual)" />
-                <span v-else class="muted">{{ eventReleased(item) ? '实际待回填' : '实际待公布' }}</span>
-                <span v-if="item.actualSource === 'BLS'" title="根据 BLS 官方 CPI 指数计算，保留一位小数">来源 BLS</span>
-              </div>
+              <dl class="macro-readings" aria-label="事件数据">
+                <div><dt>前值</dt><dd>{{ item.previous || '未提供' }}</dd></div>
+                <div><dt>预测</dt><dd>{{ item.forecast || '未提供' }}</dd></div>
+                <div><dt>实际</dt><dd>{{ item.actual || (eventReleased(item) ? '待回填' : '待公布') }}</dd></div>
+              </dl>
+              <p v-if="macroNote(item)" class="note">{{ macroNote(item) }}</p>
+              <p v-if="item.actualSource === 'BLS'" class="macro-source" title="根据 BLS 官方 CPI 指数计算，保留一位小数">来源 BLS</p>
             </div>
           </article>
         </div>
@@ -198,7 +200,7 @@ defineExpose({ initialize });
 </template>
 
 <style scoped>
-.panel.h5-macro-panel{border:0;background:transparent;border-radius:0}.h5-macro-panel .tab-panel{padding:0 0 12px}.h5-macro-panel .row{padding:12px 0}.h5-macro-panel .title{font-size:14px}.h5-macro-panel .note,.h5-macro-panel .meta{font-size:12px;line-height:1.6}.h5-macro-panel .row-time{font-size:11px}.h5-macro-panel .row-time strong{font-size:13px}
+.panel.h5-macro-panel{border:0;background:transparent;border-radius:0}.h5-macro-panel .tab-panel{padding:0 0 12px}.h5-macro-panel .row{padding:12px 0}.h5-macro-panel .title{font-size:14px}.h5-macro-panel .note{font-size:12px;line-height:1.7}.h5-macro-panel .row-time{font-size:11px}.h5-macro-panel .row-time strong{font-size:13px}
 
 .account-exchange-tabs { display: flex; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
 .account-exchange-tabs button { border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); border-radius: 6px; padding: 6px 18px; cursor: pointer; }
@@ -336,27 +338,43 @@ defineExpose({ initialize });
   min-width: 0;
   font-size: 15px;
   line-height: 1.45;
-  font-weight: 600;
+  font-weight: 700;
 }
 .title-line :deep(.ai-chip) {
   margin-top: 2px;
 }
 .note {
-  margin: 0 0 4px;
+  margin: 10px 0 0;
   font-size: 13px;
   color: var(--muted);
-  line-height: 1.5;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
 }
-.note :deep(.core),
-.meta :deep(.core) {
-  color: var(--yellow);
+.macro-readings {
+  display: grid;
+  grid-template-columns: repeat(3,minmax(0,1fr));
+  gap: 0;
+  margin: 12px 0 0;
+  padding: 10px 0;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.macro-readings > div { min-width: 0; padding: 0 10px; }
+.macro-readings > div + div { border-left: 1px solid var(--border); }
+.macro-readings dt { font-size: 11px; color: var(--muted); margin-bottom: 5px; }
+.macro-readings dd {
+  margin: 0;
+  color: #fff;
+  font-size: 14px;
   font-weight: 700;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
-.meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 12px;
-  font-size: 13px;
+.macro-source {
+  margin: 6px 0 0;
+  font-size: 11px;
   color: var(--muted);
 }
 </style>

@@ -1,0 +1,182 @@
+{
+  "sourceDiagnostics": [
+    {
+      "id": "web-1",
+      "title": "SNDK · 机构评级与目标价",
+      "url": "https://stockanalysis.com/stocks/sndk/forecast/",
+      "verification": "read",
+      "textLength": 3978
+    },
+    {
+      "id": "web-2",
+      "title": "SNDK · 公开13F机构持仓",
+      "url": "https://www.holdingschannel.com/institutional/holders-of-sndk/",
+      "verification": "read",
+      "textLength": 6500
+    },
+    {
+      "id": "web-3",
+      "title": "闪迪官方事件日历",
+      "url": "https://investor.sandisk.com/news-events/events",
+      "verification": "read",
+      "textLength": 2663
+    },
+    {
+      "id": "web-4",
+      "title": "Sandisk Corporation (SNDK) Institutional Ownership and 13F Holdings",
+      "url": "https://beta.earningswhispers.com/whales/SNDK",
+      "verification": "unread",
+      "textLength": 0
+    },
+    {
+      "id": "web-5",
+      "title": "Sandisk Canadian Depositary Receipts SNDK Holders - Ownership Distribution - Trade smarter, not harder: Unleash your inner pro with our toolkit and live discussions",
+      "url": "https://www.advfn.com/stock-market/TSX/SNDK/holders",
+      "verification": "unread",
+      "textLength": 0
+    },
+    {
+      "id": "web-6",
+      "title": "SanDisk Corporation SNDK Holders - Ownership Distribution - Trade like a pro: Leverage real-time discussions and market-moving ideas to outperform",
+      "url": "https://www.advfn.com/stock-market/NASDAQ/SNDK/holders",
+      "verification": "unread",
+      "textLength": 0
+    },
+    {
+      "id": "web-7",
+      "title": "SanDisk Corporation SNDK 株主 - 所有権分布 - 登録してリアルタイムのアラート、カスタムポートフォリオ、市場の動きを入手してください",
+      "url": "https://jp.advfn.com/exchanges/NASDAQ/SNDK/holders",
+      "verification": "unread",
+      "textLength": 0
+    },
+    {
+      "id": "web-8",
+      "title": "Sandisk Corporation (SNDK) Stock Major Holders - Yahoo Finance - Skip to navigation Skip to main content Skip to right column",
+      "url": "https://finance.yahoo.com/quote/SNDK/holders/?_guc_consent_skip=1789546424",
+      "verification": "unread",
+      "textLength": 0
+    }
+  ],
+  "dimensions": [
+    {
+      "id": "technical",
+      "bull": 0.6,
+      "bear": 7.8,
+      "reason": "基于已收盘的 1h / 4h / 日线；RSI 仅作背景，不把超卖直接计为看多。"
+    },
+    {
+      "id": "institutional",
+      "bull": 6,
+      "bear": 4,
+      "reason": "25家分析师共识\"Buy\"、均值目标价$2,173（较10月14日收盘$1,403.34高54.84%），最新评级动作多为维持/上调（Citi $2,100、Mizuho $1,875→$2,050、Bernstein $3,000、Rosenblatt $2,400、Susquehanna $2,745），构成多头支持；但目标价为12个月期，不能替代3天催化。13F（2026-06-30）显示Fidelity/FMR由Q1约13.2M降至约7.4-7.9M，为前几大中降幅最大，Vanguard口径冲突，构成空头/分歧证据。样本集中于卖方，买方持仓不推导主动看多。"
+    },
+    {
+      "id": "fundamental",
+      "bull": 5,
+      "bear": 5,
+      "reason": "SEC申报显示最新季度营收59.5亿美元、净利润36.2亿美元、毛利46.6亿美元（报告期2026-04-03），总资产225.1亿美元（2026-07-03），盈利体量可观；但资料未提供NAND价格、企业级/消费出货量拆分或公司指引，无法判断价格与出货量贡献方向。分析师预测（FY2027营收491.4亿、EPS 214.82）为市场预期而非已公布事实，且属年度口径，不构成3天方向依据。"
+    },
+    {
+      "id": "event",
+      "bull": 3,
+      "bear": 6,
+      "reason": "3天窗口内无公司直接事件；10月14日CPI已公布且实际值高于预期（核心同比2.6% vs 预期2.5%，CPI同比3.7% vs 预期3.6%），属宏观间接偏空背景。30天内10月29日FY2027Q1财报电话会为已知公司直接事件，但未公布结果，不能当作方向已定。RSS标题显示存储板块受长鑫/长江存储技术进展引发的竞争担忧拖累，属行业相关事件，但均为未核实全文的标题。"
+    },
+    {
+      "id": "flows",
+      "bull": 5,
+      "bear": 5,
+      "reason": "多 / 空分别显示近 24h 主动买 / 卖成交占比 × 10；OI 和资金费作交叉检查，不据此推断未来方向。"
+    }
+  ],
+  "version": "contract-research-v3",
+  "symbol": "SNDKUSDT",
+  "sourceCount": 8,
+  "readCount": 3,
+  "indexedCount": 0,
+  "buyCount": 6,
+  "sellCount": 5,
+  "scoreCoverage": 100,
+  "eventCount": 0,
+  "stopReason": "stop",
+  "institutions": [
+    {
+      "type": "sellside",
+      "name": "花旗",
+      "target": "$2,100",
+      "asOf": "2026-10-09",
+      "verification": "read"
+    },
+    {
+      "type": "sellside",
+      "name": "瑞穗证券",
+      "target": "$2,050",
+      "asOf": "2026-10-06",
+      "verification": "read"
+    },
+    {
+      "type": "sellside",
+      "name": "伯恩斯坦",
+      "target": "$3,000",
+      "asOf": "2026-10-05",
+      "verification": "read"
+    },
+    {
+      "type": "sellside",
+      "name": "Rosenblatt Securities",
+      "target": "$2,400",
+      "asOf": "2026-09-21",
+      "verification": "read"
+    },
+    {
+      "type": "sellside",
+      "name": "Susquehanna",
+      "target": "$2,745",
+      "asOf": "2026-09-12",
+      "verification": "read"
+    },
+    {
+      "type": "buyside",
+      "name": "贝莱德",
+      "target": null,
+      "asOf": "2026-06-30",
+      "verification": "read"
+    },
+    {
+      "type": "buyside",
+      "name": "FMR LLC（富达）",
+      "target": null,
+      "asOf": "2026-06-30",
+      "verification": "read"
+    },
+    {
+      "type": "buyside",
+      "name": "Vanguard Capital Management LLC",
+      "target": null,
+      "asOf": "2026-06-30",
+      "verification": "read"
+    },
+    {
+      "type": "buyside",
+      "name": "Invesco Ltd.",
+      "target": null,
+      "asOf": "2026-06-30",
+      "verification": "read"
+    },
+    {
+      "type": "buyside",
+      "name": "Geode Capital Management LLC",
+      "target": null,
+      "asOf": "2026-06-30",
+      "verification": "read"
+    },
+    {
+      "type": "buyside",
+      "name": "Vanguard Portfolio Management LLC",
+      "target": null,
+      "asOf": "2026-06-30",
+      "verification": "read"
+    }
+  ],
+  "payloadBytes": 62724
+}

@@ -1,0 +1,22 @@
+{
+  "SNDKUSDT": {
+    "name": "闪迪",
+    "description": "NAND 闪存与 SSD；重点区分企业级与消费需求、价格与出货量贡献。",
+    "references": [
+      { "title": "闪迪投资者关系", "url": "https://investor.sandisk.com/" },
+      { "title": "闪迪官方事件日历", "url": "https://investor.sandisk.com/news-events/events" },
+      { "title": "NAND / SSD 行业研究", "url": "https://www.trendforce.com/research/memory-storage" }
+    ],
+    "events": [
+      {
+        "id": "sndk-fy2027-q1-call",
+        "title": "闪迪 FY2027 第一季度财报电话会",
+        "at": "2026-10-29T16:30:00-04:00",
+        "source": "闪迪官方 IR · 人工核对",
+        "sourceUrl": "https://investor.sandisk.com/news-events/events",
+        "verifiedAt": "2026-10-15",
+        "note": "人工核对的官方日程，非实时采集；时间可能调整。电话会时间不等于业绩发布时刻。"
+      }
+    ]
+  }
+}

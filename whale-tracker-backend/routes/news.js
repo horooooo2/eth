@@ -4,18 +4,14 @@ const { getCalendar } = require('../lib/calendar');
 const { readConfig, writeConfig } = require('../lib/config');
 
 const router = express.Router();
+router.get('/hot', async (_req, res) => {
+  try { res.set('Cache-Control', 'no-store').json(await require('../lib/hotNews').getHotNews()); }
+  catch { res.status(503).json({ error: '热点新闻暂不可用，请稍后重试' }); }
+});
 router.get('/macro-comparison', (req,res) => {
   try { res.set('Cache-Control','no-store').json(require('../lib/macroComparison').snapshot(req.query)); }
   catch (error) { res.status(error.status || 503).json({error:error.message || '宏观对照暂不可用'}); }
 });
-const { getComments } = require('../lib/marketComments');
-
-router.get('/comments', (req, res) => {
-  const symbol = String(req.query.symbol || '').trim().toUpperCase();
-  if (!/^[A-Z0-9]{1,26}USDT$/.test(symbol)) return res.status(400).json({ error: '请选择有效标的' });
-  res.json(getComments(symbol));
-});
-
 /** GET /api/news — 加密新闻 + 金十快讯，已做关键词匹配 */
 router.get('/', async (req, res) => {
   try {

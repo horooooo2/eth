@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import { streamAnalyzeWithWhaleAi } from '@/api';
 import { formatAnalyzeBodyHtml, parseAnalyzeSections } from '@/utils/briefHighlight';
+import AdaptivePage from './mobile/AdaptivePage.vue';
 
 const props = defineProps<{
   visible: boolean;
@@ -9,6 +10,7 @@ const props = defineProps<{
   title: string;
   content: string;
   meta?: Record<string, unknown>;
+  mobile?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -35,7 +37,27 @@ const dialogTitle = computed(() =>
       : '动态智能分析',
 );
 
-const dialogWidth = computed(() => (isLarge.value ? '780px' : '520px'));
+const dialogWidth = computed(() => (props.source === 'macro' ? '720px' : isLarge.value ? '780px' : '520px'));
+const open = computed({ get: () => props.visible, set: (value) => emit('update:visible', value) });
+const macroMeta = computed(() => props.meta || {});
+const macroImportance = computed(() => ({high:'高 (High)', mid:'中 (Mid)', low:'低 (Low)'}[String(macroMeta.value.importance)] || '未提供'));
+const macroTime = computed(() => [macroMeta.value.date || macroMeta.value.dateLabel, macroMeta.value.time].filter(Boolean).join(' · ') || '时间待确认');
+const macroNote = computed(() => String(macroMeta.value.note || props.content.split('【数据读数】')[0] || '').trim());
+const macroReadings = computed(() => [
+  { label:'前值', value:macroMeta.value.previous ?? '未提供' },
+  { label:'预测', value:macroMeta.value.forecast ?? '未提供' },
+  { label:'实际值', value:macroMeta.value.actual || (macroMeta.value.released ? '待回填' : '待公布'), actual:true },
+]);
+// 仅拆分日历已有的因果链，不根据指标名称或样例推断方向。
+const macroScenarios = computed(() => {
+  const scenarios = macroNote.value.split(/[；;\n]+/).map(text => {
+    const steps = text.split(/→|⇒|->/).map(s => s.trim()).filter(Boolean);
+    const conclusion = steps.at(-1) || '';
+    const bull = /利多|偏多|利好|上涨/.test(conclusion), bear = /利空|偏空|承压|下跌/.test(conclusion);
+    return { text, steps, tone:bull === bear ? 'neutral' : bull ? 'bullish' : 'bearish' };
+  }).filter(item => item.text.trim());
+  return scenarios.some(item => item.steps.length > 1) ? scenarios : [];
+});
 
 type InfoRow = { label: string; value: string; highlight?: boolean };
 
@@ -232,29 +254,37 @@ watch(
 function close() {
   emit('update:visible', false);
 }
+onUnmounted(() => { reqSeq++; abortCtrl?.abort(); });
 </script>
 
 <template>
-  <el-dialog
-    :model-value="visible"
+  <AdaptivePage
+    v-model="open"
+    :mobile="mobile && source === 'macro'"
     class="ai-analyze-modal"
-    :class="{ large: isLarge }"
+    :class="{ large: isLarge, 'macro-analyze-modal': source === 'macro' }"
     :width="dialogWidth"
     append-to-body
     destroy-on-close
     :show-close="false"
     :title="dialogTitle"
-    @update:model-value="emit('update:visible', $event)"
   >
     <template #header>
       <div class="modal-header-inner">
-        <h2 class="modal-title">{{ dialogTitle }}</h2>
+        <h2 class="modal-title">{{ dialogTitle }}<span v-if="source === 'macro'" class="macro-title-tag">{{ macroMeta.coin || 'BTC' }} · 宏观事件</span></h2>
         <button type="button" class="close-btn" aria-label="关闭" @click="close">&times;</button>
       </div>
     </template>
 
     <div class="modal-body" :class="{ large: isLarge }">
-      <div v-if="infoRows.length" class="info-block">
+      <dl v-if="source === 'macro'" class="macro-meta-grid">
+        <div><dt>标题</dt><dd>{{ title || '（无标题）' }}</dd></div>
+        <div><dt>来源</dt><dd>宏观日历<span v-if="macroMeta.actualSource"> · {{ macroMeta.actualSource }}</span></dd></div>
+        <div><dt>重要性</dt><dd class="macro-importance">{{ macroImportance }}</dd></div>
+        <div><dt>公布时间（北京时间）</dt><dd>{{ macroTime }}</dd></div>
+        <div v-if="macroNote" class="macro-meta-summary"><dt>摘要</dt><dd>{{ macroNote }}</dd></div>
+      </dl>
+      <div v-else-if="infoRows.length" class="info-block">
         <div v-for="(row, i) in infoRows" :key="i" class="info-item">
           <span class="info-label">{{ row.label }}:</span>
           <span class="info-value" :class="{ highlight: row.highlight }">{{ row.value }}</span>
@@ -277,6 +307,16 @@ function close() {
       </div>
 
       <div class="tab-panel" role="tabpanel">
+        <template v-if="source === 'macro' && activeTab === 'summary'">
+          <div class="macro-data-grid" aria-label="事件数据读数">
+            <div v-for="reading in macroReadings" :key="reading.label" class="macro-data-box"><span>{{ reading.label }}</span><strong :class="{actual:reading.actual}">{{ reading.value === '' ? '未提供' : reading.value }}</strong></div>
+          </div>
+          <section v-if="macroScenarios.length" class="macro-scenarios">
+            <h3 class="macro-section-title">逻辑链场景参考 <small>来自宏观日历</small></h3>
+            <div class="macro-logic-grid"><article v-for="(scenario,index) in macroScenarios" :key="index" class="macro-logic-card" :class="scenario.tone"><strong>{{ scenario.steps[0] }}</strong><ol><li v-for="(step,i) in scenario.steps.slice(1)" :key="i">{{ step }}</li></ol></article></div>
+          </section>
+        </template>
+        <h3 v-if="source === 'macro'" class="macro-section-title">{{ activeTab === 'summary' ? 'AI 要点分析' : tabs.find(tab => tab.key === activeTab)?.shortTitle }}</h3>
         <div v-if="loading && !analysis" class="stream-status">
           <span class="pulse" />
           {{ statusMsg || '分析中…' }}
@@ -303,7 +343,7 @@ function close() {
         </button>
       </div>
     </template>
-  </el-dialog>
+  </AdaptivePage>
 </template>
 
 <style>
@@ -344,6 +384,37 @@ function close() {
   background: var(--aa-header, #23262f);
   border-top: 1px solid var(--aa-border, #2d3341);
 }
+.macro-analyze-modal {
+  --aa-bg: #131823;
+  --aa-header: #131823;
+  --aa-base: #0b0e14;
+  --aa-card: #1a202c;
+  --aa-border: #2a2f3e;
+  --aa-muted: #8f9bb3;
+  --aa-text: #e2e8f0;
+  --aa-blue: #3b82f6;
+}
+.macro-analyze-modal.el-dialog {
+  --aa-bg: #131823;
+  --aa-header: #131823;
+  --aa-border: #2a2f3e;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  width: min(720px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: 92dvh !important;
+  margin-top: 4dvh !important;
+  box-shadow: 0 20px 50px rgba(0,0,0,.6);
+}
+.macro-analyze-modal .el-dialog__header,
+.macro-analyze-modal .el-dialog__footer { flex: none; }
+.macro-analyze-modal .el-dialog__body { flex: 1; min-height: 0; overflow: hidden; }
+.macro-analyze-modal.h5-subpage { background: var(--aa-bg); }
+.macro-analyze-modal.h5-subpage > .h5-subpage-heading { display: none; }
+.macro-analyze-modal.h5-subpage > .h5-subpage-content { padding: 0; overflow: hidden; }
+.macro-analyze-modal.h5-subpage > .h5-subpage-footer { padding: 0 0 env(safe-area-inset-bottom); background: var(--aa-base); }
+.macro-analyze-modal .h5-subpage-nav { border-color: var(--aa-border); }
 </style>
 
 <style scoped>
@@ -581,5 +652,68 @@ function close() {
 }
 .btn-primary:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.06);
+}
+
+.macro-analyze-modal .modal-header-inner { padding: 16px 24px; gap: 12px; }
+.macro-analyze-modal .modal-title { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 18px; font-weight: 700; }
+.macro-title-tag { color: #f59e0b; background: rgba(245,158,11,.1); padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+.macro-analyze-modal .close-btn { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: 6px; }
+.macro-analyze-modal .close-btn:hover { background: #242c3d; }
+.macro-analyze-modal .modal-body.large { box-sizing: border-box; padding: 24px; gap: 20px; min-height: 0; max-height: calc(92dvh - 144px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #2a2f3e transparent; }
+.macro-meta-grid { margin: 0; padding: 16px; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px 24px; border: 1px solid var(--aa-border); background: var(--aa-base); border-radius: 8px; flex: none; }
+.macro-meta-grid > div { min-width: 0; }
+.macro-meta-grid dt { margin: 0 0 6px; color: var(--aa-muted); font-size: 11px; }
+.macro-meta-grid dd { margin: 0; font-size: 13px; font-weight: 500; color: var(--aa-text); overflow-wrap: anywhere; }
+.macro-meta-grid .macro-importance { color: #f59e0b; font-weight: 600; }
+.macro-meta-summary { grid-column: 1 / -1; }
+.macro-meta-summary dd { font-size: 12px; line-height: 1.8; color: var(--aa-muted); }
+.macro-analyze-modal .type-tabs { flex-wrap: nowrap; gap: 5px; margin: 0; padding: 0 0 8px; border-color: var(--aa-border); overflow-x: auto; scrollbar-width: none; }
+.macro-analyze-modal .type-tab { height: 32px; padding: 0 10px; border: 0; flex: none; }
+.macro-analyze-modal .type-tab.active { background: var(--aa-blue); color: white; }
+.macro-analyze-modal .type-tab:hover:not(.active) { background: #242c3d; }
+.macro-analyze-modal .tab-panel { overflow: visible; flex: none; padding: 0; }
+.macro-data-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; margin-bottom: 20px; }
+.macro-data-box { padding: 12px 8px; border: 1px solid var(--aa-border); border-radius: 8px; background: var(--aa-base); text-align: center; display: flex; flex-direction: column; gap: 6px; }
+.macro-data-box > span { color: var(--aa-muted); font-size: 11px; }
+.macro-data-box strong { color: var(--aa-text); font: 700 17px/1.5 Consolas, monospace; overflow-wrap: anywhere; }
+.macro-data-box strong.actual { color: #f59e0b; }
+.macro-section-title { font-size: 13px; font-weight: 500; color: var(--aa-muted); margin: 0 0 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.macro-section-title small { color: var(--aa-muted); font-size: 10px; opacity: .8; }
+.macro-scenarios { margin: 0 0 20px; }
+.macro-logic-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+.macro-logic-card { background: var(--aa-card); padding: 14px; border: 1px solid var(--aa-border); border-top: 3px solid var(--aa-blue); border-radius: 8px; overflow-wrap: anywhere; }
+.macro-logic-card > strong { font-size: 12px; color: var(--aa-text); font-weight: 600; }
+.macro-logic-card ol { margin: 10px 0 0; padding: 0 0 0 12px; border-left: 2px dashed var(--aa-border); list-style: none; }
+.macro-logic-card li { color: var(--aa-muted); font-size: 12px; line-height: 1.8; margin-top: 5px; }
+.macro-logic-card li::before { content: '↳'; margin-right: 6px; color: var(--aa-muted); }
+.macro-logic-card.bearish { border-top-color: #ff4d4d; }
+.macro-logic-card.bullish { border-top-color: #00e676; }
+.macro-logic-card.bearish li:last-child { color: #ff4d4d; }
+.macro-logic-card.bullish li:last-child { color: #00e676; }
+.macro-analyze-modal .analysis-stream { font-size: 13px; line-height: 1.9; color: var(--aa-muted); overflow-wrap: anywhere; }
+.macro-analyze-modal .analysis-stream :deep(.analysis-list) { padding: 0; list-style: none; }
+.macro-analyze-modal .analysis-stream :deep(.analysis-list li),
+.macro-analyze-modal .analysis-stream :deep(.analysis-p) { padding: 12px 14px; margin: 0 0 10px; border: 1px solid var(--aa-border); background: var(--aa-card); border-radius: 8px; }
+.macro-analyze-modal .stream-status,
+.macro-analyze-modal .stream-error,
+.macro-analyze-modal .tab-empty { border: 1px solid var(--aa-border); border-radius: 8px; padding: 14px; margin: 0; background: var(--aa-base); }
+.macro-analyze-modal .modal-footer-inner { padding: 16px 24px; background: var(--aa-base); }
+.macro-analyze-modal .btn-secondary { border-color: var(--aa-border); color: var(--aa-text); }
+.macro-analyze-modal .btn-primary { background: var(--aa-blue); color: white; border: 1px solid var(--aa-blue); }
+.macro-analyze-modal .btn-primary:hover:not(:disabled) { background: #2563eb; }
+.macro-analyze-modal button:focus-visible { outline: 2px solid var(--aa-blue); outline-offset: 3px; }
+@media (max-width:767px) {
+  .macro-analyze-modal .modal-body.large { height: 100%; max-height: none; padding: 16px; gap: 18px; }
+  .macro-meta-grid { padding: 14px; gap: 14px 16px; }
+  .macro-meta-grid dd { font-size: 12px; }
+  .macro-data-grid { gap: 8px; }
+  .macro-data-box strong { font-size: 16px; }
+  .macro-logic-grid { grid-template-columns: minmax(0,1fr); }
+  .macro-analyze-modal .type-tab { min-height: 40px; padding: 0 12px; }
+  .macro-analyze-modal .modal-footer-inner { padding: 12px 16px; }
+  .macro-analyze-modal .btn { min-height: 44px; flex: 1; }
+}
+@media (prefers-reduced-motion:reduce) {
+  .macro-analyze-modal .pulse, .macro-analyze-modal .stream-cursor { animation: none; }
 }
 </style>

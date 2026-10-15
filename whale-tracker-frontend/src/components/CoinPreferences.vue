@@ -4,8 +4,7 @@ import AdaptivePage from './mobile/AdaptivePage.vue';
 import { computed, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Close } from '@element-plus/icons-vue';
-import { fetchRadarCatalog, lookupMarketCoin, searchMarketCoins, type TradFiMarketSymbol } from '@/api';
-import { tradfiWatch, writeTradFiWatch } from '@/utils/tradfiWatch';
+import { lookupMarketCoin, searchMarketCoins } from '@/api';
 import {
   MAX_PREFERRED_COINS,
   readWatchedCoins,
@@ -15,7 +14,6 @@ import {
 const props = defineProps<{
   mobile?:boolean;
   variant?: 'default' | 'sidebar';
-  activeMarket?: 'virtual' | 'tradfi';
 }>();
 
 const emit = defineEmits<{
@@ -23,18 +21,12 @@ const emit = defineEmits<{
 }>();
 
 const pagePanel=ref<InstanceType<typeof AdaptivePage>|null>(null);
-const isDirty=computed(()=>JSON.stringify(draftCoins.value)!==JSON.stringify(readWatchedCoins())||JSON.stringify(draftTradfi.value)!==JSON.stringify(tradfiWatch.value)||!!prefAddSymbol.value||!!tradfiPick.value);
+const isDirty=computed(()=>JSON.stringify(draftCoins.value)!==JSON.stringify(readWatchedCoins())||!!prefAddSymbol.value);
 const prefsVisible = ref(false);
 const saving = ref(false);
 const prefAddSymbol = ref('');
 const prefAddLoading = ref(false);
 const draftCoins = ref<string[]>([]);
-const activeTab = ref<'virtual' | 'tradfi'>('virtual');
-const draftTradfi = ref<string[]>([]);
-const tradfiCatalog = ref<TradFiMarketSymbol[]>([]);
-const tradfiLoading = ref(false);
-const tradfiPick = ref('');
-const tradfiAddable = computed(() => tradfiCatalog.value.filter((item) => !draftTradfi.value.includes(item.symbol)));
 type CoinSuggestion = { value: string; id: string };
 
 async function queryCoinSuggestions(query: string, done: (items: CoinSuggestion[]) => void) {
@@ -64,46 +56,12 @@ function normalizeInput(raw: string) {
 
 function resetDraft() {
   draftCoins.value = [...readWatchedCoins()];
-  draftTradfi.value = [...tradfiWatch.value];
   prefAddSymbol.value = '';
-  tradfiPick.value = '';
 }
 
 function openPrefs() {
   resetDraft();
-  activeTab.value = props.activeMarket || 'virtual';
   prefsVisible.value = true;
-  void loadTradfiCatalog();
-}
-
-async function loadTradfiCatalog() {
-  tradfiLoading.value = true;
-  try {
-    tradfiCatalog.value = (await fetchRadarCatalog()).symbols;
-  } catch (err) {
-    ElMessage.warning(err instanceof Error ? err.message : '雷达合约清单获取失败');
-  } finally {
-    tradfiLoading.value = false;
-  }
-}
-
-function addTradfi() {
-  const symbol = tradfiPick.value;
-  if (!tradfiAddable.value.some((item) => item.symbol === symbol)) return;
-  if (draftTradfi.value.length >= 30) {
-    ElMessage.warning('最多添加 30 个雷达合约');
-    return;
-  }
-  draftTradfi.value = [...draftTradfi.value, symbol];
-  tradfiPick.value = '';
-}
-
-function removeTradfi(symbol: string) {
-  if (draftTradfi.value.length <= 1) {
-    ElMessage.warning('至少保留 1 个雷达合约');
-    return;
-  }
-  draftTradfi.value = draftTradfi.value.filter((item) => item !== symbol);
 }
 
 function closePrefs() {
@@ -156,7 +114,6 @@ async function confirmPrefs() {
   saving.value = true;
   try {
     writePreferredCoins(draftCoins.value);
-    writeTradFiWatch(draftTradfi.value);
     prefsVisible.value = false;
     emit('change');
   } finally {
@@ -171,7 +128,7 @@ async function confirmPrefs() {
       type="button"
       class="prefs-trigger"
       :class="{ sidebar: props.variant === 'sidebar' }"
-      :title="mobile ? '标的偏好' : '设置'"
+      title="标的偏好"
       @click="openPrefs"
     >
       <svg
@@ -185,11 +142,11 @@ async function confirmPrefs() {
           d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.07 7.07 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.6.24-1.14.55-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.58a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.68.22l2.39-.96c.49.39 1.03.7 1.63.94l.36 2.54c.05.24.25.42.49.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.6-.24 1.14-.55 1.63-.94l2.39.96c.25.12.54.02.68-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"
         />
       </svg>
-      <span>{{ props.variant === 'sidebar' ? '设置' : '币种' }}</span>
+      <span>标的偏好</span>
     </button></slot>
     <AdaptivePage ref="pagePanel" :mobile="mobile" :dirty="isDirty" :busy="saving"
       v-model="prefsVisible"
-      :title="mobile ? '标的偏好' : '设置'"
+      title="标的偏好"
       width="min(520px, 94vw)"
       class="coin-prefs-dialog settings-surface"
       append-to-body
@@ -197,14 +154,9 @@ async function confirmPrefs() {
       @close="resetDraft"
     >
       <div class="dialog-body">
-        <div class="market-tabs" role="tablist" aria-label="币种类型">
-          <button type="button" role="tab" :aria-selected="activeTab === 'virtual'" :class="{ active: activeTab === 'virtual' }" @click="activeTab = 'virtual'">标的偏好</button>
-          <button type="button" role="tab" :aria-selected="activeTab === 'tradfi'" :class="{ active: activeTab === 'tradfi' }" @click="activeTab = 'tradfi'">雷达合约</button>
-        </div>
-        <section v-if="activeTab === 'virtual'" class="setting-block" role="tabpanel">
-          <h4 class="block-title">标的偏好</h4>
+        <section class="setting-block" aria-label="关注标的">
           <p class="intro">
-            巨鲸与异动记录的筛选仅使用此列表，至少保留 1 个标的。雷达合约偏好独立管理。
+            巨鲸、异动记录与合约研判使用此列表，至少保留 1 个标的。
           </p>
 
           <div class="coin-grid">
@@ -238,22 +190,6 @@ async function confirmPrefs() {
             <button type="button" class="dlg-btn primary" :disabled="prefAddLoading" @click="submitPrefAdd">
               {{ prefAddLoading ? '…' : '添加' }}
             </button>
-          </div>
-        </section>
-        <section v-else class="setting-block" role="tabpanel">
-          <h4 class="block-title">雷达观察合约</h4>
-          <p class="intro">虚拟币与传统金融合约共用此列表，最多 30 个。至少保留 1 个合约。</p>
-          <div class="coin-grid">
-            <div v-for="symbol in draftTradfi" :key="symbol" class="coin-chip">
-              <span class="coin-label">{{ symbol }}</span>
-              <button type="button" class="chip-remove" :disabled="draftTradfi.length <= 1" :aria-label="`移除 ${symbol}`" @click="removeTradfi(symbol)"><el-icon><Close /></el-icon></button>
-            </div>
-          </div>
-          <div class="pref-add">
-            <el-select v-model="tradfiPick" class="tradfi-select" filterable clearable :loading="tradfiLoading" :disabled="tradfiLoading || !tradfiAddable.length" placeholder="搜索代码或名称，例如 BTC、黄金、闪迪" aria-label="搜索雷达合约">
-              <el-option v-for="item in tradfiAddable" :key="item.symbol" :value="item.symbol" :label="`${item.symbol} · ${item.name} · ${item.assetType === 'CRYPTO' ? '虚拟币' : '传统金融'}`" />
-            </el-select>
-            <button type="button" class="dlg-btn primary" :disabled="!tradfiPick" @click="addTradfi">添加</button>
           </div>
         </section>
       </div>
@@ -329,19 +265,10 @@ async function confirmPrefs() {
   flex-direction: column;
   gap: 18px;
 }
-.market-tabs { display: flex; gap: 6px; border-bottom: 1px solid #2a3548; }
-.market-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: #8b9bb4; padding: 8px 13px; font: inherit; font-size: 13px; cursor: pointer; }
-.market-tabs button.active { border-bottom-color: #3d7eff; color: #e8edf5; font-weight: 700; }
 .setting-block {
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-.block-title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 700;
-  color: #e8edf5;
 }
 .intro {
   margin: 0;
@@ -399,11 +326,10 @@ async function confirmPrefs() {
   gap: 8px;
   align-items: center;
 }
-.pref-add :deep(.el-input), .pref-add :deep(.el-autocomplete), .pref-add :deep(.el-select) {
+.pref-add :deep(.el-input), .pref-add :deep(.el-autocomplete) {
   flex: 1 1 auto;
   min-width: 0;
 }
-.tradfi-select { flex: 1 1 auto; min-width: 0; }
 .pref-add .dlg-btn {
   flex: 0 0 auto;
   white-space: nowrap;

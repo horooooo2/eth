@@ -9,6 +9,7 @@ const props = defineProps<{
   title: string;
   content: string;
   meta?: Record<string, unknown>;
+  mobile?: boolean;
   /** 按钮文案，默认「分析」；巨鲸列表可用「AI」 */
   label?: string;
 }>();
@@ -18,7 +19,7 @@ const open = ref(false);
 function onClick(ev: Event) {
   ev.stopPropagation();
   if (!aiKeyReady.value) {
-                ElMessage.warning('请先在侧栏「API 设置」中配置 DeepSeek API Key');
+    ElMessage.warning('请先在「设置 → AI 分析设置」中配置 DeepSeek API Key');
     return;
   }
   open.value = true;
@@ -42,6 +43,7 @@ function onClick(ev: Event) {
     :title="props.title"
     :content="props.content"
     :meta="props.meta"
+    :mobile="props.mobile"
   />
 </template>
 

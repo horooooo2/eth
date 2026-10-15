@@ -82,6 +82,9 @@ async function dispatch(method, pathname, query, body) {
     const data = await getNews(query.refresh === '1');
     return json(200, data);
   }
+  if (method === 'GET' && path === '/news/hot') {
+    return json(200, await require('./hotNews').getHotNews());
+  }
   if (method === 'GET' && path === '/news/calendar') {
     const force = query.refresh === '1';
     return json(200, await getCalendar(force));

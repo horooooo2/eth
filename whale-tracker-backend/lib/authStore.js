@@ -215,6 +215,7 @@ function deleteUser(userId) {
   const database = getDb();
   database.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
   database.prepare('DELETE FROM user_settings WHERE user_id = ?').run(id);
+  database.prepare('DELETE FROM contract_research_history WHERE user_id = ?').run(id);
   try {
     database.prepare('DELETE FROM user_exchange_keys WHERE user_id = ?').run(id);
   } catch {
