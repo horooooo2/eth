@@ -31,7 +31,6 @@ const FF_TITLE_MAP = [
   [/\bPPI\b/i, 'PPI'],
   [/FOMC|Federal Funds Rate/i, 'FOMC 利率决议'],
   [/GDP/i, 'GDP'],
-  [/Retail Sales/i, '零售销售'],
   [/Initial Jobless Claims|Unemployment Claims/i, '初请失业金'],
   [/JOLTS Job Openings/i, 'JOLTS 职位空缺'],
   [/Consumer Confidence/i, '消费者信心'],
@@ -55,9 +54,19 @@ function shanghaiParts(ts) {
   };
 }
 
+function retailIdentity(title) {
+  const text = String(title || '');
+  if (!/Retail Sales|零售销售/i.test(text)) return null;
+  const scope = /\bCore\b|核心/i.test(text) ? 'core' : 'headline';
+  const period = /m\/m|MoM|环比/i.test(text) ? 'mom' : /y\/y|YoY|同比/i.test(text) ? 'yoy' : 'unknown';
+  return `${scope}:${period}`;
+}
+
 function translateFfTitle(title) {
   const cpi = cpiIdentity(title);
   if (cpi) return `${cpi.startsWith('core:') ? '核心 ' : ''}CPI${cpi.endsWith(':mom') ? '（环比）' : cpi.endsWith(':yoy') ? '（同比）' : ''}`;
+  const retail = retailIdentity(title);
+  if (retail) return `${retail.startsWith('core:') ? '核心' : ''}零售销售${retail.endsWith(':mom') ? '（环比）' : retail.endsWith(':yoy') ? '（同比）' : ''}`;
   if (/\bPCE\b/i.test(title)) return `${/Core|核心/i.test(title) ? '核心 ' : ''}PCE${/m\/m|MoM|环比/i.test(title) ? '（环比）' : /y\/y|YoY|同比/i.test(title) ? '（同比）' : ''}`;
   for (const [pattern, label] of FF_TITLE_MAP) {
     if (pattern.test(title)) return label;
@@ -171,6 +180,9 @@ function eventsRoughlyMatch(a, b) {
   if (!left || !right) return false;
   const leftCpi = cpiIdentity(left), rightCpi = cpiIdentity(right);
   if (leftCpi || rightCpi) return leftCpi === rightCpi;
+  // 核心/总额及环比/同比不能按标题包含关系归并，否则读数与说明会串值。
+  const leftRetail = retailIdentity(left), rightRetail = retailIdentity(right);
+  if (leftRetail || rightRetail) return leftRetail === rightRetail;
   if (/PCE/i.test(left) || /PCE/i.test(right)) return translateFfTitle(left) === translateFfTitle(right);
   if (left.includes(right) || right.includes(left)) return true;
   return left.slice(0, 4) === right.slice(0, 4);

@@ -14,7 +14,7 @@ const visible=ref(false);
     <el-dialog v-model="visible" title="设置" width="min(480px,94vw)" append-to-body destroy-on-close>
       <div class="settings-account"><span class="account-avatar">{{(username||'U').slice(0,1).toUpperCase()}}</span><div><strong>{{username||'当前账户'}}</strong><small>个人工作区</small></div></div>
       <div class="settings-group">
-        <CoinPreferences><template #trigger="{open}"><button type="button" class="settings-row" @click="open"><span><b>标的偏好</b><small>管理巨鲸、异动记录与合约研判的关注标的</small></span><span aria-hidden="true">›</span></button></template></CoinPreferences>
+        <CoinPreferences><template #trigger="{open}"><button type="button" class="settings-row" @click="open"><span><b>标的偏好</b><small>管理巨鲸与异动记录的关注标的</small></span><span aria-hidden="true">›</span></button></template></CoinPreferences>
         <ApiSettings><template #trigger="{open}"><button type="button" class="settings-row" @click="open"><span><b>AI 分析设置</b><small>配置个人 DeepSeek 密钥</small></span><span aria-hidden="true">›</span></button></template></ApiSettings>
       </div>
       <div class="settings-group"><button type="button" class="settings-row logout" @click="emit('logout')"><span><b>退出登录</b><small>退出当前账户</small></span><span aria-hidden="true">↗</span></button></div>

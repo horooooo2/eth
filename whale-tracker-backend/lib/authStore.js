@@ -215,7 +215,10 @@ function deleteUser(userId) {
   const database = getDb();
   database.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
   database.prepare('DELETE FROM user_settings WHERE user_id = ?').run(id);
-  database.prepare('DELETE FROM contract_research_history WHERE user_id = ?').run(id);
+  // Retired history tables are absent in new databases; keep account deletion compatible with older installs.
+  if (database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='contract_research_history'").get()) {
+    database.prepare('DELETE FROM contract_research_history WHERE user_id = ?').run(id);
+  }
   try {
     database.prepare('DELETE FROM user_exchange_keys WHERE user_id = ?').run(id);
   } catch {

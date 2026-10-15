@@ -27,6 +27,15 @@ const macroError = ref('');
 const macroEvents = ref<CalendarEvent[]>([]);
 const macroLoaded = ref(false);
 
+/** 同类发布只展示代表指标；完整采集与宏观对照历史由后端独立保留。 */
+function isRepresentativeMacro(item: CalendarEvent) {
+  const title = item.title.trim();
+  if (/\bCPI\b|零售销售|Retail Sales/i.test(title)) {
+    return ['零售销售（环比）', 'CPI（同比）', '核心 CPI（环比）'].includes(title);
+  }
+  return true;
+}
+
 function importanceStars(importance: CalendarEvent['importance']) {
   if (importance === 'high') return 3;
   if (importance === 'mid') return 2;
@@ -123,6 +132,7 @@ async function loadMacro(force = false) {
     macroEvents.value = (data.events || [])
       .filter((item) => item.daysUntil >= -7 && item.daysUntil <= 7)
       .filter((item) => item.importance === 'high' || item.importance === 'mid')
+      .filter(isRepresentativeMacro)
       .slice(0, 40);
     macroLoaded.value = true;
   } catch (err) {

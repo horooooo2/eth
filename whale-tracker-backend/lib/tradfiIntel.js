@@ -66,7 +66,7 @@ function newsCategory(title, market) {
   if (market.category === 'EQUITY' && /财报|业绩|营收|利润|交付|公司|股东|earnings|revenue|filing/i.test(title)) return '公司';
   return '行业';
 }
-function rssRows(xml, market, lookbackDays = 10) {
+function rssRows(xml, market) {
   const out = [];
   const seen = new Set();
   for (const match of xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)) {
@@ -75,7 +75,7 @@ function rssRows(xml, market, lookbackDays = 10) {
     const link = xmlField(block, 'link').trim();
     const date = new Date(xmlField(block, 'pubDate'));
     if (!title || !/^https:\/\/(?:news\.google\.com|www\.google\.com)\//i.test(link)) continue;
-    if (!Number.isFinite(date.getTime()) || date.getTime() > Date.now() || Date.now() - date.getTime() > lookbackDays * 86400000) continue;
+    if (!Number.isFinite(date.getTime()) || date.getTime() > Date.now() || Date.now() - date.getTime() > 10 * 86400000) continue;
     const key = title.toLowerCase().replace(/\s+-\s+[^-]+$/, '');
     if (seen.has(key)) continue;
     seen.add(key);
@@ -91,14 +91,13 @@ function rssRows(xml, market, lookbackDays = 10) {
   }
   return out;
 }
-async function getNews(market, options = {}) {
-  const lookbackDays = options.lookbackDays === 30 ? 30 : 7;
-  return cached(`news:${market.symbol}:${lookbackDays}`, NEWS_TTL, async () => {
+async function getNews(market) {
+  return cached(`news:${market.symbol}`, NEWS_TTL, async () => {
     const query = newsQuery(market);
-    const url = `https://news.google.com/rss/search?q=${encodeURIComponent(`${query} when:${lookbackDays}d`)}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans`;
+    const url = `https://news.google.com/rss/search?q=${encodeURIComponent(`${query} when:7d`)}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans`;
     const { data } = await http.get(url, { responseType: 'text', headers: { Accept: 'application/rss+xml,text/xml,*/*' } });
     if (typeof data !== 'string' || !data.includes('<rss')) throw new Error('新闻 RSS 响应格式异常');
-    return { items: rssRows(data, market, lookbackDays === 30 ? 30 : 10), source: 'Google 新闻 RSS', sourceUrl: url, query, updatedAt: new Date().toISOString(), stale: false };
+    return { items: rssRows(data, market), source: 'Google 新闻 RSS', sourceUrl: url, query, updatedAt: new Date().toISOString(), stale: false };
   });
 }
 
@@ -227,4 +226,4 @@ async function getIntel(symbol) {
   return { symbol: market.symbol, news, fundamentals, events };
 }
 
-module.exports = { getIntel, getRadarNews, getNews, getFundamentals, rssRows, latestUsdFact, parseTreasuryCsv, issuerValue };
+module.exports = { getIntel, getRadarNews, rssRows, latestUsdFact, parseTreasuryCsv, issuerValue };

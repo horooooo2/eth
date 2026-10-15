@@ -63,11 +63,6 @@ const FILES = [
   'lib/marketMovementEngine.js',
   'lib/marketMovements.js',
   'lib/tradfiMarkets.js',
-  'lib/contractResearch.js',
-  'lib/contractResearchRules.js',
-  'lib/contractResearchStore.js',
-  'lib/contractResearchWeb.js',
-  'config/contract-research.json',
   'lib/radarLongTrend.js',
   'lib/tradfiUniverse.js',
   'lib/radarStream.js',
@@ -119,7 +114,6 @@ const FILES = [
   'routes/news.js',
   'routes/markets.js',
   'routes/tradfi.js',
-  'routes/contractResearch.js',
   'routes/strategyShadow.js',
   'routes/flow.js',
   'routes/whaleAi.js',
@@ -129,6 +123,12 @@ const FILES = [
 
 // Older packages may still contain these retired, unmounted modules.
 const RETIRED_FILES = [
+  'lib/contractResearch.js',
+  'lib/contractResearchRules.js',
+  'lib/contractResearchStore.js',
+  'lib/contractResearchWeb.js',
+  'config/contract-research.json',
+  'routes/contractResearch.js',
   'lib/marketComments.js',
   'lib/statisticsWorker.js',
   'lib/statisticsCompute.js',

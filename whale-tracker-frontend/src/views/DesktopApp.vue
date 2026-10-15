@@ -38,35 +38,30 @@ const StrategyWorkspace = defineAsyncComponent(() => import('@/components/strate
 const HotNews = defineAsyncComponent(() => import('@/components/HotNews.vue'));
 const MarketMovements = defineAsyncComponent(() => import('@/components/MarketMovements.vue'));
 const MacroComparison = defineAsyncComponent(() => import('@/components/MacroComparison.vue'));
-const ResearchWorkspace = defineAsyncComponent(() => import('@/components/research/ResearchWorkspace.vue'));
-const researchVisited = ref(false);
 const strategyVisited = ref(false);
 const whaleStore = useWhaleStore();
 
 const SIDE_TAB_STORAGE_KEY = 'whale-tracker:side-tab';
-function readSideTab(): 'virtual' | 'tradfi' | 'strategy' {
+function readSideTab(): 'virtual' | 'strategy' {
   try {
     const saved = window.localStorage.getItem(SIDE_TAB_STORAGE_KEY);
-    if (saved === 'strategy') return STRATEGY_WORKSPACE_ENABLED ? 'strategy' : 'tradfi';
-    return saved === 'tradfi' ? saved : 'virtual';
+    return saved === 'strategy' && STRATEGY_WORKSPACE_ENABLED ? 'strategy' : 'virtual';
   } catch { return 'virtual'; }
 }
 const isMobile = ref(window.matchMedia('(max-width: 767px)').matches);
-function selectMobileTab(tab:'virtual'|'tradfi'|'my'){if(tab==='my')myOpen.value=true;else{myOpen.value=false;sideTab.value=tab;}}
+function selectMobileTab(tab:'virtual'|'my'){if(tab==='my')myOpen.value=true;else{myOpen.value=false;sideTab.value=tab;}}
 const mobilePanel = ref<'hot' | 'alerts' | 'whales' | 'macro'>('hot');
 function selectMobilePanel(tab:'hot'|'alerts'|'whales'|'macro'){mobilePanel.value=tab;if(tab==='hot')sideInfoTab.value='hot';else if(tab==='macro')sideInfoTab.value='macro';}
 const myOpen = ref(false);
-const sideTab = ref<'virtual' | 'tradfi' | 'strategy'>(readSideTab());
+const sideTab = ref<'virtual' | 'strategy'>(readSideTab());
 watch(sideTab, (tab) => {
   myOpen.value = false;
   if (tab === 'strategy') strategyVisited.value = true;
-  if (tab === 'tradfi') researchVisited.value = true;
   try { window.localStorage.setItem(SIDE_TAB_STORAGE_KEY, tab); } catch { /* storage unavailable */ }
 });
 if (sideTab.value === 'strategy') strategyVisited.value = true;
-if (sideTab.value === 'tradfi') researchVisited.value = true;
 const macroRef = ref<InstanceType<typeof DataModule> | null>(null);
-let pageLoader: ReturnType<typeof createPageLoadScheduler<'virtual' | 'tradfi'>> | null = null;
+let pageLoader: ReturnType<typeof createPageLoadScheduler<'virtual'>> | null = null;
 const whaleListRef = ref<InstanceType<typeof WhaleList> | InstanceType<typeof MobileWhales> | null>(null);
 const whaleDetailOpen = ref(false);
 const whaleDetailId = ref('');
@@ -274,14 +269,11 @@ async function startAppSession() {
       ]);
 
     },
-    tradfi: async () => { /* Research loads only when its page is active. */ },
   });
-  const primary = sideTab.value === 'tradfi' ? 'tradfi' : 'virtual';
-  await pageLoader.start(primary, primary === 'virtual' ? 'tradfi' : 'virtual',
-    () => sessionStarted && generation === sessionGeneration);
+  await pageLoader.load('virtual').catch(() => undefined);
   if (!sessionStarted || generation !== sessionGeneration) return;
 }
-watch(sideTab, (tab) => { if ((tab === 'virtual' || tab === 'tradfi') && sessionStarted && pageLoader) void pageLoader.load(tab); });
+watch(sideTab, (tab) => { if (tab === 'virtual' && sessionStarted && pageLoader) void pageLoader.load(tab); });
 
 function stopAppSession() {
   sessionStarted = false;
@@ -383,7 +375,6 @@ onUnmounted(() => {
     <aside v-else class="sidebar" aria-label="主导航">
       <div class="sidebar-connection"><div class="socket-dot" :class="socketMonitor.status" :title="socketMonitor.title" :aria-label="socketMonitor.title"><span class="socket-core" /></div></div>
       <button type="button" class="nav-item" :class="{active:!myOpen && sideTab==='virtual'}" :aria-pressed="!myOpen && sideTab==='virtual'" title="巨鲸" @click="myOpen=false; sideTab='virtual'"><span class="nav-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3 3v14h14M6 12l3-4 3 2 5-6"/></svg></span><span class="nav-label">巨鲸</span></button>
-      <button type="button" class="nav-item" :class="{active:!myOpen && sideTab==='tradfi'}" :aria-pressed="!myOpen && sideTab==='tradfi'" title="合约研判" @click="myOpen=false; sideTab='tradfi'"><span class="nav-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3 16V4h14v12zM6 12l3-4 3 2 3-4"/></svg></span><span class="nav-label">研判</span></button>
       <button v-if="STRATEGY_WORKSPACE_ENABLED" type="button" class="nav-item" :class="{active:!myOpen && sideTab==='strategy'}" title="策略交易" @click="myOpen=false; sideTab='strategy'"><span class="nav-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3 3v14h14M6 13l4-5 4 2 3-6"/></svg></span><span class="nav-label">策略交易</span></button>
       <div class="sidebar-footer"><ValidationEntry navigation /><div class="bottom-nav"><DesktopSettings :username="authUser?.username" @logout="onLogout" /></div></div>
     </aside>
@@ -475,7 +466,6 @@ onUnmounted(() => {
       </div>
       </div>
       <StrategyWorkspace v-if="STRATEGY_WORKSPACE_ENABLED && strategyVisited" v-show="sideTab === 'strategy'" :active="sideTab === 'strategy'" class="tradfi-host" />
-      <ResearchWorkspace v-if="researchVisited" :mobile="isMobile" :active="sideTab === 'tradfi' && !myOpen" v-show="sideTab === 'tradfi'" class="tradfi-host" />
     </div>
     <WhaleDetailDialog :mobile="isMobile" :refresh-snapshot="recoverState" v-model="whaleDetailOpen" :whale="whaleDetailProfile" :snapshot-updated-at="whaleStore.updatedAt" />
     </template>

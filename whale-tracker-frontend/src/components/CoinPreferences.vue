@@ -156,7 +156,7 @@ async function confirmPrefs() {
       <div class="dialog-body">
         <section class="setting-block" aria-label="关注标的">
           <p class="intro">
-            巨鲸、异动记录与合约研判使用此列表，至少保留 1 个标的。
+            巨鲸与异动记录使用此列表，至少保留 1 个标的。
           </p>
 
           <div class="coin-grid">
